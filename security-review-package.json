@@ -96,15 +96,36 @@
       "required": true,
       "paths": [
         "docs/HARNESS_ENGINEERING.md",
+        "docs/CI_AND_RELEASE_GATES.md",
         "scripts/local-harness.sh",
+        "scripts/check-ci-gates.py",
+        "scripts/ci-change-scope.py",
         "scripts/h3-harness.sh",
         "scripts/ech-harness.sh",
         "scripts/conformance.sh",
         "scripts/approved-vm-detached-tcp-longhaul.sh",
         "scripts/approved-vm-failure-injection-smoke.sh",
-        ".github/workflows/ci.yml"
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-candidate.yml"
       ],
-      "notes": "Local, CI, and approved-host verification entry points."
+      "notes": "Local preflight, public PR CI, checks-only release-candidate CI, and approved-host verification entry points."
+    },
+    {
+      "id": "audit_process_and_decision_inputs",
+      "required": true,
+      "paths": [
+        "docs/PRODUCTION_SCOPE.md",
+        "production-readiness.json",
+        "docs/INDEPENDENT_AUDIT_PACKAGE.md",
+        "docs/AUDIT_EVIDENCE_INDEX.md",
+        "docs/SECURITY_DISCLOSURE_WORKFLOW.md",
+        "docs/AUDIT_REMEDIATION_POLICY.md",
+        "docs/PRODUCTION_GO_NO_GO_TEMPLATE.md",
+        "docs/RELEASE_GATES_V1_2.md",
+        "MAINTAINERS.md",
+        "docs/MAINTAINER_IDENTITY_AND_SIGNING.md"
+      ],
+      "notes": "Pre-freeze production scope, independent-audit instructions, evidence contracts, finding handling, identity policy, and an unused Go/No-Go template. These inputs do not claim audit or production completion."
     },
     {
       "id": "release_and_feedback_inputs",

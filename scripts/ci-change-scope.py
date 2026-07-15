@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classify changed paths for budget-aware optional CI jobs."""
+"""Classify changed paths for the single-platform public PR gate."""
 
 from __future__ import annotations
 

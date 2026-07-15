@@ -1,0 +1,130 @@
+name: release-candidate-ci
+run-name: release candidate ${{ inputs.release_stage }} at ${{ inputs.candidate_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full frozen Maverick release commit
+        required: true
+        type: string
+      release_stage:
+        description: v1.2.0 gate being checked
+        required: true
+        type: choice
+        options:
+          - v1.2.0-alpha.1
+          - v1.2.0-beta.1
+          - v1.2.0-rc.1
+          - v1.2.0
+
+concurrency:
+  group: release-candidate-${{ inputs.release_stage }}-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      RELEASE_STAGE: ${{ inputs.release_stage }}
+    steps:
+      - name: Check out public control record
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          path: control
+          persist-credentials: false
+
+      - name: Validate frozen ledger binding
+        run: |
+          if [[ ! "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "candidate_sha must be a full lowercase commit hash" >&2
+            exit 1
+          fi
+          python3 control/scripts/check-production-readiness.py \
+            control/production-readiness.json \
+            --expected-release-commit "$CANDIDATE_SHA" \
+            --release-stage "$RELEASE_STAGE"
+
+      - name: Check out exact public release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify exact source and software version
+        run: |
+          actual_sha="$(git -C candidate rev-parse HEAD)"
+          if [[ "$actual_sha" != "$CANDIDATE_SHA" ]]; then
+            echo "checked-out source does not match candidate_sha" >&2
+            exit 1
+          fi
+          expected_version="${RELEASE_STAGE#v}"
+          actual_version="$(awk -F'"' '/^version =/ {print $2; exit}' candidate/Cargo.toml)"
+          if [[ "$actual_version" != "$expected_version" ]]; then
+            echo "workspace version does not match release_stage" >&2
+            exit 1
+          fi
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-release-candidate-${{ hashFiles('candidate/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-release-candidate-
+            ${{ runner.os }}-cargo-registry-
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install pinned release-gate tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: Run exact-candidate source gates
+        working-directory: candidate
+        run: |
+          ./scripts/local-harness.sh
+          ./scripts/security-dependency-inventory.sh
+
+      - name: Build and verify public Maverick artifact
+        working-directory: candidate
+        run: |
+          release_version="${RELEASE_STAGE#v}"
+          MAVERICK_RELEASE_VERSION="$release_version" \
+            MAVERICK_RELEASE_TARGET=x86_64-unknown-linux-gnu \
+            ./scripts/release-artifacts.sh
+          artifact_dir="$(find dist -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          if [[ -z "$artifact_dir" ]]; then
+            echo "release artifact directory is missing" >&2
+            exit 1
+          fi
+          grep -Fx "git_revision: $CANDIDATE_SHA" "$artifact_dir/BUILDINFO"
+          (cd "$artifact_dir" && sha256sum -c SHA256SUMS)
+          {
+            echo "### Public Maverick candidate gate"
+            echo
+            echo "- Stage: \`$RELEASE_STAGE\`"
+            echo "- Release commit: \`$CANDIDATE_SHA\`"
+            echo "- Runner: \`ubuntu-24.04\`"
+            echo "- Publication: none"
+            echo
+            echo '```text'
+            cat "$artifact_dir/SHA256SUMS"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

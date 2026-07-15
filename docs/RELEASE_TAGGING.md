@@ -132,6 +132,22 @@ The first release from sanitized public history must use a version never
 assigned in the private history. The planned first public candidate is
 `v1.2.0-alpha.1`, subject to the applicable release gates.
 
+For that stage, both Maverick and reference-client software are
+`1.2.0-alpha.1`, and the Debian package is `1.2.0~alpha.1-1`. Recording these
+planned names does not freeze a commit, SDK pin, package hash, or tag.
+
+The exact `v1.2.0-alpha.1`, `v1.2.0-beta.1`, `v1.2.0-rc.1`, and `v1.2.0`
+prerequisites are in `docs/RELEASE_GATES_V1_2.md`. A tag is not authorized by a
+document change or elapsed time. It requires coordinator approval and a passing
+ledger state for that stage.
+
+Before any `v1.2.0` train tag, record the accepted
+`public-pr-ci / public-pr-gate` result and the manual `release-candidate-ci` run
+for the exact `maverick_release_commit` and stage. The workflow is checks-only;
+it does not create or authorize the tag. The control/ledger commit may be newer
+than the frozen release commit and must be recorded separately rather than
+tagged by mistake.
+
 ## Stable Tags
 
 The completed `v1.0.0` tag passed the S4 gate recorded in
@@ -153,7 +169,9 @@ git status --short --branch
 ./scripts/local-harness.sh
 ./scripts/security-dependency-inventory.sh
 ./scripts/release-artifacts.sh
-git tag -a vX.Y.Z -m "Maverick vX.Y.Z"
+python3 scripts/check-production-readiness.py
+# verify the accepted public PR and exact-stage release-candidate CI records
+git tag -s vX.Y.Z -m "Maverick vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
@@ -162,3 +180,6 @@ document. Attach artifacts only from `dist/` output generated for the exact
 commit being tagged, including `BUILDINFO` and `SHA256SUMS`. Choose prerelease
 and latest flags from the version policy; never make an experimental tag look
 stable.
+
+New `v1.2.0` train tags use a GitHub-verifiable signature. If signing cannot be
+verified, stop before tagging; do not fall back to an unsigned public tag.

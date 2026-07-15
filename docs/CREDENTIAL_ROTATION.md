@@ -174,3 +174,22 @@ Implemented:
 - Server logs should show only redacted user ids and coarse rotation state.
 - Operators should keep old secrets available only for rollback during the
   overlap window.
+
+## Failure And Recovery
+
+- If the new credential is malformed, not yet valid, or rejected, stop automatic
+  switching and keep the last valid credential only when it is not compromised.
+- If the active credential is compromised, revoke it first; do not extend an
+  overlap window just to preserve availability.
+- Keep server and client clocks healthy, but do not use clock correction as a
+  reason to print or redistribute secret material.
+- A partial client rollout must remain visible through redacted inventory and
+  authentication metrics. Do not delete the old credential until intended
+  clients are accounted for or explicitly retired.
+- After rollback, remove partial `next` material, validate configs, verify old/new
+  authentication behavior, and record the reason without credential values.
+- The packaged Linux service must prove restart, reboot, active-to-next rotation,
+  upgrade, and fail-closed behavior under its production credential-root gate.
+
+Suspected compromise follows `docs/INCIDENT_RESPONSE.md`; ordinary planned
+rotation follows this document.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit checks for budget-aware CI path classification."""
+"""Unit checks for change-scoped public PR CI."""
 
 from __future__ import annotations
 
@@ -52,6 +52,14 @@ def main() -> None:
         "shape": True,
         "browser": True,
     }
+    # A PR that changes its own classifier must run every optional job when the
+    # trusted base classifier evaluates the diff.
+    assert MODULE.classify(["scripts/ci-change-scope.py"]) == {
+        "h3": True,
+        "ech": True,
+        "shape": True,
+        "browser": True,
+    }
     assert MODULE.classify([]) == {
         "h3": True,
         "ech": True,
@@ -75,6 +83,12 @@ def main() -> None:
         "ech": False,
         "shape": False,
         "browser": True,
+    }
+    assert MODULE.classify(["production-readiness.json"]) == {
+        "h3": False,
+        "ech": False,
+        "shape": False,
+        "browser": False,
     }
     print("ci change scope tests OK")
 

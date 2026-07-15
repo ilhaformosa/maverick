@@ -14,6 +14,17 @@ compatible with the project's privacy and anti-abuse boundaries.
 - Implementer: builds compatible clients, servers, SDKs, or tooling.
 - Operator: deploys private instances and reports operational issues.
 
+The current public maintainer is listed in `MAINTAINERS.md`, and review routing
+is declared in `.github/CODEOWNERS`. One CODEOWNER does not provide two-person
+review or audit independence.
+
+## Maintainer Identity And Signatures
+
+Public identity, GitHub `noreply` email privacy, commit signatures, tag
+signatures, and key-rotation rules are in
+`docs/MAINTAINER_IDENTITY_AND_SIGNING.md`. The sanitized public root and cutover
+commit remain immutable and are not rewritten to apply a newer identity policy.
+
 ## Decision Areas
 
 Wire-affecting changes require:
@@ -40,6 +51,29 @@ wider deployment claim is made.
 External review planning is tracked in `docs/SECURITY_REVIEW_PLAN.md`. A plan
 is not an audit result; release notes must distinguish planned, in-progress,
 and completed review status.
+
+The production audit must follow `docs/INDEPENDENT_AUDIT_PACKAGE.md`. An
+implementer, maintainer, Codex agent, or AI tool cannot supply the independent
+production sign-off by reviewing its own work.
+
+## Decisions And Residual Risk
+
+Changes to production scope, platform, carrier, address family, authentication,
+wire format, package trust, or security claims require a written decision and a
+matching update to `production-readiness.json`. Residual security risks follow
+`docs/AUDIT_REMEDIATION_POLICY.md`; release pressure is not risk acceptance.
+
+## CI And Candidate Dispatch
+
+The public PR gate may run normally for every contribution. The manual
+release-candidate workflow requires a coordinator-approved frozen commit and
+stage. A workflow result does not authorize a push, tag, package publication,
+GitHub Release, scope expansion, audit-complete state, or production Go.
+
+The public workflow covers only Maverick public source. The private
+reference-client project keeps its own compute and evidence policy; this project
+imports only accepted redacted hashes and summaries. See
+`docs/CI_AND_RELEASE_GATES.md`.
 
 ## Release Labels
 

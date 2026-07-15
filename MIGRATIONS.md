@@ -46,6 +46,27 @@ Before upgrading, operators should run both `check-config` and the dry-run
 `migrate-config` command with their existing configuration. No file is rewritten
 by these checks.
 
+## v1.1.0 To v1.2.0 Candidate
+
+No protocol, Auth, or config-schema migration is planned. Software/package,
+protocol, Auth, config, helper IPC, recovery journal, and platform-plan versions
+must be recorded separately at freeze as described in `COMPATIBILITY.md`.
+
+Adopting the packaged Linux reference client is an operator and platform
+migration, not a config-version change. Before adoption:
+
+1. confirm Ubuntu 24.04 LTS `amd64` and IPv4 are the intended target;
+2. verify the exact signed package and repository metadata;
+3. generate a secret-free profile and import the service credential through the
+   fixed encrypted credential path;
+4. verify install is default-inactive, then run preflight before enabling it;
+5. record the previous client, route, DNS, service, package, and credential state;
+6. keep a tested rollback/removal path and do not treat manual file copies as an
+   equivalent package migration.
+
+The candidate does not migrate or enable IPv6, H3, GUI, mobile, or another Linux
+distribution.
+
 ## Beta / RC To v1.0.0
 
 No mandatory schema migration is required from `v0.1.0-beta.2`,

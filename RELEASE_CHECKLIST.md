@@ -31,6 +31,30 @@ Use this checklist for experimental releases and internal milestones.
   Cloudflare-fronted WebSocket workaround.
 - Confirm `docs/DOCS_INDEX.md` keeps historical readiness, evidence, and review
   snapshots out of the contributor entry path.
+- For the `v1.2.0` train, confirm the exact stage in
+  `docs/RELEASE_GATES_V1_2.md`, the narrow target in
+  `docs/PRODUCTION_SCOPE.md`, and the current machine result in
+  `production-readiness.json`.
+- Keep Maverick release commit, Maverick SDK commit, reference-client commit,
+  and reference-client SDK pin separate. Verify the pin equals the ledger's SDK
+  commit.
+- Record release train, release tag, Maverick software, reference-client
+  software, Debian package, protocol, Auth v1, Auth v2, config, helper IPC,
+  recovery-journal, and platform-plan versions separately. For the first
+  candidate they are `1.2.0`, `v1.2.0-alpha.1`, `1.2.0-alpha.1`,
+  `1.2.0-alpha.1`, and `1.2.0~alpha.1-1` before the independent numeric
+  protocol/configuration versions.
+- Confirm formal Ubuntu 24.04 LTS `amd64` evidence came from a source-bound
+  disposable target fixture, not from a physical host running another OS.
+- Confirm the three layers in `docs/CI_AND_RELEASE_GATES.md`: local preflight,
+  `public-pr-ci / public-pr-gate`, and an accepted exact-commit
+  `release-candidate-ci` run for the requested stage.
+- Confirm the release-candidate workflow used the ledger's full
+  `maverick_release_commit`. Record the workflow control commit separately; a
+  later ledger/control-record commit must not be confused with release source.
+- Do not dispatch release-candidate CI until the coordinator approves the
+  frozen inputs. A passing run does not authorize a tag, package publication,
+  or GitHub Release.
 
 ## Safety
 
@@ -54,6 +78,8 @@ Run:
 ./scripts/release-artifacts.sh
 ./scripts/benchmark-baseline.sh 65536
 ./scripts/benchmark-dashboard.sh docs/BENCHMARK_DASHBOARD.md 65536
+python3 scripts/check-production-readiness.py
+python3 scripts/check-security-review-package.py
 ```
 
 Confirm:
@@ -76,6 +102,19 @@ Confirm:
 - artifact privacy checks pass, including no local repository path or home
   directory in the generated release files;
 - benchmark output is recorded or attached to release notes.
+- the readiness ledger is internally consistent and stays No-Go unless all five
+  dimensions and final approval are complete;
+- independent audit status names the frozen candidate honestly; Codex, AI,
+  maintainer, and earlier scoped review input is not called the formal audit;
+- public maintainer identity, `noreply` email privacy, commit/tag signatures,
+  and staged privacy checks follow `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`.
+- public PR CI uses one Ubuntu 24.04 lane plus only change-relevant experimental
+  jobs; release-candidate CI uses one exact-source lane rather than a support
+  matrix;
+- public workflows do not clone the private reference client or contain private
+  host, address, provider, account, path, credential, or raw-evidence data;
+- an Ubuntu Actions result is not relabeled as formal supported-platform
+  evidence without the source-bound fixture and exact private package gates.
 
 `cargo-geiger` was evaluated for unsafe-code inventory, but the current local
 tooling repeatedly fails to parse `signal-hook-registry 1.4.8` in this
@@ -109,6 +148,11 @@ Release notes must include:
 - benchmark command used;
 - upgrade or migration notes;
 - commit hash.
+- separate release, SDK, reference-client, package, and version bindings for the
+  `v1.2.0` train;
+- the exact named platform and permanent non-claims;
+- current audit and production-readiness state without turning a temporary
+  blocker into a permanent scope statement.
 
 Historical alpha-through-v1.0 release notes live under
 `docs/history/release/`. New post-v1 release notes follow the active milestone

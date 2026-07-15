@@ -17,6 +17,8 @@ available without being part of the everyday reading path.
 ## Active Operational References
 
 - `docs/OPERATIONS.md`: deployment and service operation.
+- `docs/INCIDENT_RESPONSE.md`: incident severity, containment, recovery, and
+  signing/package/leak playbooks.
 - `COMPATIBILITY.md` and `MIGRATIONS.md`: upgrade behavior.
 - `RELEASE_CHECKLIST.md`, `docs/RELEASE_ARTIFACTS.md`, and
   `docs/RELEASE_TAGGING.md`: release gates and artifact verification.
@@ -26,6 +28,20 @@ available without being part of the everyday reading path.
   boundary and owner gates.
 - `docs/OPEN_SOURCE_CUTOVER_AUDIT_2026_07_16.md`: accepted sanitized public
   cutover facts, verification, and claim boundary.
+- `docs/PRODUCTION_SCOPE.md`: narrow Linux/H2/IPv4 production-claim candidate
+  and current No-Go boundary.
+- `docs/INDEPENDENT_AUDIT_PACKAGE.md` and `docs/AUDIT_EVIDENCE_INDEX.md`:
+  pre-freeze reviewer instructions and exact Phase 3 input contracts.
+- `docs/SECURITY_DISCLOSURE_WORKFLOW.md` and
+  `docs/AUDIT_REMEDIATION_POLICY.md`: private disclosure, severity, retest, and
+  residual-risk rules.
+- `docs/PRODUCTION_GO_NO_GO_TEMPLATE.md` and `docs/RELEASE_GATES_V1_2.md`:
+  final decision template and alpha/beta/RC/stable prerequisites.
+- `docs/CI_AND_RELEASE_GATES.md`: local preflight, public PR CI, exact frozen
+  candidate CI, and the private reference-client boundary.
+- `MAINTAINERS.md`, `.github/CODEOWNERS`, and
+  `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`: public ownership and identity,
+  email-privacy, and signature policy.
 - `docs/PUBLIC_HISTORY_BOUNDARY.md`: sanitized public root, private historical
   release, tag, and evidence boundaries.
 - `docs/CAPABILITY_REPORT.md`: detailed implementation inventory.
@@ -92,6 +108,10 @@ Active protocol/release inputs:
 - `test-vectors/`;
 - `roadmap-blockers.json`;
 - `security-review-package.json`;
+- `production-readiness.json` plus
+  `scripts/check-production-readiness.py`;
+- `.github/workflows/ci.yml`, `.github/workflows/release-candidate.yml`, and
+  `scripts/check-ci-gates.py`;
 - `spikes/tun-engine-comparison/` plus
   `scripts/check-tun-engine-comparison.py`;
 - Phase 1 packet-runtime source/docs plus

@@ -22,8 +22,8 @@ class SecurityReviewPackageTests(unittest.TestCase):
             result = check_security_review_package.check_package(valid_package(), repo_root)
 
         self.assertEqual(result["status"], "review_package_ready")
-        self.assertEqual(result["artifact_group_count"], 6)
-        self.assertEqual(result["artifact_count"], 8)
+        self.assertEqual(result["artifact_group_count"], 7)
+        self.assertEqual(result["artifact_count"], 13)
 
     def test_completed_external_review_claim_is_rejected(self) -> None:
         package = valid_package()
@@ -112,8 +112,22 @@ def valid_package() -> dict:
             {
                 "id": "harness_and_ci_inputs",
                 "required": True,
-                "paths": ["evidence/harness.txt"],
+                "paths": [
+                    "evidence/harness.txt",
+                    "docs/CI_AND_RELEASE_GATES.md",
+                    ".github/workflows/release-candidate.yml",
+                ],
                 "notes": "Harness inputs.",
+            },
+            {
+                "id": "audit_process_and_decision_inputs",
+                "required": True,
+                "paths": [
+                    "docs/INDEPENDENT_AUDIT_PACKAGE.md",
+                    "docs/AUDIT_EVIDENCE_INDEX.md",
+                    "docs/PRODUCTION_GO_NO_GO_TEMPLATE.md",
+                ],
+                "notes": "Independent audit process inputs and unused decision template.",
             },
         ],
     }
@@ -127,6 +141,9 @@ class fixture_repo:
         evidence.mkdir()
         review = root / "docs" / "history" / "review"
         review.mkdir(parents=True)
+        docs = root / "docs"
+        workflows = root / ".github" / "workflows"
+        workflows.mkdir(parents=True)
         for name in (
             "protocol.txt",
             "roadmap.txt",
@@ -141,6 +158,16 @@ class fixture_repo:
         )
         (review / "S3_FINDINGS_TRIAGE_TEMPLATE_2026_07_08.md").write_text(
             "triage template\n", encoding="utf-8"
+        )
+        for name in (
+            "CI_AND_RELEASE_GATES.md",
+            "INDEPENDENT_AUDIT_PACKAGE.md",
+            "AUDIT_EVIDENCE_INDEX.md",
+            "PRODUCTION_GO_NO_GO_TEMPLATE.md",
+        ):
+            (docs / name).write_text(f"{name} fixture\n", encoding="utf-8")
+        (workflows / "release-candidate.yml").write_text(
+            "name: release-candidate-ci\n", encoding="utf-8"
         )
         return root
 

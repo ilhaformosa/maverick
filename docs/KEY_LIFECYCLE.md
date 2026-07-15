@@ -64,3 +64,25 @@ diagnostics, not for exporting usable credentials.
 
 - GUI app profile-management UI over the platform secure-storage backend.
 - External audit before any production key lifecycle claims.
+
+## Loss, Compromise, And Recovery
+
+- Lost user credential: generate a replacement; never attempt to recover or log
+  plaintext from redacted output.
+- Compromised user credential: disable/revoke it, investigate privately, rotate,
+  and verify the old credential fails.
+- Lost TLS private key: issue a new key/certificate, update pins deliberately,
+  and retire the old pin after the migration window.
+- Lost release-signing private key: retain old public verification material,
+  create a new signer, publish its fingerprint through a reviewed channel, and
+  sign only future artifacts.
+- Suspected release or APT key compromise: stop publication, identify the last
+  trusted signed state, rotate the affected key, replace affected artifacts or
+  metadata, and issue an advisory.
+- Lost encrypted Linux service credential: import a new credential through the
+  fixed root-only path. Do not weaken the credential-root mode or write plaintext
+  to a config/environment file to restore service quickly.
+
+Commit/tag, OpenSSH artifact, APT archive, TLS, and user credential keys are
+separate trust classes and must not be reused. Full incident steps are in
+`docs/INCIDENT_RESPONSE.md`.

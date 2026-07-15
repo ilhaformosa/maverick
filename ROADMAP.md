@@ -42,6 +42,19 @@ Only the narrow `maverick-tls-h2-cli-v1` scope is stable. Published releases
 remain immutable while later behavior evolves through explicit
 compatibility and release decisions.
 
+## Narrow v1.2.0 Production Candidate
+
+The smallest production claim Maverick may try to earn is
+`maverick-linux-h2-ipv4-v1`: the `maverick` server/CLI and
+`maverick-reference-client` Debian service package on Ubuntu 24.04 LTS `amd64`,
+IPv4, using TLS 1.3 plus HTTP/2.
+
+The candidate is not frozen or approved. Formal platform evidence must come from
+a source-bound disposable Ubuntu 24.04 fixture, not from a physical host running
+another OS. `production-readiness.json` separately tracks code-complete,
+evidence-complete, audit-complete, deployable, and production-ready states; the
+current decision is No-Go.
+
 ## Active Milestones
 
 The detailed gates are in `docs/PLAN_POST_V1.md`:
@@ -120,6 +133,9 @@ not become active merely because they already exist.
   authentication, or config version 1.
 - No incompatible major release is currently planned. Any future proposal
   would require a separate compatibility, migration, and security decision.
+- The public train is gated in order as `v1.2.0-alpha.1`,
+  `v1.2.0-beta.1`, `v1.2.0-rc.1`, and `v1.2.0`; stages do not pass merely
+  because time elapsed. See `docs/RELEASE_GATES_V1_2.md`.
 
 IPv6 has no short-term, medium-term, or current long-term milestone. Existing
 experimental code may remain, and future support can be reconsidered through a

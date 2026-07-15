@@ -10,6 +10,12 @@ This plan defines what Maverick should provide to an external reviewer before a
 future production-audited, production-ready, or strong security claim. It is
 not an audit result, an active roadmap by itself, or a security endorsement.
 
+The formal production-audit process is now prepared separately in
+`docs/INDEPENDENT_AUDIT_PACKAGE.md` and `docs/AUDIT_EVIDENCE_INDEX.md`. It cannot
+start until the coordinator freezes separate Maverick release, Maverick SDK, and
+reference-client commits, verifies the reference-client SDK pin, and records the
+exact package and evidence-tool hashes.
+
 ## Review Goals
 
 - Validate authentication transcript binding, replay protection, fallback
@@ -41,6 +47,9 @@ review.
   `docs/ML_KEM_HYBRID.md`, and `docs/KEY_LIFECYCLE.md`.
 - Conformance vectors and runners under `conformance/`.
 - Local harness scripts under `scripts/`.
+- `docs/PRODUCTION_SCOPE.md`, `production-readiness.json`,
+  `docs/INDEPENDENT_AUDIT_PACKAGE.md`, `docs/AUDIT_EVIDENCE_INDEX.md`, and
+  `docs/AUDIT_REMEDIATION_POLICY.md` for the production-scoped review.
 
 ## AI-Assisted Review
 
@@ -114,3 +123,8 @@ A scoped human or community review can be marked complete only when:
 - `./scripts/local-harness.sh` and `./scripts/conformance.sh` pass after fixes;
 - residual risks are reflected in `SECURITY.md`, `THREAT_MODEL.md`, and
   `docs/CAPABILITY_REPORT.md`.
+
+That scoped review completion is not automatically the independent production
+audit. The production audit additionally requires the independence, frozen
+binding, target-platform, report-hash, remediation, and final-deliverable rules
+in `docs/INDEPENDENT_AUDIT_PACKAGE.md`.

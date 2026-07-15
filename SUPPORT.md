@@ -12,12 +12,28 @@ sanitized public Git history.
 | `v0.1.0-beta.N` and `v0.1.0-rc.N` | Historical candidates | Upgrade only | Narrow historical scope only |
 | `v1.0.x` | Pre-publication historical line | Upgrade when a public release is available | Frozen `maverick-tls-h2-cli-v1` scope |
 | `v1.1.x` | Pre-publication maintenance boundary | Superseded by the next public release | Frozen `maverick-tls-h2-cli-v1` scope |
-| `main` toward `v1.2.0` | Development, unsupported until tagged | None before release | Protocol, authentication, and config versions remain 1 |
+| `main` toward `v1.2.0` | Development, unsupported until tagged | None before release | Auth v1 remains 1, explicit Auth v2 remains 2, and config remains 1 |
 
 No stable tag exists in the sanitized public history yet. After the first
 public release, only the latest public stable tag receives best-effort fixes
 for this personal, as-is project. This support policy is not a production
 support SLA.
+
+## Named v1.2.0 Candidate Platform
+
+| component | candidate support target | current status |
+| --- | --- | --- |
+| `maverick` server/CLI | Ubuntu 24.04 LTS `amd64`, IPv4, TLS 1.3 + HTTP/2 | unsupported until its exact stable gate and Go decision pass |
+| `maverick-reference-client` Debian package/service | Ubuntu 24.04 LTS `amd64`, IPv4 | unsupported until its exact evidence, audit, publication, and Go gates pass |
+
+Formal target-platform evidence must be collected in a source-bound disposable
+Ubuntu 24.04 LTS `amd64` VM or fixture. Results from another host OS do not create
+support for Ubuntu or any additional platform. Other Linux distributions,
+architectures, containers, routers, macOS, Windows, mobile, GUI, and IPv6 are
+outside the candidate support promise.
+
+Until `v1.2.0` passes `docs/RELEASE_GATES_V1_2.md`, this table is a target, not a
+supported release.
 
 ## Breaking Changes
 
@@ -47,6 +63,10 @@ Security reports should include:
 - whether the issue requires authentication;
 - logs with secrets redacted;
 - expected impact.
+
+The private report lifecycle and disclosure process are in
+`docs/SECURITY_DISCLOSURE_WORKFLOW.md`. Incident playbooks are in
+`docs/INCIDENT_RESPONSE.md`.
 
 ## Non-Claims
 

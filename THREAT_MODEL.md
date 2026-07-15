@@ -3,6 +3,17 @@
 Status: current threat model for the narrow `maverick-tls-h2-cli-v1`
 engineering release. It is not a formal audit or a production security claim.
 
+## Production Candidate Composition
+
+The pre-freeze `maverick-linux-h2-ipv4-v1` target combines this server/SDK threat
+model with the exact public reference-client threat model at its frozen commit.
+The combined audit must cover the Linux privileged helper, IPC, journal, route,
+private DNS, TUN, credential-root, package, APT, recovery, and removal boundaries.
+
+Only a source-bound disposable Ubuntu 24.04 LTS `amd64` VM or fixture can supply
+formal target-platform evidence. A physical host with another OS may test an
+orchestration boundary but cannot prove supported-platform behavior.
+
 ## Intended Protections
 
 Maverick v1 is designed to help with:
@@ -86,3 +97,6 @@ targeted intrusion functionality.
 - Browser TLS profile evidence and traffic-shape evidence strong enough for
   stealth claims.
 - Fuzzing beyond the current frame parser property tests.
+
+For the production candidate, the remaining work is tracked as changing state in
+`production-readiness.json`; it is not part of the permanent non-claim list.

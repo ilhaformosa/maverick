@@ -17,6 +17,11 @@ The maintainer should acknowledge security coordination requests within
 7 calendar days when possible. Public disclosure should wait until the report is
 triaged and users have a reasonable update path.
 
+The complete private-report lifecycle is in
+`docs/SECURITY_DISCLOSURE_WORKFLOW.md`; finding severity and release effect are
+in `docs/AUDIT_REMEDIATION_POLICY.md`; incident playbooks are in
+`docs/INCIDENT_RESPONSE.md`.
+
 ## Secrets
 
 Use:
@@ -124,6 +129,11 @@ narrow `maverick-tls-h2-cli-v1` scope; see
 review-input gate for an RC candidate, but it is still not a formal audit,
 production sign-off, anonymity claim, censorship-resistance claim, or browser
 fingerprint-equivalence claim.
+
+The pre-freeze production audit instructions are in
+`docs/INDEPENDENT_AUDIT_PACKAGE.md`. That package has not started or completed a
+formal audit. Codex, AI, maintainer, and earlier scoped reviews cannot be used as
+the independent production sign-off.
 
 ## Pre-Release Dependency And Unsafe-Code Inventory
 

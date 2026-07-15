@@ -31,6 +31,17 @@ Use this checklist for experimental releases and internal milestones.
   Cloudflare-fronted WebSocket workaround.
 - Confirm `docs/DOCS_INDEX.md` keeps historical readiness, evidence, and review
   snapshots out of the contributor entry path.
+- For the `v1.2.0` train, confirm the exact stage in
+  `docs/RELEASE_GATES_V1_2.md`, the narrow target in
+  `docs/PRODUCTION_SCOPE.md`, and the current machine result in
+  `production-readiness.json`.
+- Keep Maverick release commit, Maverick SDK commit, reference-client commit,
+  and reference-client SDK pin separate. Verify the pin equals the ledger's SDK
+  commit.
+- Record software, package, protocol, Auth v1, Auth v2, config, helper IPC,
+  recovery-journal, and platform-plan versions separately.
+- Confirm formal Ubuntu 24.04 LTS `amd64` evidence came from a source-bound
+  disposable target fixture, not from a physical host running another OS.
 
 ## Safety
 
@@ -54,6 +65,8 @@ Run:
 ./scripts/release-artifacts.sh
 ./scripts/benchmark-baseline.sh 65536
 ./scripts/benchmark-dashboard.sh docs/BENCHMARK_DASHBOARD.md 65536
+python3 scripts/check-production-readiness.py
+python3 scripts/check-security-review-package.py
 ```
 
 Confirm:
@@ -76,6 +89,12 @@ Confirm:
 - artifact privacy checks pass, including no local repository path or home
   directory in the generated release files;
 - benchmark output is recorded or attached to release notes.
+- the readiness ledger is internally consistent and stays No-Go unless all five
+  dimensions and final approval are complete;
+- independent audit status names the frozen candidate honestly; Codex, AI,
+  maintainer, and earlier scoped review input is not called the formal audit;
+- public maintainer identity, `noreply` email privacy, commit/tag signatures,
+  and staged privacy checks follow `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`.
 
 `cargo-geiger` was evaluated for unsafe-code inventory, but the current local
 tooling repeatedly fails to parse `signal-hook-registry 1.4.8` in this
@@ -109,6 +128,11 @@ Release notes must include:
 - benchmark command used;
 - upgrade or migration notes;
 - commit hash.
+- separate release, SDK, reference-client, package, and version bindings for the
+  `v1.2.0` train;
+- the exact named platform and permanent non-claims;
+- current audit and production-readiness state without turning a temporary
+  blocker into a permanent scope statement.
 
 Historical alpha-through-v1.0 release notes live under
 `docs/history/release/`. New post-v1 release notes follow the active milestone

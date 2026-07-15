@@ -18,6 +18,11 @@ Maverick has not had a formal independent security audit and is not
 production-ready. It does not claim browser-grade TLS fingerprint mimicry,
 strong traffic shaping, anonymity, or censorship resistance.
 
+The only pre-freeze production claim candidate is Ubuntu 24.04 LTS `amd64`,
+IPv4, the `maverick` server/CLI, the `maverick-reference-client` Debian service
+package, and TLS 1.3 plus HTTP/2. `production-readiness.json` currently records
+No-Go; `docs/PRODUCTION_SCOPE.md` defines the exact boundary.
+
 ## Status
 
 This sanitized source snapshot is the public development starting point. It
@@ -132,6 +137,12 @@ status and guardrails.
 - [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md): release verification checklist.
 - [SUPPORT.md](SUPPORT.md): support, security-report, and compatibility policy.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md): self-hosted operations guide.
+- [docs/PRODUCTION_SCOPE.md](docs/PRODUCTION_SCOPE.md): narrow v1.2.0 production
+  target and permanent scope exclusions.
+- [docs/INDEPENDENT_AUDIT_PACKAGE.md](docs/INDEPENDENT_AUDIT_PACKAGE.md):
+  pre-freeze external-auditor scope and instructions; not an audit result.
+- [docs/RELEASE_GATES_V1_2.md](docs/RELEASE_GATES_V1_2.md): exact public alpha,
+  beta, RC, and stable gates.
 - [docs/PUBLIC_FEEDBACK_PROCESS.md](docs/PUBLIC_FEEDBACK_PROCESS.md): public
   issue triage, privacy boundaries, and active-milestone selection rules.
 - [docs/FAILURE_INJECTION_PLAN.md](docs/FAILURE_INJECTION_PLAN.md): restart,

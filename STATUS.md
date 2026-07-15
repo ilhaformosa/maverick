@@ -14,6 +14,12 @@ Experimental Rust privacy proxy protocol; public main targets v1.2.0 and is not 
 Do not describe Maverick as audited, production-ready, anonymous,
 censorship-resistant, browser-fingerprint-equivalent, or standardized.
 
+The pre-freeze production claim candidate is
+`maverick-linux-h2-ipv4-v1`: Ubuntu 24.04 LTS `amd64`, IPv4, the `maverick`
+server/CLI, the `maverick-reference-client` Debian service package, and the
+stable TLS 1.3 plus HTTP/2 path. It is a target, not a completed claim. The
+machine-readable result in `production-readiness.json` is currently No-Go.
+
 ## Working Now
 
 - Local SOCKS5, DNS, HTTP CONNECT, TCP relay, and SOCKS5 UDP ASSOCIATE over
@@ -60,6 +66,12 @@ censorship-resistant, browser-fingerprint-equivalent, or standardized.
 ## Not Ready
 
 - No formal independent security audit has been completed.
+- The production candidate is not frozen. Its Maverick release commit, Maverick
+  SDK commit, reference-client commit, SDK pin, package hash, and separate
+  software/package/protocol/auth/config/IPC/recovery versions are not recorded.
+- Formal Ubuntu 24.04 LTS `amd64` platform evidence must come from a source-bound
+  disposable target fixture; results from a physical host with another OS do not
+  satisfy that gate.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS
@@ -90,6 +102,9 @@ censorship-resistant, browser-fingerprint-equivalent, or standardized.
 5. Mature the implemented experimental Linux CLI/service reference client
    through sustained, repeated-use, transition/leak, process-recovery,
    power-loss, credential-root, and package-publication evidence.
+6. Keep the production ledger at No-Go until candidate freeze, accepted Phase
+   3-A/3-B inputs, an independent audit, deployability, and final approval all
+   exist for the same hashes.
 
 See `docs/PLAN_POST_V1.md` for the governing execution order,
 `docs/PUBLIC_HISTORY_BOUNDARY.md` for the repository-history boundary, and

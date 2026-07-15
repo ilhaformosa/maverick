@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "status": "not_frozen",
+    "maverick_release_commit": null,
+    "maverick_sdk_commit": null,
+    "reference_client_commit": null,
+    "reference_client_sdk_pin": null,
+    "sdk_pin_verified": false,
+    "sdk_pin_evidence_path": null,
+    "reference_package_sha256": null,
+    "versions": {
+      "release_train": "1.2.0",
+      "software": null,
+      "reference_package": null,
+      "protocol": 1,
+      "auth_v1": 1,
+      "auth_v2": 2,
+      "config": 1,
+      "helper_ipc": 1,
+      "recovery_journal": 2,
+      "platform_plan": 3
+    }
+  },
+  "scope": {
+    "id": "maverick-linux-h2-ipv4-v1",
+    "server_artifact": "maverick",
+    "client_package": "maverick-reference-client",
+    "package_format": "deb",
+    "platform": "Ubuntu 24.04 LTS",
+    "architecture": "amd64",
+    "address_family": "IPv4",
+    "carrier": "TLS 1.3 + HTTP/2",
+    "formal_evidence_fixture": {
+      "kind": "disposable_vm",
+      "platform": "Ubuntu 24.04 LTS",
+      "architecture": "amd64",
+      "source_bound_required": true,
+      "physical_host_substitution_allowed": false
+    },
+    "docs": [
+      "docs/PRODUCTION_SCOPE.md",
+      "THREAT_MODEL.md",
+      "COMPATIBILITY.md"
+    ],
+    "non_claims": [
+      "no_anonymity_guarantee",
+      "no_browser_fingerprint_equivalence",
+      "no_censorship_resistance_guarantee",
+      "no_cross_platform_support",
+      "no_h3_production_support",
+      "no_ipv6_support"
+    ]
+  },
+  "current_claim_state": {
+    "formal_audit": "not_completed",
+    "production_readiness": "not_approved"
+  },
+  "phase_inputs": {
+    "phase_3a": {
+      "status": "missing",
+      "accepted_manifest_sha256": null,
+      "public_summary_paths": []
+    },
+    "phase_3b": {
+      "status": "missing",
+      "accepted_manifest_sha256": null,
+      "public_summary_paths": []
+    }
+  },
+  "dimensions": {
+    "code_complete": {
+      "status": "blocked",
+      "reason": "candidate_not_frozen",
+      "evidence_paths": []
+    },
+    "evidence_complete": {
+      "status": "blocked",
+      "reason": "phase_3a_and_phase_3b_inputs_missing",
+      "evidence_paths": []
+    },
+    "audit_complete": {
+      "status": "blocked",
+      "reason": "independent_audit_not_completed",
+      "evidence_paths": []
+    },
+    "deployable": {
+      "status": "blocked",
+      "reason": "frozen_signed_package_and_publication_evidence_missing",
+      "evidence_paths": []
+    },
+    "production_ready": {
+      "status": "blocked",
+      "reason": "upstream_dimensions_incomplete",
+      "evidence_paths": []
+    }
+  },
+  "audit": {
+    "status": "pre_freeze_preparation",
+    "independent": false,
+    "reviewer": null,
+    "report_sha256": null,
+    "remediation_complete": false
+  },
+  "release_gates": {
+    "v1.2.0-alpha.1": "blocked",
+    "v1.2.0-beta.1": "blocked",
+    "v1.2.0-rc.1": "blocked",
+    "v1.2.0": "blocked"
+  },
+  "decision": {
+    "status": "NO_GO",
+    "kind": "current_blocker",
+    "decided_at": null,
+    "approver": null,
+    "reason_codes": [
+      "candidate_not_frozen",
+      "phase_3a_missing",
+      "phase_3b_missing",
+      "independent_audit_missing"
+    ]
+  }
+}

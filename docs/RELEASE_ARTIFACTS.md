@@ -24,6 +24,10 @@ MAVERICK_RELEASE_VERSION=X.Y.Z ./scripts/release-artifacts.sh
 
 Only publish targets that were built and smoke-tested for that release.
 
+For the narrow `v1.2.0` candidate, the named target is Ubuntu 24.04 LTS `amd64`.
+Its formal artifact and runtime evidence must come from a source-bound disposable
+target fixture. A build or run on another host OS does not create Ubuntu support.
+
 ## GitHub Release Attachment Rule
 
 Use a GitHub Pre-release for an explicitly prerelease version and a normal
@@ -76,6 +80,26 @@ Do not commit release-signing private keys. If no project release-signing key
 exists, do not claim signed checksums; publish only SHA256 checksums and record
 the gap in the release audit.
 
+## Reference Client Package Publication
+
+The `maverick` release bundle and the `maverick-reference-client` Debian/APT
+publication are separate artifact systems. The reference package must record its
+own version, architecture, SHA-256, OpenSSH package-set signature, installed
+binary hashes, and source/SDK bindings.
+
+An APT repository additionally requires a dedicated OpenPGP archive key,
+repository-scoped `Signed-By`, signed and expiring metadata, by-hash indices,
+atomic publication, rotation overlap, tamper/failure tests, and independent
+client verification. The OpenSSH release-artifact key must not be reused as the
+APT archive key. A local unsigned APT snapshot or signed `.deb` alone is not
+package-publication acceptance.
+
+Before any package is published, the frozen public reference-client commit must
+pass its `docs/PACKAGE_PUBLICATION_GATE.md`, and Phase 3-A must provide the
+coordinator-accepted redacted result. Provider, account, domain, region, and
+spending choices require a separate operator decision and never belong in public
+evidence.
+
 Release signing keys may be rotated by appending a new public signer to
 `docs/release-signing/allowed_signers`. Keep old public signer lines for old
 release verification. If a private key or passphrase is lost, old signatures
@@ -105,6 +129,7 @@ Do not attach release artifacts unless these have passed for the exact commit:
 ./scripts/local-harness.sh
 ./scripts/security-dependency-inventory.sh
 ./scripts/release-artifacts.sh
+python3 scripts/check-production-readiness.py
 ```
 
 For a post-v1 stable-scoped release, also attach the evidence required by

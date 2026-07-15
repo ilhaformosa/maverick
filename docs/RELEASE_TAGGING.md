@@ -132,6 +132,11 @@ The first release from sanitized public history must use a version never
 assigned in the private history. The planned first public candidate is
 `v1.2.0-alpha.1`, subject to the applicable release gates.
 
+The exact `v1.2.0-alpha.1`, `v1.2.0-beta.1`, `v1.2.0-rc.1`, and `v1.2.0`
+prerequisites are in `docs/RELEASE_GATES_V1_2.md`. A tag is not authorized by a
+document change or elapsed time. It requires coordinator approval and a passing
+ledger state for that stage.
+
 ## Stable Tags
 
 The completed `v1.0.0` tag passed the S4 gate recorded in
@@ -153,7 +158,8 @@ git status --short --branch
 ./scripts/local-harness.sh
 ./scripts/security-dependency-inventory.sh
 ./scripts/release-artifacts.sh
-git tag -a vX.Y.Z -m "Maverick vX.Y.Z"
+python3 scripts/check-production-readiness.py
+git tag -s vX.Y.Z -m "Maverick vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
@@ -162,3 +168,6 @@ document. Attach artifacts only from `dist/` output generated for the exact
 commit being tagged, including `BUILDINFO` and `SHA256SUMS`. Choose prerelease
 and latest flags from the version policy; never make an experimental tag look
 stable.
+
+New `v1.2.0` train tags use a GitHub-verifiable signature. If signing cannot be
+verified, stop before tagging; do not fall back to an unsigned public tag.

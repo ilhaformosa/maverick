@@ -35,6 +35,19 @@ rework, but they are not a support promise, release gate, or product-readiness
 claim. Future IPv6 work requires a new explicit decision, scope, and evidence
 plan.
 
+## Narrow Production Candidate
+
+Phase 3-C defines only one achievable production-claim target:
+`maverick-linux-h2-ipv4-v1`. It combines the `maverick` server/CLI and the
+`maverick-reference-client` Debian package on Ubuntu 24.04 LTS `amd64`, IPv4,
+using the stable TLS 1.3 plus HTTP/2 path.
+
+This target is not frozen or approved. Formal supported-platform evidence must
+come from a source-bound disposable Ubuntu 24.04 target fixture. Results from a
+physical host running another OS cannot be relabeled as Ubuntu evidence.
+`production-readiness.json` keeps code, evidence, audit, deployability, and
+production approval separate and currently records No-Go.
+
 ## Execution Order
 
 Work proceeds in this order:
@@ -413,6 +426,16 @@ combined.
 - No incompatible major release is planned. Wire-incompatible multiplexing,
   handshake-layer fallback, or another material protocol semantic change would
   require a separate compatibility, migration, and security decision.
+
+The sanitized public `v1.2.0` train uses these exact staged gates:
+
+- `v1.2.0-alpha.1`: frozen code-complete candidate;
+- `v1.2.0-beta.1`: coordinator-accepted evidence-complete candidate;
+- `v1.2.0-rc.1`: audit-complete and deployable candidate;
+- `v1.2.0`: all five readiness states complete with a final Go decision.
+
+`docs/RELEASE_GATES_V1_2.md` owns the detailed prerequisites. This mapping does
+not authorize tags or publication.
 
 Version numbers are release promises, not names for incomplete internal design
 tracks.

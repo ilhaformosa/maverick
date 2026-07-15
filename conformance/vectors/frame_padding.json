@@ -1,0 +1,12 @@
+{
+  "id": "frame_padding_v1",
+  "kind": "frame",
+  "max_frame_size": 65536,
+  "frame": {
+    "type": "padding",
+    "flags": 0,
+    "flow_id": 0,
+    "payload_hex": "0001020304050607"
+  },
+  "encoded_hex": "10000000000000000000000000080001020304050607"
+}

@@ -1,0 +1,187 @@
+name: ci
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - "crates/**"
+      - "config/**"
+      - "conformance/**"
+      - "fuzz/**"
+      - "scripts/**"
+      - "spikes/**"
+      - "test-vectors/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/docs-hygiene.yml"
+      - ".github/workflows/fuzz.yml"
+      - ".github/workflows/supply-chain.yml"
+      - "COMPATIBILITY.md"
+      - "CONFIG.md"
+      - "MIGRATIONS.md"
+      - "SPEC.md"
+      - "TEST_PLAN.md"
+      - "WIRE_FORMAT.md"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - "crates/**"
+      - "config/**"
+      - "conformance/**"
+      - "fuzz/**"
+      - "scripts/**"
+      - "spikes/**"
+      - "test-vectors/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/docs-hygiene.yml"
+      - ".github/workflows/fuzz.yml"
+      - ".github/workflows/supply-chain.yml"
+      - "COMPATIBILITY.md"
+      - "CONFIG.md"
+      - "MIGRATIONS.md"
+      - "SPEC.md"
+      - "TEST_PLAN.md"
+      - "WIRE_FORMAT.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  change-scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      h3: ${{ steps.scope.outputs.h3 }}
+      ech: ${{ steps.scope.outputs.ech }}
+      shape: ${{ steps.scope.outputs.shape }}
+      browser: ${{ steps.scope.outputs.browser }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]] || \
+             [[ -z "$BASE_SHA" ]] || \
+             [[ "$BASE_SHA" =~ ^0+$ ]] || \
+             ! git cat-file -e "${BASE_SHA}^{commit}"; then
+            python3 scripts/ci-change-scope.py --all >>"$GITHUB_OUTPUT"
+          else
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" | \
+              python3 scripts/ci-change-scope.py >>"$GITHUB_OUTPUT"
+          fi
+
+  local-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+      - run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - run: ./scripts/local-harness.sh
+
+  h3-harness:
+    needs: change-scope
+    if: needs.change-scope.outputs.h3 == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+      - run: ./scripts/h3-harness.sh
+
+  ech-harness:
+    needs: change-scope
+    if: needs.change-scope.outputs.ech == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - run: ./scripts/ech-harness.sh
+
+  shape-lab-smoke:
+    needs: change-scope
+    if: needs.change-scope.outputs.shape == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - run: ./scripts/shape-lab.sh /tmp/maverick-shape-lab.md 256 1024
+      - run: grep -q "loopback-only engineering diagnostics" /tmp/maverick-shape-lab.md
+
+  browser-tls-harness:
+    needs: change-scope
+    if: needs.change-scope.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+      - run: ./scripts/browser-tls-harness.sh

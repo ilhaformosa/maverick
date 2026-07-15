@@ -1,0 +1,6 @@
+{
+  "id": "error_code_flow_limit_exceeded_v1",
+  "kind": "error_code",
+  "code": "flow_limit_exceeded",
+  "encoded_hex": "0003"
+}

@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "status": "no_active_roadmap_blockers",
+  "notes": "There are no active Maverick protocol-roadmap blockers after current scope decisions. Native ECH remains a tracked upstream dependency with a Cloudflare-fronted WebSocket workaround; GUI/App release work belongs to the separate app product track; external human audit is a post-public/community-review gate. This registry is not a stable, audited, production-readiness, or standardization claim.",
+  "resolution_plan": "docs/BLOCKER_RESOLUTION_PLAN.md",
+  "blockers": [],
+  "non_blocking_tracks": [
+    {
+      "id": "native_ech_upstream_dependency",
+      "former_blocker": "ech_handshake_integration",
+      "status": "tracked_upstream",
+      "workaround": "cloudflare_fronted_websocket_carrier",
+      "evidence": [
+        "docs/ECH_NATIVE_TLS_LIMITATION.md",
+        "docs/NATIVE_ECH_TRACKING.md",
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/ECH_WORKAROUND.md",
+        "docs/history/manifests/ech-runtime-blockers.json",
+        "docs/history/manifests/ech-runtime-approval.json"
+      ],
+      "notes": "Native Maverick server-side ECH still depends on upstream server-side TLS backend support. The immediate workaround is the already validated Cloudflare-fronted WebSocket carrier, where Cloudflare handles client-facing ECH and Maverick runs as the origin. This is not native server-side ECH."
+    },
+    {
+      "id": "macos_app_product_release",
+      "former_blocker": "gui_tray_runtime",
+      "status": "moved_to_app_project",
+      "evidence": [
+        "docs/MACOS_APP_BOUNDARY.md",
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/history/manifests/gui-runtime-blockers.json"
+      ],
+      "notes": "GUI/App release, Packet Tunnel signing, notarization, and packaging belong to the separate macOS app project. Maverick keeps only SDK, diagnostics, profile, and conformance boundaries."
+    },
+    {
+      "id": "community_security_review_after_public_release",
+      "former_blocker": "external_security_review",
+      "status": "release_note_gate",
+      "evidence": [
+        "docs/SECURITY_REVIEW_PLAN.md",
+        "docs/history/review/SECURITY_REVIEW_TRIAGE_2026_06_28.md",
+        "security-review-package.json",
+        "SECURITY.md"
+      ],
+      "notes": "No formal human audit is expected before initial public as-is release. Third-party AI review is acceptable pre-release input, and human/community review can happen after public release. The project must not claim audited, reviewed, stable, or production-ready status before matching evidence exists."
+    }
+  ]
+}

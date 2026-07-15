@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "status": "approval_manifest_ready",
+  "local_machine_system_apply_allowed": false,
+  "requires_explicit_operator_approval": true,
+  "requires_approved_external_host": true,
+  "requires_rollback_plan": true,
+  "requires_residue_check": true,
+  "notes": "This manifest records safety boundaries for TUN helper work. It does not authorize local-machine network changes and does not select a real test host.",
+  "mutation_slices": [
+    {
+      "id": "local_machine_apply",
+      "status": "blocked",
+      "local_allowed": false,
+      "approved_host_allowed": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "AGENTS.md",
+        "docs/TUN_MODE_DESIGN.md"
+      ],
+      "notes": "The developer workstation must not be used for TUN, route, DNS, firewall, proxy, VPN, or network-service mutation tests."
+    },
+    {
+      "id": "temporary_tun_device",
+      "status": "smoked_on_approved_vm",
+      "local_allowed": false,
+      "approved_host_allowed": true,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "scripts/approved-vm-tun-apply-smoke.sh",
+        "crates/maverick-cli/src/main.rs",
+        "docs/TUN_MODE_DESIGN.md"
+      ],
+      "notes": "Temporary TUN device creation has approved-VM smoke coverage, including read-only preflight plus the gated CLI helper Phase A smoke with rollback journal, retained-journal recovery, and default-route/global-DNS unchanged checks, and still requires explicit per-run approval."
+    },
+    {
+      "id": "documentation_prefix_route",
+      "status": "smoked_on_approved_vm",
+      "local_allowed": false,
+      "approved_host_allowed": true,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "scripts/approved-vm-tun-apply-smoke.sh",
+        "crates/maverick-cli/src/main.rs",
+        "docs/TUN_MODE_DESIGN.md"
+      ],
+      "notes": "Documentation-prefix route mutation has approved-VM smoke coverage, including read-only preflight plus the gated CLI helper Phase A smoke with rollback journal, retained-journal recovery, and default-route/global-DNS unchanged checks, and must not be generalized to default-route or production-route mutation without a separate review."
+    },
+    {
+      "id": "namespace_scoped_dns",
+      "status": "smoked_on_approved_vm",
+      "local_allowed": false,
+      "approved_host_allowed": true,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "scripts/approved-vm-tun-apply-smoke.sh",
+        "docs/TUN_MODE_DESIGN.md"
+      ],
+      "notes": "Namespace-scoped DNS smoke coverage exists; global DNS policy remains blocked."
+    },
+    {
+      "id": "global_dns_policy",
+      "status": "blocked",
+      "local_allowed": false,
+      "approved_host_allowed": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "crates/maverick-core/src/tun.rs"
+      ],
+      "notes": "Global DNS mutation is blocked until policy, platform behavior, rollback, and leak tests are defined."
+    },
+    {
+      "id": "service_manager_integration",
+      "status": "smoked_on_approved_vm",
+      "local_allowed": false,
+      "approved_host_allowed": true,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "scripts/approved-vm-tun-service-smoke.sh"
+      ],
+      "notes": "Service-manager lifecycle smoke has approved-VM coverage through transient systemd units for success and failure cleanup paths. It remains approved-host-only and does not install permanent units."
+    },
+    {
+      "id": "leak_coexistence_testing",
+      "status": "smoked_on_approved_vm",
+      "local_allowed": false,
+      "approved_host_allowed": true,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "docs/HARNESS_ENGINEERING.md",
+        "scripts/approved-vm-tun-leak-coexistence-smoke.sh"
+      ],
+      "notes": "Leak/coexistence smoke has approved-VM coverage for namespace default/DNS routing to TUN, preserved control-plane routing, TCP echo coexistence, host listener/default-route/global-DNS baselines, rollback, and residue checks."
+    }
+  ]
+}

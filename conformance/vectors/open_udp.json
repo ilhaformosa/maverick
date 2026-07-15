@@ -1,0 +1,6 @@
+{
+  "id": "open_udp_v1",
+  "kind": "open_udp",
+  "idle_timeout_ms": 30000,
+  "encoded_hex": "0000000000007530"
+}

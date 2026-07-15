@@ -1,0 +1,156 @@
+{
+  "schema_version": 2,
+  "generated_at_utc": "2026-07-09T20:34:40.537561Z",
+  "git_revision": "bc77f182d9e0",
+  "safety_scope": "loopback listeners and OS-assigned ephemeral ports only",
+  "claims": {
+    "perfect_origin_indistinguishability": false,
+    "censorship_resistance": false
+  },
+  "scenarios": [
+    {
+      "id": "static_malformed_matches_ordinary",
+      "fallback_kind": "static",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "static_bad_auth_matches_ordinary",
+      "fallback_kind": "static",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_ordinary_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_get_path_query_headers_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_head_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_put_body_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_patch_body_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_delete_body_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_options_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_malformed_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_bad_auth_matches_origin",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_rate_limited_bad_auth_matches_first",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    },
+    {
+      "id": "reverse_proxy_upstream_failure_is_generic_502",
+      "fallback_kind": "reverse_proxy",
+      "equal_response_shape": true,
+      "differences": []
+    }
+  ],
+  "timing_distributions": [
+    {
+      "id": "direct_origin_vs_maverick_reverse_proxy_loopback",
+      "sample_count": 12,
+      "reference": {
+        "min_micros": 162,
+        "median_micros": 193,
+        "p95_micros": 227,
+        "max_micros": 258
+      },
+      "observed": {
+        "min_micros": 1068,
+        "median_micros": 1233,
+        "p95_micros": 1321,
+        "max_micros": 1349
+      },
+      "parity_claim": false
+    }
+  ],
+  "coverage": [
+    {
+      "surface": "H2 static fallback response shape",
+      "status": "measured",
+      "reason": "ordinary, malformed, and bad-auth requests are compared"
+    },
+    {
+      "surface": "H2 reverse-proxy response shape",
+      "status": "measured",
+      "reason": "direct origin comparisons cover methods, paths, queries, headers, bodies, malformed auth, bad auth, and auth-rate limiting"
+    },
+    {
+      "surface": "fallback admission exhaustion",
+      "status": "integration_regression",
+      "reason": "fallback_overload_returns_generic_http_without_protocol_detail mechanically checks the bounded 503 difference"
+    },
+    {
+      "surface": "TLS server fingerprint and ALPN parity",
+      "status": "measured_separately",
+      "reason": "the fingerprint lab records Maverick TLS and ALPN; no origin-specific parity claim is made"
+    },
+    {
+      "surface": "WebSocket fallback parity",
+      "status": "known_difference",
+      "reason": "the explicit WebSocket carrier rejects a wrong upgrade path instead of invoking the HTTP fallback"
+    },
+    {
+      "surface": "H3 fallback parity",
+      "status": "feature_gated_regression",
+      "reason": "the H3 harness checks ordinary, malformed, bad-auth, replay, and preserved-body fallback paths"
+    },
+    {
+      "surface": "HTTPS reverse-proxy upstream",
+      "status": "unsupported_evaluated",
+      "reason": "v1.1 accepts only HTTP upstreams and converts unsupported or failed upstreams to a generic 502 response"
+    },
+    {
+      "surface": "streaming bodies and trailers",
+      "status": "bounded_buffering_residual",
+      "reason": "maintained Hyper parsing is used, but fallback bodies remain capped and buffered and upstream trailers are not forwarded"
+    },
+    {
+      "surface": "timing distribution parity",
+      "status": "measured_no_parity_claim",
+      "reason": "repeated loopback distributions are recorded for diagnosis without an indistinguishability threshold"
+    }
+  ]
+}

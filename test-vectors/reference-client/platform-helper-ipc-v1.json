@@ -1,0 +1,501 @@
+{
+  "schema": "maverick-platform-helper-ipc",
+  "version": 1,
+  "max_message_bytes": 16384,
+  "journal_file": "maverick-recovery.json",
+  "journal_root": "/var/lib/maverick-reference",
+  "requests": [
+    {
+      "name": "preflight",
+      "message": {
+        "version": 1,
+        "request_id": "vector_preflight",
+        "operation": "preflight",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "apply",
+      "message": {
+        "version": 1,
+        "request_id": "vector_apply",
+        "operation": "apply",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "rollback",
+      "message": {
+        "version": 1,
+        "request_id": "vector_rollback",
+        "operation": "rollback",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "status",
+      "message": {
+        "version": 1,
+        "request_id": "vector_status",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "minimum_request_id",
+      "message": {
+        "version": 1,
+        "request_id": "a",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "maximum_request_id",
+      "message": {
+        "version": 1,
+        "request_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "name": "ready",
+      "message": {
+        "version": 1,
+        "request_id": "vector_preflight",
+        "outcome": "ready",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": null
+      }
+    },
+    {
+      "name": "applied",
+      "message": {
+        "version": 1,
+        "request_id": "vector_apply",
+        "outcome": "applied",
+        "recovery": { "status": "cleanup_required", "reason": "retained_helper_journal", "helper_journal_present": true },
+        "error_class": null
+      }
+    },
+    {
+      "name": "rolled_back",
+      "message": {
+        "version": 1,
+        "request_id": "vector_rollback",
+        "outcome": "rolled_back",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": null
+      }
+    },
+    {
+      "name": "cleanup_required",
+      "message": {
+        "version": 1,
+        "request_id": "vector_status",
+        "outcome": "cleanup_required",
+        "recovery": { "status": "cleanup_required", "reason": "rollback_failed", "helper_journal_present": true },
+        "error_class": null
+      }
+    },
+    {
+      "name": "recovering",
+      "message": {
+        "version": 1,
+        "request_id": "vector_status",
+        "outcome": "recovering",
+        "recovery": { "status": "recovering", "reason": "retained_helper_journal", "helper_journal_present": true },
+        "error_class": null
+      }
+    },
+    {
+      "name": "rejected_permission",
+      "message": {
+        "version": 1,
+        "request_id": "vector_apply",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": "permission"
+      }
+    },
+    {
+      "name": "rejected_invalid_request",
+      "message": {
+        "version": 1,
+        "request_id": "vector_status",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": "invalid_request"
+      }
+    },
+    {
+      "name": "rejected_conflict",
+      "message": {
+        "version": 1,
+        "request_id": "vector_apply",
+        "outcome": "rejected",
+        "recovery": { "status": "cleanup_required", "reason": "retained_helper_journal", "helper_journal_present": true },
+        "error_class": "conflict"
+      }
+    },
+    {
+      "name": "rejected_apply_failed",
+      "message": {
+        "version": 1,
+        "request_id": "vector_apply",
+        "outcome": "rejected",
+        "recovery": { "status": "cleanup_required", "reason": "retained_helper_journal", "helper_journal_present": true },
+        "error_class": "apply_failed"
+      }
+    },
+    {
+      "name": "rejected_rollback_failed",
+      "message": {
+        "version": 1,
+        "request_id": "vector_rollback",
+        "outcome": "rejected",
+        "recovery": { "status": "cleanup_required", "reason": "rollback_failed", "helper_journal_present": true },
+        "error_class": "rollback_failed"
+      }
+    },
+    {
+      "name": "rejected_internal_recovering",
+      "message": {
+        "version": 1,
+        "request_id": "vector_status",
+        "outcome": "rejected",
+        "recovery": { "status": "recovering", "reason": "retained_helper_journal", "helper_journal_present": true },
+        "error_class": "internal"
+      }
+    }
+  ],
+  "invalid_requests": [
+    {
+      "name": "unsupported_version",
+      "message": {
+        "version": 2,
+        "request_id": "bad_version",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "invalid_request_id",
+      "message": {
+        "version": 1,
+        "request_id": "bad/id",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "empty_request_id",
+      "message": {
+        "version": 1,
+        "request_id": "",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "oversized_request_id",
+      "message": {
+        "version": 1,
+        "request_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "non_ascii_request_id",
+      "message": {
+        "version": 1,
+        "request_id": "non_ascii_é",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "unknown_operation",
+      "message": {
+        "version": 1,
+        "request_id": "bad_operation",
+        "operation": "execute",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json"
+      }
+    },
+    {
+      "name": "non_fixed_journal_path",
+      "message": {
+        "version": 1,
+        "request_id": "bad_path",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/other.json"
+      }
+    },
+    {
+      "name": "unknown_field",
+      "message": {
+        "version": 1,
+        "request_id": "unknown_field",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/maverick-recovery.json",
+        "command": "not-allowed"
+      }
+    },
+    {
+      "name": "relative_journal_path",
+      "message": {
+        "version": 1,
+        "request_id": "relative_path",
+        "operation": "status",
+        "journal_path": "maverick-recovery.json"
+      }
+    },
+    {
+      "name": "non_canonical_journal_path",
+      "message": {
+        "version": 1,
+        "request_id": "non_canonical_path",
+        "operation": "status",
+        "journal_path": "/var/lib/maverick-reference/sub/../maverick-recovery.json"
+      }
+    }
+  ],
+  "invalid_responses": [
+    {
+      "name": "error_without_rejection",
+      "message": {
+        "version": 1,
+        "request_id": "bad_error",
+        "outcome": "ready",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "rejection_without_error",
+      "message": {
+        "version": 1,
+        "request_id": "bad_rejection",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": null
+      }
+    },
+    {
+      "name": "outcome_recovery_mismatch",
+      "message": {
+        "version": 1,
+        "request_id": "bad_recovery",
+        "outcome": "rolled_back",
+        "recovery": { "status": "cleanup_required", "reason": "retained_helper_journal", "helper_journal_present": true },
+        "error_class": null
+      }
+    },
+    {
+      "name": "applied_with_rollback_failure",
+      "message": {
+        "version": 1,
+        "request_id": "bad_applied_reason",
+        "outcome": "applied",
+        "recovery": { "status": "cleanup_required", "reason": "rollback_failed", "helper_journal_present": true },
+        "error_class": null
+      }
+    },
+    {
+      "name": "recovering_with_rollback_failure",
+      "message": {
+        "version": 1,
+        "request_id": "bad_recovering_reason",
+        "outcome": "recovering",
+        "recovery": { "status": "recovering", "reason": "rollback_failed", "helper_journal_present": true },
+        "error_class": null
+      }
+    },
+    {
+      "name": "clean_with_retained_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_clean_journal",
+        "outcome": "ready",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": true },
+        "error_class": null
+      }
+    },
+    {
+      "name": "clean_with_retained_reason_without_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_clean_retained_no_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": "retained_helper_journal", "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "clean_with_retained_reason_and_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_clean_retained_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": "retained_helper_journal", "helper_journal_present": true },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "clean_with_rollback_reason_without_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_clean_rollback_no_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": "rollback_failed", "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "clean_with_rollback_reason_and_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_clean_rollback_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": "rollback_failed", "helper_journal_present": true },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "cleanup_without_reason_or_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_cleanup_no_reason_no_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "cleanup_required", "reason": null, "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "cleanup_without_reason_with_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_cleanup_no_reason_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "cleanup_required", "reason": null, "helper_journal_present": true },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "cleanup_with_retained_reason_without_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_cleanup_retained_no_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "cleanup_required", "reason": "retained_helper_journal", "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "cleanup_with_rollback_reason_without_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_cleanup_rollback_no_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "cleanup_required", "reason": "rollback_failed", "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "recovering_without_reason_or_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_recovering_no_reason_no_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "recovering", "reason": null, "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "recovering_without_reason_with_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_recovering_no_reason_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "recovering", "reason": null, "helper_journal_present": true },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "recovering_with_retained_reason_without_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_recovering_retained_no_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "recovering", "reason": "retained_helper_journal", "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "recovering_with_rollback_reason_without_journal",
+      "message": {
+        "version": 1,
+        "request_id": "bad_recovering_rollback_no_journal",
+        "outcome": "rejected",
+        "recovery": { "status": "recovering", "reason": "rollback_failed", "helper_journal_present": false },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "unknown_outcome",
+      "message": {
+        "version": 1,
+        "request_id": "bad_outcome",
+        "outcome": "connected",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": null
+      }
+    },
+    {
+      "name": "unknown_error_class",
+      "message": {
+        "version": 1,
+        "request_id": "bad_error_class",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": "raw_platform_error"
+      }
+    },
+    {
+      "name": "unknown_recovery_reason",
+      "message": {
+        "version": 1,
+        "request_id": "bad_recovery_reason",
+        "outcome": "cleanup_required",
+        "recovery": { "status": "cleanup_required", "reason": "unknown_reason", "helper_journal_present": true },
+        "error_class": null
+      }
+    },
+    {
+      "name": "unknown_recovery_field",
+      "message": {
+        "version": 1,
+        "request_id": "bad_recovery_field",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false, "detail": "not-allowed" },
+        "error_class": "internal"
+      }
+    },
+    {
+      "name": "free_form_error",
+      "message": {
+        "version": 1,
+        "request_id": "bad_message",
+        "outcome": "rejected",
+        "recovery": { "status": "clean", "reason": null, "helper_journal_present": false },
+        "error_class": "internal",
+        "message": "not-allowed"
+      }
+    }
+  ]
+}

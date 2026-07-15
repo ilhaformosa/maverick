@@ -1,0 +1,196 @@
+{
+  "version": 1,
+  "status": "blocker_execution_plan_ready",
+  "runtime_ech_allowed": false,
+  "runtime_network_activity_allowed": false,
+  "local_machine_network_mutation_allowed": false,
+  "requires_server_tls_backend": true,
+  "requires_controlled_dns_distribution": true,
+  "requires_approved_external_host": true,
+  "requires_explicit_operator_dns_change": true,
+  "notes": "This manifest tracks the blocker-first execution plan for ECH runtime work. It does not enable Maverick runtime ECH, authorize workstation network changes, mutate DNS records, or claim TLS-stack readiness.",
+  "blocker_slices": [
+    {
+      "id": "client_tls_api_tracking",
+      "status": "completed_locally",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "",
+      "requires_user_action": false,
+      "requires_upstream_change": false,
+      "evidence": [
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "scripts/ech-harness.sh",
+        "crates/maverick-client/src/h2_transport.rs"
+      ],
+      "notes": "The feature harness tracks rustls client-side ECH API names locally. This is compile-time evidence only and is not runtime ECH support."
+    },
+    {
+      "id": "fallback_policy_tests",
+      "status": "completed_locally",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "",
+      "requires_user_action": false,
+      "requires_upstream_change": false,
+      "evidence": [
+        "docs/ECH_FEATURE_GATE.md",
+        "TEST_PLAN.md",
+        "crates/maverick-core/src/config.rs"
+      ],
+      "notes": "Config tests reject runtime ECH enablement and keep private mode fail-closed by rejecting plain-SNI fallback."
+    },
+    {
+      "id": "approved_integration_host",
+      "status": "host_approved_no_runtime",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_user_action": false,
+      "requires_upstream_change": false,
+      "evidence": [
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/HARNESS_ENGINEERING.md",
+        "docs/INTEROP_MATRIX.md"
+      ],
+      "notes": "approved-linux-vm is available as the approved ECH test host, but this manifest does not allow runtime ECH network activity yet."
+    },
+    {
+      "id": "controlled_dns_record_plan",
+      "status": "completed_external",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "",
+      "requires_user_action": false,
+      "requires_upstream_change": false,
+      "evidence": [
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/ECH_FEATURE_GATE.md",
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "scripts/approved-vm-ech-edge-preflight.sh"
+      ],
+      "notes": "The operator created the dedicated proxied Cloudflare subdomain. Repo automation still does not mutate DNS records."
+    },
+    {
+      "id": "cloudflare_edge_preflight",
+      "status": "completed_on_approved_host",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_user_action": false,
+      "requires_upstream_change": false,
+      "evidence": [
+        "docs/ECH_RUNTIME_PLAN.md",
+        "scripts/approved-vm-ech-edge-preflight.sh",
+        "docs/HARNESS_ENGINEERING.md",
+        "docs/ECH_UPSTREAM_STATUS.md"
+      ],
+      "notes": "Cloudflare edge ECH preflight passed from approved-linux-vm with HTTPS/SVCB ech parameter present and rustls reporting EchStatus::Accepted. This is edge-only evidence, not native Maverick server-side ECH support."
+    },
+    {
+      "id": "cloudflare_origin_reachability",
+      "status": "completed_on_approved_host",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_user_action": false,
+      "requires_upstream_change": false,
+      "evidence": [
+        "docs/ECH_RUNTIME_PLAN.md",
+        "scripts/approved-vm-ech-cloudflare-origin-probe.sh",
+        "docs/HARNESS_ENGINEERING.md",
+        "docs/ECH_UPSTREAM_STATUS.md"
+      ],
+      "notes": "Cloudflare origin reachability passed after the approved origin host allowed TCP/443 and Cloudflare SSL/TLS mode was set to Full. Direct TCP/80 and TCP/443 origin probes work, and Cloudflare reaches the temporary HTTPS origin."
+    },
+    {
+      "id": "cloudflare_fronted_runtime_smoke",
+      "status": "completed_on_approved_host",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_user_action": false,
+      "requires_upstream_change": false,
+      "evidence": [
+        "docs/ECH_RUNTIME_PLAN.md",
+        "scripts/approved-vm-ech-cloudflare-fronted-runtime-smoke.sh",
+        "docs/INTEROP_MATRIX.md",
+        "crates/maverick-client/src/tunnel.rs"
+      ],
+      "notes": "Cloudflare-fronted runtime smoke completed on the approved origin VM with a separate approved remote client data plane. GET and finite POST preflights reached the Maverick origin with HTTP 200, the earlier H2/gRPC streaming tunnel remained blocked by Cloudflare 400 after gRPC adaptations, and the WebSocket carrier successfully carried one SOCKS5 TCP echo flow through maverick-ech.example.com."
+    },
+    {
+      "id": "server_tls_backend",
+      "status": "blocked_upstream",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "",
+      "requires_user_action": false,
+      "requires_upstream_change": true,
+      "evidence": [
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "docs/ECH_NATIVE_TLS_LIMITATION.md",
+        "docs/ECH_RUNTIME_PLAN.md",
+        "crates/maverick-server/src/server.rs"
+      ],
+      "notes": "Maverick's Rust server uses rustls. The public rustls server-side ECH tracking issue remained open when checked on 2026-06-28 and still showed Open on a public HTML check on 2026-06-29, so Maverick cannot truthfully claim native runtime ECH server support yet."
+    },
+    {
+      "id": "ech_config_distribution",
+      "status": "blocked_runtime_dependency",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "",
+      "requires_user_action": false,
+      "requires_upstream_change": true,
+      "evidence": [
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/ECH_FEATURE_GATE.md",
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "CONFIG.md"
+      ],
+      "notes": "Native ECHConfig distribution must consume controlled HTTPS/SVCB data or an approved explicit config source after a server-side ECH backend exists. Cloudflare edge ECH evidence is tracked separately."
+    },
+    {
+      "id": "runtime_handshake_smoke",
+      "status": "blocked_runtime_dependency",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_user_action": false,
+      "requires_upstream_change": true,
+      "evidence": [
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/history/manifests/ech-runtime-approval.json",
+        "scripts/check-ech-runtime-approval.py"
+      ],
+      "notes": "A runtime handshake smoke must wait for controlled DNS evidence and a stable server-side TLS backend. It must run only on an approved host."
+    },
+    {
+      "id": "runtime_config_acceptance",
+      "status": "blocked_runtime_dependency",
+      "local_network_mutation_allowed": false,
+      "dns_mutation_allowed": false,
+      "runtime_network_activity_allowed": false,
+      "approved_host_candidate": "",
+      "requires_user_action": false,
+      "requires_upstream_change": true,
+      "evidence": [
+        "docs/ECH_FEATURE_GATE.md",
+        "CONFIG.md",
+        "crates/maverick-core/src/config.rs"
+      ],
+      "notes": "advanced.experimental_ech must remain rejected until native server TLS, native ECHConfig distribution, controlled DNS, approved-host native smoke, and fallback-policy gates all pass."
+    }
+  ]
+}

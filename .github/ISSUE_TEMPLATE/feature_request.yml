@@ -1,0 +1,62 @@
+name: Feature request
+description: Suggest a scoped Maverick feature or experiment.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maverick is experimental and keeps risky features behind explicit gates.
+        Requests that require system proxy, DNS, route, firewall, VPN, or TUN
+        changes need an isolated approved-host plan.
+        Do not include real infrastructure names, account identifiers, secrets,
+        generated credentials, private hostnames, or certificate paths.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Describe the smallest useful version.
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Expected scope
+      options:
+        - docs only
+        - release hygiene
+        - privacy hygiene
+        - operator docs or examples
+        - local loopback-only harness
+        - conformance or benchmark evidence
+        - protocol or wire format
+        - client/server runtime
+        - approved-host evidence
+        - external GUI/App project
+        - experimental crypto
+        - unknown
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and tradeoffs
+      description: Include compatibility, privacy, security, and operational risks if known.
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundary confirmation
+      options:
+        - label: I understand this project does not claim audited, production-ready, anonymity, or censorship-resistance status.
+          required: true
+        - label: I have not included secrets, generated credentials, real hostnames, IP addresses, account names, certificate paths, or local private paths.
+          required: true
+        - label: I understand workstation system network mutation is out of scope unless an approved test host is explicitly supplied.
+          required: true

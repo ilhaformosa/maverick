@@ -1,0 +1,16 @@
+{
+  "id": "auth_v2_client_hello",
+  "kind": "client_hello_v2",
+  "secret_test_only": "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "tunnel_path": "/assets/upload",
+  "protocol_version": 2,
+  "auth_epoch": 202607,
+  "client_nonce_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "timestamp_unix": 1767225600,
+  "credential_hint_hex": "68696e743a755f636f6e666f726d616e63653a323032363037",
+  "mode": "private",
+  "feature_flags": 9,
+  "rotation_flags": 3,
+  "auth_tag_hex": "916ef08473191a0b14d344bffc5309b355435c09c2effee9d76534b71fcfc5e4",
+  "encoded_hex": "0002000000000003176f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f000000006955b900001968696e743a755f636f6e666f726d616e63653a32303236303702000000000000000900000003916ef08473191a0b14d344bffc5309b355435c09c2effee9d76534b71fcfc5e4"
+}

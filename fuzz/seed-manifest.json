@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "notes": "Parser-only fuzz seeds. Source-backed seeds are copied from conformance vector encoded_hex fields into cargo-fuzz corpus files by fuzz/sync-corpus.py.",
+  "targets": [
+    {
+      "target": "frame_decode",
+      "seeds": [
+        {
+          "id": "frame_tcp_data_v1",
+          "source": "../conformance/vectors/frame_tcp_data.json",
+          "field": "encoded_hex"
+        },
+        {
+          "id": "frame_padding_v1",
+          "source": "../conformance/vectors/frame_padding.json",
+          "field": "encoded_hex"
+        },
+        {
+          "id": "truncated_frame_header",
+          "hex": "040000000000"
+        }
+      ]
+    },
+    {
+      "target": "auth_decode",
+      "seeds": [
+        {
+          "id": "auth_v1_client_hello",
+          "source": "../conformance/vectors/auth_v1_client_hello.json",
+          "field": "encoded_hex"
+        },
+        {
+          "id": "auth_v1_server_hello",
+          "source": "../conformance/vectors/auth_v1_server_hello.json",
+          "field": "encoded_hex"
+        },
+        {
+          "id": "short_auth_prefix",
+          "hex": "0001"
+        }
+      ]
+    }
+  ]
+}

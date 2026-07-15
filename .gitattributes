@@ -1,0 +1,6 @@
+# Keep GitHub language statistics focused on the Maverick implementation.
+# These paths are support tooling, conformance oracles, and operator harnesses;
+# they remain tracked and reviewable, but are not product implementation code.
+scripts/** linguist-detectable=false
+conformance/runner/** linguist-detectable=false
+fuzz/sync-corpus.py linguist-detectable=false

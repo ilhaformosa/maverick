@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "aead_id": 1,
+      "base_nonce": "56d890e5accaaf011cff4b7d",
+      "enc": "37fda3567bdbd628e88668c3c8d7e97d1d1253b6d4ea6d44c150f741f1bf4431",
+      "encryption": {
+        "aad": "436f756e742d30",
+        "ct": "f938558b5d72f1a23810b4be2ab4f84331acc02fc97babc53a52ae8218a355a96d8770ac83d07bea87e13c512a",
+        "nonce": "56d890e5accaaf011cff4b7d",
+        "pt": "4265617574792069732074727574682c20747275746820626561757479"
+      },
+      "export": {
+        "exported_value": "3853fe2b4035195a573ffc53856e77058e15d9ea064de3e59f4961d0095250ee",
+        "exporter_context": "",
+        "length": 32
+      },
+      "exporter_secret": "45ff1c2e220db587171952c0592d5f5ebe103f1561a2614e38f2ffd47e99e3f8",
+      "id": "rfc9180_base_x25519_hkdf_sha256_aes128gcm_case0",
+      "info": "4f6465206f6e2061204772656369616e2055726e",
+      "kdf_id": 1,
+      "kem_id": 32,
+      "key": "4531685d41d65f03dc48f6b8302c05b0",
+      "mode": 0,
+      "shared_secret": "fe0e18c9f024ce43799ae393c7e8fe8fce9d218875e8227b0187c04e7d2ea1fc"
+    }
+  ],
+  "source": {
+    "name": "CFRG HPKE test-vectors.json",
+    "sha256": "61fc662f01996cd06d713dacf5e133167bd309a1f329442d53f1e21a47b3ede6",
+    "url": "https://raw.githubusercontent.com/cfrg/draft-irtf-cfrg-hpke/master/test-vectors.json"
+  },
+  "status": "imported_official_subset_no_runtime",
+  "suite": "hpke_config_v1"
+}

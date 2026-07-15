@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "status": "review_package_ready",
+  "external_review_completed": false,
+  "notes": "This package lists inputs prepared for a future external security review. It is not an audit result, security endorsement, stable-release claim, production claim, or standardization claim.",
+  "artifact_groups": [
+    {
+      "id": "protocol_and_security_docs",
+      "required": true,
+      "paths": [
+        "SPEC.md",
+        "WIRE_FORMAT.md",
+        "COMPATIBILITY.md",
+        "MIGRATIONS.md",
+        "THREAT_MODEL.md",
+        "SECURITY.md",
+        "docs/SECURITY_REVIEW_PLAN.md",
+        "docs/history/review/S3_REVIEW_HANDOFF_2026_07_08.md",
+        "docs/history/review/S3_FINDINGS_TRIAGE_TEMPLATE_2026_07_08.md",
+        "docs/history/review/COMPREHENSIVE_SECURITY_AUDIT_REMEDIATION_2026_07_08.md",
+        "docs/history/review/S3_REVIEW_CLOSURE_2026_07_08.md",
+        "docs/history/review/SECURITY_REVIEW_TRIAGE_2026_06_28.md",
+        "docs/history/review/AI_SECURITY_REVIEW_PROMPT_2026_06_28.md"
+      ],
+      "notes": "Core protocol, wire format, threat model, security policy, and AI-assisted review inputs."
+    },
+    {
+      "id": "roadmap_and_capability_docs",
+      "required": true,
+      "paths": [
+        "ROADMAP.md",
+        "STATUS.md",
+        "docs/PLAN_SHORT_TERM_TO_V1.md",
+        "docs/RELEASE_TRAIN.md",
+        "docs/CAPABILITY_REPORT.md",
+        "docs/history/readiness/PUBLIC_RELEASE_READINESS_2026_06_29.md",
+        "docs/ROADMAP_BLOCKERS.md",
+        "docs/BLOCKER_RESOLUTION_PLAN.md",
+        "roadmap-blockers.json"
+      ],
+      "notes": "Project status, limitations, former-blocker handling, and non-blocking tracks."
+    },
+    {
+      "id": "privacy_and_experimental_docs",
+      "required": true,
+      "paths": [
+        "docs/AUTH_V2_SPEC.md",
+        "docs/CREDENTIAL_ROTATION.md",
+        "docs/SHAPING_ENGINE.md",
+        "docs/STEALTH_PRIORITY.md",
+        "docs/ECH_FEATURE_GATE.md",
+        "docs/NATIVE_ECH_TRACKING.md",
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/ECH_NATIVE_TLS_LIMITATION.md",
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "docs/ECH_WORKAROUND.md",
+        "docs/history/manifests/ech-runtime-approval.json",
+        "docs/history/manifests/ech-runtime-blockers.json",
+        "scripts/approved-vm-ech-edge-preflight.sh",
+        "docs/EXPERIMENTAL_TRACKS.md"
+      ],
+      "notes": "Privacy feature designs, gates, and experimental-track status."
+    },
+    {
+      "id": "platform_and_crypto_docs",
+      "required": true,
+      "paths": [
+        "docs/TUN_MODE_DESIGN.md",
+        "docs/history/manifests/tun-helper-approval.json",
+        "docs/history/manifests/tun-runtime-blockers.json",
+        "scripts/approved-vm-tun-runtime-smoke.sh",
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/MACOS_APP_BOUNDARY.md",
+        "docs/SDK_PLAN.md",
+        "docs/CRYPTO_AGILITY.md",
+        "docs/HPKE_NOISE_EXPERIMENTS.md",
+        "docs/history/manifests/noise-runtime-approval.json",
+        "docs/ML_KEM_HYBRID.md",
+        "docs/KEY_LIFECYCLE.md"
+      ],
+      "notes": "Platformization and crypto-agility designs, including readiness blockers."
+    },
+    {
+      "id": "conformance_and_freeze_inputs",
+      "required": true,
+      "paths": [
+        "docs/CONFORMANCE_SUITE.md",
+        "conformance/implementation-registry.json",
+        "conformance/freeze-readiness.json",
+        "conformance/frozen-releases.json"
+      ],
+      "notes": "Conformance and freeze-readiness inputs."
+    },
+    {
+      "id": "harness_and_ci_inputs",
+      "required": true,
+      "paths": [
+        "docs/HARNESS_ENGINEERING.md",
+        "scripts/local-harness.sh",
+        "scripts/h3-harness.sh",
+        "scripts/ech-harness.sh",
+        "scripts/conformance.sh",
+        "scripts/approved-vm-detached-tcp-longhaul.sh",
+        "scripts/approved-vm-failure-injection-smoke.sh",
+        ".github/workflows/ci.yml"
+      ],
+      "notes": "Local, CI, and approved-host verification entry points."
+    },
+    {
+      "id": "release_and_feedback_inputs",
+      "required": false,
+      "paths": [
+        "docs/PUBLIC_FEEDBACK_PROCESS.md",
+        "docs/history/alpha/ALPHA2_READINESS.md",
+        "docs/history/release/RELEASE_NOTES_v0.1.0-beta.1.md",
+        "docs/history/release/POST_RELEASE_AUDIT_v0.1.0-beta.1.md",
+        "docs/history/release/RELEASE_NOTES_v0.1.0-beta.2.md",
+        "docs/history/release/POST_RELEASE_AUDIT_v0.1.0-beta.2.md",
+        "docs/history/evidence/APPROVED_HOST_RUNTIME_EVIDENCE_2026_07_03.md",
+        "docs/history/evidence/APPROVED_HOST_FAILURE_INJECTION_EVIDENCE_2026_07_03.md",
+        "docs/history/evidence/APPROVED_HOST_S2_INDEPENDENT_EVIDENCE_2026_07_08.md",
+        "docs/RELEASE_TAGGING.md",
+        "docs/RELEASE_ARTIFACTS.md",
+        "RELEASE_CHECKLIST.md",
+        "SUPPORT.md"
+      ],
+      "notes": "Feedback, beta evidence, release, artifact, and support-process inputs. These are process inputs only, not external review completion evidence."
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "status": "active",
+  "notes": "Frozen conformance vector byte snapshots. These snapshots freeze test-vector bytes only and are not stable protocol, production, or external-audit claims.",
+  "frozen_releases": [
+    {
+      "release": "v0.1.0-conformance.1",
+      "manifest_path": "frozen-releases/v0.1.0-conformance.1/manifest.json",
+      "manifest_sha256": "cadd5ed064134e122698d4ffe8eed1b74dab734731233477fd101f63843943e2"
+    },
+    {
+      "release": "v1.0.0-conformance.1",
+      "manifest_path": "frozen-releases/v1.0.0-conformance.1/manifest.json",
+      "manifest_sha256": "8ad4a8313b4234d4bdd57f648b4b483e7e22ced7729d4c55bc493a875a5d6ded"
+    }
+  ]
+}

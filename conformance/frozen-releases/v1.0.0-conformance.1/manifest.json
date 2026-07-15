@@ -1,0 +1,58 @@
+{
+  "release": "v1.0.0-conformance.1",
+  "notes": "Frozen conformance vector byte snapshot for the narrow maverick-tls-h2-cli-v1 v1.0.0 scope. This is not a production, formal-audit, anonymity, censorship-resistance, browser-fingerprint-equivalence, or standardization claim.",
+  "vectors": [
+    {
+      "path": "vectors/auth_v1_client_hello.json",
+      "sha256": "a9d88017773c16528c66474ab13ba2ad5e1d6bf3789e3013b01398bc9b51120a"
+    },
+    {
+      "path": "vectors/auth_v1_server_hello.json",
+      "sha256": "e1c79f191c19357d6ef539da0dd90e716e0402a3a47d0680547cc1ed1f8c5802"
+    },
+    {
+      "path": "vectors/auth_v2_client_hello.json",
+      "sha256": "88c77b38a6c88120b7c8919c01c300d02c8432fbe7f928252a3c706cf5b854dd"
+    },
+    {
+      "path": "vectors/auth_v2_server_hello.json",
+      "sha256": "e0e3af6f6e5bd2945050cf508d34631e9793fcf6d4d64bd40b8959bad1c9887d"
+    },
+    {
+      "path": "vectors/error_code_flow_limit.json",
+      "sha256": "6ea1603a539512d2be35473c5756940114530e603775d7dcad9997a724e14b12"
+    },
+    {
+      "path": "vectors/frame_dns_query.json",
+      "sha256": "ca9014fc2700c827c1c9969aabcce36253e2a9d00dc28b6d1d1df3631c1a3508"
+    },
+    {
+      "path": "vectors/frame_dns_response.json",
+      "sha256": "35873e569f15f8ce526df3b1dfdcabc8edabfa82094bd1797164682db1a890a5"
+    },
+    {
+      "path": "vectors/frame_padding.json",
+      "sha256": "6131de5d557299d32d22c39cbcbdaff51bcba98e8bdf1f537a21281c919a41cc"
+    },
+    {
+      "path": "vectors/frame_tcp_data.json",
+      "sha256": "17f02f1c5c53ad66ef02ca1da7f1289219fc610406171e4113f3aaf37ae6e90a"
+    },
+    {
+      "path": "vectors/open_tcp_domain.json",
+      "sha256": "0756dee1c1285f3fc96d90bdf402f887bc961fc3c43e9afd6fa1578660ac84f2"
+    },
+    {
+      "path": "vectors/open_udp.json",
+      "sha256": "bb55017995479e8e7641abd17a043f99cd10e8f3c2bdb8c2f80b9c5cb8d280d1"
+    },
+    {
+      "path": "vectors/replay_window.json",
+      "sha256": "e4986ce15a5ff369eaffccf49c9e2667a8c4f5b2fb6c03cc6b164a60f1d22d3d"
+    },
+    {
+      "path": "vectors/udp_packet_ipv4.json",
+      "sha256": "3375bfeb5bf1ad036fb3d4419bca102d24bceec7f94b6ecd17e261b695879b94"
+    }
+  ]
+}

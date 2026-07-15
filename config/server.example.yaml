@@ -1,0 +1,76 @@
+version: 1
+listen: "0.0.0.0:443"
+
+tls:
+  cert_path: "./certs/fullchain.pem"
+  key_path: "./certs/privkey.pem"
+
+maverick:
+  tunnel_path: "/assets/upload"
+  mode_default: "auto"
+  replay_window_secs: 120
+  replay_cache_entries_per_credential: 16384
+  replay_cache_max_credentials_per_shard: 1024
+  max_concurrent_flows_per_user: 128
+
+users:
+  - id: "u_example"
+    name: "alice"
+    secret: "mv1_REPLACE_WITH_OUTPUT_FROM_MAVERICK_GEN_USER"
+    enabled: true
+    rate_limit: null
+    max_concurrent_flows: null
+
+fallback:
+  type: "static"
+  static_dir: "./public"
+  index: "index.html"
+# Alternative:
+# fallback:
+#   type: "reverse_proxy"
+#   upstream: "http://127.0.0.1:8080"
+
+dns:
+  upstream: "1.1.1.1:53"
+  timeout_ms: 5000
+
+metrics:
+  enabled: false
+  listen: "127.0.0.1:19090"
+
+auth:
+  channel_binding:
+    enabled: true
+    require: false
+  v2:
+    enabled: false
+    require: false
+
+log:
+  level: "info"
+  redact: true
+
+advanced:
+  idle_timeout_secs: 300
+  tcp_connect_timeout_ms: 10000
+  handshake_timeout_ms: 10000
+  max_concurrent_connections: 2048
+  max_concurrent_connections_per_source: 256
+  pre_auth_max_concurrent: 512
+  fallback_max_concurrent: 512
+  h2_max_concurrent_streams: 256
+  h2_max_concurrent_reset_streams: 50
+  h2_max_pending_accept_reset_streams: 20
+  h2_max_local_error_reset_streams: 1024
+  auth_failure_window_secs: 60
+  max_auth_failures_per_window: 24
+  auth_failure_cache_max_entries: 4096
+  max_frame_size: 65536
+  stealth:
+    tls_fingerprint: "rustls_default"
+    active_probe_resistance: true
+    cdn_fronting:
+      enabled: false
+      provider: "cloudflare"
+      carrier: "web_socket"
+      trusted_tls_terminating_provider: false

@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "spec_status": "frozen",
+  "standardization_claim": false,
+  "notes": "Implementation registry for narrow-scope frozen conformance tracking. This is not a production, formal-audit, browser-fingerprint-equivalence, or standardization claim.",
+  "implementations": [
+    {
+      "id": "maverick-rust",
+      "name": "Maverick Rust reference prototype",
+      "kind": "client_server",
+      "language": "Rust",
+      "status": "passing",
+      "network_behavior": "loopback_only_tests",
+      "opens_network": true,
+      "transports": ["h2_tls", "h3_quic_feature_gated"],
+      "feature_gates": ["h3"],
+      "coverage": [
+        "tcp_relay",
+        "dns_relay",
+        "socks5_udp_associate",
+        "http_connect",
+        "fallback",
+        "auth_v1",
+        "auth_v2",
+        "replay",
+        "h3_feature_gated"
+      ],
+      "evidence": [
+        "scripts/local-harness.sh",
+        "scripts/h3-harness.sh",
+        "crates/maverick-tests/tests/tcp_relay.rs"
+      ],
+      "normative": false
+    },
+    {
+      "id": "python-conformance-verifier",
+      "name": "Python standard-library conformance verifier",
+      "kind": "read_only_parser",
+      "language": "Python",
+      "status": "passing",
+      "network_behavior": "no_network",
+      "opens_network": false,
+      "transports": [],
+      "feature_gates": [],
+      "coverage": [
+        "frame_headers",
+        "auth_v1_hello",
+        "auth_v2_hello",
+        "dns_frames",
+        "open_tcp",
+        "open_udp",
+        "udp_packet",
+        "padding_frame",
+        "error_code",
+        "replay_sequence"
+      ],
+      "evidence": [
+        "conformance/runner/python_verify.py",
+        "conformance/vector-manifest.json",
+        "conformance/vectors/replay_window.json"
+      ],
+      "normative": false
+    }
+  ]
+}

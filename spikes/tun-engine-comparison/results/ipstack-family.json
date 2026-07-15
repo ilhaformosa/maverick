@@ -1,0 +1,42 @@
+{
+  "schema": 2,
+  "candidate_id": "ipstack_family",
+  "decision": "rejected",
+  "comparison_base_commit": "ab1bfda2ae74f778281719dceab308106c228888",
+  "mode": "preflight",
+  "started_utc": "2026-07-11T22:50:00Z",
+  "finished_utc": "2026-07-11T23:10:46Z",
+  "upstream_tests": [
+    {
+      "component": "ipstack 1.0.0",
+      "command_scope": "all targets",
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "component": "tun2proxy 0.8.2",
+      "command_scope": "all targets without default udpgw feature",
+      "passed": 2,
+      "failed": 0
+    }
+  ],
+  "case_results": [],
+  "cases_total": 0,
+  "cases_passed": 0,
+  "cases_failed": 0,
+  "resource_peak": {
+    "active_flows": 0,
+    "tasks": 0,
+    "queued_packets": 0,
+    "buffered_bytes": 0
+  },
+  "shutdown_elapsed_ms": 0,
+  "rejection_reasons": [
+    "released ipstack uses unbounded admission, per-flow packet, per-flow data, session-removal, and device-egress channels",
+    "no global flow or accept-queue maximum is exposed by ipstack configuration",
+    "tun2proxy inherits the core blocker and adds proxy, DNS, platform, and setup code outside the intended final boundary"
+  ],
+  "known_gaps": [
+    "functional matrix intentionally stopped after the mandatory bounded-resource preflight failed"
+  ]
+}

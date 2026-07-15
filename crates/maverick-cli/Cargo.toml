@@ -1,0 +1,37 @@
+[package]
+name = "maverick-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "maverick"
+path = "src/main.rs"
+
+[features]
+default = []
+browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
+ech = ["maverick-client/ech", "maverick-server/ech"]
+h3 = ["maverick-client/h3", "maverick-server/h3"]
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+maverick-client = { path = "../maverick-client" }
+maverick-core = { path = "../maverick-core" }
+maverick-server = { path = "../maverick-server" }
+qrcode.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true

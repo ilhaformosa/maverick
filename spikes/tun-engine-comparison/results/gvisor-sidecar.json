@@ -1,0 +1,29 @@
+{
+  "schema": 2,
+  "candidate_id": "gvisor_sidecar",
+  "decision": "rejected",
+  "comparison_base_commit": "ab1bfda2ae74f778281719dceab308106c228888",
+  "mode": "preflight",
+  "started_utc": "2026-07-11T22:50:00Z",
+  "finished_utc": "2026-07-11T23:10:46Z",
+  "upstream_tests": [],
+  "case_results": [],
+  "cases_total": 0,
+  "cases_passed": 0,
+  "cases_failed": 0,
+  "resource_peak": {
+    "active_flows": 0,
+    "tasks": 0,
+    "queued_packets": 0,
+    "buffered_bytes": 0
+  },
+  "shutdown_elapsed_ms": 0,
+  "rejection_reasons": [
+    "the reusable netstack API does not provide a stable versioned module contract",
+    "the permitted process boundary first requires a new bounded IPC protocol and crash supervisor",
+    "cross-platform Go sidecar packaging and a second local proxy hop add cost without a demonstrated correctness advantage over the native selected candidate"
+  ],
+  "known_gaps": [
+    "functional sidecar matrix intentionally stopped after the maintenance and packaging preflight failed"
+  ]
+}

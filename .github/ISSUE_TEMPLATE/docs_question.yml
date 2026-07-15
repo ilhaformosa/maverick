@@ -1,0 +1,48 @@
+name: Documentation or question
+description: Ask a non-security question or report unclear docs.
+title: "[Docs/Question]: "
+labels: ["docs", "question", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, generated credentials, real server addresses,
+        private hostnames, account identifiers, certificate paths, local private
+        filesystem paths, or vulnerability details in public documentation questions.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - README
+        - config
+        - protocol spec
+        - threat model
+        - release process
+        - feedback process
+        - compatibility or migration
+        - experimental tracks
+        - setup or testing
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question or documentation issue
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Link to the doc section or command that was confusing.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I have not included secrets, generated credentials, real infrastructure identifiers, certificate paths, or local private paths.
+          required: true
+        - label: This is not a public vulnerability report with working exploit details.
+          required: true

@@ -194,6 +194,96 @@ class ProductionReadinessTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "SDK pin must match"):
                 checker.check_ledger(ledger, root)
 
+    def test_release_candidate_request_binds_release_commit_and_stage(self) -> None:
+        with fixture_repo() as (root, ledger):
+            freeze_candidate(ledger, "1.2.0-alpha.1")
+            ledger["dimensions"]["code_complete"] = complete_dimension(ledger)
+            checker.check_ledger(ledger, root)
+
+            checker.check_release_candidate_request(
+                ledger, "a" * 40, "v1.2.0-alpha.1"
+            )
+
+            with self.assertRaisesRegex(AssertionError, "match maverick_release_commit"):
+                checker.check_release_candidate_request(
+                    ledger, "f" * 40, "v1.2.0-alpha.1"
+                )
+
+    def test_release_candidate_request_requires_earlier_stage(self) -> None:
+        with fixture_repo() as (root, ledger):
+            freeze_candidate(ledger, "1.2.0-beta.1", accept_phase_3a=True)
+            ledger["dimensions"]["code_complete"] = complete_dimension(ledger)
+            ledger["dimensions"]["evidence_complete"] = complete_dimension(ledger)
+            checker.check_ledger(ledger, root)
+
+            with self.assertRaisesRegex(AssertionError, "earlier release stage"):
+                checker.check_release_candidate_request(
+                    ledger, "a" * 40, "v1.2.0-beta.1"
+                )
+
+    def test_stable_candidate_ci_can_precede_final_go(self) -> None:
+        with fixture_repo() as (root, ledger):
+            freeze_candidate(ledger, "1.2.0", accept_phase_3a=True)
+            for dimension in (
+                "code_complete",
+                "evidence_complete",
+                "audit_complete",
+                "deployable",
+            ):
+                ledger["dimensions"][dimension] = complete_dimension(ledger)
+            ledger["audit"] = {
+                "status": "complete",
+                "independent": True,
+                "reviewer": "Independent reviewer",
+                "report_sha256": "f" * 64,
+                "remediation_complete": True,
+            }
+            ledger["current_claim_state"]["formal_audit"] = "completed"
+            for stage in checker.RELEASES[:-1]:
+                ledger["release_gates"][stage] = "pass"
+            checker.check_ledger(ledger, root)
+
+            checker.check_release_candidate_request(ledger, "a" * 40, "v1.2.0")
+
+
+def freeze_candidate(
+    ledger: dict, software_version: str, *, accept_phase_3a: bool = False
+) -> None:
+    evidence_path = ledger["scope"]["docs"][0]
+    ledger["candidate"].update(
+        {
+            "status": "frozen",
+            "maverick_release_commit": "a" * 40,
+            "maverick_sdk_commit": "b" * 40,
+            "reference_client_commit": "c" * 40,
+            "reference_client_sdk_pin": "b" * 40,
+            "sdk_pin_verified": True,
+            "sdk_pin_evidence_path": evidence_path,
+            "reference_package_sha256": "d" * 64,
+        }
+    )
+    ledger["candidate"]["versions"]["software"] = software_version
+    ledger["candidate"]["versions"]["reference_package"] = f"{software_version}-1"
+    ledger["phase_inputs"]["phase_3b"] = accepted_phase(evidence_path)
+    if accept_phase_3a:
+        ledger["phase_inputs"]["phase_3a"] = accepted_phase(evidence_path)
+
+
+def accepted_phase(evidence_path: str) -> dict:
+    return {
+        "status": "accepted",
+        "accepted_manifest_sha256": "e" * 64,
+        "public_summary_paths": [evidence_path],
+    }
+
+
+def complete_dimension(ledger: dict) -> dict:
+    return {
+        "status": "complete",
+        "reason": None,
+        "evidence_paths": [ledger["scope"]["docs"][0]],
+    }
+
 
 class fixture_repo:
     def __enter__(self) -> tuple[Path, dict]:

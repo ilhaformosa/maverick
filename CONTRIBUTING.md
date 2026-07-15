@@ -34,6 +34,12 @@ message, and generated artifacts for private email, paths, hosts, accounts,
 infrastructure, credentials, and raw evidence. Public identity and signing rules
 are in `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`.
 
+Every public pull request runs `public-pr-ci`. Documentation hygiene always
+runs; the core and experimental jobs are selected by changed paths. The stable
+required result is `public-pr-ci / public-pr-gate`. Contributors do not dispatch
+the separate release-candidate workflow; that gate requires a coordinator-
+approved frozen commit. See `docs/CI_AND_RELEASE_GATES.md`.
+
 ## Documentation Expectations
 
 - Update `CONFIG.md` for config fields.

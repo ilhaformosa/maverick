@@ -23,7 +23,7 @@ class SecurityReviewPackageTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "review_package_ready")
         self.assertEqual(result["artifact_group_count"], 7)
-        self.assertEqual(result["artifact_count"], 11)
+        self.assertEqual(result["artifact_count"], 13)
 
     def test_completed_external_review_claim_is_rejected(self) -> None:
         package = valid_package()
@@ -112,7 +112,11 @@ def valid_package() -> dict:
             {
                 "id": "harness_and_ci_inputs",
                 "required": True,
-                "paths": ["evidence/harness.txt"],
+                "paths": [
+                    "evidence/harness.txt",
+                    "docs/CI_AND_RELEASE_GATES.md",
+                    ".github/workflows/release-candidate.yml",
+                ],
                 "notes": "Harness inputs.",
             },
             {
@@ -138,6 +142,8 @@ class fixture_repo:
         review = root / "docs" / "history" / "review"
         review.mkdir(parents=True)
         docs = root / "docs"
+        workflows = root / ".github" / "workflows"
+        workflows.mkdir(parents=True)
         for name in (
             "protocol.txt",
             "roadmap.txt",
@@ -154,11 +160,15 @@ class fixture_repo:
             "triage template\n", encoding="utf-8"
         )
         for name in (
+            "CI_AND_RELEASE_GATES.md",
             "INDEPENDENT_AUDIT_PACKAGE.md",
             "AUDIT_EVIDENCE_INDEX.md",
             "PRODUCTION_GO_NO_GO_TEMPLATE.md",
         ):
             (docs / name).write_text(f"{name} fixture\n", encoding="utf-8")
+        (workflows / "release-candidate.yml").write_text(
+            "name: release-candidate-ci\n", encoding="utf-8"
+        )
         return root
 
     def __exit__(self, exc_type, exc, tb) -> None:

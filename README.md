@@ -23,6 +23,11 @@ IPv4, the `maverick` server/CLI, the `maverick-reference-client` Debian service
 package, and TLS 1.3 plus HTTP/2. `production-readiness.json` currently records
 No-Go; `docs/PRODUCTION_SCOPE.md` defines the exact boundary.
 
+Verification uses local preflight, public pull-request CI, and a manual
+exact-commit release-candidate gate. The public workflows do not access the
+private reference client or publish releases. See
+`docs/CI_AND_RELEASE_GATES.md`.
+
 ## Status
 
 This sanitized source snapshot is the public development starting point. It

@@ -28,6 +28,23 @@ For the narrow `v1.2.0` candidate, the named target is Ubuntu 24.04 LTS `amd64`.
 Its formal artifact and runtime evidence must come from a source-bound disposable
 target fixture. A build or run on another host OS does not create Ubuntu support.
 
+## Release-Candidate CI Artifact Check
+
+After freeze, `.github/workflows/release-candidate.yml` checks the full
+`maverick_release_commit` on one Ubuntu 24.04 `amd64` runner. It builds the
+public Maverick artifact, verifies `BUILDINFO` and `SHA256SUMS`, and writes the
+hashes to the run summary. It does not upload an artifact, create a tag, publish
+a package, or create a GitHub Release.
+
+The workflow reads the frozen ledger from its public control checkout and then
+builds the release source from a separate exact-commit checkout. This avoids the
+impossible idea that a commit can contain its own future hash. Record both the
+control commit and the frozen release commit, but tag only the approved release
+commit.
+
+This public artifact check does not build the private reference-client Debian
+package and does not replace its signed package or publication evidence.
+
 ## GitHub Release Attachment Rule
 
 Use a GitHub Pre-release for an explicitly prerelease version and a normal
@@ -131,6 +148,9 @@ Do not attach release artifacts unless these have passed for the exact commit:
 ./scripts/release-artifacts.sh
 python3 scripts/check-production-readiness.py
 ```
+
+Also require the accepted public PR result and exact-stage release-candidate CI
+record defined in `docs/CI_AND_RELEASE_GATES.md`.
 
 For a post-v1 stable-scoped release, also attach the evidence required by
 `docs/PLAN_POST_V1.md`. The completed `docs/PLAN_SHORT_TERM_TO_V1.md` and

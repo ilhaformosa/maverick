@@ -52,7 +52,7 @@ production approval separate and currently records No-Go.
 
 Work proceeds in this order:
 
-1. post-v1 plan, documentation truth, and CI economy;
+1. post-v1 plan, documentation truth, and three-layer CI;
 2. TLS/H2 fingerprint and active-probe measurement baseline;
 3. backward-compatible H2 connection reuse;
 4. browser TLS correctness and evidence gate;
@@ -82,7 +82,7 @@ hosts, or claim that later code was covered by the running evidence.
 | 7 | accepted | direct H2 remains the v1.x default, CDN WebSocket stays explicit, and handshake-layer work is gated to v2 research |
 | 8 | Phase 3 bounded safety, package lifecycle, and sustained gate accepted; maturation gates active | Phase 2 IPv4 evidence is accepted. Exact reference commit `2978aa0` retains the accepted installed traffic, route-isolation, failure, package-lifecycle, signing, purge, and zero-residue evidence. SDK commit `0511522` and reference-client runtime commit `2f46f18` form the integrated sustained candidate with stricter IPC/recovery, credential policy, packet-FD coverage, deterministic APT snapshot tooling, and per-interface compatibility handling. One corrected formal eight-hour run is accepted with 481 aligned resource/route samples, 97 complete probe cycles, stable product processes, zero restarts, bounded resources, exact route isolation, and zero runtime residue. A duplicate formal run is not required merely as insurance. Production credential-root, power loss, broader transition/leak, package publication, and daily-use gates remain open; IPv6 is unscheduled |
 
-## 1. Planning Truth And CI Economy
+## 1. Planning Truth And CI Layers
 
 Deliverables:
 
@@ -92,19 +92,23 @@ Deliverables:
 - mark the old v1 release train as completed history;
 - keep active contributor reading paths short while retaining historical
   evidence;
-- remove duplicate GitHub Actions work;
-- run H3, ECH, and shape-lab jobs only when relevant files change or when a full
-  manual run is requested;
+- use local preflight, one public PR result, and one exact release-candidate
+  gate as separate layers;
+- run H3, ECH, shape-lab, and browser-TLS jobs only when relevant files change;
+- keep release-candidate CI single-platform and checks-only, with an exact
+  frozen commit input;
 - keep weekly supply-chain and parser-fuzz workflows;
-- keep the local pre-commit harness broader than ordinary CI.
+- keep the private reference-client outside public workflows and import only
+  accepted redacted evidence.
 
 Exit gate:
 
 - one canonical post-v1 plan exists;
 - current status and roadmap link to it;
-- normal CI still runs format, Clippy, tests, conformance, fuzz smoke, config
-  checks, and hygiene without running conformance/fuzz twice;
-- explicit manual full CI remains available;
+- public PR CI still runs format, Clippy, tests, conformance, fuzz smoke, config
+  checks, and hygiene without a meaningless platform/toolchain matrix;
+- release-candidate CI reruns the exact frozen public source plus dependency and
+  artifact gates without publishing anything;
 - documentation and release evidence are not deleted.
 
 ## 2. Measurement Baseline

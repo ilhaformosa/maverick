@@ -172,7 +172,11 @@ bash -n \
 "$python_bin" scripts/test-approved-vm-s2-runners.py
 "$python_bin" scripts/test-browser-tls-baseline.py
 "$python_bin" scripts/check-browser-tls-baseline.py
-./scripts/docs-hygiene.sh
+if [[ "${MAVERICK_SKIP_DOCS_HYGIENE:-0}" != "1" ]]; then
+  ./scripts/docs-hygiene.sh
+fi
+"$python_bin" scripts/test-ci-gates.py
+"$python_bin" scripts/check-ci-gates.py
 "$python_bin" scripts/test-s2-evidence-collect.py
 "$python_bin" scripts/test-s2-evidence-cleanup.py
 "$python_bin" scripts/test-s2-evidence-audit.py

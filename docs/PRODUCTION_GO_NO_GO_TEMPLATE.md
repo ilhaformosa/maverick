@@ -20,6 +20,8 @@ or private infrastructure data.
 - Client package name/version/platform/architecture and SHA-256:
 - Release/artifact signature verification:
 - Candidate freeze record date:
+- Public PR CI result:
+- Release-candidate CI stage, run identity, and control commit:
 
 ## Required Inputs
 

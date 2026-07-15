@@ -59,7 +59,7 @@ current decision is No-Go.
 
 The detailed gates are in `docs/PLAN_POST_V1.md`:
 
-- M1: planning truth and budget-aware CI;
+- M1: planning truth and three-layer public CI;
 - M2: reproducible fingerprint and active-probe measurement;
 - M3: backward-compatible H2 connection reuse;
 - M4: browser TLS correctness and evidence;

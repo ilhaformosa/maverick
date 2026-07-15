@@ -63,6 +63,18 @@ wire format, package trust, or security claims require a written decision and a
 matching update to `production-readiness.json`. Residual security risks follow
 `docs/AUDIT_REMEDIATION_POLICY.md`; release pressure is not risk acceptance.
 
+## CI And Candidate Dispatch
+
+The public PR gate may run normally for every contribution. The manual
+release-candidate workflow requires a coordinator-approved frozen commit and
+stage. A workflow result does not authorize a push, tag, package publication,
+GitHub Release, scope expansion, audit-complete state, or production Go.
+
+The public workflow covers only Maverick public source. The private
+reference-client project keeps its own compute and evidence policy; this project
+imports only accepted redacted hashes and summaries. See
+`docs/CI_AND_RELEASE_GATES.md`.
+
 ## Release Labels
 
 - `experimental`: feature or design work outside the stable scope.

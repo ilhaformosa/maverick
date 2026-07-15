@@ -96,15 +96,19 @@
       "required": true,
       "paths": [
         "docs/HARNESS_ENGINEERING.md",
+        "docs/CI_AND_RELEASE_GATES.md",
         "scripts/local-harness.sh",
+        "scripts/check-ci-gates.py",
+        "scripts/ci-change-scope.py",
         "scripts/h3-harness.sh",
         "scripts/ech-harness.sh",
         "scripts/conformance.sh",
         "scripts/approved-vm-detached-tcp-longhaul.sh",
         "scripts/approved-vm-failure-injection-smoke.sh",
-        ".github/workflows/ci.yml"
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-candidate.yml"
       ],
-      "notes": "Local, CI, and approved-host verification entry points."
+      "notes": "Local preflight, public PR CI, checks-only release-candidate CI, and approved-host verification entry points."
     },
     {
       "id": "audit_process_and_decision_inputs",

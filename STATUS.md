@@ -43,6 +43,10 @@ machine-readable result in `production-readiness.json` is currently No-Go.
   engineering diagnostics, not anonymity guarantees.
 - Local-only harness, conformance checks, fuzz smoke, hygiene scans, and
   loopback integration tests.
+- Three-layer verification is defined: local preflight, a change-scoped public
+  PR gate, and a manual exact-commit release-candidate gate. The candidate gate
+  is checks-only and does not tag, publish, or access the private reference
+  client.
 - Optional `tun-runtime` Phase 1 packet adapter with pinned `smoltcp 0.13.1`,
   caller-supplied packet I/O, experimental dual-stack TCP plus bounded DNS/UDP
   mapping,
@@ -72,6 +76,9 @@ machine-readable result in `production-readiness.json` is currently No-Go.
 - Formal Ubuntu 24.04 LTS `amd64` platform evidence must come from a source-bound
   disposable target fixture; results from a physical host with another OS do not
   satisfy that gate.
+- No release-candidate workflow result exists until a coordinator-approved
+  frozen commit is manually dispatched. An Ubuntu Actions runner is not a
+  substitute for the target fixture and private package evidence.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS

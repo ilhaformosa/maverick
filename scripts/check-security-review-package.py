@@ -20,6 +20,8 @@ REQUIRED_GROUPS = {
     "audit_process_and_decision_inputs",
 }
 REQUIRED_ARTIFACTS = {
+    ".github/workflows/release-candidate.yml",
+    "docs/CI_AND_RELEASE_GATES.md",
     "docs/history/review/S3_REVIEW_HANDOFF_2026_07_08.md",
     "docs/history/review/S3_FINDINGS_TRIAGE_TEMPLATE_2026_07_08.md",
     "docs/INDEPENDENT_AUDIT_PACKAGE.md",

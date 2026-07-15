@@ -137,6 +137,13 @@ prerequisites are in `docs/RELEASE_GATES_V1_2.md`. A tag is not authorized by a
 document change or elapsed time. It requires coordinator approval and a passing
 ledger state for that stage.
 
+Before any `v1.2.0` train tag, record the accepted
+`public-pr-ci / public-pr-gate` result and the manual `release-candidate-ci` run
+for the exact `maverick_release_commit` and stage. The workflow is checks-only;
+it does not create or authorize the tag. The control/ledger commit may be newer
+than the frozen release commit and must be recorded separately rather than
+tagged by mistake.
+
 ## Stable Tags
 
 The completed `v1.0.0` tag passed the S4 gate recorded in
@@ -159,6 +166,7 @@ git status --short --branch
 ./scripts/security-dependency-inventory.sh
 ./scripts/release-artifacts.sh
 python3 scripts/check-production-readiness.py
+# verify the accepted public PR and exact-stage release-candidate CI records
 git tag -s vX.Y.Z -m "Maverick vX.Y.Z"
 git push origin vX.Y.Z
 ```

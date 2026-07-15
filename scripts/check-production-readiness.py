@@ -34,9 +34,22 @@ V1_2_SOFTWARE = re.compile(r"^1\.2\.0(?:-[0-9A-Za-z.-]+)?$")
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("ledger", nargs="?", default="production-readiness.json", type=Path)
+    parser.add_argument("--expected-release-commit")
+    parser.add_argument("--release-stage", choices=RELEASES)
     args = parser.parse_args()
 
-    result = check_ledger_file(args.ledger)
+    if bool(args.expected_release_commit) != bool(args.release_stage):
+        parser.error("--expected-release-commit and --release-stage must be used together")
+
+    with args.ledger.open("r", encoding="utf-8") as handle:
+        ledger = json.load(handle)
+    result = check_ledger(ledger, args.ledger.parent)
+    if args.expected_release_commit and args.release_stage:
+        check_release_candidate_request(
+            ledger,
+            args.expected_release_commit,
+            args.release_stage,
+        )
     print(
         "production readiness ledger OK: "
         f"{result['candidate_status']}, {result['decision']} "
@@ -48,6 +61,57 @@ def check_ledger_file(ledger_path: Path) -> dict[str, int | str]:
     with ledger_path.open("r", encoding="utf-8") as handle:
         ledger = json.load(handle)
     return check_ledger(ledger, ledger_path.parent)
+
+
+def check_release_candidate_request(
+    ledger: dict[str, Any], expected_release_commit: str, release_stage: str
+) -> None:
+    if not HEX40.fullmatch(expected_release_commit):
+        raise AssertionError("release-candidate CI requires a full lowercase release commit")
+    if release_stage not in RELEASES:
+        raise AssertionError("release-candidate CI received an unknown release stage")
+
+    candidate = require_mapping(ledger, "candidate")
+    if candidate.get("status") != "frozen":
+        raise AssertionError("release-candidate CI requires a frozen candidate")
+    if candidate.get("maverick_release_commit") != expected_release_commit:
+        raise AssertionError("release-candidate CI commit must match maverick_release_commit")
+
+    versions = require_mapping(candidate, "versions")
+    if versions.get("software") != release_stage.removeprefix("v"):
+        raise AssertionError("release-candidate CI stage must match the software version")
+
+    dimensions = require_mapping(ledger, "dimensions")
+    complete = {
+        name
+        for name in DIMENSIONS
+        if isinstance(dimensions.get(name), dict)
+        and dimensions[name].get("status") == "complete"
+    }
+    audit = require_mapping(ledger, "audit")
+    prerequisites = {
+        "v1.2.0-alpha.1": "code_complete" in complete,
+        "v1.2.0-beta.1": "evidence_complete" in complete,
+        "v1.2.0-rc.1": {"audit_complete", "deployable"}.issubset(complete)
+        and audit.get("remediation_complete") is True,
+        # The stable candidate CI result is an input to the final GO decision,
+        # so it must be runnable while production_ready is still blocked.
+        "v1.2.0": {
+            "code_complete",
+            "evidence_complete",
+            "audit_complete",
+            "deployable",
+        }.issubset(complete)
+        and audit.get("remediation_complete") is True,
+    }
+    if not prerequisites[release_stage]:
+        raise AssertionError(f"{release_stage}: release-candidate CI prerequisites are incomplete")
+
+    release_gates = require_mapping(ledger, "release_gates")
+    stage_index = RELEASES.index(release_stage)
+    earlier = RELEASES[:stage_index]
+    if any(release_gates.get(stage) != "pass" for stage in earlier):
+        raise AssertionError("release-candidate CI requires every earlier release stage to pass")
 
 
 def check_ledger(ledger: dict[str, Any], repo_root: Path) -> dict[str, int | str]:

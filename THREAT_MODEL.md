@@ -80,6 +80,12 @@ egress policy blocks common internal and metadata ranges, but operators should
 treat broad authenticated egress as sensitive and avoid disabling those blocks
 without a deployment-specific reason.
 
+GitHub-hosted public CI and its pinned third-party actions are a source-build
+trust boundary. Workflows use read-only repository permissions and do not retain
+checkout credentials. They receive no private reference-client or infrastructure
+secret and cannot publish a release. A passing public runner is regression input,
+not formal target-platform evidence, audit independence, or production approval.
+
 ## Abuse Boundaries
 
 This repository is for legal privacy, secure communication, connectivity

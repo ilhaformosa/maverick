@@ -42,6 +42,15 @@ Use this checklist for experimental releases and internal milestones.
   recovery-journal, and platform-plan versions separately.
 - Confirm formal Ubuntu 24.04 LTS `amd64` evidence came from a source-bound
   disposable target fixture, not from a physical host running another OS.
+- Confirm the three layers in `docs/CI_AND_RELEASE_GATES.md`: local preflight,
+  `public-pr-ci / public-pr-gate`, and an accepted exact-commit
+  `release-candidate-ci` run for the requested stage.
+- Confirm the release-candidate workflow used the ledger's full
+  `maverick_release_commit`. Record the workflow control commit separately; a
+  later ledger/control-record commit must not be confused with release source.
+- Do not dispatch release-candidate CI until the coordinator approves the
+  frozen inputs. A passing run does not authorize a tag, package publication,
+  or GitHub Release.
 
 ## Safety
 
@@ -95,6 +104,13 @@ Confirm:
   maintainer, and earlier scoped review input is not called the formal audit;
 - public maintainer identity, `noreply` email privacy, commit/tag signatures,
   and staged privacy checks follow `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`.
+- public PR CI uses one Ubuntu 24.04 lane plus only change-relevant experimental
+  jobs; release-candidate CI uses one exact-source lane rather than a support
+  matrix;
+- public workflows do not clone the private reference client or contain private
+  host, address, provider, account, path, credential, or raw-evidence data;
+- an Ubuntu Actions result is not relabeled as formal supported-platform
+  evidence without the source-bound fixture and exact private package gates.
 
 `cargo-geiger` was evaluated for unsafe-code inventory, but the current local
 tooling repeatedly fails to parse `signal-hook-registry 1.4.8` in this

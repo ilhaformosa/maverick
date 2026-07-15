@@ -157,3 +157,15 @@ unsafe inventory tool, but the current local version does not complete
 reliably on this workspace because it fails to parse
 `signal-hook-registry 1.4.8`; use the script above as the active gate and
 re-evaluate `cargo-geiger` after the toolchain or dependency graph changes.
+
+## Public CI Boundary
+
+Public pull-request and release-candidate workflows use read-only permissions,
+full action revision pins, and checkout with persisted credentials disabled.
+They require no deployment, package-publication, private-host, or private
+reference-client secret. The release-candidate workflow builds and checks an
+exact public commit but cannot push, tag, upload a package, or create a release.
+
+Treat public runner logs as public. Never add private aliases, addresses,
+provider/account data, credentials, raw runtime evidence, or exploit details to
+workflow inputs or output. See `docs/CI_AND_RELEASE_GATES.md`.

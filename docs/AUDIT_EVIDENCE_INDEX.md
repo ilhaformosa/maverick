@@ -14,6 +14,7 @@ results.
 | operations | `docs/OPERATIONS.md`, `docs/INCIDENT_RESPONSE.md`, `SUPPORT.md` | operator process, not runtime proof |
 | keys | `docs/CREDENTIAL_ROTATION.md`, `docs/KEY_LIFECYCLE.md` | rotation and recovery process |
 | release | `RELEASE_CHECKLIST.md`, `docs/RELEASE_GATES_V1_2.md`, `docs/RELEASE_ARTIFACTS.md` | release rules, not released artifacts |
+| CI | `docs/CI_AND_RELEASE_GATES.md`, `.github/workflows/ci.yml`, `.github/workflows/release-candidate.yml` | public-source checks, not private package or platform proof |
 | audit process | `docs/INDEPENDENT_AUDIT_PACKAGE.md`, `docs/AUDIT_REMEDIATION_POLICY.md` | reviewer and finding rules |
 | prior review | `security-review-package.json`, `docs/history/review/` | historical review input only |
 | public cutover | `docs/OPEN_SOURCE_CUTOVER_AUDIT_2026_07_16.md` | history/privacy cutover only |
@@ -22,6 +23,10 @@ The separate reference-client review input must include its public threat model,
 packaging gate, credential-root gate, package-publication gate, sustained gate,
 transition/process-recovery gate definitions, and power-loss gate definition at
 the exact frozen commit.
+
+Public Actions results may be used for public Maverick source and artifact
+checks. They must not be presented as reference-client build evidence, formal
+Ubuntu fixture evidence, independent audit evidence, or production approval.
 
 ## Phase 3-B Candidate Input Contract
 

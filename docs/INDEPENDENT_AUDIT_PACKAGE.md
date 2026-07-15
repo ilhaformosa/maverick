@@ -57,6 +57,7 @@ Do not start the formal audit until every value below is present and verified:
 | reference package | package name, version, architecture, size, SHA-256, signature result |
 | release versions | software, protocol, Auth v1, Auth v2, config, IPC, journal/recovery |
 | evidence tools | runner, collector, analyzer, cleanup, verifier hashes |
+| public CI | accepted PR gate plus exact release-candidate run identity and control commit |
 | Phase 3-A input | coordinator-accepted manifest SHA-256 and redacted summaries |
 | Phase 3-B input | coordinator-accepted candidate manifest SHA-256 and redacted summaries |
 | known risks | open blockers, accepted residual risks, excluded features |
@@ -72,6 +73,8 @@ different operating-system release cannot be used as Ubuntu support evidence.
 
 1. Verify the frozen source, dependency locks, artifacts, signatures, and input
    manifests before reviewing behavior.
+   Confirm that the public release-candidate run built the ledger's release
+   commit rather than the newer control-record commit.
 2. Review the two threat models and build one combined attack-path list for the
    server, client, privileged helper, package, credential root, and repository.
 3. Reproduce local and loopback gates from clean checkouts. Do not change the

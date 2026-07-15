@@ -7,6 +7,16 @@ All stages use the narrow scope in `docs/PRODUCTION_SCOPE.md`. Every tag require
 coordinator approval, a clean exact commit, local verification, artifact privacy,
 and versions not previously used in the private history.
 
+Every stage also follows `docs/CI_AND_RELEASE_GATES.md`:
+
+- the exact change passes local preflight and `public-pr-ci / public-pr-gate`;
+- after freeze, the coordinator dispatches `release-candidate-ci` with the full
+  `maverick_release_commit` and exact stage;
+- the accepted run identity and checksums enter the coordinator record before
+  the stage is marked passed;
+- the workflow does not tag, publish, or replace private reference-client or
+  target-fixture evidence.
+
 ## `v1.2.0-alpha.1`
 
 Purpose: first public frozen-source and package candidate.
@@ -19,6 +29,7 @@ Required:
 - `code_complete` is complete in `production-readiness.json`;
 - both local harnesses, dependency/source/license/unsafe gates, package build,
   checksum, signature, privacy, and smoke checks pass for exact artifacts;
+- public PR CI and exact-commit release-candidate CI pass;
 - the scope, non-claims, compatibility, migration, and known blockers are in the
   release notes;
 - release is marked Pre-release and not Latest.
@@ -69,6 +80,9 @@ Purpose: first public stable release for the named narrow production scope.
 Required:
 
 - all RC requirements pass for the exact stable candidate;
+- stable release-candidate CI passes while the final production decision is
+  still No-Go; the owner uses that accepted result as an input to the final
+  ledger transition;
 - every published RC artifact is re-downloaded and independently verified;
 - all five readiness dimensions are complete;
 - the final record based on `docs/PRODUCTION_GO_NO_GO_TEMPLATE.md` says `GO` and

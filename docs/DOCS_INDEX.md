@@ -37,6 +37,8 @@ available without being part of the everyday reading path.
   residual-risk rules.
 - `docs/PRODUCTION_GO_NO_GO_TEMPLATE.md` and `docs/RELEASE_GATES_V1_2.md`:
   final decision template and alpha/beta/RC/stable prerequisites.
+- `docs/CI_AND_RELEASE_GATES.md`: local preflight, public PR CI, exact frozen
+  candidate CI, and the private reference-client boundary.
 - `MAINTAINERS.md`, `.github/CODEOWNERS`, and
   `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`: public ownership and identity,
   email-privacy, and signature policy.
@@ -108,6 +110,8 @@ Active protocol/release inputs:
 - `security-review-package.json`;
 - `production-readiness.json` plus
   `scripts/check-production-readiness.py`;
+- `.github/workflows/ci.yml`, `.github/workflows/release-candidate.yml`, and
+  `scripts/check-ci-gates.py`;
 - `spikes/tun-engine-comparison/` plus
   `scripts/check-tun-engine-comparison.py`;
 - Phase 1 packet-runtime source/docs plus

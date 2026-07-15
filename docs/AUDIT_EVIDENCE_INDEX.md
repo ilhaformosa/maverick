@@ -48,7 +48,7 @@ The coordinator-accepted Phase 3-B manifest must provide:
 - every unresolved blocker and a candidate recommendation.
 
 The formal supported-platform evidence must be produced in a source-bound
-disposable Ubuntu 24.04 LTS `amd64` VM or fixture. A different physical host may
+disposable Ubuntu 26.04 LTS `amd64` VM or fixture. A different physical host may
 exercise orchestration or isolation tooling, but its operating-system result is
 not accepted as Ubuntu target-platform evidence.
 

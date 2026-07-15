@@ -24,17 +24,18 @@ MAVERICK_RELEASE_VERSION=X.Y.Z ./scripts/release-artifacts.sh
 
 Only publish targets that were built and smoke-tested for that release.
 
-For the narrow `v1.2.0` candidate, the named target is Ubuntu 24.04 LTS `amd64`.
+For the narrow `v1.2.0` candidate, the named target is Ubuntu 26.04 LTS `amd64`.
 Its formal artifact and runtime evidence must come from a source-bound disposable
 target fixture. A build or run on another host OS does not create Ubuntu support.
 
 ## Release-Candidate CI Artifact Check
 
 After freeze, `.github/workflows/release-candidate.yml` checks the full
-`maverick_release_commit` on one Ubuntu 24.04 `amd64` runner. It builds the
-public Maverick artifact, verifies `BUILDINFO` and `SHA256SUMS`, and writes the
-hashes to the run summary. It does not upload an artifact, create a tag, publish
-a package, or create a GitHub Release.
+`maverick_release_commit` on one `ubuntu-24.04` Actions runner. That runner is
+public CI infrastructure, not the formal target. The job builds the public
+Maverick artifact, verifies `BUILDINFO` and `SHA256SUMS`, and writes the hashes
+plus the separate Ubuntu 26.04 target boundary to the run summary. It does not
+upload an artifact, create a tag, publish a package, or create a GitHub Release.
 
 The workflow reads the frozen ledger from its public control checkout and then
 builds the release source from a separate exact-commit checkout. This avoids the

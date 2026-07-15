@@ -9,7 +9,7 @@ The narrow production candidate is `maverick-linux-h2-ipv4-v1`:
 
 - `maverick` CLI-managed server;
 - packaged `maverick-reference-client` Linux client/service;
-- Ubuntu 24.04 LTS `amd64` only;
+- Ubuntu 26.04 LTS `amd64` only;
 - IPv4 only;
 - TLS 1.3 plus HTTP/2 as the default carrier;
 - explicit config files owned by the operator;
@@ -19,7 +19,7 @@ The narrow production candidate is `maverick-linux-h2-ipv4-v1`:
 The candidate is not frozen, independently audited, deployable, or
 production-ready. Exact scope and non-claims are in `docs/PRODUCTION_SCOPE.md`.
 Formal target-platform evidence must come from a source-bound disposable Ubuntu
-24.04 LTS `amd64` VM or fixture. Results from a physical host with another OS
+26.04 LTS `amd64` VM or fixture. Results from a physical host with another OS
 release do not satisfy the supported-platform gate.
 
 For development and pre-release harness work, prefer loopback tests or a

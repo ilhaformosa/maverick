@@ -77,14 +77,14 @@ The planned first public line keeps these versions separate:
 These planned version strings identify the next stage. They do not freeze its
 commits, SDK pin, package hash, evidence, or approval.
 
-The supported-platform candidate is Ubuntu 24.04 LTS `amd64`, IPv4, with the
+The supported-platform candidate is Ubuntu 26.04 LTS `amd64`, IPv4, with the
 default TLS 1.3 plus HTTP/2 path. Its reference client must pin the exact
 Maverick SDK commit recorded separately from the Maverick release commit. A
 public documentation-only commit after that SDK commit does not silently change
 the pin or transfer runtime evidence.
 
 Other host operating systems may run local or isolation checks, but only a
-source-bound disposable Ubuntu 24.04 fixture can satisfy the candidate platform
+source-bound disposable Ubuntu 26.04 fixture can satisfy the candidate platform
 gate. No cross-distribution, cross-architecture, IPv6, H3, GUI, or mobile
 compatibility promise is made.
 

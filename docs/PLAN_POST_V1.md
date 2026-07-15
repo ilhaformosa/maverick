@@ -39,11 +39,11 @@ plan.
 
 Phase 3-C defines only one achievable production-claim target:
 `maverick-linux-h2-ipv4-v1`. It combines the `maverick` server/CLI and the
-`maverick-reference-client` Debian package on Ubuntu 24.04 LTS `amd64`, IPv4,
+`maverick-reference-client` Debian package on Ubuntu 26.04 LTS `amd64`, IPv4,
 using the stable TLS 1.3 plus HTTP/2 path.
 
 This target is not frozen or approved. Formal supported-platform evidence must
-come from a source-bound disposable Ubuntu 24.04 target fixture. Results from a
+come from a source-bound disposable Ubuntu 26.04 target fixture. Results from a
 physical host running another OS cannot be relabeled as Ubuntu evidence.
 `production-readiness.json` keeps code, evidence, audit, deployability, and
 production approval separate and currently records No-Go.

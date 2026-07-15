@@ -29,13 +29,13 @@
     "server_artifact": "maverick",
     "client_package": "maverick-reference-client",
     "package_format": "deb",
-    "platform": "Ubuntu 24.04 LTS",
+    "platform": "Ubuntu 26.04 LTS",
     "architecture": "amd64",
     "address_family": "IPv4",
     "carrier": "TLS 1.3 + HTTP/2",
     "formal_evidence_fixture": {
       "kind": "disposable_vm",
-      "platform": "Ubuntu 24.04 LTS",
+      "platform": "Ubuntu 26.04 LTS",
       "architecture": "amd64",
       "source_bound_required": true,
       "physical_host_substitution_allowed": false

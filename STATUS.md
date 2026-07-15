@@ -16,7 +16,7 @@ Do not describe Maverick as audited, production-ready, anonymous,
 censorship-resistant, browser-fingerprint-equivalent, or standardized.
 
 The pre-freeze production claim candidate is
-`maverick-linux-h2-ipv4-v1`: Ubuntu 24.04 LTS `amd64`, IPv4, the `maverick`
+`maverick-linux-h2-ipv4-v1`: Ubuntu 26.04 LTS `amd64`, IPv4, the `maverick`
 server/CLI, the `maverick-reference-client` Debian service package, and the
 stable TLS 1.3 plus HTTP/2 path. It is a target, not a completed claim. The
 machine-readable result in `production-readiness.json` is currently No-Go.
@@ -77,7 +77,7 @@ machine-readable result in `production-readiness.json` is currently No-Go.
   now reports that planned software version, but the candidate is not frozen:
   its Maverick release commit, Maverick SDK commit, reference-client commit,
   SDK pin, package hash, and accepted evidence are not recorded.
-- Formal Ubuntu 24.04 LTS `amd64` platform evidence must come from a source-bound
+- Formal Ubuntu 26.04 LTS `amd64` platform evidence must come from a source-bound
   disposable target fixture; results from a physical host with another OS do not
   satisfy that gate.
 - No release-candidate workflow result exists until a coordinator-approved

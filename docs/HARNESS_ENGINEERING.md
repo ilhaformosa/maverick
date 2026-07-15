@@ -119,7 +119,8 @@ GitHub Actions may run the full public checks needed for the change:
 - optional selection uses the base commit's classifier, and the final gate
   rejects a selected job that was skipped or an unselected job that ran;
 - one manual release-candidate job reruns the exact frozen source plus
-  dependency and artifact checks on Ubuntu 24.04;
+  dependency and artifact checks on an `ubuntu-24.04` CI runner, which is not
+  formal Ubuntu 26.04 target evidence;
 - there is no operating-system or Rust-version matrix without a matching
   support claim.
 

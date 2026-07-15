@@ -33,8 +33,9 @@ proxy, DNS, routes, firewall, VPN, or interfaces.
 - `public-pr-gate` requires every selected optional job to succeed and every
   unselected optional job to be skipped; a selected job that is skipped fails
   the gate;
-- jobs use Ubuntu 24.04 and a single stable Rust toolchain, with no platform or
-  version matrix;
+- jobs use an `ubuntu-24.04` CI runner image and one stable Rust toolchain, with
+  no platform or version matrix; this runner choice is not a product-support
+  claim;
 - permissions are read-only, checkout credentials are not retained, and no
   repository or infrastructure secret is required.
 
@@ -57,7 +58,7 @@ The operator supplies:
   `v1.2.0`.
 
 The workflow first checks the public control record and then checks out the
-release commit into a separate directory. One Ubuntu 24.04 `amd64` job:
+release commit into a separate directory. One `ubuntu-24.04` CI runner job:
 
 1. verifies the ledger binding, release-stage order, separate version fields,
    and reference-client SDK pin evidence;
@@ -96,11 +97,13 @@ publication, and residue evidence remain Phase 3-A/3-B inputs.
 
 ## Ubuntu Evidence Boundary
 
-Using an `ubuntu-24.04` Actions runner catches public-source platform problems,
-but it does not by itself establish the formal supported-platform claim. Formal
-evidence must still come from the source-bound disposable Ubuntu 24.04 LTS
-`amd64` VM or fixture defined in `docs/PRODUCTION_SCOPE.md`, including the exact
-private package and accepted lifecycle evidence.
+Using an `ubuntu-24.04` Actions runner catches public-source portability
+problems, but it is only CI infrastructure and does not establish the formal
+supported-platform claim. Formal evidence must come from the source-bound
+disposable Ubuntu 26.04 LTS `amd64` VM or fixture defined in
+`docs/PRODUCTION_SCOPE.md`, including the exact private package and accepted
+lifecycle evidence. An Actions result bound to Ubuntu 24.04 must never be
+relabeled as Ubuntu 26.04 target-platform evidence.
 
 Approved test systems may be rebuilt or destroyed by their authorized owner,
 but aliases, addresses, provider data, regions, account details, raw logs, and

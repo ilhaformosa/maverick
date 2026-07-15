@@ -70,9 +70,11 @@ machine-readable result in `production-readiness.json` is currently No-Go.
 ## Not Ready
 
 - No formal independent security audit has been completed.
-- The production candidate is not frozen. Its Maverick release commit, Maverick
-  SDK commit, reference-client commit, SDK pin, package hash, and separate
-  software/package/protocol/auth/config/IPC/recovery versions are not recorded.
+- The planned candidate identity is release train `1.2.0`, tag
+  `v1.2.0-alpha.1`, Maverick and reference-client software
+  `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. The candidate is not
+  frozen: its Maverick release commit, Maverick SDK commit, reference-client
+  commit, SDK pin, package hash, and accepted evidence are not recorded.
 - Formal Ubuntu 24.04 LTS `amd64` platform evidence must come from a source-bound
   disposable target fixture; results from a physical host with another OS do not
   satisfy that gate.

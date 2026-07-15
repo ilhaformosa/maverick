@@ -13,9 +13,12 @@ or private infrastructure data.
 - Maverick SDK commit:
 - Reference-client commit:
 - Reference-client SDK pin and verification evidence:
-- Software version:
-- Protocol/Auth/config versions:
-- Helper IPC/recovery versions:
+- Release train and release tag:
+- Maverick software version:
+- Reference-client software version:
+- Debian package version:
+- Protocol, Auth v1, Auth v2, and config versions:
+- Helper IPC, recovery journal, and platform-plan versions:
 - Server artifact name and SHA-256:
 - Client package name/version/platform/architecture and SHA-256:
 - Release/artifact signature verification:

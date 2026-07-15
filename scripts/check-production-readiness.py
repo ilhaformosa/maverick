@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -28,7 +29,28 @@ REQUIRED_NON_CLAIMS = {
 }
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-V1_2_SOFTWARE = re.compile(r"^1\.2\.0(?:-[0-9A-Za-z.-]+)?$")
+RELEASE_IDENTITIES = {
+    "v1.2.0-alpha.1": {
+        "maverick_software": "1.2.0-alpha.1",
+        "reference_software": "1.2.0-alpha.1",
+        "debian_package": "1.2.0~alpha.1-1",
+    },
+    "v1.2.0-beta.1": {
+        "maverick_software": "1.2.0-beta.1",
+        "reference_software": "1.2.0-beta.1",
+        "debian_package": "1.2.0~beta.1-1",
+    },
+    "v1.2.0-rc.1": {
+        "maverick_software": "1.2.0-rc.1",
+        "reference_software": "1.2.0-rc.1",
+        "debian_package": "1.2.0~rc.1-1",
+    },
+    "v1.2.0": {
+        "maverick_software": "1.2.0",
+        "reference_software": "1.2.0",
+        "debian_package": "1.2.0-1",
+    },
+}
 
 
 def main() -> None:
@@ -41,8 +63,7 @@ def main() -> None:
     if bool(args.expected_release_commit) != bool(args.release_stage):
         parser.error("--expected-release-commit and --release-stage must be used together")
 
-    with args.ledger.open("r", encoding="utf-8") as handle:
-        ledger = json.load(handle)
+    ledger = load_json_strict(args.ledger)
     result = check_ledger(ledger, args.ledger.parent)
     if args.expected_release_commit and args.release_stage:
         check_release_candidate_request(
@@ -58,9 +79,22 @@ def main() -> None:
 
 
 def check_ledger_file(ledger_path: Path) -> dict[str, int | str]:
-    with ledger_path.open("r", encoding="utf-8") as handle:
-        ledger = json.load(handle)
+    ledger = load_json_strict(ledger_path)
     return check_ledger(ledger, ledger_path.parent)
+
+
+def load_json_strict(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle, object_pairs_hook=reject_duplicate_json_keys)
+
+
+def reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise AssertionError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
 
 
 def check_release_candidate_request(
@@ -78,8 +112,13 @@ def check_release_candidate_request(
         raise AssertionError("release-candidate CI commit must match maverick_release_commit")
 
     versions = require_mapping(candidate, "versions")
-    if versions.get("software") != release_stage.removeprefix("v"):
-        raise AssertionError("release-candidate CI stage must match the software version")
+    if versions.get("release_tag") != release_stage:
+        raise AssertionError("release-candidate CI stage must match release_tag")
+    for field, expected in RELEASE_IDENTITIES[release_stage].items():
+        if versions.get(field) != expected:
+            raise AssertionError(
+                f"release-candidate CI {release_stage} requires {field} {expected!r}"
+            )
 
     dimensions = require_mapping(ledger, "dimensions")
     complete = {
@@ -193,8 +232,23 @@ def check_candidate(candidate: dict[str, Any], status: str, repo_root: Path) -> 
     for key, value in expected_versions.items():
         if versions.get(key) != value:
             raise AssertionError(f"candidate version {key} must be {value!r}")
-    if set(versions) != {*expected_versions, "software", "reference_package"}:
+    identity_fields = {
+        "release_tag",
+        "maverick_software",
+        "reference_software",
+        "debian_package",
+    }
+    if set(versions) != {*expected_versions, *identity_fields}:
         raise AssertionError("candidate versions must list every required version separately")
+
+    release_tag = versions["release_tag"]
+    if release_tag not in RELEASES:
+        raise AssertionError("candidate release_tag must name a v1.2.0 release stage")
+    for key, value in RELEASE_IDENTITIES[release_tag].items():
+        if versions[key] != value:
+            raise AssertionError(
+                f"candidate release identity {key} must be {value!r} for {release_tag}"
+            )
 
     commits = (
         candidate.get("maverick_release_commit"),
@@ -210,11 +264,11 @@ def check_candidate(candidate: dict[str, Any], status: str, repo_root: Path) -> 
                 *commits,
                 package_hash,
                 candidate.get("sdk_pin_evidence_path"),
-                versions["software"],
-                versions["reference_package"],
             )
         ):
-            raise AssertionError("an unfrozen candidate must not carry frozen hashes")
+            raise AssertionError(
+                "an unfrozen candidate must not carry commits, hashes, or SDK evidence"
+            )
         if candidate.get("sdk_pin_verified") is not False:
             raise AssertionError("an unfrozen candidate cannot claim SDK pin verification")
         return
@@ -228,12 +282,6 @@ def check_candidate(candidate: dict[str, Any], status: str, repo_root: Path) -> 
     check_paths([sdk_pin_evidence], "candidate.sdk_pin_evidence_path", repo_root, allow_empty=False)
     if not isinstance(package_hash, str) or not HEX64.fullmatch(package_hash):
         raise AssertionError("a frozen candidate requires the package SHA-256")
-    package_version = versions.get("reference_package")
-    if not isinstance(package_version, str) or not package_version:
-        raise AssertionError("a frozen candidate requires a reference package version")
-    software_version = versions.get("software")
-    if not isinstance(software_version, str) or not V1_2_SOFTWARE.fullmatch(software_version):
-        raise AssertionError("a frozen candidate requires a v1.2.0 software version")
 
 
 def check_scope(scope: dict[str, Any], repo_root: Path) -> None:
@@ -427,8 +475,22 @@ def check_paths(raw_paths: Any, field: str, repo_root: Path, *, allow_empty: boo
         path = PurePosixPath(raw_path)
         if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
             raise AssertionError(f"{field} contains unsafe path {raw_path!r}")
-        if not (repo_root / path).is_file():
+        actual = repo_root / path
+        current = repo_root
+        for part in path.parts:
+            current /= part
+            if current.is_symlink():
+                raise AssertionError(f"{field} contains symlink path {raw_path!r}")
+        try:
+            mode = actual.lstat().st_mode
+        except FileNotFoundError:
             raise AssertionError(f"{field} references missing file {raw_path!r}")
+        if not stat.S_ISREG(mode):
+            raise AssertionError(f"{field} must reference an actual regular file {raw_path!r}")
+        try:
+            actual.resolve(strict=True).relative_to(repo_root.resolve(strict=True))
+        except (OSError, ValueError):
+            raise AssertionError(f"{field} resolves outside the repository {raw_path!r}")
 
 
 def require_mapping(mapping: dict[str, Any], key: str) -> dict[str, Any]:

@@ -44,6 +44,9 @@ commit.
 
 This public artifact check does not build the private reference-client Debian
 package and does not replace its signed package or publication evidence.
+For the planned alpha, its software version is `1.2.0-alpha.1` and its Debian
+package version is `1.2.0~alpha.1-1`; the exact package hash remains a separate
+freeze input.
 
 ## GitHub Release Attachment Rule
 

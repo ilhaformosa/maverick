@@ -38,8 +38,12 @@ Use this checklist for experimental releases and internal milestones.
 - Keep Maverick release commit, Maverick SDK commit, reference-client commit,
   and reference-client SDK pin separate. Verify the pin equals the ledger's SDK
   commit.
-- Record software, package, protocol, Auth v1, Auth v2, config, helper IPC,
-  recovery-journal, and platform-plan versions separately.
+- Record release train, release tag, Maverick software, reference-client
+  software, Debian package, protocol, Auth v1, Auth v2, config, helper IPC,
+  recovery-journal, and platform-plan versions separately. For the first
+  candidate they are `1.2.0`, `v1.2.0-alpha.1`, `1.2.0-alpha.1`,
+  `1.2.0-alpha.1`, and `1.2.0~alpha.1-1` before the independent numeric
+  protocol/configuration versions.
 - Confirm formal Ubuntu 24.04 LTS `amd64` evidence came from a source-bound
   disposable target fixture, not from a physical host running another OS.
 - Confirm the three layers in `docs/CI_AND_RELEASE_GATES.md`: local preflight,

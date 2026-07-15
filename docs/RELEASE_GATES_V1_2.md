@@ -23,6 +23,9 @@ Purpose: first public frozen-source and package candidate.
 
 Required:
 
+- the ledger records release train `1.2.0`, release tag
+  `v1.2.0-alpha.1`, Maverick and reference-client software
+  `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1` as separate fields;
 - coordinator records the exact frozen Maverick release, Maverick SDK, and
   reference-client commits, and verifies the reference-client SDK pin against
   the Phase 3-B accepted public summary;

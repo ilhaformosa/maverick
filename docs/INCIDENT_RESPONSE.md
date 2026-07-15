@@ -27,7 +27,8 @@ Security finding severity and release effect follow
 ## First Response
 
 - Assign an incident ID and UTC start time.
-- Record the exact software, package, config, protocol, and artifact hashes.
+- Record the exact release tag, Maverick software, reference-client software,
+  Debian package, config, protocol, and artifact hashes.
 - Stop publication and promotion when package or signing trust may be affected.
 - Preserve minimal redacted logs, metrics, package metadata, and configuration
   hashes before cleanup or rollback.

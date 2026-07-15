@@ -55,6 +55,11 @@ another OS. `production-readiness.json` separately tracks code-complete,
 evidence-complete, audit-complete, deployable, and production-ready states; the
 current decision is No-Go.
 
+Its planned identity is release train `1.2.0`, release tag
+`v1.2.0-alpha.1`, Maverick and reference-client software
+`1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. Those names do not
+freeze commits, the SDK pin, a package hash, evidence, or approval.
+
 ## Active Milestones
 
 The detailed gates are in `docs/PLAN_POST_V1.md`:

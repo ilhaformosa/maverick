@@ -61,12 +61,15 @@ release commit into a separate directory. One Ubuntu 24.04 `amd64` job:
 
 1. verifies the ledger binding, release-stage order, separate version fields,
    and reference-client SDK pin evidence;
-2. verifies that the exact source commit and Cargo software version match the
+2. requires the ledger release tag to equal the requested stage;
+3. requires both software versions to equal the tag without `v`, and requires
+   the exact Debian mapping for alpha, beta, RC, or stable;
+4. verifies that the exact source commit and Cargo software version match the
    requested stage;
-3. reruns the local harness because the frozen release commit can differ from
+5. reruns the local harness because the frozen release commit can differ from
    the pull-request merge test commit;
-4. runs dependency, source, license, and first-party unsafe-code gates;
-5. builds the public Maverick `x86_64-unknown-linux-gnu` artifact and verifies
+6. runs dependency, source, license, and first-party unsafe-code gates;
+7. builds the public Maverick `x86_64-unknown-linux-gnu` artifact and verifies
    `BUILDINFO` plus `SHA256SUMS`.
 
 The workflow does not tag, push, upload a package, publish a release, or mark a

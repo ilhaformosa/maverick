@@ -72,6 +72,11 @@ The candidate is not frozen. Phase 3-A and Phase 3-B inputs are missing, and no
 formal independent production audit is complete. The current result is
 therefore **No-Go**.
 
+The planned first-stage identity is release train `1.2.0`, tag
+`v1.2.0-alpha.1`, Maverick and reference-client software
+`1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. Version names are a
+plan; they are not commit, SDK-pin, package-hash, evidence, or approval freeze.
+
 `production-readiness.json` is the machine-readable source for these states.
 Run `python3 scripts/check-production-readiness.py` after every change to the
 scope, gate inputs, release stages, or final decision.

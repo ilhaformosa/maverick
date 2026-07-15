@@ -132,6 +132,10 @@ The first release from sanitized public history must use a version never
 assigned in the private history. The planned first public candidate is
 `v1.2.0-alpha.1`, subject to the applicable release gates.
 
+For that stage, both Maverick and reference-client software are
+`1.2.0-alpha.1`, and the Debian package is `1.2.0~alpha.1-1`. Recording these
+planned names does not freeze a commit, SDK pin, package hash, or tag.
+
 The exact `v1.2.0-alpha.1`, `v1.2.0-beta.1`, `v1.2.0-rc.1`, and `v1.2.0`
 prerequisites are in `docs/RELEASE_GATES_V1_2.md`. A tag is not authorized by a
 document change or elapsed time. It requires coordinator approval and a passing

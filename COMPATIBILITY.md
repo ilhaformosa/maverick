@@ -62,14 +62,20 @@ configuration migration:
 
 The planned first public line keeps these versions separate:
 
-- software version: `v1.2.0` release train;
-- reference-client Debian package version: recorded at candidate freeze;
+- release train: `1.2.0`;
+- planned release tag: `v1.2.0-alpha.1`;
+- planned Maverick software version: `1.2.0-alpha.1`;
+- planned reference-client software version: `1.2.0-alpha.1`;
+- planned reference-client Debian package version: `1.2.0~alpha.1-1`;
 - Auth v1 protocol version: `1`;
 - explicit Auth v2 protocol version: `2`;
 - config version: `1`;
 - platform-helper IPC version: `1`;
 - recovery journal version: `2`;
 - current platform plan version: `3`.
+
+These planned version strings identify the next stage. They do not freeze its
+commits, SDK pin, package hash, evidence, or approval.
 
 The supported-platform candidate is Ubuntu 24.04 LTS `amd64`, IPv4, with the
 default TLS 1.3 plus HTTP/2 path. Its reference client must pin the exact

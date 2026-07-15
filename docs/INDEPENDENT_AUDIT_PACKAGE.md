@@ -55,7 +55,7 @@ Do not start the formal audit until every value below is present and verified:
 | reference-client source | full public commit hash |
 | server/CLI artifact | name, target, size, SHA-256, signature result |
 | reference package | package name, version, architecture, size, SHA-256, signature result |
-| release versions | software, protocol, Auth v1, Auth v2, config, IPC, journal/recovery |
+| release versions | release train/tag, Maverick software, reference-client software, Debian package, protocol, Auth v1/v2, config, helper IPC, recovery journal, platform plan |
 | evidence tools | runner, collector, analyzer, cleanup, verifier hashes |
 | public CI | accepted PR gate plus exact release-candidate run identity and control commit |
 | Phase 3-A input | coordinator-accepted manifest SHA-256 and redacted summaries |

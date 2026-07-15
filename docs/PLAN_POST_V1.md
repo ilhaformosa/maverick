@@ -48,6 +48,11 @@ physical host running another OS cannot be relabeled as Ubuntu evidence.
 `production-readiness.json` keeps code, evidence, audit, deployability, and
 production approval separate and currently records No-Go.
 
+The planned first-stage identity is release train `1.2.0`, release tag
+`v1.2.0-alpha.1`, Maverick and reference-client software
+`1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. These planned names do
+not freeze commits, the SDK pin, a package hash, evidence, or approval.
+
 ## Execution Order
 
 Work proceeds in this order:
@@ -449,6 +454,10 @@ The sanitized public repository does not recreate these private historical
 tags. Its first release must use a previously unused version; the planned
 first public candidate is `v1.2.0-alpha.1` after its applicable gates pass.
 See `docs/PUBLIC_HISTORY_BOUNDARY.md`.
+
+The ledger accepts the same exact software/tag/package mapping for beta, RC,
+and stable while a future stage is still planned but not frozen. Version names
+and freeze evidence remain separate.
 
 ## v1.1 Candidate And Stable Gate
 

@@ -11,8 +11,10 @@
     "reference_package_sha256": null,
     "versions": {
       "release_train": "1.2.0",
-      "software": null,
-      "reference_package": null,
+      "release_tag": "v1.2.0-alpha.1",
+      "maverick_software": "1.2.0-alpha.1",
+      "reference_software": "1.2.0-alpha.1",
+      "debian_package": "1.2.0~alpha.1-1",
       "protocol": 1,
       "auth_v1": 1,
       "auth_v2": 2,

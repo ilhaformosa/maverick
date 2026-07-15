@@ -34,8 +34,9 @@ The coordinator-accepted Phase 3-B manifest must provide:
 
 - full Maverick release, Maverick SDK, and reference-client commit hashes, plus
   proof that the reference-client SDK pin equals the recorded SDK commit;
-- software, protocol, Auth v1, Auth v2, config, helper IPC, and recovery-journal
-  versions as separate fields;
+- release train, release tag, Maverick software, reference-client software,
+  Debian package, protocol, Auth v1, Auth v2, config, helper IPC,
+  recovery-journal, and platform-plan versions as separate fields;
 - package name, version, format, architecture, platform, artifact size, SHA-256,
   OpenSSH release-signature result, and public signer fingerprint;
 - local harness, dependency, license, source, unsafe-code, privacy, and

@@ -51,6 +51,79 @@ class CIGateTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "forbidden design tokens"):
                 checker.check_ci_design(repo)
 
+    def test_pr_core_cannot_be_made_conditional(self) -> None:
+        with copied_gate_repo() as repo:
+            path = repo / ".github" / "workflows" / "ci.yml"
+            text = path.read_text(encoding="utf-8").replace(
+                "  core:\n    runs-on:",
+                "  core:\n    needs: change-scope\n"
+                "    if: needs.change-scope.outputs.core == 'true'\n"
+                "    runs-on:",
+                1,
+            )
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "forbidden|unconditional"):
+                checker.check_ci_design(repo)
+
+    def test_pr_classifier_must_come_from_base_commit(self) -> None:
+        with copied_gate_repo() as repo:
+            path = repo / ".github" / "workflows" / "ci.yml"
+            text = path.read_text(encoding="utf-8").replace(
+                'git show "${BASE_SHA}:scripts/ci-change-scope.py" >"$classifier"',
+                "cp scripts/ci-change-scope.py \"$classifier\"",
+                1,
+            )
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "missing required design tokens"):
+                checker.check_ci_design(repo)
+
+    def test_valid_required_and_optional_results_are_accepted(self) -> None:
+        checker.check_pr_gate_results(
+            "success",
+            "success",
+            "success",
+            {
+                "h3": ("true", "success"),
+                "ech": ("false", "skipped"),
+            },
+        )
+
+    def test_selected_job_skipped_is_rejected(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "requires success, got skipped"):
+            checker.check_pr_gate_results(
+                "success",
+                "success",
+                "success",
+                {"malicious-or-wrong-classifier": ("true", "skipped")},
+            )
+
+    def test_unselected_job_running_is_rejected(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "requires skipped, got success"):
+            checker.check_pr_gate_results(
+                "success",
+                "success",
+                "success",
+                {"h3": ("false", "success")},
+            )
+
+    def test_required_core_skipped_is_rejected(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "core must succeed"):
+            checker.check_pr_gate_results(
+                "success",
+                "success",
+                "skipped",
+                {"h3": ("false", "skipped")},
+            )
+
+    def test_invalid_selected_value_is_rejected(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "invalid selected value"):
+            checker.check_pr_gate_results(
+                "success",
+                "success",
+                "success",
+                {"h3": ("", "skipped")},
+            )
+
 
 class copied_gate_repo:
     def __enter__(self) -> Path:

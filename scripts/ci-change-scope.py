@@ -8,7 +8,7 @@ import sys
 from collections.abc import Iterable
 
 
-SCOPES = ("core", "h3", "ech", "shape", "browser")
+SCOPES = ("h3", "ech", "shape", "browser")
 EXISTING_OPTIONAL_SCOPES = ("h3", "ech", "shape")
 
 
@@ -21,8 +21,6 @@ def classify(paths: Iterable[str]) -> dict[str, bool]:
 
     result = {scope: False for scope in SCOPES}
     for path in normalized:
-        if affects_core(path):
-            result["core"] = True
         if affects_all_optional_jobs(path):
             for scope in EXISTING_OPTIONAL_SCOPES:
                 result[scope] = True
@@ -35,14 +33,6 @@ def classify(paths: Iterable[str]) -> dict[str, bool]:
         if affects_browser(path):
             result["browser"] = True
     return result
-
-
-def affects_core(path: str) -> bool:
-    return not (
-        path.endswith(".md")
-        or path.startswith(".github/ISSUE_TEMPLATE/")
-        or path == ".github/CODEOWNERS"
-    )
 
 
 def affects_all_optional_jobs(path: str) -> bool:
@@ -130,7 +120,7 @@ def affects_browser(path: str) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--all", action="store_true", help="enable every PR job")
+    parser.add_argument("--all", action="store_true", help="enable every optional job")
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args()
 

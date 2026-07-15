@@ -15,7 +15,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
-      core: ${{ steps.scope.outputs.core }}
       h3: ${{ steps.scope.outputs.h3 }}
       ech: ${{ steps.scope.outputs.ech }}
       shape: ${{ steps.scope.outputs.shape }}
@@ -30,12 +29,19 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
         run: |
+          classifier="$RUNNER_TEMP/ci-change-scope.py"
           if [[ -z "$BASE_SHA" ]] || \
              ! git cat-file -e "${BASE_SHA}^{commit}"; then
-            python3 scripts/ci-change-scope.py --all >>"$GITHUB_OUTPUT"
+            for scope in h3 ech shape browser; do
+              echo "$scope=true" >>"$GITHUB_OUTPUT"
+            done
+          elif ! git show "${BASE_SHA}:scripts/ci-change-scope.py" >"$classifier"; then
+            for scope in h3 ech shape browser; do
+              echo "$scope=true" >>"$GITHUB_OUTPUT"
+            done
           else
             git diff --name-only "$BASE_SHA" "$HEAD_SHA" | \
-              python3 scripts/ci-change-scope.py >>"$GITHUB_OUTPUT"
+              python3 "$classifier" >>"$GITHUB_OUTPUT"
           fi
 
   docs-hygiene:
@@ -48,8 +54,6 @@ jobs:
       - run: ./scripts/docs-hygiene.sh
 
   core:
-    needs: change-scope
-    if: needs.change-scope.outputs.core == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -180,18 +184,45 @@ jobs:
           SCOPE_RESULT: ${{ needs.change-scope.result }}
           DOCS_RESULT: ${{ needs.docs-hygiene.result }}
           CORE_RESULT: ${{ needs.core.result }}
+          H3_SELECTED: ${{ needs.change-scope.outputs.h3 }}
           H3_RESULT: ${{ needs.h3-harness.result }}
+          ECH_SELECTED: ${{ needs.change-scope.outputs.ech }}
           ECH_RESULT: ${{ needs.ech-harness.result }}
+          SHAPE_SELECTED: ${{ needs.change-scope.outputs.shape }}
           SHAPE_RESULT: ${{ needs.shape-lab-smoke.result }}
+          BROWSER_SELECTED: ${{ needs.change-scope.outputs.browser }}
           BROWSER_RESULT: ${{ needs.browser-tls-harness.result }}
         run: |
-          for result in \
-            "$SCOPE_RESULT" "$DOCS_RESULT" "$CORE_RESULT" "$H3_RESULT" \
-            "$ECH_RESULT" "$SHAPE_RESULT" "$BROWSER_RESULT"; do
-            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
-              echo "selected PR job did not pass: $result" >&2
+          require_success() {
+            local label="$1"
+            local result="$2"
+            if [[ "$result" != "success" ]]; then
+              echo "$label must succeed, got: $result" >&2
               exit 1
             fi
-          done
-          [[ "$SCOPE_RESULT" == "success" ]]
-          [[ "$DOCS_RESULT" == "success" ]]
+          }
+          require_optional_result() {
+            local label="$1"
+            local selected="$2"
+            local result="$3"
+            local expected
+            case "$selected" in
+              true) expected="success" ;;
+              false) expected="skipped" ;;
+              *)
+                echo "$label has invalid selected value: $selected" >&2
+                exit 1
+                ;;
+            esac
+            if [[ "$result" != "$expected" ]]; then
+              echo "$label selected=$selected requires $expected, got: $result" >&2
+              exit 1
+            fi
+          }
+          require_success "change-scope" "$SCOPE_RESULT"
+          require_success "docs-hygiene" "$DOCS_RESULT"
+          require_success "core" "$CORE_RESULT"
+          require_optional_result "h3-harness" "$H3_SELECTED" "$H3_RESULT"
+          require_optional_result "ech-harness" "$ECH_SELECTED" "$ECH_RESULT"
+          require_optional_result "shape-lab-smoke" "$SHAPE_SELECTED" "$SHAPE_RESULT"
+          require_optional_result "browser-tls-harness" "$BROWSER_SELECTED" "$BROWSER_RESULT"

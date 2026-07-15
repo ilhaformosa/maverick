@@ -106,19 +106,18 @@ Before pushing, run:
 ./scripts/local-harness.sh
 ```
 
-This is the default pre-commit gate. Public CI reuses it for code-affecting pull
-requests, while a separate docs job avoids making prose-only changes compile the
-workspace. `MAVERICK_SKIP_DOCS_HYGIENE=1` is reserved for that public CI job
-because the same workflow has already run the standalone docs gate.
+This is the default pre-commit gate. Public CI reuses it for every pull request.
+`MAVERICK_SKIP_DOCS_HYGIENE=1` is reserved for that public core job because the
+same workflow always runs the standalone docs gate.
 
 GitHub Actions may run the full public checks needed for the change:
 
-- every pull request runs documentation hygiene and the stable required
-  `public-pr-gate` result;
-- Rust, config, conformance, script, workflow, and machine-metadata changes run
-  the core local harness once;
+- every pull request runs documentation hygiene, the core local harness, and the
+  stable required `public-pr-gate` result;
 - H3, ECH, shape-lab, and browser-TLS jobs run only when their relevant inputs
   change;
+- optional selection uses the base commit's classifier, and the final gate
+  rejects a selected job that was skipped or an unselected job that ran;
 - one manual release-candidate job reruns the exact frozen source plus
   dependency and artifact checks on Ubuntu 24.04;
 - there is no operating-system or Rust-version matrix without a matching

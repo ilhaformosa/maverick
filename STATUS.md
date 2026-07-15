@@ -43,10 +43,10 @@ machine-readable result in `production-readiness.json` is currently No-Go.
   engineering diagnostics, not anonymity guarantees.
 - Local-only harness, conformance checks, fuzz smoke, hygiene scans, and
   loopback integration tests.
-- Three-layer verification is defined: local preflight, a change-scoped public
-  PR gate, and a manual exact-commit release-candidate gate. The candidate gate
-  is checks-only and does not tag, publish, or access the private reference
-  client.
+- Three-layer verification is defined: local preflight, a public PR gate with
+  unconditional core/docs jobs and path-scoped optional jobs, and a manual
+  exact-commit release-candidate gate. The candidate gate is checks-only and
+  does not tag, publish, or access the private reference client.
 - Optional `tun-runtime` Phase 1 packet adapter with pinned `smoltcp 0.13.1`,
   caller-supplied packet I/O, experimental dual-stack TCP plus bounded DNS/UDP
   mapping,

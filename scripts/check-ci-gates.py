@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -33,16 +34,40 @@ def check_ci_design(repo: Path) -> None:
         (
             "name: public-pr-ci",
             "pull_request:",
-            "core: ${{ steps.scope.outputs.core }}",
+            'git show "${BASE_SHA}:scripts/ci-change-scope.py" >"$classifier"',
             "MAVERICK_SKIP_DOCS_HYGIENE: \"1\"",
             "public-pr-gate:",
+            "H3_SELECTED: ${{ needs.change-scope.outputs.h3 }}",
+            "ECH_SELECTED: ${{ needs.change-scope.outputs.ech }}",
+            "SHAPE_SELECTED: ${{ needs.change-scope.outputs.shape }}",
+            "BROWSER_SELECTED: ${{ needs.change-scope.outputs.browser }}",
+            'require_success "docs-hygiene" "$DOCS_RESULT"',
+            'require_success "core" "$CORE_RESULT"',
+            'require_optional_result "h3-harness" "$H3_SELECTED" "$H3_RESULT"',
+            'require_optional_result "ech-harness" "$ECH_SELECTED" "$ECH_RESULT"',
+            'require_optional_result "shape-lab-smoke" "$SHAPE_SELECTED" "$SHAPE_RESULT"',
+            'require_optional_result "browser-tls-harness" "$BROWSER_SELECTED" "$BROWSER_RESULT"',
             "runs-on: ubuntu-24.04",
         ),
         "public PR CI",
     )
-    reject_all(pr, ("workflow_dispatch:", "strategy:", "matrix:"), "public PR CI")
+    reject_all(
+        pr,
+        (
+            "workflow_dispatch:",
+            "strategy:",
+            "matrix:",
+            "if: needs.change-scope.outputs.core",
+            "for result in",
+        ),
+        "public PR CI",
+    )
     if pr.count("./scripts/local-harness.sh") != 1:
         raise AssertionError("public PR CI must run the local harness exactly once")
+    for job_name in ("docs-hygiene", "core"):
+        block = workflow_job(pr, job_name)
+        if re.search(r"^    (?:if|needs):", block, flags=re.MULTILINE):
+            raise AssertionError(f"public PR CI job {job_name} must be unconditional")
 
     require_all(
         candidate,
@@ -92,6 +117,42 @@ def check_ci_design(repo: Path) -> None:
         ),
         "local preflight",
     )
+
+
+def check_pr_gate_results(
+    scope_result: str,
+    docs_result: str,
+    core_result: str,
+    optional_results: dict[str, tuple[str, str]],
+) -> None:
+    for label, result in (
+        ("change-scope", scope_result),
+        ("docs-hygiene", docs_result),
+        ("core", core_result),
+    ):
+        if result != "success":
+            raise AssertionError(f"{label} must succeed, got {result!r}")
+
+    for label, (selected, result) in optional_results.items():
+        if selected == "true":
+            expected = "success"
+        elif selected == "false":
+            expected = "skipped"
+        else:
+            raise AssertionError(f"{label} has invalid selected value {selected!r}")
+        if result != expected:
+            raise AssertionError(
+                f"{label} selected={selected} requires {expected}, got {result}"
+            )
+
+
+def workflow_job(text: str, name: str) -> str:
+    marker = f"\n  {name}:\n"
+    if marker not in text:
+        raise AssertionError(f"public PR CI is missing job {name}")
+    remainder = text.split(marker, 1)[1]
+    next_job = re.search(r"^  [a-zA-Z0-9_-]+:\n", remainder, flags=re.MULTILINE)
+    return remainder[: next_job.start()] if next_job else remainder
 
 
 def require_all(text: str, tokens: tuple[str, ...], label: str) -> None:

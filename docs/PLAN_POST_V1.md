@@ -105,8 +105,9 @@ Exit gate:
 
 - one canonical post-v1 plan exists;
 - current status and roadmap link to it;
-- public PR CI still runs format, Clippy, tests, conformance, fuzz smoke, config
-  checks, and hygiene without a meaningless platform/toolchain matrix;
+- every public PR runs format, Clippy, tests, conformance, fuzz smoke, config
+  checks, and docs hygiene; only feature-specific jobs are path-selected, with
+  no meaningless platform/toolchain matrix;
 - release-candidate CI reruns the exact frozen public source plus dependency and
   artifact gates without publishing anything;
 - documentation and release evidence are not deleted.

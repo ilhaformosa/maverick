@@ -25,22 +25,23 @@ proxy, DNS, routes, firewall, VPN, or interfaces.
 
 `.github/workflows/ci.yml` runs automatically for every public pull request:
 
-- documentation hygiene always runs;
-- the core harness runs when code, config, workflow, script, or machine metadata
-  changes;
+- documentation hygiene and the core harness always run and must both succeed;
 - H3, ECH, shape-lab, and browser-TLS jobs run only when their own inputs
   change;
-- `public-pr-gate` is the one required result that collects selected job
-  outcomes;
+- the path classifier is loaded from the pull request's base commit, not from
+  the proposed tree, so a pull request cannot weaken its own classification;
+- `public-pr-gate` requires every selected optional job to succeed and every
+  unselected optional job to be skipped; a selected job that is skipped fails
+  the gate;
 - jobs use Ubuntu 24.04 and a single stable Rust toolchain, with no platform or
   version matrix;
 - permissions are read-only, checkout credentials are not retained, and no
   repository or infrastructure secret is required.
 
 A feature-specific job is not wasteful duplication: it exercises behavior the
-core harness does not cover. Running the same generic suite across unsupported
-systems or many Rust versions would not establish a supported product claim, so
-that matrix is intentionally absent.
+always-running core harness does not cover. Running the same generic suite
+across unsupported systems or many Rust versions would not establish a
+supported product claim, so that matrix is intentionally absent.
 
 Scheduled supply-chain and parser-fuzz workflows remain maintenance signals.
 They do not replace the pull-request gate or a frozen-candidate result.
@@ -110,7 +111,7 @@ already enabled.
 
 | change | required CI |
 | --- | --- |
-| prose only | local docs/privacy preflight plus public PR gate |
+| prose only | local docs/privacy preflight plus unconditional public core/docs gate |
 | public code, config, workflow, checker, dependency, or artifact script | full local preflight plus selected public PR jobs |
 | frozen alpha/beta/RC/stable source | accepted public PR gate plus exact release-candidate CI |
 | private helper, package, credential, route, DNS, or recovery behavior | private project gates and accepted Phase 3-A/3-B evidence in addition to public gates |

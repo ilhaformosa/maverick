@@ -24,6 +24,10 @@ release must use a version that was never assigned to a pre-publication
 release. The active development line is `v1.2.0`; its first public candidate
 may use `v1.2.0-alpha.1` only after the applicable release gates pass.
 
+The later public maintainer identity and signature policy does not amend or
+replace the neutral sanitized root or the accepted cutover audit commit. Both
+remain immutable public-history facts.
+
 ## Evidence And Compatibility
 
 Historical exact-commit evidence remains scoped to the historical commit it

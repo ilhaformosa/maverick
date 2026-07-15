@@ -14,6 +14,12 @@ Experimental Rust privacy proxy protocol; public main targets v1.2.0 and is not 
 Do not describe Maverick as audited, production-ready, anonymous,
 censorship-resistant, browser-fingerprint-equivalent, or standardized.
 
+The pre-freeze production claim candidate is
+`maverick-linux-h2-ipv4-v1`: Ubuntu 24.04 LTS `amd64`, IPv4, the `maverick`
+server/CLI, the `maverick-reference-client` Debian service package, and the
+stable TLS 1.3 plus HTTP/2 path. It is a target, not a completed claim. The
+machine-readable result in `production-readiness.json` is currently No-Go.
+
 ## Working Now
 
 - Local SOCKS5, DNS, HTTP CONNECT, TCP relay, and SOCKS5 UDP ASSOCIATE over
@@ -37,6 +43,10 @@ censorship-resistant, browser-fingerprint-equivalent, or standardized.
   engineering diagnostics, not anonymity guarantees.
 - Local-only harness, conformance checks, fuzz smoke, hygiene scans, and
   loopback integration tests.
+- Three-layer verification is defined: local preflight, a public PR gate with
+  unconditional core/docs jobs and path-scoped optional jobs, and a manual
+  exact-commit release-candidate gate. The candidate gate is checks-only and
+  does not tag, publish, or access the private reference client.
 - Optional `tun-runtime` Phase 1 packet adapter with pinned `smoltcp 0.13.1`,
   caller-supplied packet I/O, experimental dual-stack TCP plus bounded DNS/UDP
   mapping,
@@ -60,6 +70,17 @@ censorship-resistant, browser-fingerprint-equivalent, or standardized.
 ## Not Ready
 
 - No formal independent security audit has been completed.
+- The planned candidate identity is release train `1.2.0`, tag
+  `v1.2.0-alpha.1`, Maverick and reference-client software
+  `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. The candidate is not
+  frozen: its Maverick release commit, Maverick SDK commit, reference-client
+  commit, SDK pin, package hash, and accepted evidence are not recorded.
+- Formal Ubuntu 24.04 LTS `amd64` platform evidence must come from a source-bound
+  disposable target fixture; results from a physical host with another OS do not
+  satisfy that gate.
+- No release-candidate workflow result exists until a coordinator-approved
+  frozen commit is manually dispatched. An Ubuntu Actions runner is not a
+  substitute for the target fixture and private package evidence.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS
@@ -90,6 +111,9 @@ censorship-resistant, browser-fingerprint-equivalent, or standardized.
 5. Mature the implemented experimental Linux CLI/service reference client
    through sustained, repeated-use, transition/leak, process-recovery,
    power-loss, credential-root, and package-publication evidence.
+6. Keep the production ledger at No-Go until candidate freeze, accepted Phase
+   3-A/3-B inputs, an independent audit, deployability, and final approval all
+   exist for the same hashes.
 
 See `docs/PLAN_POST_V1.md` for the governing execution order,
 `docs/PUBLIC_HISTORY_BOUNDARY.md` for the repository-history boundary, and

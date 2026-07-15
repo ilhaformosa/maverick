@@ -5,13 +5,22 @@ production-ready security product by itself.
 
 ## Deployment Scope
 
-The first stable-scope target is:
+The narrow production candidate is `maverick-linux-h2-ipv4-v1`:
 
-- CLI-managed client and server;
+- `maverick` CLI-managed server;
+- packaged `maverick-reference-client` Linux client/service;
+- Ubuntu 24.04 LTS `amd64` only;
+- IPv4 only;
 - TLS 1.3 plus HTTP/2 as the default carrier;
 - explicit config files owned by the operator;
 - loopback-only local client listeners by default;
 - no native server-side ECH claim.
+
+The candidate is not frozen, independently audited, deployable, or
+production-ready. Exact scope and non-claims are in `docs/PRODUCTION_SCOPE.md`.
+Formal target-platform evidence must come from a source-bound disposable Ubuntu
+24.04 LTS `amd64` VM or fixture. Results from a physical host with another OS
+release do not satisfy the supported-platform gate.
 
 For development and pre-release harness work, prefer loopback tests or a
 dedicated VM. Operators may intentionally configure system proxy, DNS, route,
@@ -35,6 +44,11 @@ Recommended Linux layout:
 
 Use a dedicated `maverick` service account. Do not reuse a personal shell user
 for unattended services.
+
+This layout describes the server binary. Do not manually recreate the reference
+client's privileged helper, identities, TUN, route, DNS, credential, or package
+layout from this section. Use only its exact verified signed package after the
+package gate passes.
 
 ## Certificates
 
@@ -79,6 +93,30 @@ Important counters:
 - `flow_limit_rejections`: authenticated user flow limit rejections.
 
 Do not expose the metrics listener directly to the internet.
+
+## Monitoring Readiness
+
+Before a production Go decision, record deployment-specific warning and critical
+thresholds for:
+
+- process exits, service restarts, readiness loss, and certificate expiry;
+- active connections, connection-limit and per-source-limit rejections;
+- pre-auth work, auth-rate-limit rejections, and fallback overload;
+- authenticated sessions, flow-limit rejections, and unexpected fallback ratio;
+- process memory, descriptor count, CPU, disk space, and clock health;
+- reference-client TUN/link health, route isolation, private DNS, recovery
+  journal state, package version, and credential load status.
+
+Use ratios and a known-good baseline where raw counts depend on traffic. One
+short spike is not automatically an incident, but missing samples, repeated
+restart, readiness loss, route/DNS escape, journal uncertainty, certificate
+expiry, or signature failure requires immediate investigation. Alert output must
+remain redacted and must not expose target domains, credentials, packet data, or
+private infrastructure.
+
+Monitoring is not ready until alert delivery, owner escalation, one service-
+failure drill, one credential-rotation drill, and one rollback drill are recorded
+for the frozen candidate.
 
 ## Abuse And Pressure Controls
 
@@ -154,6 +192,12 @@ Operational sequence:
 Never publish or paste generated `mv1_` secrets in issues, logs, release notes,
 or support threads.
 
+If rotation fails, stop automatic promotion, keep or restore the last valid
+credential only when it is not compromised, validate both server and client
+state, and remove partial `next` material. A compromised credential is revoked
+before overlap. Recovery and signing-key loss rules are in
+`docs/KEY_LIFECYCLE.md` and `docs/INCIDENT_RESPONSE.md`.
+
 ## Public Support Data Hygiene
 
 When reporting operational issues publicly, redact:
@@ -182,6 +226,10 @@ Before upgrade:
 ./scripts/release-artifacts.sh
 ```
 
+Also verify the exact candidate commit, artifact SHA-256, release signature,
+config backup hash, certificate state, and rollback artifact. Define the health
+check and rollback trigger before replacing the binary.
+
 On the server:
 
 ```sh
@@ -202,7 +250,19 @@ sudo systemctl restart maverick-server
 If config fields changed, keep a copy of the previous validated config and
 restore it with the binary rollback.
 
+After upgrade or rollback, verify config, service readiness, H2 connectivity,
+metrics binding, expected authentication, redacted logs, and absence of a restart
+loop. Keep the previous binary/config only for the bounded rollback window, then
+remove them safely.
+
+The reference-client Debian package uses its own signed package transaction and
+repository gates. A manual binary copy is not an equivalent substitute for its
+install, upgrade, recovery, purge, or residue evidence.
+
 ## Incident Handling
+
+The full severity, containment, recovery, signing-key, package, leak, and
+closeout process is `docs/INCIDENT_RESPONSE.md`.
 
 For suspected credential compromise:
 

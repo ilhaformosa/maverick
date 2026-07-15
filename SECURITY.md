@@ -17,6 +17,11 @@ The maintainer should acknowledge security coordination requests within
 7 calendar days when possible. Public disclosure should wait until the report is
 triaged and users have a reasonable update path.
 
+The complete private-report lifecycle is in
+`docs/SECURITY_DISCLOSURE_WORKFLOW.md`; finding severity and release effect are
+in `docs/AUDIT_REMEDIATION_POLICY.md`; incident playbooks are in
+`docs/INCIDENT_RESPONSE.md`.
+
 ## Secrets
 
 Use:
@@ -125,6 +130,11 @@ review-input gate for an RC candidate, but it is still not a formal audit,
 production sign-off, anonymity claim, censorship-resistance claim, or browser
 fingerprint-equivalence claim.
 
+The pre-freeze production audit instructions are in
+`docs/INDEPENDENT_AUDIT_PACKAGE.md`. That package has not started or completed a
+formal audit. Codex, AI, maintainer, and earlier scoped reviews cannot be used as
+the independent production sign-off.
+
 ## Pre-Release Dependency And Unsafe-Code Inventory
 
 Before a public source release, run:
@@ -147,3 +157,15 @@ unsafe inventory tool, but the current local version does not complete
 reliably on this workspace because it fails to parse
 `signal-hook-registry 1.4.8`; use the script above as the active gate and
 re-evaluate `cargo-geiger` after the toolchain or dependency graph changes.
+
+## Public CI Boundary
+
+Public pull-request and release-candidate workflows use read-only permissions,
+full action revision pins, and checkout with persisted credentials disabled.
+They require no deployment, package-publication, private-host, or private
+reference-client secret. The release-candidate workflow builds and checks an
+exact public commit but cannot push, tag, upload a package, or create a release.
+
+Treat public runner logs as public. Never add private aliases, addresses,
+provider/account data, credentials, raw runtime evidence, or exploit details to
+workflow inputs or output. See `docs/CI_AND_RELEASE_GATES.md`.

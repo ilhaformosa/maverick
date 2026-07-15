@@ -1,0 +1,11 @@
+# Public project ownership. This is review routing, not independent audit.
+* @ilhaformosa
+
+# Security, release, governance, and production-claim boundaries.
+/SECURITY.md @ilhaformosa
+/THREAT_MODEL.md @ilhaformosa
+/production-readiness.json @ilhaformosa
+/security-review-package.json @ilhaformosa
+/.github/ @ilhaformosa
+/docs/ @ilhaformosa
+/scripts/ @ilhaformosa

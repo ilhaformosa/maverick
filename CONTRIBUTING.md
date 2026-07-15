@@ -29,6 +29,18 @@ If your change touches H3/QUIC behavior, also run:
 ./scripts/h3-harness.sh
 ```
 
+Before commit or review, scan the staged diff, author/committer identity, commit
+message, and generated artifacts for private email, paths, hosts, accounts,
+infrastructure, credentials, and raw evidence. Public identity and signing rules
+are in `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`.
+
+Every public pull request runs `public-pr-ci`. Documentation hygiene always
+runs, and the core harness always runs. Only H3, ECH, shape-lab, and browser-TLS
+jobs are selected by changed paths. The stable required result is
+`public-pr-ci / public-pr-gate`. Contributors do not dispatch the separate
+release-candidate workflow; that gate requires a coordinator-approved frozen
+commit. See `docs/CI_AND_RELEASE_GATES.md`.
+
 ## Documentation Expectations
 
 - Update `CONFIG.md` for config fields.
@@ -44,3 +56,6 @@ If your change touches H3/QUIC behavior, also run:
 Do not open public issues with working exploit details or secrets. Follow
 `SECURITY.md` and contact the maintainer privately when a report could put
 users or operators at risk.
+
+A contributor, maintainer, Codex agent, or AI tool may provide review input but
+cannot label review of its own work as the independent production audit.

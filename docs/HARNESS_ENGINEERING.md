@@ -106,24 +106,26 @@ Before pushing, run:
 ./scripts/local-harness.sh
 ```
 
-This is intentionally broader than CI because it also checks generated config
-validity and scans for common repo hygiene failures. CI may stay smaller and
-faster, but the local harness is the default pre-commit gate.
+This is the default pre-commit gate. Public CI reuses it for every pull request.
+`MAVERICK_SKIP_DOCS_HYGIENE=1` is reserved for that public core job because the
+same workflow always runs the standalone docs gate.
 
-GitHub Actions usage should stay budget-aware without weakening release gates:
+GitHub Actions may run the full public checks needed for the change:
 
-- docs, issue-template, and metadata-only changes run `docs-hygiene`, a small
-  Python-only workflow;
-- Rust, config, conformance, fuzz, script, workflow, and protocol-spec changes
-  run the core `ci` job, which already includes conformance and fuzz smoke;
-- H3, ECH, and shape-lab jobs run when their relevant files change, and all run
-  for an explicit `workflow_dispatch` full pass;
-- `workflow_dispatch` remains available for an explicit full CI run before
-  risky merges, RC tags, or releases;
-- CI jobs have timeout caps so a stuck job does not burn the monthly quota.
+- every pull request runs documentation hygiene, the core local harness, and the
+  stable required `public-pr-gate` result;
+- H3, ECH, shape-lab, and browser-TLS jobs run only when their relevant inputs
+  change;
+- optional selection uses the base commit's classifier, and the final gate
+  rejects a selected job that was skipped or an unselected job that ran;
+- one manual release-candidate job reruns the exact frozen source plus
+  dependency and artifact checks on Ubuntu 24.04;
+- there is no operating-system or Rust-version matrix without a matching
+  support claim.
 
-Batch small commits when possible, and avoid manually rerunning CI unless the
-previous result was infrastructure-noisy or the rerun is needed for a gate.
+The manual release-candidate workflow must not be dispatched until the
+coordinator approves the frozen inputs. See `docs/CI_AND_RELEASE_GATES.md` for
+the exact public/private boundary.
 
 The local harness also runs `maverick experimental list` and rejects any
 experimental registry entry that becomes default-on without an explicit review.

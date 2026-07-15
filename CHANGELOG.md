@@ -6,6 +6,9 @@ production-ready release claims.
 
 ## Unreleased
 
+- Set the public workspace software version to `1.2.0-alpha.1` for the first
+  planned public candidate. This names the source version only; it does not
+  freeze a commit, create a tag, publish an artifact, or make a readiness claim.
 - Completed the sanitized public-source cutover from a single audited root,
   without importing private Git history, historical tags, releases, or Actions
   records. The cutover created no software release or production-readiness

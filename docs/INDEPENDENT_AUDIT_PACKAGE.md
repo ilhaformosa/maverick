@@ -15,7 +15,7 @@ The audit is limited to `maverick-linux-h2-ipv4-v1` from
 
 - the frozen Maverick server and SDK source;
 - the frozen `maverick-reference-client` source and signed Debian package;
-- Ubuntu 24.04 LTS `amd64`, IPv4, TLS 1.3 plus HTTP/2;
+- Ubuntu 26.04 LTS `amd64`, IPv4, TLS 1.3 plus HTTP/2;
 - authentication, replay, fallback, parser, resource, logging, and credential
   behavior;
 - privileged helper IPC, TUN ownership, route isolation, private DNS, journaled
@@ -66,7 +66,7 @@ A mismatch stops the audit. Evidence from another commit or rebuilt package may
 not be relabeled.
 
 The target-platform runtime gates must use a source-bound disposable Ubuntu
-24.04 LTS `amd64` VM or fixture. Evidence collected on a physical host with a
+26.04 LTS `amd64` VM or fixture. Evidence collected on a physical host with a
 different operating-system release cannot be used as Ubuntu support evidence.
 
 ## Reviewer Instructions

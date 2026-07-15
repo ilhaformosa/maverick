@@ -55,7 +55,7 @@ must be recorded separately at freeze as described in `COMPATIBILITY.md`.
 Adopting the packaged Linux reference client is an operator and platform
 migration, not a config-version change. Before adoption:
 
-1. confirm Ubuntu 24.04 LTS `amd64` and IPv4 are the intended target;
+1. confirm Ubuntu 26.04 LTS `amd64` and IPv4 are the intended target;
 2. verify the exact signed package and repository metadata;
 3. generate a secret-free profile and import the service credential through the
    fixed encrypted credential path;

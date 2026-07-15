@@ -44,7 +44,7 @@ Use this checklist for experimental releases and internal milestones.
   candidate they are `1.2.0`, `v1.2.0-alpha.1`, `1.2.0-alpha.1`,
   `1.2.0-alpha.1`, and `1.2.0~alpha.1-1` before the independent numeric
   protocol/configuration versions.
-- Confirm formal Ubuntu 24.04 LTS `amd64` evidence came from a source-bound
+- Confirm formal Ubuntu 26.04 LTS `amd64` evidence came from a source-bound
   disposable target fixture, not from a physical host running another OS.
 - Confirm the three layers in `docs/CI_AND_RELEASE_GATES.md`: local preflight,
   `public-pr-ci / public-pr-gate`, and an accepted exact-commit
@@ -108,13 +108,14 @@ Confirm:
   maintainer, and earlier scoped review input is not called the formal audit;
 - public maintainer identity, `noreply` email privacy, commit/tag signatures,
   and staged privacy checks follow `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`.
-- public PR CI uses one Ubuntu 24.04 lane plus only change-relevant experimental
-  jobs; release-candidate CI uses one exact-source lane rather than a support
-  matrix;
+- public PR CI uses one `ubuntu-24.04` runner lane only as public CI
+  infrastructure, plus change-relevant experimental jobs; release-candidate CI
+  uses one exact-source lane rather than a support matrix;
 - public workflows do not clone the private reference client or contain private
   host, address, provider, account, path, credential, or raw-evidence data;
-- an Ubuntu Actions result is not relabeled as formal supported-platform
-  evidence without the source-bound fixture and exact private package gates.
+- an Ubuntu 24.04 Actions result is not relabeled as formal Ubuntu 26.04
+  supported-platform evidence without the source-bound fixture and exact
+  private package gates.
 
 `cargo-geiger` was evaluated for unsafe-code inventory, but the current local
 tooling repeatedly fails to parse `signal-hook-registry 1.4.8` in this

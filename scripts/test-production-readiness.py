@@ -25,6 +25,11 @@ class ProductionReadinessTests(unittest.TestCase):
         self.assertEqual(result["candidate_status"], "not_frozen")
         self.assertEqual(result["decision"], "NO_GO")
         self.assertEqual(result["complete_dimensions"], 0)
+        self.assertEqual(ledger["scope"]["platform"], "Ubuntu 26.04 LTS")
+        self.assertEqual(
+            ledger["scope"]["formal_evidence_fixture"]["platform"],
+            "Ubuntu 26.04 LTS",
+        )
         self.assertEqual(
             ledger["candidate"]["versions"],
             {
@@ -59,6 +64,15 @@ class ProductionReadinessTests(unittest.TestCase):
         with fixture_repo() as (root, ledger):
             ledger["scope"]["non_claims"].pop()
             with self.assertRaisesRegex(AssertionError, "canonical set"):
+                checker.check_ledger(ledger, root)
+
+    def test_ubuntu_24_04_cannot_be_the_formal_target(self) -> None:
+        with fixture_repo() as (root, ledger):
+            ledger["scope"]["platform"] = "Ubuntu 24.04 LTS"
+            ledger["scope"]["formal_evidence_fixture"]["platform"] = (
+                "Ubuntu 24.04 LTS"
+            )
+            with self.assertRaisesRegex(AssertionError, "scope platform"):
                 checker.check_ledger(ledger, root)
 
     def test_go_without_complete_dimensions_is_rejected(self) -> None:

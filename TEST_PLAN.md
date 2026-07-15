@@ -109,6 +109,10 @@ firewall, VPN, interface, or other host network-service settings.
 - imported cryptographic vectors must match pinned upstream document digests
 - workflow actions use full commit pins and Cargo-installed CI tools use exact,
   locked versions
+- production-readiness tooling requires the exact Ubuntu 26.04 LTS `amd64`
+  formal platform and source-bound fixture, rejects the former Ubuntu 24.04
+  target, and keeps public `ubuntu-24.04` Actions runners labeled as CI
+  infrastructure rather than target evidence
 - source and log secrecy scans cover generic tokens, event macros, paths,
   addresses, and optional untracked private-marker input without reflecting a
   matched value; a complete credential is allowed only when it is the canonical

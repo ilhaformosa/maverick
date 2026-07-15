@@ -46,11 +46,11 @@ compatibility and release decisions.
 
 The smallest production claim Maverick may try to earn is
 `maverick-linux-h2-ipv4-v1`: the `maverick` server/CLI and
-`maverick-reference-client` Debian service package on Ubuntu 24.04 LTS `amd64`,
+`maverick-reference-client` Debian service package on Ubuntu 26.04 LTS `amd64`,
 IPv4, using TLS 1.3 plus HTTP/2.
 
 The candidate is not frozen or approved. Formal platform evidence must come from
-a source-bound disposable Ubuntu 24.04 fixture, not from a physical host running
+a source-bound disposable Ubuntu 26.04 fixture, not from a physical host running
 another OS. `production-readiness.json` separately tracks code-complete,
 evidence-complete, audit-complete, deployable, and production-ready states; the
 current decision is No-Go.

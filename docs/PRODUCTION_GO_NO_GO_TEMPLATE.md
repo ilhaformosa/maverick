@@ -17,6 +17,7 @@ or private infrastructure data.
 - Maverick software version:
 - Reference-client software version:
 - Debian package version:
+- Formal platform, architecture, fixture image, and image hash:
 - Protocol, Auth v1, Auth v2, and config versions:
 - Helper IPC, recovery journal, and platform-plan versions:
 - Server artifact name and SHA-256:

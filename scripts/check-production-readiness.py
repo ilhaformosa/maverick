@@ -19,6 +19,7 @@ DIMENSIONS = (
     "production_ready",
 )
 RELEASES = ("v1.2.0-alpha.1", "v1.2.0-beta.1", "v1.2.0-rc.1", "v1.2.0")
+FORMAL_PLATFORM = "Ubuntu 26.04 LTS"
 REQUIRED_NON_CLAIMS = {
     "no_anonymity_guarantee",
     "no_browser_fingerprint_equivalence",
@@ -290,7 +291,7 @@ def check_scope(scope: dict[str, Any], repo_root: Path) -> None:
         "server_artifact": "maverick",
         "client_package": "maverick-reference-client",
         "package_format": "deb",
-        "platform": "Ubuntu 24.04 LTS",
+        "platform": FORMAL_PLATFORM,
         "architecture": "amd64",
         "address_family": "IPv4",
         "carrier": "TLS 1.3 + HTTP/2",
@@ -302,7 +303,7 @@ def check_scope(scope: dict[str, Any], repo_root: Path) -> None:
     fixture = scope.get("formal_evidence_fixture")
     expected_fixture = {
         "kind": "disposable_vm",
-        "platform": "Ubuntu 24.04 LTS",
+        "platform": FORMAL_PLATFORM,
         "architecture": "amd64",
         "source_bound_required": True,
         "physical_host_substitution_allowed": False,

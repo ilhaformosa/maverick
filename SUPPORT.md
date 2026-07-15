@@ -23,11 +23,11 @@ support SLA.
 
 | component | candidate support target | current status |
 | --- | --- | --- |
-| `maverick` server/CLI | Ubuntu 24.04 LTS `amd64`, IPv4, TLS 1.3 + HTTP/2 | unsupported until its exact stable gate and Go decision pass |
-| `maverick-reference-client` Debian package/service | Ubuntu 24.04 LTS `amd64`, IPv4 | unsupported until its exact evidence, audit, publication, and Go gates pass |
+| `maverick` server/CLI | Ubuntu 26.04 LTS `amd64`, IPv4, TLS 1.3 + HTTP/2 | unsupported until its exact stable gate and Go decision pass |
+| `maverick-reference-client` Debian package/service | Ubuntu 26.04 LTS `amd64`, IPv4 | unsupported until its exact evidence, audit, publication, and Go gates pass |
 
 Formal target-platform evidence must be collected in a source-bound disposable
-Ubuntu 24.04 LTS `amd64` VM or fixture. Results from another host OS do not create
+Ubuntu 26.04 LTS `amd64` VM or fixture. Results from another host OS do not create
 support for Ubuntu or any additional platform. Other Linux distributions,
 architectures, containers, routers, macOS, Windows, mobile, GUI, and IPv6 are
 outside the candidate support promise.

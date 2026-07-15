@@ -14,7 +14,7 @@ The candidate contains only:
 
 - the `maverick` CLI-managed server using TLS 1.3 plus HTTP/2;
 - the `maverick-reference-client` Debian package;
-- Ubuntu 24.04 LTS on `amd64` for both installed service evidence and support;
+- Ubuntu 26.04 LTS on `amd64` for both installed service evidence and support;
 - IPv4 traffic only;
 - Auth v1 by default, with the existing explicit Auth v2 option;
 - config version 1 and the existing v1 frame format;
@@ -26,10 +26,10 @@ The release may describe only the exact package, operating-system version,
 architecture, carrier, address family, and operations path that were frozen,
 tested, independently audited, and accepted.
 
-Formal platform evidence must come from a source-bound disposable Ubuntu 24.04
+Formal platform evidence must come from a source-bound disposable Ubuntu 26.04
 LTS `amd64` VM or fixture whose image and package hashes are recorded. Evidence
 from a physical host running another operating-system release may help test the
-harness or host-isolation boundary, but it cannot satisfy the Ubuntu 24.04
+harness or host-isolation boundary, but it cannot satisfy the Ubuntu 26.04
 support gate and cannot be relabeled as target-platform evidence.
 
 ## Excluded Scope And Non-Claims

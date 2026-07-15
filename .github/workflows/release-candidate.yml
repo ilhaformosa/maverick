@@ -32,6 +32,7 @@ jobs:
     env:
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       RELEASE_STAGE: ${{ inputs.release_stage }}
+      FORMAL_TARGET_PLATFORM: Ubuntu 26.04 LTS amd64
     steps:
       - name: Check out public control record
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -121,7 +122,9 @@ jobs:
             echo
             echo "- Stage: \`$RELEASE_STAGE\`"
             echo "- Release commit: \`$CANDIDATE_SHA\`"
-            echo "- Runner: \`ubuntu-24.04\`"
+            echo "- CI runner (not formal target): \`ubuntu-24.04\`"
+            echo "- Formal target: \`$FORMAL_TARGET_PLATFORM\`"
+            echo "- Formal target evidence: separate source-bound disposable fixture required"
             echo "- Publication: none"
             echo
             echo '```text'

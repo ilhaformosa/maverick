@@ -26,6 +26,9 @@ Required:
 - the ledger records release train `1.2.0`, release tag
   `v1.2.0-alpha.1`, Maverick and reference-client software
   `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1` as separate fields;
+- the ledger scope and formal fixture policy both name Ubuntu 26.04 LTS
+  `amd64`; an Ubuntu 24.04 Actions result is CI input only and cannot satisfy
+  the target-platform gate;
 - coordinator records the exact frozen Maverick release, Maverick SDK, and
   reference-client commits, and verifies the reference-client SDK pin against
   the Phase 3-B accepted public summary;

@@ -41,6 +41,18 @@ class CIGateTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "forbidden design tokens"):
                 checker.check_ci_design(repo)
 
+    def test_release_workflow_must_name_ubuntu_26_04_formal_target(self) -> None:
+        with copied_gate_repo() as repo:
+            path = repo / ".github" / "workflows" / "release-candidate.yml"
+            text = path.read_text(encoding="utf-8").replace(
+                "FORMAL_TARGET_PLATFORM: Ubuntu 26.04 LTS amd64",
+                "FORMAL_TARGET_PLATFORM: Ubuntu 24.04 LTS amd64",
+                1,
+            )
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "missing required design tokens"):
+                checker.check_ci_design(repo)
+
     def test_pr_matrix_is_rejected(self) -> None:
         with copied_gate_repo() as repo:
             path = repo / ".github" / "workflows" / "ci.yml"

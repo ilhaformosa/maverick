@@ -1,13 +1,13 @@
 # Maverick
 
 Maverick is a Rust privacy-preserving proxy protocol prototype. The public
-source mainline is development toward `v1.2.0`. The completed
-pre-publication `v1.1.0` release is the latest narrow stable engineering
-boundary for `maverick-tls-h2-cli-v1`: CLI-managed Rust client/server, TLS 1.3
-+ HTTP/2 as the mandatory default transport, local SOCKS5/HTTP CONNECT
-inbound, TCP/DNS/UDP relay over authenticated tunnel frames, replay
-protection, resource bounds, loopback metrics, and static or reverse-proxy
-fallback.
+source mainline reports software version `1.2.0-alpha.1` while developing
+toward `v1.2.0`. The completed pre-publication `v1.1.0` release is the latest
+narrow stable engineering boundary for `maverick-tls-h2-cli-v1`: CLI-managed
+Rust client/server, TLS 1.3 + HTTP/2 as the mandatory default transport, local
+SOCKS5/HTTP CONNECT inbound, TCP/DNS/UDP relay over authenticated tunnel
+frames, replay protection, resource bounds, loopback metrics, and static or
+reverse-proxy fallback.
 
 The pre-publication `v1.1.0` release has approved-host runtime evidence,
 bounded impairment and failure-injection evidence, community/anonymous

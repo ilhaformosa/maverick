@@ -1,9 +1,10 @@
 # Maverick Status
 
-Status: public `main` is development toward `v1.2.0`. The pre-publication
-`v1.1.0` release is the latest completed stable engineering boundary for the
-compatible `maverick-tls-h2-cli-v1` scope; its private Git objects were not
-imported into public history.
+Status: public `main` is development toward `v1.2.0` and the workspace reports
+software version `1.2.0-alpha.1`. The pre-publication `v1.1.0` release is the
+latest completed stable engineering boundary for the compatible
+`maverick-tls-h2-cli-v1` scope; its private Git objects were not imported into
+public history.
 
 ## Public Description
 
@@ -72,9 +73,10 @@ machine-readable result in `production-readiness.json` is currently No-Go.
 - No formal independent security audit has been completed.
 - The planned candidate identity is release train `1.2.0`, tag
   `v1.2.0-alpha.1`, Maverick and reference-client software
-  `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. The candidate is not
-  frozen: its Maverick release commit, Maverick SDK commit, reference-client
-  commit, SDK pin, package hash, and accepted evidence are not recorded.
+  `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. The Maverick workspace
+  now reports that planned software version, but the candidate is not frozen:
+  its Maverick release commit, Maverick SDK commit, reference-client commit,
+  SDK pin, package hash, and accepted evidence are not recorded.
 - Formal Ubuntu 24.04 LTS `amd64` platform evidence must come from a source-bound
   disposable target fixture; results from a physical host with another OS do not
   satisfy that gate.

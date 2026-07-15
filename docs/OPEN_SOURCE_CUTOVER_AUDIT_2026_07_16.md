@@ -11,7 +11,7 @@ privileged test.
 The source-publication cutover is accepted.
 
 - The public history began at root commit
-  `058893f784fd3966c0ffd300ef325a54aa0e0901`.
+  `fd9073b0fa43b8c258bdf95bce846343b3c90cc2`.
 - The root tree is
   `af9f49c482149b65b6693cb1901a432e9612c5d8` and exactly matches the audited
   Phase 1 source tree.
@@ -42,6 +42,23 @@ A fresh unauthenticated clone from the public repository confirmed:
 The dependency inventory also passed for 301 Rust dependencies: no applicable
 RustSec advisory was reported, dependency policy passed, and the first-party
 `unsafe` inventory remained within its reviewed boundary.
+
+## Identity Attribution Correction
+
+On 2026-07-16, the neutral snapshot and cutover author identities were checked
+against GitHub's email-based contributor attribution. Neutral-looking
+`users.noreply.github.com` addresses had been associated with unrelated GitHub
+accounts. The history was corrected once so the two project roles use reserved
+`.invalid` addresses that cannot identify a person.
+
+The role names, commit messages, dates, root tree, and source trees were
+preserved. Commit hashes necessarily changed because Git commit hashes include
+author metadata. GitHub signatures on descendant pull-request commits could not
+be carried across the parent-hash change. At the time of correction there was
+no public tag, release, frozen candidate, or published package. The corrected
+source passed the local harness, dependency inventory, and CodeQL analysis.
+Future frozen candidate and release commits remain subject to the signature
+requirements in `docs/MAINTAINER_IDENTITY_AND_SIGNING.md`.
 
 ## Claim Boundary
 

@@ -1,6 +1,7 @@
 # Maintainer Identity And Signing Policy
 
-Status: active for new public-history work. Existing commits are not rewritten.
+Status: active for public-history work. Accepted commits are not rewritten
+except to correct a proven attribution or privacy error before a release.
 
 ## Public Identity
 
@@ -14,9 +15,16 @@ Before a public commit, verify that the staged diff, author, committer, and
 commit message contain no private email, path, host, account, or infrastructure
 string.
 
-The sanitized root and the public cutover audit commit use a neutral project
-identity. They are accepted history and must not be amended, replaced, or
-rewritten merely to apply this newer identity policy.
+The sanitized root and the public cutover audit commit use neutral project role
+names with reserved `.invalid` email addresses. A neutral role must never use a
+GitHub `noreply` address unless the project intentionally attributes the commit
+to that exact account. The two migration identities were corrected once after
+their original addresses were found to map to unrelated accounts; the semantic
+roles and source trees were preserved. That correction is recorded in
+`docs/OPEN_SOURCE_CUTOVER_AUDIT_2026_07_16.md`.
+
+These commits are now accepted history and must not be amended, replaced, or
+rewritten merely to apply a newer identity policy.
 
 ## Commit Signatures
 

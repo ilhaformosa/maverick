@@ -6,6 +6,10 @@ production-ready release claims.
 
 ## Unreleased
 
+- Completed the sanitized public-source cutover from a single audited root,
+  without importing private Git history, historical tags, releases, or Actions
+  records. The cutover created no software release or production-readiness
+  claim.
 - Defined the sanitized public-history boundary: pre-publication tags,
   releases, Actions runs, and private Git objects are not imported or
   recreated; public development continues toward a previously unused

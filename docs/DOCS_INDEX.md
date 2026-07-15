@@ -24,6 +24,8 @@ available without being part of the everyday reading path.
   contribution, and community boundaries.
 - `docs/OPEN_SOURCE_PHASE1_GO_NO_GO_2026_07_15.md`: source-publication audit
   boundary and owner gates.
+- `docs/OPEN_SOURCE_CUTOVER_AUDIT_2026_07_16.md`: accepted sanitized public
+  cutover facts, verification, and claim boundary.
 - `docs/PUBLIC_HISTORY_BOUNDARY.md`: sanitized public root, private historical
   release, tag, and evidence boundaries.
 - `docs/CAPABILITY_REPORT.md`: detailed implementation inventory.

@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "status": "approval_manifest_ready",
+  "runtime_ech_allowed": false,
+  "requires_server_tls_backend": true,
+  "requires_controlled_ech_config_source": true,
+  "requires_controlled_dns_distribution": true,
+  "requires_approved_integration_host": true,
+  "requires_fallback_policy_tests": true,
+  "requires_runtime_config_gate": true,
+  "notes": "This manifest records the native ECH runtime approval boundary. It separates completed local/Cloudflare-fronted evidence from native server-side ECH gates. It does not enable native Maverick ECH handshakes, configure DNS, contact public hosts, or claim TLS-stack readiness.",
+  "runtime_gates": [
+    {
+      "id": "client_tls_api_tracking",
+      "status": "tracked_locally",
+      "runtime_allowed": false,
+      "network_activity_allowed": false,
+      "evidence": [
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "scripts/ech-harness.sh",
+        "crates/maverick-core/src/ech.rs"
+      ],
+      "notes": "The local feature harness tracks client-side rustls ECH API names, but client API tracking alone is not runtime ECH support."
+    },
+    {
+      "id": "server_tls_backend",
+      "status": "blocked_upstream",
+      "runtime_allowed": false,
+      "network_activity_allowed": false,
+      "evidence": [
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "docs/ECH_FEATURE_GATE.md",
+        "docs/ECH_NATIVE_TLS_LIMITATION.md",
+        "crates/maverick-core/src/ech.rs",
+        "crates/maverick-server/src/server.rs"
+      ],
+      "notes": "Native Maverick runtime ECH requires server-side ECH in the server TLS backend. Maverick uses rustls, and rustls server-side ECH support remains tracked upstream."
+    },
+    {
+      "id": "ech_config_distribution",
+      "status": "blocked_native_dependency",
+      "runtime_allowed": false,
+      "network_activity_allowed": false,
+      "evidence": [
+        "docs/ECH_FEATURE_GATE.md",
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "docs/ECH_RUNTIME_PLAN.md",
+        "CONFIG.md"
+      ],
+      "notes": "Native ECHConfig source handling remains blocked until Maverick has a usable server-side ECH backend. Cloudflare edge DNS/ECH evidence is tracked separately and does not provide Maverick's native server ECHConfig."
+    },
+    {
+      "id": "controlled_dns_records",
+      "status": "completed_external",
+      "runtime_allowed": false,
+      "network_activity_allowed": false,
+      "evidence": [
+        "docs/ECH_FEATURE_GATE.md",
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/ECH_UPSTREAM_STATUS.md",
+        "TEST_PLAN.md",
+        "scripts/approved-vm-ech-edge-preflight.sh"
+      ],
+      "notes": "The controlled Cloudflare subdomain and edge-only DNS/ECH preflight are complete. This is external edge evidence only; native Maverick ECH still needs a separate server-side backend and config source."
+    },
+    {
+      "id": "approved_integration_host",
+      "status": "host_approved_no_runtime",
+      "runtime_allowed": false,
+      "network_activity_allowed": false,
+      "evidence": [
+        "docs/ECH_FEATURE_GATE.md",
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/HARNESS_ENGINEERING.md",
+        "roadmap-blockers.json"
+      ],
+      "notes": "approved-linux-vm is the approved host for ECH integration work. This approval does not allow native runtime ECH until server TLS and config-source gates pass."
+    },
+    {
+      "id": "fallback_policy_tests",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "network_activity_allowed": false,
+      "evidence": [
+        "docs/ECH_FEATURE_GATE.md",
+        "TEST_PLAN.md",
+        "crates/maverick-core/src/config.rs"
+      ],
+      "notes": "Private-mode fail-closed behavior and explicit auto-mode plain-SNI fallback policy are covered locally and must remain covered before native runtime ECH is accepted."
+    },
+    {
+      "id": "cloudflare_fronted_runtime_smoke",
+      "status": "completed_on_approved_host",
+      "runtime_allowed": false,
+      "network_activity_allowed": false,
+      "evidence": [
+        "docs/ECH_RUNTIME_PLAN.md",
+        "docs/INTEROP_MATRIX.md",
+        "scripts/approved-vm-ech-cloudflare-fronted-runtime-smoke.sh",
+        "crates/maverick-client/src/tunnel.rs"
+      ],
+      "notes": "The Cloudflare-fronted WebSocket runtime smoke passed on approved hosts. This is useful edge-fronted evidence but does not enable native Maverick server-side ECH."
+    },
+    {
+      "id": "runtime_config_acceptance",
+      "status": "deferred_runtime_gate",
+      "runtime_allowed": false,
+      "network_activity_allowed": false,
+      "evidence": [
+        "docs/ECH_FEATURE_GATE.md",
+        "CONFIG.md",
+        "crates/maverick-core/src/config.rs"
+      ],
+      "notes": "Runtime config must continue to reject native experimental ECH until server TLS, config source, controlled DNS, integration, and fallback-policy gates pass."
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[package]
+name = "maverick-smoltcp-comparison"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+etherparse = "=0.20.3"
+smoltcp = { version = "=0.13.1", default-features = false, features = [
+  "std",
+  "medium-ip",
+  "proto-ipv4",
+  "proto-ipv4-fragmentation",
+  "proto-ipv6",
+  "proto-ipv6-fragmentation",
+  "socket-tcp",
+  "socket-tcp-reno",
+  "socket-udp",
+] }
+
+[workspace]

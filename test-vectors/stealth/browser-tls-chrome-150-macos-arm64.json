@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "browser_tls_reference",
+  "generated_at_utc": "2026-07-09T19:48:29.539961Z",
+  "implementation_git_revision": "7169e2009587",
+  "target": {
+    "browser_family": "Google Chrome",
+    "browser_version": "150.0.7871.115",
+    "browser_mode": "headless",
+    "platform": "macOS arm64"
+  },
+  "safety_scope": "loopback listeners and OS-assigned ephemeral ports only",
+  "capture": {
+    "kind": "loopback_browser_process",
+    "sample_count": 5,
+    "raw_capture_committed": false,
+    "browser_path_committed": false,
+    "sni_value_committed": false
+  },
+  "browser_mimic": {
+    "tls_channel_binding_available": true,
+    "tls_normalized_set_sha256": [
+      "9234e2d434215bbf93187286893eadd302e87497a5e57b6a1ff5b32c8639104a"
+    ],
+    "h2_normalized_sha256": [
+      "eeee2e5bce6443d6d1b6edd88028d13bcf18bf1e3a9ed6c07ac0d3619bcb2e63"
+    ]
+  },
+  "browser_reference": {
+    "tls_normalized_set_sha256": [
+      "38b96d2b5e03dad97ec3b5fa20f881bac3b215e1445abd42b00b5ff4f6dad120"
+    ],
+    "h2_normalized_sha256": [
+      "eeee2e5bce6443d6d1b6edd88028d13bcf18bf1e3a9ed6c07ac0d3619bcb2e63"
+    ]
+  },
+  "comparison": {
+    "tls_normalized_set_match": false,
+    "h2_normalized_match": true,
+    "residuals": [
+      {
+        "id": "tls_extension_set",
+        "status": "not_controllable_with_current_binding",
+        "reason": "The current BoringSSL Rust API does not expose client ALPS application settings."
+      },
+      {
+        "id": "tls_signature_algorithm_order_or_values",
+        "status": "not_controllable_with_current_binding",
+        "reason": "The current BoringSSL Rust dependency does not provide the three newer signature algorithms advertised by the pinned Chrome target."
+      }
+    ]
+  },
+  "supported_build_targets": [
+    {
+      "target": "aarch64-apple-darwin",
+      "status": "passed",
+      "gate": "local browser TLS harness plus five-sample real-browser capture"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "status": "passed",
+      "gate": "GitHub run 29046496527 path-scoped browser TLS harness"
+    }
+  ],
+  "claims": {
+    "browser_equivalence": false,
+    "censorship_resistance": false,
+    "traffic_analysis_resistance": false
+  }
+}

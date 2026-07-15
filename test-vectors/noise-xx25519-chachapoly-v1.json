@@ -1,0 +1,90 @@
+{
+  "cases": [
+    {
+      "deterministic_rng": {
+        "initiator_seed": 7,
+        "resolver": "maverick_test_counting_rng_v1",
+        "responder_seed": 70
+      },
+      "handshake_messages": [
+        {
+          "direction": "initiator_to_responder",
+          "message_hex": "e13f9aa97086198bbe8812ffbd1aa109fef97fb691da1a9c4908ddce76c01444",
+          "payload_hex": "",
+          "tokens": "e"
+        },
+        {
+          "direction": "responder_to_initiator",
+          "message_hex": "d71adaa603c3241410e40e35b878d33bab0f54e23e1562decc950c80a8088e6cb6873532e7ae368d17d6870e12495ed7d25126f57ea8f3041ebe8da70771de5884880f3bff81f47f9e7e84cc64ab583297629ffe879da38139f901c411cab9bb",
+          "payload_hex": "",
+          "tokens": "e_ee_s_es"
+        },
+        {
+          "direction": "initiator_to_responder",
+          "message_hex": "c5cbde467d32bf494380a9a6a1b0cd92b42838417b7400f0b254accbd7b10ac4719f81f05c878a7e88ca5cf90719ca0bd9bd406f2a76d98b06f0dba2a80bd2aa",
+          "payload_hex": "",
+          "tokens": "s_se"
+        }
+      ],
+      "id": "snow_xx25519_chachapoly_sha256_h2_empty_payloads_v1",
+      "implementation": {
+        "crate": "https://crates.io/crates/snow/0.10.0",
+        "docs": "https://docs.rs/snow/",
+        "license": "Apache-2.0 OR MIT",
+        "name": "snow",
+        "repository": "https://github.com/mcginty/snow",
+        "formal_human_review": "not_performed",
+        "version": "0.10.0"
+      },
+      "noise_name": "Noise_XX_25519_ChaChaPoly_SHA256",
+      "remote_static_public_keys": {
+        "initiator_view_hex": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254",
+        "responder_view_hex": "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f"
+      },
+      "static_private_keys": {
+        "initiator_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "responder_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "transport_context": "h2",
+      "transport_smoke": {
+        "initiator_to_responder_ciphertext_hex": "fb159016cbc2e24f0c929c1b75d4c6b69ba93a9cb61e318fd8167f6a1e203d741e67f16af6c6962cb4e351852238",
+        "initiator_to_responder_plaintext_hex": "6d6176657269636b2d6e6f6973652d7472616e73706f72742d736d6f6b65",
+        "responder_decrypted_hex": "6d6176657269636b2d6e6f6973652d7472616e73706f72742d736d6f6b65"
+      }
+    }
+  ],
+  "notes": [
+    "Noise runtime remains disabled.",
+    "This vector is generated and verified through the snow crate as pre-runtime evidence.",
+    "The selected candidate implementation is not runtime approval or a cryptographic endorsement."
+  ],
+  "prologue_context": {
+    "canonical_prologue_hex": "4d6176657269636b4e6f69736550726f6c6f6775650008656e636f64696e6700196c656e6774682d70726566697865642d6669656c64732d763100057375697465001c6e6f6973655f787832353531395f6368616368615f706f6c795f7631000a6e6f6973655f6e616d6500204e6f6973655f58585f32353531395f436861436861506f6c795f53484132353600116d6176657269636b5f70726f746f636f6c000e6d6176657269636b2d70726f787900196d6176657269636b5f70726f746f636f6c5f76657273696f6e000131000e696e69746961746f725f726f6c65000f6d6176657269636b2d636c69656e74000e726573706f6e6465725f726f6c65000f6d6176657269636b2d73657276657200117472616e73706f72745f636f6e74657874000268320007707572706f7365001d6578706572696d656e74616c2d72657365617263682d72756e74696d65",
+    "encoding": "length-prefixed-fields-v1",
+    "initiator_role": "maverick-client",
+    "maverick_protocol": "maverick-proxy",
+    "maverick_protocol_version": 1,
+    "noise_name": "Noise_XX_25519_ChaChaPoly_SHA256",
+    "purpose": "experimental-research-runtime",
+    "responder_role": "maverick-server",
+    "suite": "noise_xx25519_chacha_poly_v1",
+    "transport_context": "h2"
+  },
+  "source": {
+    "implementation": {
+      "crate": "https://crates.io/crates/snow/0.10.0",
+      "docs": "https://docs.rs/snow/",
+      "license": "Apache-2.0 OR MIT",
+      "name": "snow",
+      "repository": "https://github.com/mcginty/snow",
+      "formal_human_review": "not_performed",
+      "version": "0.10.0"
+    },
+    "specification": {
+      "name": "Noise Protocol Framework",
+      "url": "https://noiseprotocol.org/noise.html"
+    }
+  },
+  "status": "implementation_backed_no_runtime",
+  "suite": "noise_xx25519_chacha_poly_v1"
+}

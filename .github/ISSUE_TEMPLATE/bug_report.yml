@@ -1,0 +1,85 @@
+name: Bug report
+description: Report a reproducible Maverick bug.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, private keys, HMAC tags, real access tokens, raw payload data, real server addresses, private hostnames, certificate paths, or local private filesystem paths.
+        Maverick is experimental and not production-ready.
+        Use loopback-only reproduction steps when possible. Security issues with exploit details should not be filed publicly.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Paste `git rev-parse --short HEAD` or the release tag.
+      placeholder: abc1234
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - client
+        - server
+        - CLI
+        - config
+        - H2 transport
+        - H3 transport
+        - Cloudflare-fronted WebSocket
+        - TUN experimental harness
+        - Noise experimental harness
+        - docs
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Use loopback-only examples when possible.
+      placeholder: |
+        1. Run ...
+        2. Configure ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or output
+      description: Remove secrets, tokens, private hostnames, real domains, IP addresses, account names, certificate paths, local private paths, and raw payload data.
+      render: text
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Keep this generic. Do not include private infrastructure names or account identifiers.
+      placeholder: |
+        OS:
+        rustc:
+        cargo:
+        feature flags:
+        network environment: loopback / approved host / other redacted context
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I have not included secrets, private keys, tokens, or raw payload data.
+          required: true
+        - label: I have redacted real hostnames, IP addresses, account names, certificate paths, and local private paths.
+          required: true
+        - label: My reproduction does not require changing a developer workstation's system proxy, DNS, route table, firewall, VPN, or other network-service settings.
+          required: true
+        - label: This is not a public vulnerability report with working exploit details.
+          required: true

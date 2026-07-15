@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "status": "blocker_execution_plan_ready",
+  "local_machine_network_mutation_allowed": false,
+  "default_route_mutation_allowed": false,
+  "global_dns_mutation_allowed": false,
+  "requires_explicit_operator_confirmation": true,
+  "requires_approved_external_host": true,
+  "requires_rollback_plan": true,
+  "requires_residue_check": true,
+  "notes": "This manifest tracks approved-host helper evidence for TUN runtime work. completed_on_approved_vm means the evidence slice exists; it does not mean product TUN packet I/O is ready. It does not authorize local-machine network changes, default-route mutation, global DNS mutation, or a new approved-host mutation run.",
+  "blocker_slices": [
+    {
+      "id": "phase_a_helper_smoke",
+      "status": "completed_on_approved_vm",
+      "local_allowed": false,
+      "remote_mutation_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_new_operator_confirmation": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "docs/history/manifests/tun-helper-approval.json",
+        "crates/maverick-cli/src/main.rs"
+      ],
+      "notes": "Phase A evidence exists for temporary TUN, documentation-prefix route, namespace-scoped DNS smoke, rollback, retained-journal recovery, and default-route/global-DNS unchanged checks."
+    },
+    {
+      "id": "phase_b_namespace_runtime_smoke",
+      "status": "completed_on_approved_vm",
+      "local_allowed": false,
+      "remote_mutation_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_new_operator_confirmation": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "scripts/approved-vm-tun-runtime-smoke.sh",
+        "docs/HARNESS_ENGINEERING.md",
+        "roadmap-blockers.json"
+      ],
+      "notes": "Phase B namespace runtime smoke passed on approved-linux-vm with temporary network namespace, veth data path, namespace-local TUN, policy route, namespace-scoped DNS, leak sentries, rollback, residue checks, and unchanged host default-route/global-DNS baselines."
+    },
+    {
+      "id": "production_route_policy",
+      "status": "completed_on_approved_vm",
+      "local_allowed": false,
+      "remote_mutation_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_new_operator_confirmation": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "crates/maverick-core/src/tun.rs",
+        "scripts/approved-vm-tun-policy-smoke.sh",
+        "docs/HARNESS_ENGINEERING.md"
+      ],
+      "notes": "Production include/exclude route policy now has core production-policy gate coverage plus approved-VM namespace evidence for a preserved control-plane route coexisting with a default TUN route. Host-level route mutation remains disallowed by this registry."
+    },
+    {
+      "id": "default_route_policy",
+      "status": "completed_on_approved_vm",
+      "local_allowed": false,
+      "remote_mutation_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_new_operator_confirmation": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "crates/maverick-core/src/tun.rs",
+        "scripts/approved-vm-tun-policy-smoke.sh",
+        "docs/HARNESS_ENGINEERING.md"
+      ],
+      "notes": "Default-route policy now has core gate coverage plus approved-VM namespace evidence that default route selection can be pointed at a namespace-local TUN device and rolled back without changing the host default route."
+    },
+    {
+      "id": "global_dns_policy",
+      "status": "completed_on_approved_vm",
+      "local_allowed": false,
+      "remote_mutation_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_new_operator_confirmation": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "crates/maverick-core/src/tun.rs",
+        "scripts/approved-vm-tun-policy-smoke.sh",
+        "docs/HARNESS_ENGINEERING.md"
+      ],
+      "notes": "DNS policy now has core gate coverage plus approved-VM namespace evidence that namespace-scoped resolver configuration and DNS route selection can use the TUN path while the host global DNS resolver remains unchanged."
+    },
+    {
+      "id": "service_manager_integration",
+      "status": "completed_on_approved_vm",
+      "local_allowed": false,
+      "remote_mutation_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_new_operator_confirmation": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "scripts/approved-vm-tun-service-smoke.sh",
+        "docs/HARNESS_ENGINEERING.md"
+      ],
+      "notes": "Service-manager integration now has approved-VM transient systemd evidence for privileged helper lifecycle success, failure cleanup, rollback/residue checks, and unchanged host default-route/global-DNS baselines. No permanent unit is installed by the smoke."
+    },
+    {
+      "id": "full_privileged_helper_runtime_integration",
+      "status": "completed_on_approved_vm",
+      "local_allowed": false,
+      "remote_mutation_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_new_operator_confirmation": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "crates/maverick-core/src/tun.rs",
+        "crates/maverick-cli/src/main.rs",
+        "scripts/approved-vm-tun-full-helper-smoke.sh",
+        "docs/HARNESS_ENGINEERING.md"
+      ],
+      "notes": "Full privileged helper runtime integration now has approved-VM aggregate evidence for the current prototype scope: namespace runtime, default-route/DNS policy, service-manager lifecycle, leak/coexistence, rollback, residue checks, and unchanged host baselines. This does not claim production-grade full-device TCP/IP relay behavior."
+    },
+    {
+      "id": "leak_coexistence_testing",
+      "status": "completed_on_approved_vm",
+      "local_allowed": false,
+      "remote_mutation_allowed": false,
+      "approved_host_candidate": "approved-linux-vm",
+      "requires_new_operator_confirmation": false,
+      "rollback_required": true,
+      "residue_check_required": true,
+      "evidence": [
+        "docs/TUN_MODE_DESIGN.md",
+        "docs/HARNESS_ENGINEERING.md",
+        "scripts/approved-vm-tun-leak-coexistence-smoke.sh"
+      ],
+      "notes": "Leak and coexistence testing now has approved-VM namespace evidence for default and DNS probes selecting the TUN path, preserved control-plane routing over veth, TCP echo coexistence, unchanged host listener/default-route/global-DNS baselines, rollback, and residue checks."
+    }
+  ]
+}

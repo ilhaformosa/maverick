@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "captured_utc": "2026-07-11T23:10:46Z",
+  "comparison_base_commit": "ab1bfda2ae74f778281719dceab308106c228888",
+  "candidate_limit": 3,
+  "toolchain": {
+    "rustc": "1.96.0 (ac68faa20 2026-05-25)"
+  },
+  "safety": {
+    "development_machine_network_mutation": false,
+    "real_tun_device_used": false,
+    "remote_host_used": false,
+    "public_socket_used": false,
+    "candidate_setup_api_used": false
+  },
+  "candidates": [
+    {
+      "id": "ipstack_family",
+      "status": "rejected",
+      "components": [
+        {
+          "name": "ipstack",
+          "version": "1.0.0",
+          "source_url": "https://github.com/narrowlink/ipstack",
+          "revision": "c06e2a1aaecfd78033e1dca233c2e871b007ae30",
+          "registry_archive_sha256": "d603c9807158f8054f56c3672c8670096580c3ec1d5bab6f27b2aca89be89117",
+          "license": "Apache-2.0",
+          "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        {
+          "name": "tun2proxy",
+          "version": "0.8.2",
+          "source_url": "https://github.com/tun2proxy/tun2proxy",
+          "revision": "eed123fbbec06295bf83f9be36d5a0f64ed9a8cb",
+          "registry_archive_sha256": "058486886fa3987ca284673b467f52f7c60e22ac6cf5d1e91f2d63b8f024bad4",
+          "license": "MIT",
+          "license_sha256": "8cddc80ccbbb14a8a3d7fee1fc1795d7fcd647f4c7063ad95246f9ff24b407c7"
+        }
+      ],
+      "injected_packet_device": true,
+      "host_setup_required_for_evaluated_path": false,
+      "resource_model": {
+        "flow_count": "not_configurable_in_ipstack",
+        "accept_queue": "unbounded",
+        "per_flow_packet_queue": "unbounded",
+        "per_flow_data_queue": "unbounded",
+        "device_egress_queue": "unbounded"
+      },
+      "unsafe_boundary": "two explicit unsafe auto-trait implementations in released ipstack library code; tun2proxy adds platform and FFI surfaces",
+      "decision_reason": "The released core uses six unbounded Tokio channels on admission, device egress, and per-flow paths. An outer flow semaphore cannot bound packets already queued for a slow consumer. The bridge inherits this blocker and adds an unnecessary local proxy parser and setup surface."
+    },
+    {
+      "id": "smoltcp",
+      "status": "selected_for_phase_1",
+      "components": [
+        {
+          "name": "smoltcp",
+          "version": "0.13.1",
+          "source_url": "https://github.com/smoltcp-rs/smoltcp",
+          "revision": "e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897",
+          "registry_archive_sha256": "5f73d40463bba65efc9adc6370b56df76d563cc46e2482bba58351b4afb7535e",
+          "license": "0BSD",
+          "license_sha256": "beb2cad88fab8447f7975564e21f9506e733e14c344836f146fa02e811216694"
+        }
+      ],
+      "injected_packet_device": true,
+      "host_setup_required_for_evaluated_path": false,
+      "resource_model": {
+        "flow_count": "adapter-enforced fixed maximum",
+        "accept_queue": "adapter-enforced fixed maximum",
+        "per_flow_packet_queue": "fixed socket buffers",
+        "per_flow_data_queue": "fixed socket buffers",
+        "device_egress_queue": "adapter-enforced fixed maximum"
+      },
+      "unsafe_boundary": "selected features exclude hosted raw-socket and TUN PHY helpers; the smoltcp crate root denies unsafe code outside explicitly isolated modules",
+      "decision_reason": "The released engine exposes an injected Device, explicit socket buffers, deterministic polling, dual-stack TCP and UDP, fragmentation features, and no required host setup. The fixed harness passed packet, lifecycle, backpressure, queue, and 100-flow controls. Adapter code is larger than ipstack integration, but its resource and shutdown ownership can be made explicit."
+    },
+    {
+      "id": "gvisor_sidecar",
+      "status": "rejected",
+      "components": [
+        {
+          "name": "gvisor-netstack",
+          "version": "unversioned-api-snapshot",
+          "source_url": "https://github.com/google/gvisor",
+          "revision": "6d73c10d795c9d08ce277545a5a6a8227c601681",
+          "registry_archive_sha256": "not_applicable",
+          "license": "Apache-2.0",
+          "license_sha256": "0fbab5c58efbdf6d31e8085214f2dd821659c03d73cff3ed2b08e98826ea1cd9"
+        }
+      ],
+      "injected_packet_device": true,
+      "host_setup_required_for_evaluated_path": false,
+      "resource_model": {
+        "flow_count": "sidecar_protocol_not_defined",
+        "accept_queue": "sidecar_protocol_not_defined",
+        "per_flow_packet_queue": "sidecar_protocol_not_defined",
+        "per_flow_data_queue": "sidecar_protocol_not_defined",
+        "device_egress_queue": "sidecar_protocol_not_defined"
+      },
+      "unsafe_boundary": "foreign Go runtime and process IPC boundary; in-process FFI was excluded",
+      "decision_reason": "The reusable netstack API has no stable versioned module contract. A safe first integration would require a separately packaged sidecar, bounded authenticated IPC, crash supervision, cross-platform release artifacts, and a second local proxy hop. That cost is not justified while a native bounded candidate passes the fixed primitive gate."
+    }
+  ]
+}

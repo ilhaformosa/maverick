@@ -1,0 +1,14 @@
+{
+  "id": "auth_v1_server_hello",
+  "kind": "server_hello_v1",
+  "secret_test_only": "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "client_nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "protocol_version_selected": 1,
+  "server_nonce_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "session_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+  "max_frame_size": 65536,
+  "max_concurrent_flows": 128,
+  "feature_flags_selected": 1,
+  "server_auth_tag_hex": "e732847672ee5b5fbefb4a35f0c94173b9243b3dce12edbc9c0e9bd07f88a107",
+  "encoded_hex": "0001202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f10a0a1a2a3a4a5a6a7a8a9aaabacadaeaf00010000000000800000000000000001e732847672ee5b5fbefb4a35f0c94173b9243b3dce12edbc9c0e9bd07f88a107"
+}

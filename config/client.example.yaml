@@ -1,0 +1,54 @@
+version: 1
+mode: auto
+
+local:
+  socks5:
+    listen: "127.0.0.1:1080"
+  dns:
+    enabled: true
+    listen: "127.0.0.1:5353"
+  http_connect:
+    enabled: false
+    listen: "127.0.0.1:18080"
+
+server:
+  address: "example.com:443"
+  server_name: "example.com"
+  tunnel_path: "/assets/upload"
+  credential_id: "u_example"
+  secret: "mv1_REPLACE_WITH_OUTPUT_FROM_MAVERICK_GEN_USER"
+  ca_cert: null
+  cert_pin: null
+
+auth:
+  channel_binding:
+    enabled: true
+    require: false
+  v2:
+    enabled: false
+    require: false
+  rotation:
+    active_epoch: null
+    next_credential_id: null
+    auto_switch: false
+    next: null
+
+log:
+  level: "info"
+  redact: true
+
+advanced:
+  connect_timeout_ms: 10000
+  idle_timeout_secs: 300
+  max_concurrent_flows: 256
+  padding: "auto"
+  stealth:
+    tls_fingerprint: "rustls_default"
+    active_probe_resistance: true
+    cdn_fronting:
+      enabled: false
+      provider: "cloudflare"
+      carrier: "web_socket"
+      trusted_tls_terminating_provider: false
+  allow_non_loopback_listeners: false
+  experimental_tun: false

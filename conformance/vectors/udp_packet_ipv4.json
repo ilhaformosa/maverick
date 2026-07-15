@@ -1,0 +1,8 @@
+{
+  "id": "udp_packet_ipv4_v1",
+  "kind": "udp_packet",
+  "target": "127.0.0.1",
+  "port": 53,
+  "data_hex": "646e73",
+  "encoded_hex": "017f000001003500000003646e73"
+}

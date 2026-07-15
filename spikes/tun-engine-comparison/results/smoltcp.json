@@ -1,0 +1,91 @@
+{
+  "schema": 2,
+  "candidate_id": "smoltcp",
+  "decision": "selected_for_phase_1",
+  "comparison_base_commit": "ab1bfda2ae74f778281719dceab308106c228888",
+  "candidate_version": "0.13.1",
+  "candidate_revision": "e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897",
+  "toolchain": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "mode": "in_memory",
+  "seed": 7,
+  "started_utc": "2026-07-11T22:50:00Z",
+  "finished_utc": "2026-07-11T23:10:46Z",
+  "harness": {
+    "manifest": "spikes/tun-engine-comparison/smoltcp-harness/Cargo.toml",
+    "manifest_sha256": "00f7b53563c8545548799366eace00fb1f5edaada3d52a0cc8e310ce203fe305",
+    "lock_sha256": "26696866db53f34cec3cb3ee0e9132450222232d301038d0fdf7816884c8698a",
+    "source_sha256": "5af99f9b99fb77de014c34c60b41b2494c56a7ea6a2dc0c3c99c9be54ac7824c"
+  },
+  "upstream_tests": [
+    {
+      "component": "smoltcp 0.13.1",
+      "command_scope": "minimal selected feature set plus IPv4 and IPv6 fragmentation",
+      "passed": 409,
+      "failed": 0
+    }
+  ],
+  "comparison_tests": {
+    "passed": 19,
+    "failed": 0
+  },
+  "unsafe_inventory": {
+    "tool": "cargo-geiger 0.13.0",
+    "harness_forbids_unsafe": true,
+    "selected_smoltcp_used_unsafe_expressions": 0,
+    "transitive_crates_with_used_unsafe": [
+      "arrayvec",
+      "byteorder",
+      "etherparse",
+      "hash32",
+      "heapless",
+      "stable_deref_trait"
+    ],
+    "hosted_os_phy_compiled": false,
+    "ffi_boundary_compiled": false
+  },
+  "case_results": [
+    {"id": "PKT-01", "status": "passed"},
+    {"id": "PKT-02", "status": "passed"},
+    {"id": "PKT-03", "status": "passed"},
+    {"id": "PKT-04", "status": "passed"},
+    {"id": "PKT-05", "status": "passed"},
+    {"id": "PKT-06", "status": "passed"},
+    {"id": "PKT-07", "status": "passed"},
+    {"id": "PKT-09", "status": "passed"},
+    {"id": "PKT-10", "status": "passed"},
+    {"id": "TCP-01", "status": "passed"},
+    {"id": "TCP-02", "status": "passed"},
+    {"id": "TCP-03", "status": "passed"},
+    {"id": "TCP-05", "status": "passed"},
+    {"id": "TCP-06", "status": "passed"},
+    {"id": "TCP-07", "status": "passed"},
+    {"id": "TCP-09", "status": "passed"},
+    {"id": "TCP-10", "status": "passed"},
+    {"id": "TCP-11", "status": "passed"},
+    {"id": "TCP-12", "status": "passed"},
+    {"id": "TCP-14", "status": "passed"},
+    {"id": "UDP-01", "status": "passed"},
+    {"id": "UDP-02", "status": "passed"},
+    {"id": "UDP-11", "status": "passed"},
+    {"id": "RES-03", "status": "passed"},
+    {"id": "RES-04", "status": "passed"},
+    {"id": "RES-05", "status": "passed"}
+  ],
+  "cases_total": 26,
+  "cases_passed": 26,
+  "cases_failed": 0,
+  "resource_peak": {
+    "active_flows": 100,
+    "tasks": 0,
+    "queued_packets": 4,
+    "buffered_bytes": 819200
+  },
+  "shutdown_elapsed_ms": 0,
+  "known_gaps": [
+    "adapter-level DNS exchange and UDP association policy move to Phase 1",
+    "adapter-level cancellation, forced shutdown, task accounting, and diagnostics move to Phase 1",
+    "fragment and IPv6 extension-header behavior is enabled and covered upstream but still needs adapter-level fixtures",
+    "RSS, CPU, and sustained throughput baselines require the selected Phase 1 runtime rather than engine primitives alone",
+    "no synthetic result authorizes a real TUN device or host network mutation"
+  ]
+}

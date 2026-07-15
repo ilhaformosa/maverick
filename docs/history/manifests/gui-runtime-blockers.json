@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "status": "blocker_execution_plan_ready",
+  "gui_runtime_allowed": false,
+  "local_machine_network_mutation_allowed": false,
+  "system_proxy_mutation_allowed": false,
+  "system_dns_route_firewall_mutation_allowed": false,
+  "notes": "This manifest tracks GUI-facing prerequisite evidence for a future GUI/tray runtime. completed_locally means the prerequisite evidence exists; it does not mean a shipped GUI app exists. It records a macOS-first, local-loopback client control scope while keeping system proxy, DNS, route, firewall, VPN/other network-service settings, and TUN apply controls disabled.",
+  "blocker_slices": [
+    {
+      "id": "core_diagnostics",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "crates/maverick-core/src/diagnostics.rs",
+        "docs/GUI_TRAY_ARCHITECTURE.md"
+      ],
+      "notes": "Redacted GUI diagnostics snapshots exist and keep ordinary UI output free of secrets, target hosts, server addresses, full credential ids, H2/H3 labels, and cooldown details."
+    },
+    {
+      "id": "sdk_runtime_baseline",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "crates/maverick-sdk/src/lib.rs",
+        "docs/SDK_PLAN.md"
+      ],
+      "notes": "The Rust SDK can start and stop loopback client/server runtimes and validates configs through shared core logic."
+    },
+    {
+      "id": "debug_redaction_tests",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "crates/maverick-core/src/diagnostics.rs",
+        "TEST_PLAN.md"
+      ],
+      "notes": "Unit tests cover redacted ordinary GUI diagnostics and debug-only transport details."
+    },
+    {
+      "id": "ui_scope_decision",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/MACOS_APP_BOUNDARY.md",
+        "crates/maverick-core/src/diagnostics.rs"
+      ],
+      "notes": "Initial GUI scope is a control surface for the local Maverick loopback client: connect, disconnect, observe health, import/export redacted profiles, copy listener addresses, and show diagnostics. It must not modify system proxy, DNS, routes, firewall, VPN, or other network-service settings TUN apply state."
+    },
+    {
+      "id": "platform_target_decision",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/MACOS_APP_BOUNDARY.md",
+        "crates/maverick-core/src/diagnostics.rs"
+      ],
+      "notes": "Initial platform target is macOS-first. Cross-platform GUI work is deferred until the macOS loopback control surface and storage/lifecycle gates are implemented."
+    },
+    {
+      "id": "secure_profile_storage",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/KEY_LIFECYCLE.md",
+        "docs/SDK_PLAN.md",
+        "crates/maverick-sdk/src/lib.rs"
+      ],
+      "notes": "SDK profile metadata separates raw secrets into a ProfileSecretStore contract, tests prove serialized metadata omits active and next credential secrets, and NativeProfileSecretStore wires the contract to the platform credential store for future macOS GUI use. Local tests do not write the user's Keychain."
+    },
+    {
+      "id": "service_lifecycle_integration",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/SDK_PLAN.md",
+        "crates/maverick-sdk/src/lib.rs"
+      ],
+      "notes": "The Rust SDK exposes a GUI-facing local client lifecycle wrapper for start, stop, diagnostics, idempotent disconnect, and listener cleanup on loopback-only runtimes."
+    },
+    {
+      "id": "signing_notarization",
+      "status": "blocked_release_gate",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/MACOS_APP_BOUNDARY.md"
+      ],
+      "notes": "macOS signing and notarization are release gates and are not required for local prototype diagnostics."
+    },
+    {
+      "id": "tun_safety_integration",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/TUN_MODE_DESIGN.md",
+        "docs/history/manifests/tun-runtime-blockers.json",
+        "crates/maverick-core/src/diagnostics.rs"
+      ],
+      "notes": "GUI diagnostics now consume the core TUN runtime readiness snapshot as read-only state while keeping GUI controls, GUI apply, and local-machine network mutation disabled."
+    },
+    {
+      "id": "ui_smoke_tests",
+      "status": "completed_locally",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "TEST_PLAN.md",
+        "scripts/gui-runtime-smoke.sh"
+      ],
+      "notes": "Headless GUI runtime smoke covers local-only SDK lifecycle start/stop, listener cleanup, profile secret metadata separation, diagnostics redaction, read-only TUN state, and blocker manifest validation. It does not write the user's Keychain or change system network settings."
+    },
+    {
+      "id": "release_packaging",
+      "status": "blocked_release_gate",
+      "runtime_allowed": false,
+      "requires_user_action": false,
+      "evidence": [
+        "docs/GUI_TRAY_ARCHITECTURE.md",
+        "docs/MACOS_APP_BOUNDARY.md",
+        "RELEASE_CHECKLIST.md"
+      ],
+      "notes": "Release packaging is deferred until local GUI runtime, storage, lifecycle, smoke tests, and signing/notarization gates are ready."
+    }
+  ]
+}

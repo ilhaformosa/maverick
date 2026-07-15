@@ -1,0 +1,60 @@
+[package]
+name = "maverick-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "maverick-tun-phase2"
+path = "src/bin/maverick-tun-phase2.rs"
+required-features = ["tun-phase2"]
+
+[features]
+default = []
+browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
+ech = ["maverick-client/ech", "maverick-server/ech"]
+h3 = [
+  "dep:h3",
+  "dep:h3-quinn",
+  "dep:quinn",
+  "maverick-client/h3",
+  "maverick-server/h3",
+]
+tun-runtime = [
+  "dep:etherparse",
+  "dep:maverick-tun",
+  "maverick-client/tun-runtime",
+]
+tun-phase2 = ["tun-runtime", "dep:clap", "dep:libc"]
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+bytes.workspace = true
+clap = { workspace = true, optional = true }
+etherparse = { version = "=0.20.3", optional = true }
+futures.workspace = true
+h2.workspace = true
+h3 = { workspace = true, optional = true }
+h3-quinn = { workspace = true, optional = true }
+http.workspace = true
+maverick-client = { path = "../maverick-client" }
+maverick-core = { path = "../maverick-core" }
+maverick-server = { path = "../maverick-server" }
+maverick-tun = { path = "../maverick-tun", optional = true }
+quinn = { workspace = true, optional = true }
+rcgen.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true, optional = true }

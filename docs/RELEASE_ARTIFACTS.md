@@ -1,0 +1,121 @@
+# Release Artifacts
+
+Maverick release artifacts are generated locally and written under `dist/`.
+`dist/` is ignored by git.
+
+## Default Local Build
+
+```sh
+./scripts/release-artifacts.sh
+```
+
+The script builds the `maverick` CLI in release mode, copies public release
+documents, writes `BUILDINFO`, and generates `SHA256SUMS`. Release builds
+remap local source paths before publishing and fail if the generated artifact
+still contains the local repository path or home directory.
+
+## Optional Target Or Features
+
+```sh
+MAVERICK_RELEASE_TARGET=x86_64-unknown-linux-gnu ./scripts/release-artifacts.sh
+MAVERICK_RELEASE_FEATURES=h3 ./scripts/release-artifacts.sh
+MAVERICK_RELEASE_VERSION=X.Y.Z ./scripts/release-artifacts.sh
+```
+
+Only publish targets that were built and smoke-tested for that release.
+
+## GitHub Release Attachment Rule
+
+Use a GitHub Pre-release for an explicitly prerelease version and a normal
+release only after its stable gate passes. Attach artifacts only after the
+exact commit has passed the release checks. Do not mark prereleases as
+`latest`, and do not attach artifacts from:
+
+- a dirty working tree;
+- a different commit than the tag;
+- a local rebuild after the tag was created;
+- a target or feature set that was not smoke-tested for the release.
+
+The GitHub release body should list the artifact name, target, feature set,
+commit hash, and checksum verification command.
+
+## Stable Checksum Signing
+
+Stable releases should publish the generated `SHA256SUMS` file and a detached
+`SHA256SUMS.sig` signature from a project release-signing key.
+
+Maverick uses OpenSSH file signatures for this release artifact signature path:
+
+```sh
+MAVERICK_RELEASE_SIGNING_KEY=/path/to/maverick-release-signing-key \
+MAVERICK_RELEASE_ALLOWED_SIGNERS=docs/release-signing/allowed_signers \
+./scripts/release-artifacts.sh
+```
+
+On macOS, an encrypted private key can read its passphrase from Keychain:
+
+```sh
+MAVERICK_RELEASE_SIGNING_KEY=/path/to/maverick-release-signing-key \
+MAVERICK_RELEASE_SIGNING_KEYCHAIN_SERVICE=maverick-release-signing-passphrase \
+MAVERICK_RELEASE_SIGNING_KEYCHAIN_ACCOUNT=maverick-release-signing-ed25519-2026 \
+MAVERICK_RELEASE_ALLOWED_SIGNERS=docs/release-signing/allowed_signers \
+./scripts/release-artifacts.sh
+```
+
+The signature namespace defaults to `maverick-release`. Verification uses:
+
+```sh
+ssh-keygen -Y verify \
+  -f docs/release-signing/allowed_signers \
+  -I maverick-release \
+  -n maverick-release \
+  -s SHA256SUMS.sig <SHA256SUMS
+```
+
+Do not commit release-signing private keys. If no project release-signing key
+exists, do not claim signed checksums; publish only SHA256 checksums and record
+the gap in the release audit.
+
+Release signing keys may be rotated by appending a new public signer to
+`docs/release-signing/allowed_signers`. Keep old public signer lines for old
+release verification. If a private key or passphrase is lost, old signatures
+remain verifiable, but future releases must be signed with a new key.
+
+## Verification
+
+On macOS:
+
+```sh
+cd dist/maverick-<version>-<target>
+shasum -a 256 -c SHA256SUMS
+```
+
+On Linux:
+
+```sh
+cd dist/maverick-<version>-<target>
+sha256sum -c SHA256SUMS
+```
+
+## Release Rule
+
+Do not attach release artifacts unless these have passed for the exact commit:
+
+```sh
+./scripts/local-harness.sh
+./scripts/security-dependency-inventory.sh
+./scripts/release-artifacts.sh
+```
+
+For a post-v1 stable-scoped release, also attach the evidence required by
+`docs/PLAN_POST_V1.md`. The completed `docs/PLAN_SHORT_TERM_TO_V1.md` and
+`docs/RELEASE_TRAIN.md` remain the evidence sources for the `v1.0.0` train.
+The stable artifact set should include `SHA256SUMS.sig` when a project release
+signing key exists.
+Historical public alpha snapshots may cite the one-hour and 24-hour pre-stable
+evidence in
+`docs/history/evidence/APPROVED_HOST_RUNTIME_EVIDENCE_2026_07_01.md` and
+`docs/history/evidence/APPROVED_HOST_RUNTIME_EVIDENCE_2026_07_03.md`, plus
+process-level failure evidence in
+`docs/history/evidence/APPROVED_HOST_FAILURE_INJECTION_EVIDENCE_2026_07_03.md`.
+They must not present that evidence as a production-readiness claim.

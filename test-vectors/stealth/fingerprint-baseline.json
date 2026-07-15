@@ -1,0 +1,52 @@
+{
+  "schema_version": 2,
+  "generated_at_utc": "2026-07-09T19:48:29.539961Z",
+  "git_revision": "7169e2009587",
+  "safety_scope": "loopback listeners and OS-assigned ephemeral ports only",
+  "profiles": [
+    {
+      "name": "rustls_default",
+      "status": "observed",
+      "reason": null,
+      "sample_count": 5,
+      "tls_channel_binding_available": true,
+      "observed_ja3_variant_count": 5,
+      "tls_normalized_set_sha256": [
+        "12dd18a7445176ea7c0df78f3405d10a338280d7bb805b341d52380b97dc0186"
+      ],
+      "observed_h2_variant_count": 2,
+      "h2_normalized_sha256": [
+        "43465a556308768562633c5598f28da8538ec22110e7991b423472ac02b01515"
+      ]
+    },
+    {
+      "name": "browser_mimic",
+      "status": "observed",
+      "reason": null,
+      "sample_count": 5,
+      "tls_channel_binding_available": true,
+      "observed_ja3_variant_count": 5,
+      "tls_normalized_set_sha256": [
+        "9234e2d434215bbf93187286893eadd302e87497a5e57b6a1ff5b32c8639104a"
+      ],
+      "observed_h2_variant_count": 1,
+      "h2_normalized_sha256": [
+        "eeee2e5bce6443d6d1b6edd88028d13bcf18bf1e3a9ed6c07ac0d3619bcb2e63"
+      ]
+    }
+  ],
+  "browser_reference_status": "observed",
+  "browser_reference_sample_count": 5,
+  "browser_reference_tls_normalized_set_sha256": [
+    "38b96d2b5e03dad97ec3b5fa20f881bac3b215e1445abd42b00b5ff4f6dad120"
+  ],
+  "browser_reference_h2_normalized_sha256": [
+    "eeee2e5bce6443d6d1b6edd88028d13bcf18bf1e3a9ed6c07ac0d3619bcb2e63"
+  ],
+  "browser_tls_normalized_set_match": false,
+  "browser_h2_normalized_match": true,
+  "browser_field_differences": [
+    "tls_extension_set",
+    "tls_signature_algorithm_order_or_values"
+  ]
+}

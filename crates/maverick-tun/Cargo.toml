@@ -1,0 +1,18 @@
+[package]
+name = "maverick-tun"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+futures.workspace = true
+rand.workspace = true
+smoltcp.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+etherparse = "=0.20.3"

@@ -1,0 +1,43 @@
+[package]
+name = "maverick-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+browser-tls = [
+  "maverick-core/browser-tls",
+  "dep:boring",
+  "dep:brotli",
+  "dep:tokio-boring",
+]
+ech = ["maverick-core/ech"]
+h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn"]
+tun-runtime = ["dep:maverick-tun", "dep:tokio-util"]
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+boring = { workspace = true, optional = true }
+brotli = { workspace = true, optional = true }
+bytes.workspace = true
+futures.workspace = true
+h2.workspace = true
+h3 = { workspace = true, optional = true }
+h3-quinn = { workspace = true, optional = true }
+http.workspace = true
+maverick-core = { path = "../maverick-core" }
+maverick-tun = { path = "../maverick-tun", optional = true }
+quinn = { workspace = true, optional = true }
+rustls.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"], optional = true }
+tokio-boring = { workspace = true, optional = true }
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+webpki-roots.workspace = true

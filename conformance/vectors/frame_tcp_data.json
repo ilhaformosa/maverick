@@ -1,0 +1,12 @@
+{
+  "id": "frame_tcp_data_v1",
+  "kind": "frame",
+  "max_frame_size": 65536,
+  "frame": {
+    "type": "tcp_data",
+    "flags": 0,
+    "flow_id": 42,
+    "payload_hex": "68656c6c6f"
+  },
+  "encoded_hex": "0400000000000000002a0000000568656c6c6f"
+}

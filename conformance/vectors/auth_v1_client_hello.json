@@ -1,0 +1,14 @@
+{
+  "id": "auth_v1_client_hello",
+  "kind": "client_hello_v1",
+  "secret_test_only": "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "tunnel_path": "/assets/upload",
+  "protocol_version": 1,
+  "client_nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "timestamp_unix": 1735689600,
+  "credential_id": "u_conformance",
+  "mode": "auto",
+  "feature_flags": 5,
+  "auth_tag_hex": "ecb54c72c64398715d30cf862691b1663df0f351e3a6be008933c36eb059c3d5",
+  "encoded_hex": "0001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0000000067748580000d755f636f6e666f726d616e6365000000000000000005ecb54c72c64398715d30cf862691b1663df0f351e3a6be008933c36eb059c3d5"
+}

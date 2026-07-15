@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "status": "ready",
+  "target": "frozen",
+  "notes": "Maverick has a frozen conformance-vector snapshot and S3 review-input closure for the narrow v1 scope. This is readiness metadata for the RC/stable release train only; it is not a formal audit, production, anonymity, censorship-resistance, or standardization claim.",
+  "criteria": [
+    {
+      "id": "spec_and_wire_docs_current",
+      "level": "candidate",
+      "status": "satisfied",
+      "evidence": [
+        "SPEC.md",
+        "WIRE_FORMAT.md",
+        "crates/maverick-core/tests/conformance_vectors.rs",
+        "conformance/runner/check_spec_wire_alignment.py"
+      ],
+      "notes": "Frame type assignments are checked across Rust, WIRE_FORMAT.md, and the Python verifier; checked-in vectors are regenerated from current wire/cache types."
+    },
+    {
+      "id": "local_harness_passes",
+      "level": "candidate",
+      "status": "satisfied",
+      "evidence": [
+        "scripts/local-harness.sh",
+        "docs/HARNESS_ENGINEERING.md"
+      ],
+      "notes": "The default local harness is the pre-commit gate."
+    },
+    {
+      "id": "h3_feature_harness_passes",
+      "level": "candidate",
+      "status": "satisfied",
+      "evidence": [
+        "scripts/h3-harness.sh",
+        "docs/H3_QUIC_PLAN.md"
+      ],
+      "notes": "H3 remains experimental and off by default."
+    },
+    {
+      "id": "experimental_features_marked",
+      "level": "candidate",
+      "status": "satisfied",
+      "evidence": [
+        "docs/EXPERIMENTAL_TRACKS.md",
+        "crates/maverick-core/src/experimental.rs"
+      ],
+      "notes": "Experimental tracks are default-off and excluded from default security claims."
+    },
+    {
+      "id": "fallback_behavior_documented_and_tested",
+      "level": "candidate",
+      "status": "satisfied",
+      "evidence": [
+        "crates/maverick-tests/tests/tcp_relay.rs",
+        "docs/CAPABILITY_REPORT.md"
+      ],
+      "notes": "Pre-auth tunnel-like failures return fallback-like content in loopback tests."
+    },
+    {
+      "id": "conformance_vectors_cover_required_wire_surface",
+      "level": "candidate",
+      "status": "satisfied",
+      "evidence": [
+        "conformance/vectors",
+        "docs/CONFORMANCE_SUITE.md"
+      ],
+      "notes": "Vectors cover Auth v1, replay semantics, frame wrappers, DNS query/response frames, OpenTcp, OpenUdp, UdpPacket, padding, and error code payloads."
+    },
+    {
+      "id": "security_limitations_current",
+      "level": "candidate",
+      "status": "satisfied",
+      "evidence": [
+        "SECURITY.md",
+        "THREAT_MODEL.md",
+        "docs/CAPABILITY_REPORT.md"
+      ],
+      "notes": "The docs preserve experimental and non-audited status."
+    },
+    {
+      "id": "first_non_rust_parser_smoke",
+      "level": "frozen",
+      "status": "satisfied",
+      "evidence": [
+        "conformance/runner/python_verify.py",
+        "docs/CONFORMANCE_SUITE.md"
+      ],
+      "notes": "The Python verifier is parser-vector smoke coverage only, not a full independent implementation."
+    },
+    {
+      "id": "external_security_review_plan",
+      "level": "frozen",
+      "status": "satisfied",
+      "evidence": [
+        "docs/GOVERNANCE.md",
+        "docs/SPEC_FREEZE_PROCESS.md",
+        "docs/SECURITY_REVIEW_PLAN.md",
+        "docs/history/review/S3_REVIEW_HANDOFF_2026_07_08.md",
+        "security-review-package.json"
+      ],
+      "notes": "A review plan and S3 community-review request exist. This is review preparation only, not completed independent review evidence."
+    },
+    {
+      "id": "external_security_review_completed",
+      "level": "frozen",
+      "status": "satisfied",
+      "evidence": [
+        "SECURITY.md",
+        "docs/SECURITY_REVIEW_PLAN.md",
+        "docs/history/review/S3_REVIEW_HANDOFF_2026_07_08.md",
+        "docs/history/review/COMPREHENSIVE_SECURITY_AUDIT_REMEDIATION_2026_07_08.md",
+        "docs/history/review/S3_REVIEW_CLOSURE_2026_07_08.md"
+      ],
+      "notes": "Maintainer-provided anonymous review input was triaged and remediated for the narrow v1 scope. This closes the S3 review-input gate without claiming a formal audit or production security certification."
+    },
+    {
+      "id": "frozen_release_snapshot",
+      "level": "frozen",
+      "status": "satisfied",
+      "evidence": [
+        "conformance/frozen-releases.json",
+        "conformance/frozen-releases/v0.1.0-conformance.1/manifest.json"
+      ],
+      "notes": "The first conformance vector byte snapshot is recorded; it does not imply a stable protocol or completed security review."
+    }
+  ]
+}

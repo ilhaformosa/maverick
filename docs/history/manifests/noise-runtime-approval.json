@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "status": "approval_manifest_ready",
+  "runtime_noise_allowed": false,
+  "requires_candidate_implementation": true,
+  "requires_implementation_vectors": true,
+  "requires_transcript_prologue_tests": true,
+  "requires_downgrade_tests": true,
+  "requires_runtime_config_gate": true,
+  "requires_formal_human_crypto_review": false,
+  "requires_community_crypto_review_before_security_claims": true,
+  "notes": "This manifest records the Noise runtime approval boundary. Maverick has selected Snow 0.10.0 as a candidate implementation, records implementation-backed transcript evidence, includes a feature-gated core runtime session harness, keeps product transport config disabled, and makes no security-release claim.",
+  "runtime_gates": [
+    {
+      "id": "implementation_selection",
+      "status": "completed_non_runtime",
+      "runtime_allowed": false,
+      "evidence": [
+        "docs/HPKE_NOISE_EXPERIMENTS.md",
+        "docs/CRYPTO_AGILITY.md",
+        "crates/maverick-core/src/crypto.rs",
+        "Cargo.toml",
+        "crates/maverick-core/Cargo.toml"
+      ],
+      "notes": "Snow 0.10.0 is selected as the candidate standard Noise implementation for vector generation and the feature-gated core session harness. This does not expose Noise as a product transport or make a security claim."
+    },
+    {
+      "id": "implementation_backed_vectors",
+      "status": "completed_non_runtime",
+      "runtime_allowed": false,
+      "evidence": [
+        "test-vectors/noise-xx25519-chachapoly-v1.json",
+        "scripts/import-crypto-vector-subsets.py",
+        "crates/maverick-core/src/crypto.rs"
+      ],
+      "notes": "The Noise vector file now includes a deterministic Snow-backed XX25519/ChaChaPoly/SHA256 H2 handshake transcript and transport smoke case."
+    },
+    {
+      "id": "transcript_prologue_tests",
+      "status": "completed_non_runtime",
+      "runtime_allowed": false,
+      "evidence": [
+        "docs/HPKE_NOISE_EXPERIMENTS.md",
+        "TEST_PLAN.md",
+        "crates/maverick-core/src/crypto.rs",
+        "test-vectors/noise-xx25519-chachapoly-v1.json"
+      ],
+      "notes": "The deterministic prologue context is mixed into a Snow-generated Noise XX transcript and checked against the committed vector."
+    },
+    {
+      "id": "downgrade_tests",
+      "status": "completed_non_runtime",
+      "runtime_allowed": false,
+      "evidence": [
+        "docs/CRYPTO_AGILITY.md",
+        "TEST_PLAN.md",
+        "crates/maverick-core/src/crypto.rs"
+      ],
+      "notes": "Runtime config continues to reject Noise even when experimental settings are requested, keeping TLS 1.3 as the only accepted runtime suite."
+    },
+    {
+      "id": "runtime_session_harness",
+      "status": "completed_runtime_harness",
+      "runtime_allowed": false,
+      "evidence": [
+        "crates/maverick-core/src/noise.rs",
+        "crates/maverick-core/src/lib.rs",
+        "docs/HPKE_NOISE_EXPERIMENTS.md",
+        "TEST_PLAN.md"
+      ],
+      "notes": "The feature-gated core Noise session harness performs XX handshake, expected-remote-static checks, prologue/transport-context binding, length-prefixed encrypted message envelopes, and encrypted Maverick frame round trips."
+    },
+    {
+      "id": "runtime_config_acceptance",
+      "status": "deferred_product_gate",
+      "runtime_allowed": false,
+      "evidence": [
+        "docs/CRYPTO_AGILITY.md",
+        "CONFIG.md",
+        "crates/maverick-core/src/config.rs"
+      ],
+      "notes": "Product config exposure remains deferred. advanced.crypto continues to reject Noise as an ordinary user transport suite until a separate product decision deliberately exposes it."
+    },
+    {
+      "id": "community_crypto_review",
+      "status": "deferred_claim_gate",
+      "runtime_allowed": false,
+      "evidence": [
+        "docs/SECURITY_REVIEW_PLAN.md",
+        "security-review-package.json",
+        "roadmap-blockers.json"
+      ],
+      "notes": "Formal human crypto review is not an active development blocker for this personal as-is prototype. Community or independent review remains required before any reviewed, stable, production, or censorship-resistance claim."
+    }
+  ]
+}

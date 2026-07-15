@@ -1,0 +1,39 @@
+.DS_Store
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Secret-bearing generated configs
+client.generated.yaml
+server.generated.yaml
+
+# Dependencies and build outputs
+node_modules/
+dist/
+build/
+target/
+.next/
+.turbo/
+coverage/
+runtime-evidence/
+
+# Fuzz outputs
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/

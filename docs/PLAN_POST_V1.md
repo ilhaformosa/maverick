@@ -42,16 +42,17 @@ Phase 3-C defines only one achievable production-claim target:
 `maverick-reference-client` Debian package on Ubuntu 26.04 LTS `amd64`, IPv4,
 using the stable TLS 1.3 plus HTTP/2 path.
 
-This target is not frozen or approved. Formal supported-platform evidence must
+This target is frozen but not approved. Formal supported-platform evidence must
 come from a source-bound disposable Ubuntu 26.04 target fixture. Results from a
 physical host running another OS cannot be relabeled as Ubuntu evidence.
 `production-readiness.json` keeps code, evidence, audit, deployability, and
 production approval separate and currently records No-Go.
 
-The planned first-stage identity is release train `1.2.0`, release tag
+The frozen first-stage identity is release train `1.2.0`, release tag
 `v1.2.0-alpha.1`, Maverick and reference-client software
-`1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. These planned names do
-not freeze commits, the SDK pin, a package hash, evidence, or approval.
+`1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. The exact frozen hashes
+are recorded in `production-readiness.json`; the freeze does not supply formal
+platform evidence, an audit, deployability, or production approval.
 
 ## Execution Order
 

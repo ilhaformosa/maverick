@@ -71,17 +71,18 @@ machine-readable result in `production-readiness.json` is currently No-Go.
 ## Not Ready
 
 - No formal independent security audit has been completed.
-- The planned candidate identity is release train `1.2.0`, tag
+- The frozen candidate identity is release train `1.2.0`, tag
   `v1.2.0-alpha.1`, Maverick and reference-client software
   `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. The Maverick workspace
-  now reports that planned software version, but the candidate is not frozen:
-  its Maverick release commit, Maverick SDK commit, reference-client commit,
-  SDK pin, package hash, and accepted evidence are not recorded.
+  now reports that software version. The exact Maverick release/SDK commit,
+  reference-client commit and SDK pin, package hash, and accepted Phase 3-B
+  summary are recorded in `production-readiness.json`. Phase 3-A, audit,
+  deployability, and production approval remain incomplete.
 - Formal Ubuntu 26.04 LTS `amd64` platform evidence must come from a source-bound
   disposable target fixture; results from a physical host with another OS do not
   satisfy that gate.
-- No release-candidate workflow result exists until a coordinator-approved
-  frozen commit is manually dispatched. An Ubuntu Actions runner is not a
+- No post-freeze release-candidate workflow result is accepted yet. An Ubuntu
+  Actions runner is not a
   substitute for the target fixture and private package evidence.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference

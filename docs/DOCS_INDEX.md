@@ -110,6 +110,8 @@ Active protocol/release inputs:
 - `security-review-package.json`;
 - `production-readiness.json` plus
   `scripts/check-production-readiness.py`;
+- `docs/PHASE3_B_CANDIDATE_SUMMARY.md`: redacted exact-source, package,
+  signing, and freeze input for the current candidate;
 - `.github/workflows/ci.yml`, `.github/workflows/release-candidate.yml`, and
   `scripts/check-ci-gates.py`;
 - `spikes/tun-engine-comparison/` plus

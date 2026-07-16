@@ -22,9 +22,10 @@ class ProductionReadinessTests(unittest.TestCase):
     def test_current_blocked_ledger_is_valid(self) -> None:
         with fixture_repo() as (root, ledger):
             result = checker.check_ledger(ledger, root)
-        self.assertEqual(result["candidate_status"], "not_frozen")
+        self.assertEqual(result["candidate_status"], "frozen")
         self.assertEqual(result["decision"], "NO_GO")
-        self.assertEqual(result["complete_dimensions"], 0)
+        self.assertEqual(result["complete_dimensions"], 1)
+        self.assertEqual(ledger["phase_inputs"]["phase_3b"]["status"], "accepted")
         self.assertEqual(ledger["scope"]["platform"], "Ubuntu 26.04 LTS")
         self.assertEqual(
             ledger["scope"]["formal_evidence_fixture"]["platform"],
@@ -50,6 +51,7 @@ class ProductionReadinessTests(unittest.TestCase):
 
     def test_unfrozen_candidate_rejects_hashes(self) -> None:
         with fixture_repo() as (root, ledger):
+            unfreeze_candidate(ledger)
             ledger["candidate"]["maverick_release_commit"] = "a" * 40
             with self.assertRaisesRegex(AssertionError, "unfrozen candidate"):
                 checker.check_ledger(ledger, root)
@@ -300,6 +302,7 @@ class ProductionReadinessTests(unittest.TestCase):
         }
         for release_tag, (software, debian) in identities.items():
             with self.subTest(release_tag=release_tag), fixture_repo() as (root, ledger):
+                unfreeze_candidate(ledger)
                 set_version_identity(ledger, release_tag)
                 result = checker.check_ledger(ledger, root)
                 self.assertEqual(result["candidate_status"], "not_frozen")
@@ -356,6 +359,32 @@ def freeze_candidate(
         ledger["phase_inputs"]["phase_3a"] = accepted_phase(evidence_path)
 
 
+def unfreeze_candidate(ledger: dict) -> None:
+    ledger["candidate"].update(
+        {
+            "status": "not_frozen",
+            "maverick_release_commit": None,
+            "maverick_sdk_commit": None,
+            "reference_client_commit": None,
+            "reference_client_sdk_pin": None,
+            "sdk_pin_verified": False,
+            "sdk_pin_evidence_path": None,
+            "reference_package_sha256": None,
+        }
+    )
+    ledger["phase_inputs"]["phase_3b"] = {
+        "status": "missing",
+        "accepted_manifest_sha256": None,
+        "public_summary_paths": [],
+    }
+    ledger["dimensions"]["code_complete"] = {
+        "status": "blocked",
+        "reason": "candidate_not_frozen",
+        "evidence_paths": [],
+    }
+    ledger["release_gates"] = {release: "blocked" for release in checker.RELEASES}
+
+
 def set_version_identity(ledger: dict, release_tag: str) -> None:
     software = release_tag.removeprefix("v")
     if "-alpha." in software:
@@ -399,7 +428,15 @@ class fixture_repo:
         source_root = SCRIPT.parent.parent
         with (source_root / "production-readiness.json").open("r", encoding="utf-8") as handle:
             ledger = copy.deepcopy(json.load(handle))
-        for raw_path in ledger["scope"]["docs"]:
+        paths = set(ledger["scope"]["docs"])
+        candidate_path = ledger["candidate"].get("sdk_pin_evidence_path")
+        if candidate_path:
+            paths.add(candidate_path)
+        for phase in ledger["phase_inputs"].values():
+            paths.update(phase["public_summary_paths"])
+        for dimension in ledger["dimensions"].values():
+            paths.update(dimension["evidence_paths"])
+        for raw_path in paths:
             path = root / raw_path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture\n", encoding="utf-8")

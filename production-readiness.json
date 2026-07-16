@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "candidate": {
-    "status": "not_frozen",
-    "maverick_release_commit": null,
-    "maverick_sdk_commit": null,
-    "reference_client_commit": null,
-    "reference_client_sdk_pin": null,
-    "sdk_pin_verified": false,
-    "sdk_pin_evidence_path": null,
-    "reference_package_sha256": null,
+    "status": "frozen",
+    "maverick_release_commit": "3b3f0c4836c2ab619002e953ff574fbbcf224f56",
+    "maverick_sdk_commit": "3b3f0c4836c2ab619002e953ff574fbbcf224f56",
+    "reference_client_commit": "054956fa4e14e2df3e9b1d9c7f4f0628074a83a1",
+    "reference_client_sdk_pin": "3b3f0c4836c2ab619002e953ff574fbbcf224f56",
+    "sdk_pin_verified": true,
+    "sdk_pin_evidence_path": "docs/PHASE3_B_CANDIDATE_SUMMARY.md",
+    "reference_package_sha256": "2fccf32953fb0b93c569c9c74fbb58ae4bee0c7ca1e9a33b494c25fc7b95388a",
     "versions": {
       "release_train": "1.2.0",
       "release_tag": "v1.2.0-alpha.1",
@@ -65,20 +65,25 @@
       "public_summary_paths": []
     },
     "phase_3b": {
-      "status": "missing",
-      "accepted_manifest_sha256": null,
-      "public_summary_paths": []
+      "status": "accepted",
+      "accepted_manifest_sha256": "a45704bea46e49be2ff49df2b3e8b8d32353fb224db4c1999d4f854871d8e6b3",
+      "public_summary_paths": [
+        "docs/PHASE3_B_CANDIDATE_SUMMARY.md"
+      ]
     }
   },
   "dimensions": {
     "code_complete": {
-      "status": "blocked",
-      "reason": "candidate_not_frozen",
-      "evidence_paths": []
+      "status": "complete",
+      "reason": null,
+      "evidence_paths": [
+        "docs/PHASE3_B_CANDIDATE_SUMMARY.md",
+        "docs/PRODUCTION_SCOPE.md"
+      ]
     },
     "evidence_complete": {
       "status": "blocked",
-      "reason": "phase_3a_and_phase_3b_inputs_missing",
+      "reason": "phase_3a_input_missing",
       "evidence_paths": []
     },
     "audit_complete": {
@@ -116,10 +121,10 @@
     "decided_at": null,
     "approver": null,
     "reason_codes": [
-      "candidate_not_frozen",
+      "post_freeze_release_candidate_ci_missing",
       "phase_3a_missing",
-      "phase_3b_missing",
-      "independent_audit_missing"
+      "independent_audit_missing",
+      "deployability_missing"
     ]
   }
 }

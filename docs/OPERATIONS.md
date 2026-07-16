@@ -16,7 +16,7 @@ The narrow production candidate is `maverick-linux-h2-ipv4-v1`:
 - loopback-only local client listeners by default;
 - no native server-side ECH claim.
 
-The candidate is not frozen, independently audited, deployable, or
+The candidate is frozen, but it is not independently audited, deployable, or
 production-ready. Exact scope and non-claims are in `docs/PRODUCTION_SCOPE.md`.
 Formal target-platform evidence must come from a source-bound disposable Ubuntu
 26.04 LTS `amd64` VM or fixture. Results from a physical host with another OS

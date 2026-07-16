@@ -49,7 +49,7 @@ The smallest production claim Maverick may try to earn is
 `maverick-reference-client` Debian service package on Ubuntu 26.04 LTS `amd64`,
 IPv4, using TLS 1.3 plus HTTP/2.
 
-The candidate is not frozen or approved. Formal platform evidence must come from
+The candidate is frozen but not approved. Formal platform evidence must come from
 a source-bound disposable Ubuntu 26.04 fixture, not from a physical host running
 another OS. `production-readiness.json` separately tracks code-complete,
 evidence-complete, audit-complete, deployable, and production-ready states; the

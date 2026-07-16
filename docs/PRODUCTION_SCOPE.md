@@ -68,14 +68,15 @@ Passing one question never changes another question automatically.
 
 ## Current Result
 
-The candidate is not frozen. Phase 3-A and Phase 3-B inputs are missing, and no
-formal independent production audit is complete. The current result is
-therefore **No-Go**.
+The candidate is frozen and the Phase 3-B input is accepted. Phase 3-A input,
+post-freeze release-candidate CI, deployability, and a formal independent
+production audit are still missing. The current result is therefore **No-Go**.
 
-The planned first-stage identity is release train `1.2.0`, tag
+The frozen first-stage identity is release train `1.2.0`, tag
 `v1.2.0-alpha.1`, Maverick and reference-client software
-`1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. Version names are a
-plan; they are not commit, SDK-pin, package-hash, evidence, or approval freeze.
+`1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. The machine-readable
+ledger binds those names to exact commits and the package hash; it does not
+turn the remaining evidence or approval questions into passes.
 
 `production-readiness.json` is the machine-readable source for these states.
 Run `python3 scripts/check-production-readiness.py` after every change to the

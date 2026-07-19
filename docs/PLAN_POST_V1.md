@@ -113,7 +113,11 @@ zero POST retry, redacted attempt logging, and every inherited local gate. Its
 single authorized run stopped during read-only provider plan preflight after
 both bounded GET attempts failed with the broad class `transport`; the precise
 exception was not persisted. It created no resource, ran no product, spent no
-money, and has no authorized successor.
+money, and has no authorized successor. A later remote-first successor removed
+the large catalog request and created exactly two disposable hosts, then
+stopped after two classified readiness-poll disconnects before SSH or product
+upload. Exact delayed cleanup deleted both hosts and the run-owned key and
+confirmed zero. Its single run is closed and no successor is authorized.
 
 That successor cannot retroactively complete Phase 3. Production audit,
 remediation, deployability, and stable release work remain inactive unless a

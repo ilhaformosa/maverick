@@ -103,7 +103,13 @@ No-Go.
   authorized run stopped during read-only provider plan preflight after both
   bounded GET attempts failed with the broad class `transport`; the precise
   exception was not persisted. It created no resource, ran no product, spent
-  no money, and has no authorized successor.
+  no money, and has no authorized successor. A later remote-first successor
+  removed the large catalog request and created exactly two disposable hosts,
+  but its readiness poll ended twice with a classified remote disconnect. It
+  stopped before SSH, upload, package installation, or any Maverick process.
+  Cleanup waited out a temporary provider resource lock, then deleted both
+  hosts and the run-owned key and confirmed zero. Its one run is closed; this
+  is not product evidence.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS
@@ -133,11 +139,12 @@ No-Go.
    boundary without recreating its tag on a different public commit.
 5. Preserve the Phase 3 incomplete closeout and frozen candidate without
    relabelling partial server runs as product evidence.
-6. Keep remote integration work stopped. The separate Integration Recovery
-   Program and its transport-recovery successor each consumed their single run
-   before resource creation. Any return requires another project-level
-   decision, fresh exact owner authorization, and harmless calibration on both
-   fresh hosts before product upload.
+6. Keep remote integration work stopped. The separate recovery,
+   transport-recovery, and remote-first routes each consumed their single run.
+   The latest created two disposable hosts but stopped before SSH or product
+   upload, then confirmed zero resources. Any return requires another
+   project-level decision, fresh exact owner authorization, and a control path
+   that does not repeat the same operator-network dependency unchanged.
 7. Keep the production ledger at No-Go until a future project establishes
    accepted platform evidence, an independent audit, deployability, and final
    approval for one exact candidate.

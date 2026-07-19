@@ -1,9 +1,10 @@
 # Phase 3 Closeout And Integration Recovery Boundary
 
 Status: Phase 3 closed incomplete on 2026-07-19. The frozen candidate has a
-final `NO_GO` decision. The separate recovery route and its transport-recovery
-successor each consumed one integration run before resource creation. No
-replacement remote run is active or authorized.
+final `NO_GO` decision. The separate recovery, transport-recovery, and
+remote-first routes each consumed one integration run. The latest created two
+disposable hosts but stopped before product upload, then confirmed zero cloud
+resources. No replacement remote run is active or authorized.
 
 ## Product Result
 
@@ -111,14 +112,37 @@ spending occurred. Fail-stop collection and zero-resource destruction passed.
 The single-run allowance is consumed and closed; no replacement or successor
 is authorized.
 
+### IRF-1: closed remote-first recovery run
+
+The project later established Integration Remote-First Recovery with another
+new identity and authorization. It removed the large provider catalogs and
+limited the operator path to narrow control requests and bounded fixed-input
+transfer. Its local qualification added real streaming, exact-label,
+uncertain-create, transfer-retry, proposal-binding, entrypoint, readiness, and
+cleanup checks.
+
+Its one authorized run passed the narrow collision checks and created exactly
+two disposable hosts plus one run-owned key. Every resource used exactly one
+create POST. While the hosts were still provisioning, a readiness GET ended
+with classified `remote_disconnect`; its single safe retry ended the same way.
+The controller stopped before SSH, upload, package installation, or any
+Maverick process.
+
+Immediate cleanup met a temporary provider lock. Once the lock cleared, the
+same exact destruction path deleted both hosts and the key, removed the local
+key, and confirmed zero resources. Two billable hosts existed briefly; no
+exact billing claim is made. This remains a tool/environment result, not a
+product result. The single-run allowance is consumed and closed.
+
 ### IRP-2: outcome decision
 
-Neither IRP-1 nor ITR-1 reached the product path, so IRP-2 did not start. The
-program has stopped and returned to a project-level tooling/architecture
-decision. This does not automatically start production audit or release work.
+Neither IRP-1, ITR-1, nor IRF-1 reached the product path, so IRP-2 did not
+start. The program has stopped and returned to a project-level
+tooling/architecture decision. This does not automatically start production
+audit or release work.
 
 ## Authorization Boundary
 
-The closed IRP-1 and ITR-1 results authorize no external work. They
+The closed IRP-1, ITR-1, and IRF-1 results authorize no external work. They
 do not authorize credentials, provider queries, remote access, resource
 creation, spending, CI, tags, publication, or release operations.

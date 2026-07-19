@@ -95,7 +95,11 @@ real-response-read regression and all inherited tool gates. Its single
 authorized run stopped during read-only provider plan preflight after both
 bounded GET attempts failed with the broad class `transport`; the precise
 exception was not persisted. It created no resource, ran no product, spent no
-money, and has no authorized successor. This is not product evidence.
+money, and has no authorized successor. A later remote-first successor created
+exactly two disposable hosts, but stopped after two classified readiness-poll
+disconnects before SSH, package installation, or product execution. Delayed
+exact cleanup confirmed zero hosts and run-owned keys. Its single run is
+closed, and this is not product evidence.
 
 The frozen first-stage identity is release train `1.2.0`, tag
 `v1.2.0-alpha.1`, Maverick and reference-client software

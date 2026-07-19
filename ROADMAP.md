@@ -14,8 +14,8 @@ Maverick's current direction is preservation and a bounded integration reset:
    post-v1 evidence;
 2. keep the frozen `v1.2.0-alpha.1` candidate and Phase 3 records immutable;
 3. do not resume paid server work under the Phase 3 name;
-4. preserve the passed local-only Integration Recovery Program controller gate
-   without treating it as a product result;
+4. preserve the closed Integration Recovery Program, transport-recovery, and
+   remote-first control results without treating them as product results;
 5. return to servers only through a new exact owner decision with fresh inputs,
    limits, resources, acceptance rules, and harmless calibration on both hosts
    before product upload;
@@ -97,6 +97,16 @@ retry, and stopped after both attempts failed with the broad class
 ran no product, spent no money, and has no authorized successor. See
 `docs/IRP_CONTROLLER_QUALIFICATION.md`.
 
+A later remote-first successor removed the large provider catalogs and used
+only narrow control requests. It created exactly two disposable hosts with no
+duplicate create request, but a readiness poll then ended twice with a remote
+disconnect. Fail-stop occurred before SSH, upload, package installation, or a
+Maverick process. Immediate deletion was temporarily blocked while the new
+hosts were provider-locked; the same bounded cleanup later deleted both hosts
+and the run-owned key and confirmed zero resources. This is another
+tool/environment result, not product evidence. Its one run is closed and no
+successor is authorized.
+
 ## Active Milestones
 
 The detailed gates are in `docs/PLAN_POST_V1.md`:
@@ -142,8 +152,11 @@ The detailed gates are in `docs/PLAN_POST_V1.md`:
   creation. A new project-level transport-recovery package was requalified
   locally, but its own single run also stopped during read-only provider
   preflight after exhausting one safe GET retry. It created no resource, ran no
-  product, spent no money, and has no authorized successor. IPv6 is not
-  scheduled.
+  product, spent no money, and has no authorized successor. A later
+  remote-first successor created exactly two disposable hosts, then stopped
+  after two readiness-poll disconnects before SSH or product upload. Delayed
+  exact destruction confirmed zero hosts and keys. That single run is also
+  consumed with no authorized successor. IPv6 is not scheduled.
 
 M1-M3 are the first implementation group. M4-M6 follow after review of that
 baseline. M7-M8 depend on measured results.

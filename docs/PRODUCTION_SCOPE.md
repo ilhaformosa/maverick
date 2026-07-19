@@ -82,9 +82,12 @@ protocol/package failure and is not product acceptance. Any return to server
 work requires a separate project-level decision; see
 `PHASE3_CLOSEOUT_AND_RECOVERY.md`.
 
-The separate IRP-0 local controller qualification later passed, but it ran no
-product and does not change this result. Any future server run still needs a
-fresh exact owner authorization and cannot retroactively complete Phase 3.
+The separate recovery route's readiness component later passed, but its first
+whole execution package was rejected locally before external action because
+real stage executables were missing. A corrected executable revision now
+passes only local tool checks. It ran no product and does not change this
+result. Any future server run still needs a fresh exact owner authorization and
+cannot retroactively complete Phase 3.
 
 The frozen first-stage identity is release train `1.2.0`, tag
 `v1.2.0-alpha.1`, Maverick and reference-client software

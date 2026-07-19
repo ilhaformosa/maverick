@@ -89,10 +89,12 @@ No-Go.
   traffic, expected rejection, restart recovery, purge, and the follow-up
   engineering acceptance were not completed. This is neither a demonstrated
   protocol/package failure nor a product pass.
-- The separate IRP-0 local controller qualification now passes bounded
-  delayed-start, never-ready, early-exit, interruption, cleanup, and strict
-  four-way classification checks. It performed no server or product work and
-  authorizes none.
+- The separate recovery route's readiness component passed locally, but its
+  first whole execution package was then rejected before external action
+  because fixed stage executables were missing. A corrected executable
+  revision now passes local actual-entrypoint, partial-state, interruption,
+  cleanup, destruction, and strict four-way classification checks. It
+  performed no server or product work and authorizes none.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS

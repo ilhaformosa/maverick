@@ -99,13 +99,14 @@ they are not reopened or relabelled.
 
 No paid or remote successor is active. A future return to servers must use the
 separate Integration Recovery Program defined in
-`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`. Its local-only first gate has now passed:
-one-shot readiness was replaced with bounded polling, delayed and failed
-readiness plus interruption cleanup were exercised, every unreached product
-transition was reviewed, and a private exact owner proposal was produced. This
-tool result authorizes no external work. The owner must still separately decide
-whether to authorize one new bounded resource run, and both fresh hosts must
-pass harmless calibration before product upload.
+`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`. Its readiness component passed, but its
+first whole execution package was then rejected locally because the named
+stages had no real executables. A corrected revision now passes local-only
+actual-entrypoint, bounded-readiness, failure, interruption, partial-state,
+collection, cleanup, and destruction checks. This tool result authorizes no
+external work. The owner must still separately approve the corrected exact
+proposal before one new bounded resource run, and both fresh hosts must pass
+harmless calibration before product upload.
 
 That successor cannot retroactively complete Phase 3. Production audit,
 remediation, deployability, and stable release work remain inactive unless a

@@ -1,8 +1,8 @@
 # Phase 3 Closeout And Integration Recovery Boundary
 
 Status: Phase 3 closed incomplete on 2026-07-19. The frozen candidate has a
-final `NO_GO` decision. The separate IRP-0 local controller qualification has
-passed, but no replacement remote run is active or authorized.
+final `NO_GO` decision. The separate recovery route has a corrected local
+execution package, but no replacement remote run is active or authorized.
 
 ## Product Result
 
@@ -65,17 +65,20 @@ Before any provider query or server authorization, the local-only gate had to:
 5. choose exact source, package, signature, controller, and acceptance inputs;
 6. produce one human-readable proposal and exact manifest for owner review.
 
-IRP-0 passed these local gates. The bounded readiness code was exercised with
-real local processes for delayed startup, permanent non-readiness, early exit,
-interruption, and cleanup, including a repeated timing batch. The four-way
-result firewall and previously unreached transition review also passed. IRP-0
-is a tool/readiness result, not a product result. See
-`IRP_CONTROLLER_QUALIFICATION.md`.
+The readiness component passed with real local processes for delayed startup,
+permanent non-readiness, early exit, interruption, and cleanup, including a
+repeated timing batch. A later no-cost preflight then correctly rejected the
+first whole execution package because its real stage executables were missing;
+that proposal was closed without external action. A corrected revision now
+passes actual-entrypoint, four-way classification, partial-state, collection,
+cleanup, and destruction checks locally. This remains a tool/readiness result,
+not a product result. See `IRP_CONTROLLER_QUALIFICATION.md`.
 
 ### IRP-1: separately authorized integration qualification
 
-IRP-0 has produced a private exact proposal, but it is not authorized. The
-owner must separately approve its exact hash before any external action. That
+The corrected local gate has produced a new private exact proposal, but it is
+not authorized. The earlier proposal cannot be reused. The owner must
+separately approve the corrected exact hash before any external action. That
 approval must cover the provider and account, region, host roles, platform and
 size, resource count, maximum cost, expected and hard time limits, stop
 thresholds, destruction action, and fresh lease/run identity.
@@ -93,6 +96,6 @@ outcome automatically starts production audit or release work.
 
 ## Authorization Boundary
 
-The IRP-0 result authorizes no external work. It does not authorize credentials,
-provider queries, remote access, resource creation, spending, CI, tags,
-publication, or release operations.
+The local recovery result authorizes no external work. It does not authorize
+credentials, provider queries, remote access, resource creation, spending, CI,
+tags, publication, or release operations.

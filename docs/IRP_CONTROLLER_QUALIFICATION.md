@@ -1,8 +1,11 @@
 # Integration Recovery Controller Qualification
 
-Status: the local-only IRP-0 controller qualification passed on 2026-07-19.
-No server run is active or authorized. This result does not change the final
-Phase 3 `NO_GO` decision.
+Status: the readiness component passed locally on 2026-07-19, but the first
+whole IRP execution package was then rejected by a no-cost preflight because
+its real stage executables were missing. A corrected executable package has
+since passed a new local-only qualification. No server run is active or
+authorized. These tool results do not change the final Phase 3 `NO_GO`
+decision.
 
 ## What Passed
 
@@ -24,6 +27,13 @@ run-owned-directory residue. The fixed controller's ordering, fail-stop,
 receipt, collection, destruction, and four-way classification rules passed
 their unit checks.
 
+The corrected package also exercises its actual fixed stage entrypoints rather
+than only a simulated runner. Local fixtures cover complete success, qualified
+product rejection, unqualified-label rejection, controller interruption,
+partial resource creation, collection replay, destruction replay, and parsing
+of every rendered remote command. An independent hard-deadline guard stops the
+active process group before collection and destruction.
+
 ## Result Firewall
 
 Every future integration run must end with exactly one of:
@@ -40,12 +50,13 @@ destruction path in one run. Partial runs are never combined.
 
 ## What Remains
 
-IRP-0 is only a local tool result. It did not query a provider, create a host,
-use SSH, upload inputs, install a package, start Maverick, inject a fault, or
-spend money.
+This is still only a local tool result. It did not query a provider, create a
+host, use SSH, upload inputs, install a package, start Maverick, inject a fault,
+or spend money.
 
-A private exact IRP-1 proposal exists, but it has no authorization. If the
-owner later approves that exact proposal, two fresh direct disposable Ubuntu
+A corrected private exact IRP-1 proposal exists, but it has no authorization.
+The earlier proposal is closed and cannot be reused. If the owner later
+approves the corrected exact proposal, two fresh direct disposable Ubuntu
 hosts must first pass harmless delayed-start, never-ready, early-exit,
 interruption, cleanup, and zero-residue calibration. Product inputs cannot be
 uploaded before both calibrations pass.

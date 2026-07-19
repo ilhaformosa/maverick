@@ -79,10 +79,13 @@ tag, package publication, production audit, deployment approval, or release is
 authorized. See `docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` for the preserved
 evidence boundary and the conditions for any separate successor program.
 
-The independent IRP-0 local controller gate has since passed delayed-start,
-never-ready, early-exit, interruption, cleanup, strict classification, and
-unreached-transition checks. No server action is authorized by that tool
-result. See `docs/IRP_CONTROLLER_QUALIFICATION.md`.
+The independent recovery route first passed its readiness component, then
+correctly rejected its initial whole execution package before any external
+action because fixed stage executables were missing. A corrected executable
+package has since passed local-only delayed-start, failure, interruption,
+cleanup, partial-state, strict-classification, and stage-entrypoint checks. No
+server action is authorized by that tool result. See
+`docs/IRP_CONTROLLER_QUALIFICATION.md`.
 
 ## Active Milestones
 
@@ -123,9 +126,10 @@ The detailed gates are in `docs/PLAN_POST_V1.md`:
   cross-platform clients, and production readiness remain open. Phase 3 itself
   is now closed incomplete: its server-first engineering rehearsal did not
   reach client installation or the product smoke path, and no follow-up
-  acceptance started. The separate IRP-0 local tool gate has passed, but any
-  future server work still requires a fresh exact owner decision. IPv6 is not
-  scheduled.
+  acceptance started. The first recovery execution package was rejected
+  locally; its corrected executable revision now passes only the local tool
+  gate. Any future server work still requires a fresh exact owner decision.
+  IPv6 is not scheduled.
 
 M1-M3 are the first implementation group. M4-M6 follow after review of that
 baseline. M7-M8 depend on measured results.

@@ -103,10 +103,12 @@ separate Integration Recovery Program defined in
 first whole execution package was then rejected locally because the named
 stages had no real executables. A corrected revision now passes local-only
 actual-entrypoint, bounded-readiness, failure, interruption, partial-state,
-collection, cleanup, and destruction checks. This tool result authorizes no
-external work. The owner must still separately approve the corrected exact
-proposal before one new bounded resource run, and both fresh hosts must pass
-harmless calibration before product upload.
+collection, cleanup, and destruction checks. Its one authorized integration
+run later stopped during read-only provider preflight, before resource
+creation, because a truncated response escaped the adapter's safe GET-retry
+path. It produced no host or product result and no spending. No replacement is
+authorized. Any future return requires a new project-level decision, corrected
+and requalified tooling, and fresh exact authorization.
 
 That successor cannot retroactively complete Phase 3. Production audit,
 remediation, deployability, and stable release work remain inactive unless a

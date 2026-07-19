@@ -2,7 +2,8 @@
 
 Status: Phase 3 closed incomplete on 2026-07-19. The frozen candidate has a
 final `NO_GO` decision. The separate recovery route has a corrected local
-execution package, but no replacement remote run is active or authorized.
+execution package, but its one integration run stopped before resource
+creation. No replacement remote run is active or authorized.
 
 ## Product Result
 
@@ -74,28 +75,28 @@ passes actual-entrypoint, four-way classification, partial-state, collection,
 cleanup, and destruction checks locally. This remains a tool/readiness result,
 not a product result. See `IRP_CONTROLLER_QUALIFICATION.md`.
 
-### IRP-1: separately authorized integration qualification
+### IRP-1: closed integration qualification
 
-The corrected local gate has produced a new private exact proposal, but it is
-not authorized. The earlier proposal cannot be reused. The owner must
-separately approve the corrected exact hash before any external action. That
-approval must cover the provider and account, region, host roles, platform and
-size, resource count, maximum cost, expected and hard time limits, stop
-thresholds, destruction action, and fresh lease/run identity.
+The corrected local gate produced a new private exact proposal and received
+one exact authorization. Its controller armed the bounded guard and began
+read-only provider preflight. A truncated response then escaped the adapter's
+safe GET-retry path, so the run stopped before any resource-create request.
+No host, remote access, package action, product process, product result, or
+spending occurred.
 
-IRP-1 has one resource run and no automatic replacement or retry run. It must
-again use fresh disposable hosts, collect before cleanup, destroy all
-run-owned resources, and preserve the Phase 3 record regardless of outcome.
+IRP-1 allowed one resource run and no automatic replacement. That allowance is
+consumed and closed. Any future server work requires a new project-level
+decision, a new run identity, corrected and requalified tooling, and fresh
+exact owner authorization.
 
 ### IRP-2: outcome decision
 
-If IRP-1 passes the complete product path, the project may separately decide
-whether to create a new candidate and a small acceptance gate. If IRP-1 fails,
-the program stops and returns to a candidate or architecture decision. Neither
-outcome automatically starts production audit or release work.
+IRP-1 did not reach the product path, so IRP-2 did not start. The program has
+stopped and returned to a project-level tooling/architecture decision. This
+does not automatically start production audit or release work.
 
 ## Authorization Boundary
 
-The local recovery result authorizes no external work. It does not authorize
-credentials, provider queries, remote access, resource creation, spending, CI,
-tags, publication, or release operations.
+The closed recovery result authorizes no further external work. It does not
+authorize credentials, provider queries, remote access, resource creation,
+spending, CI, tags, publication, or release operations.

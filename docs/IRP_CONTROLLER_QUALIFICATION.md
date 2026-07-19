@@ -3,9 +3,10 @@
 Status: the readiness component passed locally on 2026-07-19, but the first
 whole IRP execution package was then rejected by a no-cost preflight because
 its real stage executables were missing. A corrected executable package has
-since passed a new local-only qualification. No server run is active or
-authorized. These tool results do not change the final Phase 3 `NO_GO`
-decision.
+since passed a new local-only qualification. Its single authorized integration
+run then stopped during provider preflight before resource creation. No server
+run is active or authorized. These tool results do not change the final Phase
+3 `NO_GO` decision.
 
 ## What Passed
 
@@ -50,17 +51,14 @@ destruction path in one run. Partial runs are never combined.
 
 ## What Remains
 
-This is still only a local tool result. It did not query a provider, create a
-host, use SSH, upload inputs, install a package, start Maverick, inject a fault,
-or spend money.
+The corrected proposal received one exact authorization. The controller armed
+its safety deadline and began read-only provider preflight, but a truncated
+response escaped the adapter's safe GET-retry path. It stopped before any
+resource-create request. No host, SSH session, upload, package installation,
+Maverick process, fault action, product result, or spending occurred.
 
-A corrected private exact IRP-1 proposal exists, but it has no authorization.
-The earlier proposal is closed and cannot be reused. If the owner later
-approves the corrected exact proposal, two fresh direct disposable Ubuntu
-hosts must first pass harmless delayed-start, never-ready, early-exit,
-interruption, cleanup, and zero-residue calibration. Product inputs cannot be
-uploaded before both calibrations pass.
-
-IRP-1 would have one resource run and no automatic replacement. It would not be
-Phase 3 attempt 5, would not alter the frozen candidate, and would not by itself
-authorize a successor candidate, production audit, deployment, release, or Go.
+The one-run allowance is consumed and closed. No automatic replacement is
+authorized. Any future return requires a new project-level decision, a new run
+identity, corrected and requalified adapter behavior, and fresh exact owner
+authorization. It still cannot be called Phase 3 attempt 5 or authorize a
+successor candidate, production audit, deployment, release, or Go by itself.

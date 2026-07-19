@@ -83,8 +83,11 @@ The independent recovery route first passed its readiness component, then
 correctly rejected its initial whole execution package before any external
 action because fixed stage executables were missing. A corrected executable
 package has since passed local-only delayed-start, failure, interruption,
-cleanup, partial-state, strict-classification, and stage-entrypoint checks. No
-server action is authorized by that tool result. See
+cleanup, partial-state, strict-classification, and stage-entrypoint checks. Its
+one authorized integration run later stopped during read-only provider
+preflight, before resource creation, because a truncated response escaped the
+adapter's safe GET-retry path. It produced a tool failure, no host or product
+result, and no spending. No replacement run is authorized. See
 `docs/IRP_CONTROLLER_QUALIFICATION.md`.
 
 ## Active Milestones
@@ -127,9 +130,11 @@ The detailed gates are in `docs/PLAN_POST_V1.md`:
   is now closed incomplete: its server-first engineering rehearsal did not
   reach client installation or the product smoke path, and no follow-up
   acceptance started. The first recovery execution package was rejected
-  locally; its corrected executable revision now passes only the local tool
-  gate. Any future server work still requires a fresh exact owner decision.
-  IPv6 is not scheduled.
+  locally; its corrected executable revision passed the local tool gate, but
+  its single integration run stopped during provider preflight before resource
+  creation. Any future server work requires a new project-level decision,
+  corrected and requalified tooling, and fresh exact authorization. IPv6 is
+  not scheduled.
 
 M1-M3 are the first implementation group. M4-M6 follow after review of that
 baseline. M7-M8 depend on measured results.

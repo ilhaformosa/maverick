@@ -85,9 +85,12 @@ work requires a separate project-level decision; see
 The separate recovery route's readiness component later passed, but its first
 whole execution package was rejected locally before external action because
 real stage executables were missing. A corrected executable revision now
-passes only local tool checks. It ran no product and does not change this
-result. Any future server run still needs a fresh exact owner authorization and
-cannot retroactively complete Phase 3.
+passes local tool checks, but its one authorized integration run stopped during
+read-only provider preflight before resource creation because a truncated
+response escaped the adapter's safe GET-retry path. It ran no product, created
+no host, spent no money, and does not change this result. Any future server run
+requires a new project-level decision and cannot retroactively complete Phase
+3.
 
 The frozen first-stage identity is release train `1.2.0`, tag
 `v1.2.0-alpha.1`, Maverick and reference-client software

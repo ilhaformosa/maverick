@@ -93,8 +93,11 @@ No-Go.
   first whole execution package was then rejected before external action
   because fixed stage executables were missing. A corrected executable
   revision now passes local actual-entrypoint, partial-state, interruption,
-  cleanup, destruction, and strict four-way classification checks. It
-  performed no server or product work and authorizes none.
+  cleanup, destruction, and strict four-way classification checks. Its one
+  authorized integration run then stopped during read-only provider preflight:
+  a truncated response escaped the adapter's safe GET-retry path. No resource
+  was created, no product step ran, no money was spent, and no replacement run
+  is authorized.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS
@@ -125,9 +128,10 @@ No-Go.
 5. Preserve the Phase 3 incomplete closeout and frozen candidate without
    relabelling partial server runs as product evidence.
 6. Keep remote integration work stopped. The separate Integration Recovery
-   Program's local controller gate is complete, but any return still requires a
-   new exact owner decision and harmless calibration on both fresh hosts before
-   product upload.
+   Program consumed its single run before resource creation. Any return now
+   requires a new project-level decision, corrected and requalified tooling,
+   fresh exact owner authorization, and harmless calibration on both fresh
+   hosts before product upload.
 7. Keep the production ledger at No-Go until a future project establishes
    accepted platform evidence, an independent audit, deployability, and final
    approval for one exact candidate.

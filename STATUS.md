@@ -97,10 +97,13 @@ No-Go.
   authorized integration run then stopped during read-only provider preflight:
   a truncated response escaped the adapter's safe GET-retry path. No resource
   was created, no product step ran, no money was spent, and no replacement run
-  is authorized. A separately established transport-recovery package now
-  passes real-loopback truncated-body/disconnect handling, bounded idempotent
-  retries, zero POST retry, and all inherited local gates. Its fresh proposal
-  is not externally authorized and it has run no product.
+  was authorized. A separately established transport-recovery package then
+  passed real-loopback truncated-body/disconnect handling, bounded idempotent
+  retries, zero POST retry, and all inherited local gates. Its single
+  authorized run stopped during read-only provider plan preflight after both
+  bounded GET attempts failed with the broad class `transport`; the precise
+  exception was not persisted. It created no resource, ran no product, spent
+  no money, and has no authorized successor.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS
@@ -131,10 +134,10 @@ No-Go.
 5. Preserve the Phase 3 incomplete closeout and frozen candidate without
    relabelling partial server runs as product evidence.
 6. Keep remote integration work stopped. The separate Integration Recovery
-   Program consumed its single run before resource creation. The new
-   project-level transport correction is locally qualified, but any return
-   still requires fresh exact owner authorization and harmless calibration on
-   both fresh hosts before product upload.
+   Program and its transport-recovery successor each consumed their single run
+   before resource creation. Any return requires another project-level
+   decision, fresh exact owner authorization, and harmless calibration on both
+   fresh hosts before product upload.
 7. Keep the production ledger at No-Go until a future project establishes
    accepted platform evidence, an independent audit, deployability, and final
    approval for one exact candidate.

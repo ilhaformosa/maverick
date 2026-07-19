@@ -6,8 +6,9 @@ its real stage executables were missing. A corrected executable package has
 since passed a new local-only qualification. Its single authorized integration
 run then stopped during provider preflight before resource creation. No server
 run is active or authorized. A separately established transport-recovery
-package has since passed a new local-only gate for that exact failure. These
-tool results do not change the final Phase 3 `NO_GO` decision.
+package then passed a new local-only gate and consumed its single authorized
+run during read-only provider plan preflight, also before resource creation.
+These tool results do not change the final Phase 3 `NO_GO` decision.
 
 ## What Passed
 
@@ -61,10 +62,16 @@ Maverick process, fault action, product result, or spending occurred.
 The one-run allowance is consumed and closed. No automatic replacement is
 authorized.
 
-The independent Integration Transport Recovery package uses a new run
+The independent Integration Transport Recovery package used a new run
 identity and proposal. Its real-loopback tests truncate the declared HTTP body
 or disconnect before the status line, then prove GET/DELETE retry at most once,
 POST retry zero, bounded fail-stop, redacted attempt logging, and all inherited
-controller/cleanup gates. This remains local tool qualification only. Its new
-proposal is not externally authorized and cannot authorize a successor
-candidate, production audit, deployment, release, or Go by itself.
+controller/cleanup gates.
+
+Its single authorized run confirmed that the bounded retry path caught the
+provider plan-list transport failure and retried once. The second attempt also
+failed with the persisted broad class `transport`, so the controller stopped
+before resource creation. The journal did not persist the underlying exception
+class, so the precise cause is undetermined. No host, remote access, package
+action, product process, product result, or spending occurred. The one-run
+allowance is consumed; no replacement or successor is authorized.

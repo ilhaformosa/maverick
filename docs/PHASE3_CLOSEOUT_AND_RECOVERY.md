@@ -1,9 +1,9 @@
 # Phase 3 Closeout And Integration Recovery Boundary
 
 Status: Phase 3 closed incomplete on 2026-07-19. The frozen candidate has a
-final `NO_GO` decision. The separate recovery route has a corrected local
-execution package, but its one integration run stopped before resource
-creation. No replacement remote run is active or authorized.
+final `NO_GO` decision. The separate recovery route and its transport-recovery
+successor each consumed one integration run before resource creation. No
+replacement remote run is active or authorized.
 
 ## Product Result
 
@@ -89,7 +89,7 @@ consumed and closed. Any future server work requires a new project-level
 decision, a new run identity, corrected and requalified tooling, and fresh
 exact owner authorization.
 
-### ITR-1: local transport recovery gate
+### ITR-1: closed transport recovery run
 
 The project separately established Integration Transport Recovery after the
 IRP-1 closeout. It uses a new identity and does not inherit the old
@@ -99,17 +99,26 @@ none for POST, records redacted attempt outcomes, and reruns every inherited
 controller, entrypoint, readiness, package-alignment, collection and
 destruction check.
 
-That local gate passes, but it ran no product and authorizes no external work.
-A fresh private proposal exists and requires a separate exact owner decision.
+That local gate passed. Its fresh private proposal then received one exact
+authorization. During the read-only provider plan preflight, the corrected
+adapter caught a transport failure and used its one safe GET retry. The second
+attempt also failed with the broad persisted class `transport`, so the
+controller stopped before any provider mutation. The precise underlying
+exception was not persisted and remains undetermined.
+
+No host, remote access, package action, product process, product result, or
+spending occurred. Fail-stop collection and zero-resource destruction passed.
+The single-run allowance is consumed and closed; no replacement or successor
+is authorized.
 
 ### IRP-2: outcome decision
 
-IRP-1 did not reach the product path, so IRP-2 did not start. The program has
-stopped and returned to a project-level tooling/architecture decision. This
-does not automatically start production audit or release work.
+Neither IRP-1 nor ITR-1 reached the product path, so IRP-2 did not start. The
+program has stopped and returned to a project-level tooling/architecture
+decision. This does not automatically start production audit or release work.
 
 ## Authorization Boundary
 
-The closed IRP-1 result and local ITR-1 result authorize no external work. They
+The closed IRP-1 and ITR-1 results authorize no external work. They
 do not authorize credentials, provider queries, remote access, resource
 creation, spending, CI, tags, publication, or release operations.

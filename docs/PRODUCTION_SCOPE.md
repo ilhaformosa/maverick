@@ -90,9 +90,12 @@ read-only provider preflight before resource creation because a truncated
 response escaped the adapter's safe GET-retry path. It ran no product, created
 no host, spent no money, and does not change this result. Any future server run
 requires a new project-level decision and cannot retroactively complete Phase
-3. A separately established transport-recovery package now passes a local
-real-response-read regression and all inherited tool gates, but its fresh
-proposal is not externally authorized and is not product evidence.
+3. A separately established transport-recovery package then passed a local
+real-response-read regression and all inherited tool gates. Its single
+authorized run stopped during read-only provider plan preflight after both
+bounded GET attempts failed with the broad class `transport`; the precise
+exception was not persisted. It created no resource, ran no product, spent no
+money, and has no authorized successor. This is not product evidence.
 
 The frozen first-stage identity is release train `1.2.0`, tag
 `v1.2.0-alpha.1`, Maverick and reference-client software

@@ -107,10 +107,13 @@ collection, cleanup, and destruction checks. Its one authorized integration
 run later stopped during read-only provider preflight, before resource
 creation, because a truncated response escaped the adapter's safe GET-retry
 path. It produced no host or product result and no spending. No replacement is
-authorized. A separately established transport-recovery package now passes
+authorized. A separately established transport-recovery package then passed
 real-loopback truncated-body/disconnect handling, bounded GET/DELETE retry,
-zero POST retry, redacted attempt logging, and every inherited local gate. It
-has a fresh proposal but no external authorization.
+zero POST retry, redacted attempt logging, and every inherited local gate. Its
+single authorized run stopped during read-only provider plan preflight after
+both bounded GET attempts failed with the broad class `transport`; the precise
+exception was not persisted. It created no resource, ran no product, spent no
+money, and has no authorized successor.
 
 That successor cannot retroactively complete Phase 3. Production audit,
 remediation, deployability, and stable release work remain inactive unless a

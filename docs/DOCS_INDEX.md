@@ -30,12 +30,10 @@ available without being part of the everyday reading path.
   cutover facts, verification, and claim boundary.
 - `docs/PRODUCTION_SCOPE.md`: narrow Linux/H2/IPv4 production-claim candidate
   and current No-Go boundary.
-- `docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`: final incomplete Phase 3 result and
-  the local-first decision boundary for any separate integration-recovery
-  program.
-- `docs/IRP_CONTROLLER_QUALIFICATION.md`: accepted local controller/readiness
-  qualification, strict result labels, and the remaining remote-authorization
-  boundary.
+- `docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`: terminal incomplete Phase 3 result
+  and retired recovery history.
+- `docs/IRP_CONTROLLER_QUALIFICATION.md`: historical local controller/readiness
+  qualification and strict result labels; it is not an active gate.
 - `docs/INDEPENDENT_AUDIT_PACKAGE.md` and `docs/AUDIT_EVIDENCE_INDEX.md`:
   pre-freeze reviewer instructions and exact Phase 3 input contracts.
 - `docs/SECURITY_DISCLOSURE_WORKFLOW.md` and
@@ -117,7 +115,7 @@ Active protocol/release inputs:
 - `production-readiness.json` plus
   `scripts/check-production-readiness.py`;
 - `docs/PHASE3_B_CANDIDATE_SUMMARY.md`: redacted exact-source, package,
-  signing, and freeze input for the current candidate;
+  signing, and freeze input for the archived candidate;
 - `.github/workflows/ci.yml`, `.github/workflows/release-candidate.yml`, and
   `scripts/check-ci-gates.py`;
 - `spikes/tun-engine-comparison/` plus

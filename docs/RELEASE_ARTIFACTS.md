@@ -24,9 +24,9 @@ MAVERICK_RELEASE_VERSION=X.Y.Z ./scripts/release-artifacts.sh
 
 Only publish targets that were built and smoke-tested for that release.
 
-For the narrow `v1.2.0` candidate, the named target is Ubuntu 26.04 LTS `amd64`.
-Its formal artifact and runtime evidence must come from a source-bound disposable
-target fixture. A build or run on another host OS does not create Ubuntu support.
+For the archived narrow `v1.2.0` candidate, the named target was Ubuntu 26.04
+LTS `amd64`. No artifact publication is active for that candidate. A build or
+run on another host OS does not create Ubuntu support.
 
 ## Release-Candidate CI Artifact Check
 
@@ -45,9 +45,9 @@ commit.
 
 This public artifact check does not build the private reference-client Debian
 package and does not replace its signed package or publication evidence.
-For the planned alpha, its software version is `1.2.0-alpha.1` and its Debian
-package version is `1.2.0~alpha.1-1`; the exact package hash remains a separate
-freeze input.
+For the archived alpha identity, its software version is `1.2.0-alpha.1` and
+its Debian package version is `1.2.0~alpha.1-1`; the exact package hash remains
+a separate historical freeze input.
 
 ## GitHub Release Attachment Rule
 

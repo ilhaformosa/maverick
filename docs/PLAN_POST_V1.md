@@ -1,9 +1,9 @@
 # Post-v1 Execution Plan
 
 Status: active post-v1 record and execution boundary. Phase 3 closed incomplete
-on 2026-07-19 with a final `NO_GO` decision; no replacement server program is
-active. The completed v1 release train remains historical evidence in
-`docs/PLAN_SHORT_TERM_TO_V1.md`.
+on 2026-07-19 with a final `NO_GO` decision, and every recovery route was
+terminally retired on 2026-07-20. The completed v1 release train remains
+historical evidence in `docs/PLAN_SHORT_TERM_TO_V1.md`.
 
 ## Direction
 
@@ -36,18 +36,17 @@ rework, but they are not a support promise, release gate, or product-readiness
 claim. Future IPv6 work requires a new explicit decision, scope, and evidence
 plan.
 
-## Narrow Production Candidate
+## Archived Narrow Production Candidate
 
 Phase 3-C defines only one achievable production-claim target:
 `maverick-linux-h2-ipv4-v1`. It combines the `maverick` server/CLI and the
 `maverick-reference-client` Debian package on Ubuntu 26.04 LTS `amd64`, IPv4,
 using the stable TLS 1.3 plus HTTP/2 path.
 
-This target is frozen but not approved. Formal supported-platform evidence must
-come from a source-bound disposable Ubuntu 26.04 target fixture. Results from a
-physical host running another OS cannot be relabeled as Ubuntu evidence.
-`production-readiness.json` keeps code, evidence, audit, deployability, and
-production approval separate and currently records No-Go.
+This target is frozen, archived, and not approved. It is no longer an active
+release or server-work target. `production-readiness.json` keeps code, evidence,
+audit, deployability, and production approval separate and records the final
+No-Go result.
 
 The frozen first-stage identity is release train `1.2.0`, release tag
 `v1.2.0-alpha.1`, Maverick and reference-client software
@@ -87,9 +86,9 @@ hosts, or claim that later code was covered by the running evidence.
 | 5 | complete | 13 response-shape gates, Hyper fallback, H2/H3 body preservation, residual registry, and CI pass |
 | 6 | complete | diagnostic/regression layers are accepted; milestone 24-hour, 8-hour impairment, and failure closure share tested source commit `b3a1793` |
 | 7 | accepted | direct H2 remains the v1.x default, CDN WebSocket stays explicit, and handshake-layer work is gated to v2 research |
-| 8 | Phase 2 accepted; Phase 3 closed incomplete No-Go | Phase 2 IPv4 evidence and the exact-source Phase 3-B package/signature/freeze inputs remain accepted within their recorded boundaries. One corrected historical eight-hour gate remains accepted for its exact source. The final Phase 3 server-first rehearsal built its server and verified the signed package, but a controller readiness race stopped it before client installation; product smoke, expected reject, restart, purge, and follow-up acceptance were not completed. No partial run is combined into a pass. Any future server work requires a separate Integration Recovery Program decision; IPv6 remains unscheduled. |
+| 8 | Phase 2 accepted; Phase 3 terminally closed incomplete No-Go | Phase 2 IPv4 evidence and the exact-source Phase 3-B package/signature/freeze inputs remain accepted within their recorded boundaries. One corrected historical eight-hour gate remains accepted for its exact source. No Phase 3 or recovery run completed the two-host product path, no partial run is combined into a pass, and the recovery program is retired. IPv6 remains unscheduled. |
 
-## Phase 3 Closeout And Successor Boundary
+## Phase 3 Terminal Closeout
 
 Phase 3 ended incomplete on 2026-07-19. The frozen candidate remains parked
 with a final `NO_GO` decision. Phase 3-A input, evidence completion, independent
@@ -97,40 +96,20 @@ audit, deployability, production approval, and release remain incomplete.
 Accepted Phase 3-B inputs and public candidate controls remain provenance only;
 they are not reopened or relabelled.
 
-No paid or remote successor is active. A future return to servers must use the
-separate Integration Recovery Program defined in
-`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`. Its readiness component passed, but its
-first whole execution package was then rejected locally because the named
-stages had no real executables. A corrected revision now passes local-only
-actual-entrypoint, bounded-readiness, failure, interruption, partial-state,
-collection, cleanup, and destruction checks. Its one authorized integration
-run later stopped during read-only provider preflight, before resource
-creation, because a truncated response escaped the adapter's safe GET-retry
-path. It produced no host or product result and no spending. No replacement is
-authorized. A separately established transport-recovery package then passed
-real-loopback truncated-body/disconnect handling, bounded GET/DELETE retry,
-zero POST retry, redacted attempt logging, and every inherited local gate. Its
-single authorized run stopped during read-only provider plan preflight after
-both bounded GET attempts failed with the broad class `transport`; the precise
-exception was not persisted. It created no resource, ran no product, spent no
-money, and has no authorized successor. A later remote-first successor removed
-the large catalog request and created exactly two disposable hosts, then
-stopped after two classified readiness-poll disconnects before SSH or product
-upload. Exact delayed cleanup deleted both hosts and the run-owned key and
-confirmed zero. Its single run is closed and no successor is authorized. A
-later remote-controller successor armed its independent guard and reached one
-narrow authenticated provider preflight without relying on the developer
-machine for live control. Source-address access policy rejected that GET before
-any create request. It created no resource, ran no product, incurred no
-billable resource cost, removed the transient credential and run-owned key, and
-confirmed zero. That single run is also closed. Any future paid proposal must
-be preceded by a separately authorized zero-resource authenticated access
-check from the final controller location.
+Every recovery route is also closed. Their local tooling checks and bounded
+external results remain historical evidence only. The last project-server run
+created two hosts, passed both login preflights and one harmless calibration,
+then stopped before source upload because a root-owned mode-0600 receipt could
+not be read by the named login user. Exact destruction confirmed zero hosts,
+keys, credentials, and controller residue. This is a tool failure, not a
+protocol/package result.
 
-That successor cannot retroactively complete Phase 3. Production audit,
-remediation, deployability, and stable release work remain inactive unless a
-later complete integration result supports a new project-level decision.
-The sanitized local qualification boundary is in
+On 2026-07-20 the owner and coordinator retired the entire recovery program.
+There is no active Phase 3 server gate, successor, proposal, or release path.
+Production audit, remediation, deployability, Phase 4, and stable release work
+remain inactive for this candidate. Any future productization effort requires a
+newly named candidate and new roadmap and cannot retroactively complete Phase
+3. The historical boundaries are in `docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` and
 `docs/IRP_CONTROLLER_QUALIFICATION.md`.
 
 ## 1. Planning Truth And CI Layers
@@ -441,9 +420,14 @@ These results do not transfer unrelated privileged claims from older sources.
 The later server-first Phase 3 route closed incomplete. Its final bounded
 rehearsal confirmed a fresh server build and signed-package verification, but a
 controller readiness race stopped the run before the target package was
-installed. No client-to-server smoke, expected reject, restart recovery, or
-normal purge result was accepted. The planned follow-up engineering acceptance
-did not start. The detailed current boundary is
+installed. Later recovery programs repeatedly stopped in their tooling or
+environment before the complete product path. The last project-server run
+created two hosts and passed login plus harmless calibration, then stopped when
+the named login user could not read a root-owned mode-0600 controller receipt.
+It uploaded no source, built no product, installed no package, and destroyed all
+run-owned resources. These are not protocol/package failures and are not a
+product pass. On 2026-07-20 the owner and coordinator retired every Phase 3
+recovery route. The detailed terminal boundary is
 `docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`.
 
 One eight-hour sustained attempt on the historical source completed 28,800
@@ -484,14 +468,13 @@ combined.
 - `v1.1.0`: pre-publication private stable engineering release after
   exact-commit release-artifact, migration, compatibility, CI, signature,
   privacy, and post-release gates passed without a blocker.
-- `v1.2.0`: one IPv4 reference-client path, sustained product lifecycle and
-  resource evidence, and demand-backed ecosystem work without changing the v1
-  wire or authentication formats.
+- `v1.2.0`: archived, blocked candidate identity that did not earn the required
+  two-host product evidence and does not advance to beta, RC, or stable.
 - No incompatible major release is planned. Wire-incompatible multiplexing,
   handshake-layer fallback, or another material protocol semantic change would
   require a separate compatibility, migration, and security decision.
 
-The sanitized public `v1.2.0` train uses these exact staged gates:
+The archived public `v1.2.0` train retains these exact staged gates:
 
 - `v1.2.0-alpha.1`: frozen code-complete candidate;
 - `v1.2.0-beta.1`: coordinator-accepted evidence-complete candidate;
@@ -504,14 +487,13 @@ not authorize tags or publication.
 Version numbers are release promises, not names for incomplete internal design
 tracks.
 
-The sanitized public repository does not recreate these private historical
-tags. Its first release must use a previously unused version; the planned
-first public candidate is `v1.2.0-alpha.1` after its applicable gates pass.
-See `docs/PUBLIC_HISTORY_BOUNDARY.md`.
+The sanitized public repository does not recreate private historical tags. No
+public candidate is currently planned. Any future release must use a separately
+approved, previously unused version and a new roadmap. See
+`docs/PUBLIC_HISTORY_BOUNDARY.md`.
 
-The ledger accepts the same exact software/tag/package mapping for beta, RC,
-and stable while a future stage is still planned but not frozen. Version names
-and freeze evidence remain separate.
+The ledger retains the historical software/tag/package mappings so the blocked
+record remains verifiable. Version names and freeze evidence remain separate.
 
 ## v1.1 Candidate And Stable Gate
 
@@ -544,9 +526,9 @@ software is actually running and producing relevant evidence, or when external
 users, deployments, scheduled jobs, or time-sensitive behavior can reveal new
 information. Waiting without an active evidence source is not a release gate.
 
-The active release-development milestone is now `v1.2.0`: select and build one
-IPv4 reference-client path, then collect sustained lifecycle and resource
-evidence without changing the v1 wire or authentication formats.
+There is no active release-development milestone. The frozen `v1.2.0-alpha.1`
+candidate and its blocked gates are archival. A future release-development
+milestone requires a new explicit roadmap and version decision.
 
 ## Standing Rules
 

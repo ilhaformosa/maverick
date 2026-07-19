@@ -1,9 +1,9 @@
 # Narrow Production Scope Candidate
 
-Status: frozen and parked scope definition for `v1.2.0`. Phase 3 closed
-incomplete with a final `NO_GO` decision. This document defines the smallest
-production claim Maverick had tried to earn; it does not say that the claim was
-earned.
+Status: frozen and archived scope definition for `v1.2.0`. Phase 3 closed
+incomplete with a final `NO_GO` decision, and every recovery route was retired
+on 2026-07-20. This document defines the smallest production claim Maverick had
+tried to earn; it does not say that the claim was earned.
 
 ## Candidate Name
 
@@ -73,39 +73,23 @@ The candidate is frozen and the Phase 3-B input is accepted. Exact-source
 post-freeze release-candidate CI also passed, but Phase 3 closed without an
 accepted Phase 3-A input. Deployability and a formal independent production
 audit are still missing. The final Phase 3 result is therefore **No-Go** and the
-candidate is parked.
+candidate is archived rather than advanced.
 
-The last bounded engineering rehearsal stopped at a controller readiness race
-before client package installation. It did not complete positive traffic,
-expected rejection, restart recovery, or purge. This is not a demonstrated
-protocol/package failure and is not product acceptance. Any return to server
-work requires a separate project-level decision; see
+The original server-first rehearsal and every later recovery route stopped in
+tooling or environment control before a complete product path. The last
+project-server run created two disposable hosts and passed both login preflights
+plus one harmless calibration, but the controller could not transfer a
+root-owned mode-0600 receipt to its named login user. It stopped before source
+upload, build, package installation, or protocol smoke and then confirmed zero
+run-owned hosts and keys. This is not a demonstrated protocol/package failure
+and is not product acceptance.
+
+The owner and coordinator retired the recovery program on 2026-07-20. No
+server-recovery proposal, Phase 3 successor, production audit, deployability
+work, or release progression is active for this candidate. A future
+productization effort must define a newly named candidate and roadmap; it
+cannot retroactively complete or relabel Phase 3. See
 `PHASE3_CLOSEOUT_AND_RECOVERY.md`.
-
-The separate recovery route's readiness component later passed, but its first
-whole execution package was rejected locally before external action because
-real stage executables were missing. A corrected executable revision now
-passes local tool checks, but its one authorized integration run stopped during
-read-only provider preflight before resource creation because a truncated
-response escaped the adapter's safe GET-retry path. It ran no product, created
-no host, spent no money, and does not change this result. Any future server run
-requires a new project-level decision and cannot retroactively complete Phase
-3. A separately established transport-recovery package then passed a local
-real-response-read regression and all inherited tool gates. Its single
-authorized run stopped during read-only provider plan preflight after both
-bounded GET attempts failed with the broad class `transport`; the precise
-exception was not persisted. It created no resource, ran no product, spent no
-money, and has no authorized successor. A later remote-first successor created
-exactly two disposable hosts, but stopped after two classified readiness-poll
-disconnects before SSH, package installation, or product execution. Delayed
-exact cleanup confirmed zero hosts and run-owned keys. Its single run is
-closed, and this is not product evidence. A later remote-controller successor
-then reached one narrow authenticated provider preflight with its independent
-guard active. Source-address access policy rejected that request before any
-create operation. It created no resource, ran no product, removed the transient
-credential and run-owned key, confirmed zero, and incurred no billable resource
-cost. Its single run is closed. A future paid route must first pass a separate
-zero-resource authenticated access check from the final controller location.
 
 The frozen first-stage identity is release train `1.2.0`, tag
 `v1.2.0-alpha.1`, Maverick and reference-client software

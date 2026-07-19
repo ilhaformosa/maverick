@@ -1,11 +1,9 @@
-# Phase 3 Closeout And Integration Recovery Boundary
+# Phase 3 Terminal Closeout And Recovery History
 
 Status: Phase 3 closed incomplete on 2026-07-19. The frozen candidate has a
-final `NO_GO` decision. The separate recovery, transport-recovery,
-remote-first, and remote-controller routes each consumed one integration run.
-The latest stopped during authenticated provider access preflight before any
-resource creation and confirmed zero. No replacement remote run is active or
-authorized.
+final `NO_GO` decision. On 2026-07-20 the owner and coordinator retired every
+recovery route. This file is immutable history and an authorization boundary,
+not a checklist for another server attempt.
 
 ## Product Result
 
@@ -45,13 +43,19 @@ claim. Rejected or incomplete runs are not combined into a pass.
   not activated as a successor merely because Phase 3 ended.
 - The former large formal execution framework remains historical material and
   is not the active route.
+- Integration recovery, transport recovery, remote-first recovery,
+  remote-controller recovery, server-resource runs, and project-server runs
+  are terminally closed for this candidate.
+- Any future productization effort must use a newly named candidate and a new
+  roadmap. It cannot complete, recover, amend, or relabel this Phase 3 result.
 
-## Conditional Successor: Integration Recovery Program
+## Historical Integration Recovery Program
 
-There is no active server-recovery run. The project has created a separate
-Integration Recovery Program (`IRP`) for any possible return to disposable
-servers. IRP cannot be recorded as another Phase 3 rehearsal attempt and cannot
-change the Phase 3 result.
+There is no active server-recovery run. The project created the Integration
+Recovery Program (`IRP`) after Phase 3 closed, then retired it after its bounded
+runs failed to reach the complete product path. IRP cannot be restarted,
+recorded as another Phase 3 rehearsal attempt, or used to change the Phase 3
+result.
 
 ### IRP-0: local recovery gate
 
@@ -87,9 +91,8 @@ No host, remote access, package action, product process, product result, or
 spending occurred.
 
 IRP-1 allowed one resource run and no automatic replacement. That allowance is
-consumed and closed. Any future server work requires a new project-level
-decision, a new run identity, corrected and requalified tooling, and fresh
-exact owner authorization.
+consumed and closed. Its former successor conditions are obsolete because the
+entire recovery program is now retired.
 
 ### ITR-1: closed transport recovery run
 
@@ -153,17 +156,37 @@ run-owned key were removed. No billable resource existed. This is an
 environment-access result, not a protocol/package result. The one-run allowance
 is consumed and closed.
 
-### IRP-2: outcome decision
+### Later project-level server runs: closed
 
-Neither IRP-1, ITR-1, IRF-1, nor RCR-1 reached the product path, so IRP-2 did
-not start. The program has stopped and returned to a project-level
-tooling/architecture decision. This does not automatically start production
-audit or release work.
+Later project-level work first calibrated the remote guard and authenticated
+control path, then tried bounded server-resource runs under fresh identities.
+Those runs remained separate from Phase 3 and did not inherit earlier
+authority. They exposed additional controller classification, login-elevation,
+and cross-user file-transfer defects before the complete product path.
+
+The last project-server run created exactly two disposable hosts and one
+run-owned key. Both hosts passed the named-user login and root-elevation
+preflight, and one host completed the harmless calibration process. The
+controller then failed to download the successful receipt because the elevated
+writer left it root-owned mode `0600` while the fixed reader ran as the named
+login user. It stopped before source upload, product build, package upload,
+package verification, package installation, client startup, positive smoke,
+expected rejection, restart, or fault injection. Collection and exact
+destruction confirmed zero hosts, keys, credentials, and controller residue.
+The raw result remains an environment failure; the coordinator root cause is a
+tool failure. This is neither a protocol/package failure nor a product pass.
+
+### Terminal outcome decision
+
+No recovery route reached the complete product path. The owner chose to stop
+the loop and skip further Phase 3 work on 2026-07-20. The recovery program is
+retired, not paused. This does not start production audit, deployment, Phase 4,
+or release work for the frozen candidate.
 
 ## Authorization Boundary
 
-The closed IRP-1, ITR-1, IRF-1, and RCR-1 results authorize no external work.
-They do not authorize credentials, provider queries, remote access, resource
-creation, spending, CI, tags, publication, or release operations. Any future
-paid proposal must first pass a separately authorized zero-resource
-authenticated access check from its final controller location.
+All closed Phase 3 and recovery results authorize no external work. They do not
+authorize credentials, provider queries, remote access, resource creation,
+spending, CI, tags, publication, or release operations. No successor proposal
+may be prepared for this frozen candidate. A future return to productization
+requires a new candidate, new roadmap, and separate owner decision.

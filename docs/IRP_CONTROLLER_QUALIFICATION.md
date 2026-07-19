@@ -14,8 +14,10 @@ now confirmed absent. A final remote-controller package then consumed its one
 run during the first authenticated provider preflight, before resource
 creation, because source-address access policy rejected the request. Its
 fail-stop confirmed zero and removed its transient credential and run-owned
-key. These tool/environment results do not change the final Phase 3 `NO_GO`
-decision.
+key. Later project-level runs also stopped before the complete product path.
+These tool/environment results do not change the final Phase 3 `NO_GO`
+decision. The owner and coordinator retired the recovery program on
+2026-07-20; this file is historical qualification evidence, not an active gate.
 
 ## What Passed
 
@@ -44,9 +46,9 @@ partial resource creation, collection replay, destruction replay, and parsing
 of every rendered remote command. An independent hard-deadline guard stops the
 active process group before collection and destruction.
 
-## Result Firewall
+## Historical Result Firewall
 
-Every future integration run must end with exactly one of:
+Every recorded integration run had to end with exactly one of:
 
 - `TOOL_FAILURE`;
 - `ENVIRONMENT_FAILURE`;
@@ -58,7 +60,7 @@ both fresh hosts and an exact product assertion has a diagnostic receipt.
 `PRODUCT_PASS` requires the complete product, collection, cleanup, and resource
 destruction path in one run. Partial runs are never combined.
 
-## What Remains
+## Closed Run History
 
 The corrected proposal received one exact authorization. The controller armed
 its safety deadline and began read-only provider preflight, but a truncated
@@ -107,7 +109,7 @@ source-address access policy. No create intent or POST occurred. It created no
 resource, reached no product step, incurred no billable resource cost, removed
 the transient credential and run-owned key, and confirmed zero.
 
-That run is closed and cannot be resumed. Any future paid route must first pass
-a separately authorized zero-resource authenticated access gate from the final
-controller location. Passing an unauthenticated outbound-network check is not a
-substitute for that gate.
+That run is closed and cannot be resumed. Subsequent project-level runs are
+summarized in `PHASE3_CLOSEOUT_AND_RECOVERY.md`; none completed the product
+path. The recovery program is retired, so this qualification does not authorize
+or require another access gate, proposal, or paid run for the frozen candidate.

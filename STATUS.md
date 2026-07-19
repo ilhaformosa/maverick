@@ -1,26 +1,26 @@
 # Maverick Status
 
-Status: public `main` is development toward `v1.2.0` and the workspace reports
-software version `1.2.0-alpha.1`. The pre-publication `v1.1.0` release is the
-latest completed stable engineering boundary for the compatible
+Status: the workspace reports the archived software identity
+`1.2.0-alpha.1`, but no release train is active. The pre-publication `v1.1.0`
+release is the latest completed stable engineering boundary for the compatible
 `maverick-tls-h2-cli-v1` scope; its private Git objects were not imported into
 public history.
 
 ## Public Description
 
 ```text
-Experimental Rust privacy proxy protocol; public main targets v1.2.0 and is not audited or production-ready.
+Experimental Rust privacy proxy protocol; the archived v1.2 candidate is No-Go and the project is not audited or production-ready.
 ```
 
 Do not describe Maverick as audited, production-ready, anonymous,
 censorship-resistant, browser-fingerprint-equivalent, or standardized.
 
-The frozen and parked production claim candidate is
+The frozen and archived production claim candidate is
 `maverick-linux-h2-ipv4-v1`: Ubuntu 26.04 LTS `amd64`, IPv4, the `maverick`
 server/CLI, the `maverick-reference-client` Debian service package, and the
-stable TLS 1.3 plus HTTP/2 path. It is a target, not a completed claim. The
-machine-readable result in `production-readiness.json` is the final Phase 3
-No-Go.
+stable TLS 1.3 plus HTTP/2 path. It did not earn the claim and is no longer an
+active release target. The machine-readable result in
+`production-readiness.json` is the final Phase 3 No-Go.
 
 ## Working Now
 
@@ -89,32 +89,13 @@ No-Go.
   traffic, expected rejection, restart recovery, purge, and the follow-up
   engineering acceptance were not completed. This is neither a demonstrated
   protocol/package failure nor a product pass.
-- The separate recovery route's readiness component passed locally, but its
-  first whole execution package was then rejected before external action
-  because fixed stage executables were missing. A corrected executable
-  revision now passes local actual-entrypoint, partial-state, interruption,
-  cleanup, destruction, and strict four-way classification checks. Its one
-  authorized integration run then stopped during read-only provider preflight:
-  a truncated response escaped the adapter's safe GET-retry path. No resource
-  was created, no product step ran, no money was spent, and no replacement run
-  was authorized. A separately established transport-recovery package then
-  passed real-loopback truncated-body/disconnect handling, bounded idempotent
-  retries, zero POST retry, and all inherited local gates. Its single
-  authorized run stopped during read-only provider plan preflight after both
-  bounded GET attempts failed with the broad class `transport`; the precise
-  exception was not persisted. It created no resource, ran no product, spent
-  no money, and has no authorized successor. A later remote-first successor
-  removed the large catalog request and created exactly two disposable hosts,
-  but its readiness poll ended twice with a classified remote disconnect. It
-  stopped before SSH, upload, package installation, or any Maverick process.
-  Cleanup waited out a temporary provider resource lock, then deleted both
-  hosts and the run-owned key and confirmed zero. Its one run is closed; this
-  is not product evidence. A final remote-controller successor armed its
-  independent guard and reached one narrow authenticated provider preflight,
-  which source-address access policy rejected before any create request. It
-  created no resource, reached no product step, removed the transient
-  credential and run-owned key, confirmed zero, and incurred no billable
-  resource cost. Its one run is also closed.
+- Every separate recovery route is closed. The last project-server run created
+  two disposable hosts and passed both login preflights plus one harmless
+  calibration, then stopped before source upload because the named login user
+  could not read a root-owned mode-0600 receipt. Exact destruction confirmed
+  zero hosts, keys, credentials, and controller residue. This is a tool
+  failure, not a protocol/package result. On 2026-07-20 the owner and
+  coordinator retired the recovery program rather than starting another run.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS
@@ -144,21 +125,14 @@ No-Go.
    boundary without recreating its tag on a different public commit.
 5. Preserve the Phase 3 incomplete closeout and frozen candidate without
    relabelling partial server runs as product evidence.
-6. Keep remote integration work stopped. The separate recovery,
-   transport-recovery, remote-first, and remote-controller routes each consumed
-   their single run. The latest stopped at authenticated provider access before
-   resource creation and confirmed zero. Any return requires another
-   project-level decision, fresh exact owner authorization, and a separate
-   zero-resource authenticated access check from the final controller location
-   before a paid proposal.
-7. Keep the production ledger at No-Go until a future project establishes
-   accepted platform evidence, an independent audit, deployability, and final
-   approval for one exact candidate.
+6. Keep Phase 3 and every recovery alias terminally closed. Do not prepare
+   another server proposal for the frozen candidate.
+7. Keep the production ledger at No-Go. Any future productization effort must
+   begin with a newly named candidate, roadmap, and explicit owner decision.
 
 See `docs/PLAN_POST_V1.md` for the governing execution order,
-`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` for the Phase 3 closeout and conditional
-successor boundary,
-`docs/IRP_CONTROLLER_QUALIFICATION.md` for the local-only controller result,
+`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` for the terminal Phase 3 closeout,
+`docs/IRP_CONTROLLER_QUALIFICATION.md` for historical controller results,
 `docs/PUBLIC_HISTORY_BOUNDARY.md` for the repository-history boundary, and
 `docs/STEALTH_PRIORITY.md` for the focused stealth technical queue.
 

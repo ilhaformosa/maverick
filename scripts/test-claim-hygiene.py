@@ -42,13 +42,13 @@ class ClaimHygieneTests(unittest.TestCase):
     def test_whitespace_is_normalized(self) -> None:
         requirement = module.Requirement(
             "README.md",
-            "Experimental Rust privacy proxy protocol; public main targets v1.2.0 and is not audited or production-ready",
+            "Experimental Rust privacy proxy protocol; the archived v1.2 candidate is No-Go and the project is not audited or production-ready",
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             (repo_root / "README.md").write_text(
-                "Experimental Rust privacy proxy protocol; public main targets\n"
-                "v1.2.0 and is not audited or production-ready\n",
+                "Experimental Rust privacy proxy protocol; the archived v1.2\n"
+                "candidate is No-Go and the project is not audited or production-ready\n",
                 encoding="utf-8",
             )
             module.check_requirement(repo_root, requirement)

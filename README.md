@@ -1,9 +1,10 @@
 # Maverick
 
 Maverick is a Rust privacy-preserving proxy protocol prototype. The public
-source mainline reports software version `1.2.0-alpha.1` while developing
-toward `v1.2.0`. The completed pre-publication `v1.1.0` release is the latest
-narrow stable engineering boundary for `maverick-tls-h2-cli-v1`: CLI-managed
+source mainline reports the archived software identity `1.2.0-alpha.1`; it is
+not advancing toward beta, RC, stable, deployment, or production. The completed
+pre-publication `v1.1.0` release is the latest narrow stable engineering
+boundary for `maverick-tls-h2-cli-v1`: CLI-managed
 Rust client/server, TLS 1.3 + HTTP/2 as the mandatory default transport, local
 SOCKS5/HTTP CONNECT inbound, TCP/DNS/UDP relay over authenticated tunnel
 frames, replay protection, resource bounds, loopback metrics, and static or
@@ -18,13 +19,14 @@ Maverick has not had a formal independent security audit and is not
 production-ready. It does not claim browser-grade TLS fingerprint mimicry,
 strong traffic shaping, anonymity, or censorship resistance.
 
-The frozen and parked production claim candidate is Ubuntu 26.04 LTS `amd64`,
+The frozen and archived production claim candidate is Ubuntu 26.04 LTS `amd64`,
 IPv4, the `maverick` server/CLI, the `maverick-reference-client` Debian service
 package, and TLS 1.3 plus HTTP/2. `production-readiness.json` currently records
-a final Phase 3 No-Go; `docs/PRODUCTION_SCOPE.md` defines the exact boundary,
-`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` records the closeout and successor rules,
-and `docs/IRP_CONTROLLER_QUALIFICATION.md` records the local-only recovery-tool
-result.
+a final Phase 3 No-Go. Every Phase 3 recovery route is retired;
+`docs/PRODUCTION_SCOPE.md` defines the archived boundary,
+`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` records the terminal closeout, and
+`docs/IRP_CONTROLLER_QUALIFICATION.md` preserves historical recovery-tool
+results.
 
 Verification uses local preflight, public pull-request CI, and a manual
 exact-commit release-candidate gate. The public workflows do not access the
@@ -42,7 +44,7 @@ standardization proposal.
 Recommended public repository description:
 
 ```text
-Experimental Rust privacy proxy protocol; public main targets v1.2.0 and is not audited or production-ready.
+Experimental Rust privacy proxy protocol; the archived v1.2 candidate is No-Go and the project is not audited or production-ready.
 ```
 
 ## What Works
@@ -145,12 +147,12 @@ status and guardrails.
 - [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md): release verification checklist.
 - [SUPPORT.md](SUPPORT.md): support, security-report, and compatibility policy.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md): self-hosted operations guide.
-- [docs/PRODUCTION_SCOPE.md](docs/PRODUCTION_SCOPE.md): narrow v1.2.0 production
-  target and permanent scope exclusions.
+- [docs/PRODUCTION_SCOPE.md](docs/PRODUCTION_SCOPE.md): archived narrow v1.2.0
+  production target and permanent scope exclusions.
 - [docs/INDEPENDENT_AUDIT_PACKAGE.md](docs/INDEPENDENT_AUDIT_PACKAGE.md):
   pre-freeze external-auditor scope and instructions; not an audit result.
-- [docs/RELEASE_GATES_V1_2.md](docs/RELEASE_GATES_V1_2.md): exact public alpha,
-  beta, RC, and stable gates.
+- [docs/RELEASE_GATES_V1_2.md](docs/RELEASE_GATES_V1_2.md): historical blocked
+  public alpha, beta, RC, and stable gates.
 - [docs/PUBLIC_FEEDBACK_PROCESS.md](docs/PUBLIC_FEEDBACK_PROCESS.md): public
   issue triage, privacy boundaries, and active-milestone selection rules.
 - [docs/FAILURE_INJECTION_PLAN.md](docs/FAILURE_INJECTION_PLAN.md): restart,

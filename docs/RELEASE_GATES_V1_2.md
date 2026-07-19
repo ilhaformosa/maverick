@@ -1,7 +1,7 @@
 # v1.2.0 Release Gates
 
-Status: active pre-freeze gate map. No tag is authorized or created by this
-document.
+Status: archived blocked gate map. Phase 3 closed No-Go and the recovery
+program is retired. No tag is authorized or created by this document.
 
 All stages use the narrow scope in `docs/PRODUCTION_SCOPE.md`. Every tag requires
 coordinator approval, a clean exact commit, local verification, artifact privacy,

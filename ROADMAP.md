@@ -1,25 +1,25 @@
 # Maverick Roadmap
 
-Status: public `main` contains the frozen `v1.2.0-alpha.1` development
-candidate, but that candidate is parked after Phase 3 closed incomplete with a
-final `NO_GO` decision. Pre-publication `v1.1.0` remains the latest completed
-stable engineering boundary. The active execution source is
-`docs/PLAN_POST_V1.md`.
+Status: the frozen `v1.2.0-alpha.1` development candidate is archived after
+Phase 3 closed incomplete with a final `NO_GO` decision. On 2026-07-20 the
+project retired every Phase 3 recovery route instead of starting another
+server attempt. Pre-publication `v1.1.0` remains the latest completed stable
+engineering boundary. The active execution source is `docs/PLAN_POST_V1.md`.
 
 ## Current Direction
 
-Maverick's current direction is preservation and a bounded integration reset:
+Maverick's current direction is preservation after the terminal Phase 3
+closeout:
 
 1. preserve the completed `v1.1.0` engineering boundary and accepted narrow
    post-v1 evidence;
 2. keep the frozen `v1.2.0-alpha.1` candidate and Phase 3 records immutable;
-3. do not resume paid server work under the Phase 3 name;
+3. do not resume server work under the Phase 3 name or any recovery alias;
 4. preserve the closed Integration Recovery Program, transport-recovery,
    remote-first, and remote-controller results without treating them as product
    results;
-5. return to servers only through a new exact owner decision with fresh inputs,
-   limits, resources, acceptance rules, and harmless calibration on both hosts
-   before product upload;
+5. treat any future return to servers as a new candidate with a new roadmap,
+   not as completion, recovery, or evidence for the frozen Phase 3 candidate;
 6. defer broader ecosystem, audit, deployability, and production work until a
    complete integration result justifies it.
 
@@ -54,12 +54,11 @@ The smallest production claim Maverick may try to earn is
 `maverick-reference-client` Debian service package on Ubuntu 26.04 LTS `amd64`,
 IPv4, using TLS 1.3 plus HTTP/2.
 
-The candidate is frozen, parked, and not approved. Phase 3 closed without an
-accepted two-host product result. Formal platform evidence would still need to
-come from a source-bound disposable Ubuntu 26.04 fixture, not from a physical
-host running another OS. `production-readiness.json` separately tracks
-code-complete, evidence-complete, audit-complete, deployable, and
-production-ready states; the final Phase 3 decision is No-Go.
+The candidate is frozen, archived, and not approved. It is no longer an active
+release target. Phase 3 closed without an accepted two-host product result.
+`production-readiness.json` preserves code-complete, evidence-complete,
+audit-complete, deployable, and production-ready as separate historical states;
+the final Phase 3 decision is No-Go.
 
 Its planned identity is release train `1.2.0`, release tag
 `v1.2.0-alpha.1`, Maverick and reference-client software
@@ -78,47 +77,21 @@ This is a tool-sequencing failure, not a demonstrated protocol or package
 failure. It is also not a product pass. The frozen candidate remains No-Go; no
 tag, package publication, production audit, deployment approval, or release is
 authorized. See `docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` for the preserved
-evidence boundary and the conditions for any separate successor program.
+evidence boundary and terminal decision.
 
-The independent recovery route first passed its readiness component, then
-correctly rejected its initial whole execution package before any external
-action because fixed stage executables were missing. A corrected executable
-package has since passed local-only delayed-start, failure, interruption,
-cleanup, partial-state, strict-classification, and stage-entrypoint checks. Its
-one authorized integration run later stopped during read-only provider
-preflight, before resource creation, because a truncated response escaped the
-adapter's safe GET-retry path. It produced a tool failure, no host or product
-result, and no spending. No replacement run was authorized. A separately
-established Integration Transport Recovery gate then passed real-loopback
-truncated-body and disconnect handling, bounded GET/DELETE retry, zero POST
-retry, and the inherited controller/cleanup checks locally. Its single
-authorized run reached the provider plan preflight, used its one safe GET
-retry, and stopped after both attempts failed with the broad class
-`transport`. The precise exception was not persisted. It created no resource,
-ran no product, spent no money, and has no authorized successor. See
-`docs/IRP_CONTROLLER_QUALIFICATION.md`.
+The later IRP, ITR, IRF, remote-controller, server-resource, and project-server
+runs are retained only as closed history. The last project-server run created
+two disposable hosts and passed both login preflights plus one harmless host
+calibration. It then stopped before source upload because a root-owned mode-0600
+receipt could not be read by the named login user. Exact destruction confirmed
+zero hosts and keys. No recovery run reached the complete product path.
 
-A later remote-first successor removed the large provider catalogs and used
-only narrow control requests. It created exactly two disposable hosts with no
-duplicate create request, but a readiness poll then ended twice with a remote
-disconnect. Fail-stop occurred before SSH, upload, package installation, or a
-Maverick process. Immediate deletion was temporarily blocked while the new
-hosts were provider-locked; the same bounded cleanup later deleted both hosts
-and the run-owned key and confirmed zero resources. This is another
-tool/environment result, not product evidence. Its one run is closed and no
-successor is authorized.
+The owner and coordinator therefore retired the recovery program on
+2026-07-20. There is no active Phase 3 milestone, server proposal, or successor
+gate. A future productization effort must start from a newly named candidate and
+roadmap and cannot retroactively change this Phase 3 result.
 
-A final remote-controller successor proved that its independent guard,
-credential handoff, fail-stop, collection, and zero cleanup could continue
-without the developer machine as live controller. Its first narrow
-authenticated provider preflight was rejected by source-address access policy,
-before any create request. It created no resource, ran no product, incurred no
-billable resource cost, removed its transient credential and run-owned key, and
-confirmed zero. Its one run is closed. Any future route must first pass a
-separately authorized zero-resource authenticated access check from the final
-controller location before another paid run is proposed.
-
-## Active Milestones
+## Completed And Historical Milestones
 
 The detailed gates are in `docs/PLAN_POST_V1.md`:
 
@@ -169,8 +142,8 @@ The detailed gates are in `docs/PLAN_POST_V1.md`:
   exact destruction confirmed zero hosts and keys. That single run is also
   consumed with no authorized successor. IPv6 is not scheduled.
 
-M1-M3 are the first implementation group. M4-M6 follow after review of that
-baseline. M7-M8 depend on measured results.
+M1-M8 are retained as completed or historical records. None is an active Phase
+3 or server-recovery milestone.
 
 ## Deprioritized Until Evidence Justifies Them
 
@@ -203,14 +176,12 @@ not become active merely because they already exist.
 
 - `v1.1.x` is maintenance-only and preserves the completed backward-compatible
   M1-M8 implementation and evidence scope.
-- The current `main` branch targets `v1.2.0`: one IPv4 reference client and
-  broader product lifecycle evidence without changing protocol,
-  authentication, or config version 1.
+- The frozen `v1.2.0-alpha.1` candidate is archival and does not advance to
+  beta, RC, stable, audit, deployment, or production work.
 - No incompatible major release is currently planned. Any future proposal
   would require a separate compatibility, migration, and security decision.
-- The public train is gated in order as `v1.2.0-alpha.1`,
-  `v1.2.0-beta.1`, `v1.2.0-rc.1`, and `v1.2.0`; stages do not pass merely
-  because time elapsed. See `docs/RELEASE_GATES_V1_2.md`.
+- Any future release train requires a new explicit roadmap and version
+  decision. Historical `v1.2.0` gates remain documented but blocked.
 
 IPv6 has no short-term, medium-term, or current long-term milestone. Existing
 experimental code may remain, and future support can be reconsidered through a

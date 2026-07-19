@@ -21,8 +21,9 @@ the sanitized public Git history and might not resolve as public links.
 
 Do not recreate an old tag on a different public commit. The first public
 release must use a version that was never assigned to a pre-publication
-release. The active development line is `v1.2.0`; its first public candidate
-may use `v1.2.0-alpha.1` only after the applicable release gates pass.
+release. The frozen `v1.2.0-alpha.1` identity is archived with a final No-Go
+decision and is not an active public candidate. Any future public release needs
+a separately approved, previously unused version and new roadmap.
 
 The later public maintainer identity and signature policy does not amend or
 replace the neutral sanitized root or the accepted cutover audit commit. Both

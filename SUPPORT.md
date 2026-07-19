@@ -1,8 +1,8 @@
 # Maverick Support Policy
 
-Maverick is an experimental open source prototype. Public `main` is
-development toward `v1.2.0`; the completed `v1.1.0` boundary predates the
-sanitized public Git history.
+Maverick is an experimental open source prototype. No release train is active;
+the archived `v1.2.0-alpha.1` candidate is No-Go. The completed `v1.1.0`
+boundary predates the sanitized public Git history.
 
 ## Supported Versions
 
@@ -12,7 +12,7 @@ sanitized public Git history.
 | `v0.1.0-beta.N` and `v0.1.0-rc.N` | Historical candidates | Upgrade only | Narrow historical scope only |
 | `v1.0.x` | Pre-publication historical line | Upgrade when a public release is available | Frozen `maverick-tls-h2-cli-v1` scope |
 | `v1.1.x` | Pre-publication maintenance boundary | Superseded by the next public release | Frozen `maverick-tls-h2-cli-v1` scope |
-| `main` toward `v1.2.0` | Development, unsupported until tagged | None before release | Auth v1 remains 1, explicit Auth v2 remains 2, and config remains 1 |
+| `main` | Experimental development snapshot; no active release target | None before a future release | Auth v1 remains 1, explicit Auth v2 remains 2, and config remains 1 |
 
 No stable tag exists in the sanitized public history yet. After the first
 public release, only the latest public stable tag receives best-effort fixes
@@ -23,8 +23,8 @@ support SLA.
 
 | component | candidate support target | current status |
 | --- | --- | --- |
-| `maverick` server/CLI | Ubuntu 26.04 LTS `amd64`, IPv4, TLS 1.3 + HTTP/2 | unsupported until its exact stable gate and Go decision pass |
-| `maverick-reference-client` Debian package/service | Ubuntu 26.04 LTS `amd64`, IPv4 | unsupported until its exact evidence, audit, publication, and Go gates pass |
+| `maverick` server/CLI | Ubuntu 26.04 LTS `amd64`, IPv4, TLS 1.3 + HTTP/2 | archived No-Go candidate; unsupported |
+| `maverick-reference-client` Debian package/service | Ubuntu 26.04 LTS `amd64`, IPv4 | archived No-Go candidate; unsupported |
 
 Formal target-platform evidence must be collected in a source-bound disposable
 Ubuntu 26.04 LTS `amd64` VM or fixture. Results from another host OS do not create
@@ -32,15 +32,14 @@ support for Ubuntu or any additional platform. Other Linux distributions,
 architectures, containers, routers, macOS, Windows, mobile, GUI, and IPv6 are
 outside the candidate support promise.
 
-Until `v1.2.0` passes `docs/RELEASE_GATES_V1_2.md`, this table is a target, not a
-supported release.
+This table is an archived target definition, not a supported release.
 
 ## Breaking Changes
 
 Development snapshots may change CLI or operator behavior when the change
-improves safety or removes a bad design. The current `v1.2.0` work must keep
-protocol, authentication, and config versions at 1. Breaking changes must be
-listed in `CHANGELOG.md`, `MIGRATIONS.md`, and release notes.
+improves safety or removes a bad design. The archived `v1.2.0-alpha.1` source
+keeps protocol, authentication, and config versions at 1. Breaking changes
+must be listed in `CHANGELOG.md`, `MIGRATIONS.md`, and release notes.
 
 Stable-scoped releases must not break the documented stable scope without:
 

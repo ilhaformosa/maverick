@@ -1,6 +1,7 @@
 # CI And Release Gates
 
-Status: active pre-freeze design. The workflows do not authorize a push, a
+Status: available checks-only design with no active release candidate. The
+workflows do not authorize a push, a
 manual dispatch, a tag, a package publication, or a GitHub Release.
 
 Maverick uses three verification layers. Each layer answers a different

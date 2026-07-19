@@ -18,7 +18,7 @@ class Requirement:
 REQUIREMENTS = (
     Requirement(
         "README.md",
-        "Experimental Rust privacy proxy protocol; public main targets v1.2.0 and is not audited or production-ready",
+        "Experimental Rust privacy proxy protocol; the archived v1.2 candidate is No-Go and the project is not audited or production-ready",
     ),
     Requirement(
         "docs/PUBLIC_HISTORY_BOUNDARY.md",

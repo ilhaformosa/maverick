@@ -30,6 +30,12 @@ available without being part of the everyday reading path.
   cutover facts, verification, and claim boundary.
 - `docs/PRODUCTION_SCOPE.md`: narrow Linux/H2/IPv4 production-claim candidate
   and current No-Go boundary.
+- `docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`: final incomplete Phase 3 result and
+  the local-first decision boundary for any separate integration-recovery
+  program.
+- `docs/IRP_CONTROLLER_QUALIFICATION.md`: accepted local controller/readiness
+  qualification, strict result labels, and the remaining remote-authorization
+  boundary.
 - `docs/INDEPENDENT_AUDIT_PACKAGE.md` and `docs/AUDIT_EVIDENCE_INDEX.md`:
   pre-freeze reviewer instructions and exact Phase 3 input contracts.
 - `docs/SECURITY_DISCLOSURE_WORKFLOW.md` and

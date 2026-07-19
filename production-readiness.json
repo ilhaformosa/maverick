@@ -117,14 +117,13 @@
   },
   "decision": {
     "status": "NO_GO",
-    "kind": "current_blocker",
-    "decided_at": null,
-    "approver": null,
+    "kind": "final",
+    "decided_at": "2026-07-19T10:20:40Z",
+    "approver": "owner_and_coordinator",
     "reason_codes": [
-      "post_freeze_release_candidate_ci_missing",
-      "phase_3a_missing",
-      "independent_audit_missing",
-      "deployability_missing"
+      "phase_3_closed_without_accepted_phase_3a",
+      "independent_audit_not_completed",
+      "deployability_not_completed"
     ]
   }
 }

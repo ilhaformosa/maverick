@@ -1,22 +1,26 @@
 # Maverick Roadmap
 
-Status: public `main` targets `v1.2.0`. Pre-publication `v1.1.0` is the latest
-completed stable engineering boundary, and the active execution source is
+Status: public `main` contains the frozen `v1.2.0-alpha.1` development
+candidate, but that candidate is parked after Phase 3 closed incomplete with a
+final `NO_GO` decision. Pre-publication `v1.1.0` remains the latest completed
+stable engineering boundary. The active execution source is
 `docs/PLAN_POST_V1.md`.
 
 ## Current Direction
 
-Maverick's next work is depth before breadth:
+Maverick's current direction is preservation and a bounded integration reset:
 
-1. measure client TLS/H2 fingerprint differences and server active-probe
-   differences;
-2. reuse H2 connections without changing the frozen v1 frame/auth formats;
-3. improve browser TLS and fallback behavior only against measured baselines;
-4. collect detailed two-host evidence;
-5. decide whether application fallback, a trusted CDN path, or handshake-layer
-   forwarding is the right architecture;
-6. advance from the accepted narrow IPv4 TUN evidence to one gated IPv4
-   reference client before broader ecosystem integration.
+1. preserve the completed `v1.1.0` engineering boundary and accepted narrow
+   post-v1 evidence;
+2. keep the frozen `v1.2.0-alpha.1` candidate and Phase 3 records immutable;
+3. do not resume paid server work under the Phase 3 name;
+4. preserve the passed local-only Integration Recovery Program controller gate
+   without treating it as a product result;
+5. return to servers only through a new exact owner decision with fresh inputs,
+   limits, resources, acceptance rules, and harmless calibration on both hosts
+   before product upload;
+6. defer broader ecosystem, audit, deployability, and production work until a
+   complete integration result justifies it.
 
 The long-term destination remains an open protocol with independent
 implementations, standardization work, and community governance. Those tracks
@@ -49,16 +53,36 @@ The smallest production claim Maverick may try to earn is
 `maverick-reference-client` Debian service package on Ubuntu 26.04 LTS `amd64`,
 IPv4, using TLS 1.3 plus HTTP/2.
 
-The candidate is frozen but not approved. Formal platform evidence must come from
-a source-bound disposable Ubuntu 26.04 fixture, not from a physical host running
-another OS. `production-readiness.json` separately tracks code-complete,
-evidence-complete, audit-complete, deployable, and production-ready states; the
-current decision is No-Go.
+The candidate is frozen, parked, and not approved. Phase 3 closed without an
+accepted two-host product result. Formal platform evidence would still need to
+come from a source-bound disposable Ubuntu 26.04 fixture, not from a physical
+host running another OS. `production-readiness.json` separately tracks
+code-complete, evidence-complete, audit-complete, deployable, and
+production-ready states; the final Phase 3 decision is No-Go.
 
 Its planned identity is release train `1.2.0`, release tag
 `v1.2.0-alpha.1`, Maverick and reference-client software
 `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. Those names do not
 freeze commits, the SDK pin, a package hash, evidence, or approval.
+
+## Phase 3 Closeout
+
+Phase 3 ended incomplete on 2026-07-19. Its final bounded rehearsal built the
+rehearsal server and verified the signed client package, but stopped at a
+controller readiness race before client installation. The positive path,
+expected rejection, restart recovery, and purge path were not exercised, and
+the planned follow-up acceptance did not start.
+
+This is a tool-sequencing failure, not a demonstrated protocol or package
+failure. It is also not a product pass. The frozen candidate remains No-Go; no
+tag, package publication, production audit, deployment approval, or release is
+authorized. See `docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` for the preserved
+evidence boundary and the conditions for any separate successor program.
+
+The independent IRP-0 local controller gate has since passed delayed-start,
+never-ready, early-exit, interruption, cleanup, strict classification, and
+unreached-transition checks. No server action is authorized by that tool
+result. See `docs/IRP_CONTROLLER_QUALIFICATION.md`.
 
 ## Active Milestones
 
@@ -96,7 +120,11 @@ The detailed gates are in `docs/PLAN_POST_V1.md`:
   attempt remains rejected and contributes no partial acceptance. A duplicate
   formal run is not required merely as insurance. Production credential-root,
   power loss, broader transitions, package publication, daily-use,
-  cross-platform clients, and production readiness remain open. IPv6 is not
+  cross-platform clients, and production readiness remain open. Phase 3 itself
+  is now closed incomplete: its server-first engineering rehearsal did not
+  reach client installation or the product smoke path, and no follow-up
+  acceptance started. The separate IRP-0 local tool gate has passed, but any
+  future server work still requires a fresh exact owner decision. IPv6 is not
   scheduled.
 
 M1-M3 are the first implementation group. M4-M6 follow after review of that

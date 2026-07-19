@@ -1,7 +1,8 @@
 # Post-v1 Execution Plan
 
-Status: active highest-priority plan after the `v1.0.0` stable engineering
-release. The completed v1 release train remains historical evidence in
+Status: active post-v1 record and execution boundary. Phase 3 closed incomplete
+on 2026-07-19 with a final `NO_GO` decision; no replacement server program is
+active. The completed v1 release train remains historical evidence in
 `docs/PLAN_SHORT_TERM_TO_V1.md`.
 
 ## Direction
@@ -86,7 +87,31 @@ hosts, or claim that later code was covered by the running evidence.
 | 5 | complete | 13 response-shape gates, Hyper fallback, H2/H3 body preservation, residual registry, and CI pass |
 | 6 | complete | diagnostic/regression layers are accepted; milestone 24-hour, 8-hour impairment, and failure closure share tested source commit `b3a1793` |
 | 7 | accepted | direct H2 remains the v1.x default, CDN WebSocket stays explicit, and handshake-layer work is gated to v2 research |
-| 8 | Phase 3 bounded safety, package lifecycle, and sustained gate accepted; maturation gates active | Phase 2 IPv4 evidence is accepted. Exact reference commit `2978aa0` retains the accepted installed traffic, route-isolation, failure, package-lifecycle, signing, purge, and zero-residue evidence. SDK commit `0511522` and reference-client runtime commit `2f46f18` form the integrated sustained candidate with stricter IPC/recovery, credential policy, packet-FD coverage, deterministic APT snapshot tooling, and per-interface compatibility handling. One corrected formal eight-hour run is accepted with 481 aligned resource/route samples, 97 complete probe cycles, stable product processes, zero restarts, bounded resources, exact route isolation, and zero runtime residue. A duplicate formal run is not required merely as insurance. Production credential-root, power loss, broader transition/leak, package publication, and daily-use gates remain open; IPv6 is unscheduled |
+| 8 | Phase 2 accepted; Phase 3 closed incomplete No-Go | Phase 2 IPv4 evidence and the exact-source Phase 3-B package/signature/freeze inputs remain accepted within their recorded boundaries. One corrected historical eight-hour gate remains accepted for its exact source. The final Phase 3 server-first rehearsal built its server and verified the signed package, but a controller readiness race stopped it before client installation; product smoke, expected reject, restart, purge, and follow-up acceptance were not completed. No partial run is combined into a pass. Any future server work requires a separate Integration Recovery Program decision; IPv6 remains unscheduled. |
+
+## Phase 3 Closeout And Successor Boundary
+
+Phase 3 ended incomplete on 2026-07-19. The frozen candidate remains parked
+with a final `NO_GO` decision. Phase 3-A input, evidence completion, independent
+audit, deployability, production approval, and release remain incomplete.
+Accepted Phase 3-B inputs and public candidate controls remain provenance only;
+they are not reopened or relabelled.
+
+No paid or remote successor is active. A future return to servers must use the
+separate Integration Recovery Program defined in
+`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`. Its local-only first gate has now passed:
+one-shot readiness was replaced with bounded polling, delayed and failed
+readiness plus interruption cleanup were exercised, every unreached product
+transition was reviewed, and a private exact owner proposal was produced. This
+tool result authorizes no external work. The owner must still separately decide
+whether to authorize one new bounded resource run, and both fresh hosts must
+pass harmless calibration before product upload.
+
+That successor cannot retroactively complete Phase 3. Production audit,
+remediation, deployability, and stable release work remain inactive unless a
+later complete integration result supports a new project-level decision.
+The sanitized local qualification boundary is in
+`docs/IRP_CONTROLLER_QUALIFICATION.md`.
 
 ## 1. Planning Truth And CI Layers
 
@@ -342,8 +367,8 @@ remains experimental namespace evidence, not a product-readiness or
 cross-platform claim. The exact execution and acceptance record is in
 `docs/TUN_PHASE2_EXECUTION_GATE.md`.
 
-Phase 3 is active in a separate private reference-client project so privileged
-platform code and packaging do not enter the protocol repository. Its Linux
+Phase 3 ran in a separate private reference-client project so privileged
+platform code and packaging did not enter the protocol repository. Its Linux
 implementation includes an ordinary-user controller and service, a default-off
 privileged mutation gate, peer-authorized bounded Unix IPC, single-operation
 locking and replay handling, a durable recovery journal, fixed IPv4
@@ -392,6 +417,14 @@ snapshot build/verification, and strict per-interface compatibility handling.
 Its complete local harness, dependency policy, APT tests, privacy gate,
 repeated packet-FD tests, signed package, and bounded sustained gates pass.
 These results do not transfer unrelated privileged claims from older sources.
+
+The later server-first Phase 3 route closed incomplete. Its final bounded
+rehearsal confirmed a fresh server build and signed-package verification, but a
+controller readiness race stopped the run before the target package was
+installed. No client-to-server smoke, expected reject, restart recovery, or
+normal purge result was accepted. The planned follow-up engineering acceptance
+did not start. The detailed current boundary is
+`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md`.
 
 One eight-hour sustained attempt on the historical source completed 28,800
 connected seconds, 97 probes, and 481 aligned resource samples with stable

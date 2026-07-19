@@ -18,10 +18,13 @@ Maverick has not had a formal independent security audit and is not
 production-ready. It does not claim browser-grade TLS fingerprint mimicry,
 strong traffic shaping, anonymity, or censorship resistance.
 
-The only pre-freeze production claim candidate is Ubuntu 26.04 LTS `amd64`,
+The frozen and parked production claim candidate is Ubuntu 26.04 LTS `amd64`,
 IPv4, the `maverick` server/CLI, the `maverick-reference-client` Debian service
 package, and TLS 1.3 plus HTTP/2. `production-readiness.json` currently records
-No-Go; `docs/PRODUCTION_SCOPE.md` defines the exact boundary.
+a final Phase 3 No-Go; `docs/PRODUCTION_SCOPE.md` defines the exact boundary,
+`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` records the closeout and successor rules,
+and `docs/IRP_CONTROLLER_QUALIFICATION.md` records the local-only recovery-tool
+result.
 
 Verification uses local preflight, public pull-request CI, and a manual
 exact-commit release-candidate gate. The public workflows do not access the

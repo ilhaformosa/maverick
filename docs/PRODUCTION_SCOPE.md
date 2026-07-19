@@ -1,8 +1,9 @@
 # Narrow Production Scope Candidate
 
-Status: pre-freeze scope definition for `v1.2.0`. This document defines the
-smallest production claim Maverick may try to earn. It does not say that the
-claim has been earned.
+Status: frozen and parked scope definition for `v1.2.0`. Phase 3 closed
+incomplete with a final `NO_GO` decision. This document defines the smallest
+production claim Maverick had tried to earn; it does not say that the claim was
+earned.
 
 ## Candidate Name
 
@@ -68,9 +69,22 @@ Passing one question never changes another question automatically.
 
 ## Current Result
 
-The candidate is frozen and the Phase 3-B input is accepted. Phase 3-A input,
-post-freeze release-candidate CI, deployability, and a formal independent
-production audit are still missing. The current result is therefore **No-Go**.
+The candidate is frozen and the Phase 3-B input is accepted. Exact-source
+post-freeze release-candidate CI also passed, but Phase 3 closed without an
+accepted Phase 3-A input. Deployability and a formal independent production
+audit are still missing. The final Phase 3 result is therefore **No-Go** and the
+candidate is parked.
+
+The last bounded engineering rehearsal stopped at a controller readiness race
+before client package installation. It did not complete positive traffic,
+expected rejection, restart recovery, or purge. This is not a demonstrated
+protocol/package failure and is not product acceptance. Any return to server
+work requires a separate project-level decision; see
+`PHASE3_CLOSEOUT_AND_RECOVERY.md`.
+
+The separate IRP-0 local controller qualification later passed, but it ran no
+product and does not change this result. Any future server run still needs a
+fresh exact owner authorization and cannot retroactively complete Phase 3.
 
 The frozen first-stage identity is release train `1.2.0`, tag
 `v1.2.0-alpha.1`, Maverick and reference-client software

@@ -15,11 +15,12 @@ Experimental Rust privacy proxy protocol; public main targets v1.2.0 and is not 
 Do not describe Maverick as audited, production-ready, anonymous,
 censorship-resistant, browser-fingerprint-equivalent, or standardized.
 
-The pre-freeze production claim candidate is
+The frozen and parked production claim candidate is
 `maverick-linux-h2-ipv4-v1`: Ubuntu 26.04 LTS `amd64`, IPv4, the `maverick`
 server/CLI, the `maverick-reference-client` Debian service package, and the
 stable TLS 1.3 plus HTTP/2 path. It is a target, not a completed claim. The
-machine-readable result in `production-readiness.json` is currently No-Go.
+machine-readable result in `production-readiness.json` is the final Phase 3
+No-Go.
 
 ## Working Now
 
@@ -81,9 +82,17 @@ machine-readable result in `production-readiness.json` is currently No-Go.
 - Formal Ubuntu 26.04 LTS `amd64` platform evidence must come from a source-bound
   disposable target fixture; results from a physical host with another OS do not
   satisfy that gate.
-- No post-freeze release-candidate workflow result is accepted yet. An Ubuntu
-  Actions runner is not a
-  substitute for the target fixture and private package evidence.
+- Exact-source post-freeze release-candidate CI passed, but an Ubuntu Actions
+  runner is not a substitute for target-fixture and private package evidence.
+- Phase 3 closed incomplete after its final bounded server rehearsal stopped at
+  a controller readiness race before client package installation. Positive
+  traffic, expected rejection, restart recovery, purge, and the follow-up
+  engineering acceptance were not completed. This is neither a demonstrated
+  protocol/package failure nor a product pass.
+- The separate IRP-0 local controller qualification now passes bounded
+  delayed-start, never-ready, early-exit, interruption, cleanup, and strict
+  four-way classification checks. It performed no server or product work and
+  authorizes none.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS
@@ -111,14 +120,20 @@ machine-readable result in `production-readiness.json` is currently No-Go.
    boundary as machine-checked regressions.
 4. Preserve pre-publication `v1.1.0` as the compatible M1-M8 regression
    boundary without recreating its tag on a different public commit.
-5. Mature the implemented experimental Linux CLI/service reference client
-   through sustained, repeated-use, transition/leak, process-recovery,
-   power-loss, credential-root, and package-publication evidence.
-6. Keep the production ledger at No-Go until candidate freeze, accepted Phase
-   3-A/3-B inputs, an independent audit, deployability, and final approval all
-   exist for the same hashes.
+5. Preserve the Phase 3 incomplete closeout and frozen candidate without
+   relabelling partial server runs as product evidence.
+6. Keep remote integration work stopped. The separate Integration Recovery
+   Program's local controller gate is complete, but any return still requires a
+   new exact owner decision and harmless calibration on both fresh hosts before
+   product upload.
+7. Keep the production ledger at No-Go until a future project establishes
+   accepted platform evidence, an independent audit, deployability, and final
+   approval for one exact candidate.
 
 See `docs/PLAN_POST_V1.md` for the governing execution order,
+`docs/PHASE3_CLOSEOUT_AND_RECOVERY.md` for the Phase 3 closeout and conditional
+successor boundary,
+`docs/IRP_CONTROLLER_QUALIFICATION.md` for the local-only controller result,
 `docs/PUBLIC_HISTORY_BOUNDARY.md` for the repository-history boundary, and
 `docs/STEALTH_PRIORITY.md` for the focused stealth technical queue.
 

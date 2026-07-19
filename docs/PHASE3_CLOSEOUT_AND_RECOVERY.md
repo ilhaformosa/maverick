@@ -89,6 +89,19 @@ consumed and closed. Any future server work requires a new project-level
 decision, a new run identity, corrected and requalified tooling, and fresh
 exact owner authorization.
 
+### ITR-1: local transport recovery gate
+
+The project separately established Integration Transport Recovery after the
+IRP-1 closeout. It uses a new identity and does not inherit the old
+authorization. Its local gate exercises the real HTTP response-read path with
+truncated bodies and disconnects, proves one bounded retry for GET/DELETE and
+none for POST, records redacted attempt outcomes, and reruns every inherited
+controller, entrypoint, readiness, package-alignment, collection and
+destruction check.
+
+That local gate passes, but it ran no product and authorizes no external work.
+A fresh private proposal exists and requires a separate exact owner decision.
+
 ### IRP-2: outcome decision
 
 IRP-1 did not reach the product path, so IRP-2 did not start. The program has
@@ -97,6 +110,6 @@ does not automatically start production audit or release work.
 
 ## Authorization Boundary
 
-The closed recovery result authorizes no further external work. It does not
-authorize credentials, provider queries, remote access, resource creation,
-spending, CI, tags, publication, or release operations.
+The closed IRP-1 result and local ITR-1 result authorize no external work. They
+do not authorize credentials, provider queries, remote access, resource
+creation, spending, CI, tags, publication, or release operations.

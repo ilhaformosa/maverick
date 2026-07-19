@@ -5,8 +5,9 @@ whole IRP execution package was then rejected by a no-cost preflight because
 its real stage executables were missing. A corrected executable package has
 since passed a new local-only qualification. Its single authorized integration
 run then stopped during provider preflight before resource creation. No server
-run is active or authorized. These tool results do not change the final Phase
-3 `NO_GO` decision.
+run is active or authorized. A separately established transport-recovery
+package has since passed a new local-only gate for that exact failure. These
+tool results do not change the final Phase 3 `NO_GO` decision.
 
 ## What Passed
 
@@ -58,7 +59,12 @@ resource-create request. No host, SSH session, upload, package installation,
 Maverick process, fault action, product result, or spending occurred.
 
 The one-run allowance is consumed and closed. No automatic replacement is
-authorized. Any future return requires a new project-level decision, a new run
-identity, corrected and requalified adapter behavior, and fresh exact owner
-authorization. It still cannot be called Phase 3 attempt 5 or authorize a
-successor candidate, production audit, deployment, release, or Go by itself.
+authorized.
+
+The independent Integration Transport Recovery package uses a new run
+identity and proposal. Its real-loopback tests truncate the declared HTTP body
+or disconnect before the status line, then prove GET/DELETE retry at most once,
+POST retry zero, bounded fail-stop, redacted attempt logging, and all inherited
+controller/cleanup gates. This remains local tool qualification only. Its new
+proposal is not externally authorized and cannot authorize a successor
+candidate, production audit, deployment, release, or Go by itself.

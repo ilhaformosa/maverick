@@ -87,7 +87,11 @@ cleanup, partial-state, strict-classification, and stage-entrypoint checks. Its
 one authorized integration run later stopped during read-only provider
 preflight, before resource creation, because a truncated response escaped the
 adapter's safe GET-retry path. It produced a tool failure, no host or product
-result, and no spending. No replacement run is authorized. See
+result, and no spending. No replacement run is authorized. A separately
+established Integration Transport Recovery gate now passes real-loopback
+truncated-body and disconnect handling, bounded GET/DELETE retry, zero POST
+retry, and the inherited controller/cleanup checks locally. It has a fresh
+identity and proposal but no external authorization. See
 `docs/IRP_CONTROLLER_QUALIFICATION.md`.
 
 ## Active Milestones
@@ -132,9 +136,9 @@ The detailed gates are in `docs/PLAN_POST_V1.md`:
   acceptance started. The first recovery execution package was rejected
   locally; its corrected executable revision passed the local tool gate, but
   its single integration run stopped during provider preflight before resource
-  creation. Any future server work requires a new project-level decision,
-  corrected and requalified tooling, and fresh exact authorization. IPv6 is
-  not scheduled.
+  creation. A new project-level transport-recovery package is now requalified
+  locally against that exact failure, but any server work still requires fresh
+  exact authorization. IPv6 is not scheduled.
 
 M1-M3 are the first implementation group. M4-M6 follow after review of that
 baseline. M7-M8 depend on measured results.

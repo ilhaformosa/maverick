@@ -14,8 +14,9 @@ Maverick's current direction is preservation and a bounded integration reset:
    post-v1 evidence;
 2. keep the frozen `v1.2.0-alpha.1` candidate and Phase 3 records immutable;
 3. do not resume paid server work under the Phase 3 name;
-4. preserve the closed Integration Recovery Program, transport-recovery, and
-   remote-first control results without treating them as product results;
+4. preserve the closed Integration Recovery Program, transport-recovery,
+   remote-first, and remote-controller results without treating them as product
+   results;
 5. return to servers only through a new exact owner decision with fresh inputs,
    limits, resources, acceptance rules, and harmless calibration on both hosts
    before product upload;
@@ -106,6 +107,16 @@ hosts were provider-locked; the same bounded cleanup later deleted both hosts
 and the run-owned key and confirmed zero resources. This is another
 tool/environment result, not product evidence. Its one run is closed and no
 successor is authorized.
+
+A final remote-controller successor proved that its independent guard,
+credential handoff, fail-stop, collection, and zero cleanup could continue
+without the developer machine as live controller. Its first narrow
+authenticated provider preflight was rejected by source-address access policy,
+before any create request. It created no resource, ran no product, incurred no
+billable resource cost, removed its transient credential and run-owned key, and
+confirmed zero. Its one run is closed. Any future route must first pass a
+separately authorized zero-resource authenticated access check from the final
+controller location before another paid run is proposed.
 
 ## Active Milestones
 

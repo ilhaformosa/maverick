@@ -10,8 +10,12 @@ package then passed a new local-only gate and consumed its single authorized
 run during read-only provider plan preflight, also before resource creation.
 A later remote-first package consumed its single run after creating exactly two
 disposable hosts, but stopped before SSH or product upload. All resources are
-now confirmed absent. These tool results do not change the final Phase 3
-`NO_GO` decision.
+now confirmed absent. A final remote-controller package then consumed its one
+run during the first authenticated provider preflight, before resource
+creation, because source-address access policy rejected the request. Its
+fail-stop confirmed zero and removed its transient credential and run-owned
+key. These tool/environment results do not change the final Phase 3 `NO_GO`
+decision.
 
 ## What Passed
 
@@ -92,3 +96,18 @@ or product process. The provider temporarily rejected immediate deletion while
 the new hosts were locked for provisioning. After that lock cleared, the same
 exact cleanup deleted both hosts and the run-owned key, removed the local key,
 and confirmed zero resources. The run is closed and authorizes no replacement.
+
+The later remote-controller package moved the live provider, readiness, SSH,
+transfer, and destruction loop off the developer machine. Local qualification
+and a harmless controller-host calibration passed, including delayed provider
+polling, temporary delete-lock handling, independent-guard ordering, transient
+credential cleanup, and interruption cases. In its single authorized run, the
+guard armed and the first narrow authenticated provider GET was rejected by
+source-address access policy. No create intent or POST occurred. It created no
+resource, reached no product step, incurred no billable resource cost, removed
+the transient credential and run-owned key, and confirmed zero.
+
+That run is closed and cannot be resumed. Any future paid route must first pass
+a separately authorized zero-resource authenticated access gate from the final
+controller location. Passing an unauthenticated outbound-network check is not a
+substitute for that gate.

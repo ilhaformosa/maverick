@@ -1,10 +1,11 @@
 # Phase 3 Closeout And Integration Recovery Boundary
 
 Status: Phase 3 closed incomplete on 2026-07-19. The frozen candidate has a
-final `NO_GO` decision. The separate recovery, transport-recovery, and
-remote-first routes each consumed one integration run. The latest created two
-disposable hosts but stopped before product upload, then confirmed zero cloud
-resources. No replacement remote run is active or authorized.
+final `NO_GO` decision. The separate recovery, transport-recovery,
+remote-first, and remote-controller routes each consumed one integration run.
+The latest stopped during authenticated provider access preflight before any
+resource creation and confirmed zero. No replacement remote run is active or
+authorized.
 
 ## Product Result
 
@@ -134,15 +135,35 @@ key, and confirmed zero resources. Two billable hosts existed briefly; no
 exact billing claim is made. This remains a tool/environment result, not a
 product result. The single-run allowance is consumed and closed.
 
+### RCR-1: closed remote-controller recovery run
+
+The final successor moved live provider, readiness, SSH, transfer, collection,
+and destruction control from the developer machine to a separately calibrated
+remote controller. Its independent guard, fixed package, fail-stop,
+classification, and cleanup gates passed locally and on that controller.
+
+In the single authorized run, the guard armed before the transient credential
+was received. The first narrow authenticated provider preflight GET was then
+rejected by source-address access policy. No provider create intent, create
+POST, host, provider key, remote access, product upload, package action, or
+Maverick process occurred.
+
+Collection and zero cleanup passed; the transient credential and generated
+run-owned key were removed. No billable resource existed. This is an
+environment-access result, not a protocol/package result. The one-run allowance
+is consumed and closed.
+
 ### IRP-2: outcome decision
 
-Neither IRP-1, ITR-1, nor IRF-1 reached the product path, so IRP-2 did not
-start. The program has stopped and returned to a project-level
+Neither IRP-1, ITR-1, IRF-1, nor RCR-1 reached the product path, so IRP-2 did
+not start. The program has stopped and returned to a project-level
 tooling/architecture decision. This does not automatically start production
 audit or release work.
 
 ## Authorization Boundary
 
-The closed IRP-1, ITR-1, and IRF-1 results authorize no external work. They
-do not authorize credentials, provider queries, remote access, resource
-creation, spending, CI, tags, publication, or release operations.
+The closed IRP-1, ITR-1, IRF-1, and RCR-1 results authorize no external work.
+They do not authorize credentials, provider queries, remote access, resource
+creation, spending, CI, tags, publication, or release operations. Any future
+paid proposal must first pass a separately authorized zero-resource
+authenticated access check from its final controller location.

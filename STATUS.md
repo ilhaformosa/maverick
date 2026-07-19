@@ -109,7 +109,12 @@ No-Go.
   stopped before SSH, upload, package installation, or any Maverick process.
   Cleanup waited out a temporary provider resource lock, then deleted both
   hosts and the run-owned key and confirmed zero. Its one run is closed; this
-  is not product evidence.
+  is not product evidence. A final remote-controller successor armed its
+  independent guard and reached one narrow authenticated provider preflight,
+  which source-address access policy rejected before any create request. It
+  created no resource, reached no product step, removed the transient
+  credential and run-owned key, confirmed zero, and incurred no billable
+  resource cost. Its one run is also closed.
 - Native Maverick server-side ECH is not implemented.
 - The Phase 2 evidence runner is not a shipped network helper or reference
   client. The separate Linux reference client has a platform route/DNS
@@ -140,11 +145,12 @@ No-Go.
 5. Preserve the Phase 3 incomplete closeout and frozen candidate without
    relabelling partial server runs as product evidence.
 6. Keep remote integration work stopped. The separate recovery,
-   transport-recovery, and remote-first routes each consumed their single run.
-   The latest created two disposable hosts but stopped before SSH or product
-   upload, then confirmed zero resources. Any return requires another
-   project-level decision, fresh exact owner authorization, and a control path
-   that does not repeat the same operator-network dependency unchanged.
+   transport-recovery, remote-first, and remote-controller routes each consumed
+   their single run. The latest stopped at authenticated provider access before
+   resource creation and confirmed zero. Any return requires another
+   project-level decision, fresh exact owner authorization, and a separate
+   zero-resource authenticated access check from the final controller location
+   before a paid proposal.
 7. Keep the production ledger at No-Go until a future project establishes
    accepted platform evidence, an independent audit, deployability, and final
    approval for one exact candidate.

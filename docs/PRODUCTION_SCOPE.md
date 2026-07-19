@@ -99,7 +99,13 @@ money, and has no authorized successor. A later remote-first successor created
 exactly two disposable hosts, but stopped after two classified readiness-poll
 disconnects before SSH, package installation, or product execution. Delayed
 exact cleanup confirmed zero hosts and run-owned keys. Its single run is
-closed, and this is not product evidence.
+closed, and this is not product evidence. A later remote-controller successor
+then reached one narrow authenticated provider preflight with its independent
+guard active. Source-address access policy rejected that request before any
+create operation. It created no resource, ran no product, removed the transient
+credential and run-owned key, confirmed zero, and incurred no billable resource
+cost. Its single run is closed. A future paid route must first pass a separate
+zero-resource authenticated access check from the final controller location.
 
 The frozen first-stage identity is release train `1.2.0`, tag
 `v1.2.0-alpha.1`, Maverick and reference-client software

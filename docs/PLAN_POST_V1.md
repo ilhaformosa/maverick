@@ -117,7 +117,15 @@ money, and has no authorized successor. A later remote-first successor removed
 the large catalog request and created exactly two disposable hosts, then
 stopped after two classified readiness-poll disconnects before SSH or product
 upload. Exact delayed cleanup deleted both hosts and the run-owned key and
-confirmed zero. Its single run is closed and no successor is authorized.
+confirmed zero. Its single run is closed and no successor is authorized. A
+later remote-controller successor armed its independent guard and reached one
+narrow authenticated provider preflight without relying on the developer
+machine for live control. Source-address access policy rejected that GET before
+any create request. It created no resource, ran no product, incurred no
+billable resource cost, removed the transient credential and run-owned key, and
+confirmed zero. That single run is also closed. Any future paid proposal must
+be preceded by a separately authorized zero-resource authenticated access
+check from the final controller location.
 
 That successor cannot retroactively complete Phase 3. Production audit,
 remediation, deployability, and stable release work remain inactive unless a

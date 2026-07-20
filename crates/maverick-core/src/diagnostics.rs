@@ -404,9 +404,9 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        CdnFrontingConfig, ClientAdvancedConfig, ClientServerConfig, EchFallbackPolicy,
-        HttpConnectConfig, LocalConfig, LogConfig, Mode, SecretString, Socks5Config,
-        TlsFingerprintMode,
+        CdnFrontingCarrier, CdnFrontingConfig, ClientAdvancedConfig, ClientServerConfig,
+        EchFallbackPolicy, HttpConnectConfig, LocalConfig, LogConfig, Mode, SecretString,
+        Socks5Config, TlsFingerprintMode,
     };
 
     #[test]
@@ -707,6 +707,7 @@ mod tests {
     #[test]
     fn stealth_diagnostics_report_baseline_and_cdn_fronted_states() {
         let mut config = client_config("u123", SecretString::generate());
+        config.advanced.stealth.tls_fingerprint = TlsFingerprintMode::RustlsDefault;
         let baseline = StealthDiagnosticsSnapshot::from_client_config(&config);
         assert_eq!(baseline.tls_fingerprint, TlsFingerprintMode::RustlsDefault);
         assert_eq!(baseline.status, StealthDiagnosticStatus::BaselineRustls);
@@ -720,6 +721,7 @@ mod tests {
         config.advanced.experimental_cloudflare_ws = true;
         config.advanced.stealth.cdn_fronting = CdnFrontingConfig {
             enabled: true,
+            carrier: CdnFrontingCarrier::WebSocket,
             trusted_tls_terminating_provider: true,
             ..CdnFrontingConfig::default()
         };

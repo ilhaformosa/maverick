@@ -202,7 +202,7 @@ impl ClientConfig {
         self.advanced.shaping.validate()?;
         self.advanced.validate(self.mode)?;
         self.auth.channel_binding.validate_transport_support(
-            self.advanced.cloudflare_ws_enabled(),
+            self.advanced.tls_terminating_fronting_enabled(),
             self.advanced.experimental_h3,
         )?;
         if let Some(dns) = &self.local.dns {
@@ -339,12 +339,13 @@ impl AuthChannelBindingConfig {
 
     fn validate_transport_support(
         &self,
-        cloudflare_ws_enabled: bool,
+        tls_terminating_fronting_enabled: bool,
         experimental_h3: bool,
     ) -> Result<()> {
-        if self.require && cloudflare_ws_enabled {
+        if self.require && tls_terminating_fronting_enabled {
             return Err(Error::Config(
-                "auth.channel_binding.require is not supported with CDN-fronted WebSocket".into(),
+                "auth.channel_binding.require is not supported with TLS-terminating CDN fronting"
+                    .into(),
             ));
         }
         if self.require && experimental_h3 {
@@ -698,7 +699,7 @@ impl ServerConfig {
         self.advanced.shaping.validate()?;
         self.advanced.validate(self.maverick.mode_default)?;
         self.auth.channel_binding.validate_transport_support(
-            self.advanced.cloudflare_ws_enabled(),
+            self.advanced.tls_terminating_fronting_enabled(),
             self.advanced.experimental_h3,
         )?;
         Ok(())
@@ -903,7 +904,7 @@ pub struct ClientAdvancedConfig {
     pub udp_idle_timeout_ms: u64,
     #[serde(default)]
     pub shaping: ShapingConfig,
-    #[serde(default)]
+    #[serde(default = "default_client_stealth")]
     pub stealth: StealthConfig,
     #[serde(default)]
     pub allow_non_loopback_listeners: bool,
@@ -930,7 +931,7 @@ impl Default for ClientAdvancedConfig {
             padding: default_padding(),
             udp_idle_timeout_ms: default_udp_idle_timeout_ms(),
             shaping: ShapingConfig::default(),
-            stealth: StealthConfig::default(),
+            stealth: default_client_stealth(),
             allow_non_loopback_listeners: false,
             experimental_h3: false,
             experimental_cloudflare_ws: false,
@@ -944,6 +945,14 @@ impl Default for ClientAdvancedConfig {
 
 impl ClientAdvancedConfig {
     pub fn cloudflare_ws_enabled(&self) -> bool {
+        self.experimental_cloudflare_ws || self.stealth.cdn_fronting.websocket_enabled()
+    }
+
+    pub fn cdn_fronted_h2_enabled(&self) -> bool {
+        self.stealth.cdn_fronting.h2_enabled()
+    }
+
+    pub fn tls_terminating_fronting_enabled(&self) -> bool {
         self.experimental_cloudflare_ws || self.stealth.cdn_fronting.enabled
     }
 
@@ -955,9 +964,10 @@ impl ClientAdvancedConfig {
             ));
         }
         let cloudflare_ws_enabled = self.cloudflare_ws_enabled();
-        if mode == Mode::Stable && cloudflare_ws_enabled {
+        let fronting_enabled = self.tls_terminating_fronting_enabled();
+        if mode == Mode::Stable && fronting_enabled {
             return Err(Error::Config(
-                "CDN-fronted WebSocket is not allowed in stable mode".into(),
+                "CDN fronting is not allowed in stable mode".into(),
             ));
         }
         if mode == Mode::Stable && self.experimental_tun {
@@ -965,9 +975,9 @@ impl ClientAdvancedConfig {
                 "advanced.experimental_tun is not allowed in stable mode".into(),
             ));
         }
-        if cloudflare_ws_enabled && self.experimental_h3 {
+        if fronting_enabled && self.experimental_h3 {
             return Err(Error::Config(
-                "CDN-fronted WebSocket and advanced.experimental_h3 cannot both be enabled".into(),
+                "CDN fronting and advanced.experimental_h3 cannot both be enabled".into(),
             ));
         }
         if self.stealth.tls_fingerprint == TlsFingerprintMode::BrowserMimic && cloudflare_ws_enabled
@@ -981,7 +991,7 @@ impl ClientAdvancedConfig {
         self.stealth.validate(
             "advanced.stealth",
             mode,
-            cloudflare_ws_enabled,
+            self.experimental_cloudflare_ws,
             browser_tls_profile_supported(),
         )?;
         if mode == Mode::Private
@@ -1078,6 +1088,14 @@ impl Default for ServerAdvancedConfig {
 
 impl ServerAdvancedConfig {
     pub fn cloudflare_ws_enabled(&self) -> bool {
+        self.experimental_cloudflare_ws || self.stealth.cdn_fronting.websocket_enabled()
+    }
+
+    pub fn cdn_fronted_h2_enabled(&self) -> bool {
+        self.stealth.cdn_fronting.h2_enabled()
+    }
+
+    pub fn tls_terminating_fronting_enabled(&self) -> bool {
         self.experimental_cloudflare_ws || self.stealth.cdn_fronting.enabled
     }
 
@@ -1137,10 +1155,10 @@ impl ServerAdvancedConfig {
                 "advanced.auth_failure_cache_max_entries must be greater than zero".into(),
             ));
         }
-        let cloudflare_ws_enabled = self.cloudflare_ws_enabled();
-        if mode == Mode::Stable && cloudflare_ws_enabled {
+        let fronting_enabled = self.tls_terminating_fronting_enabled();
+        if mode == Mode::Stable && fronting_enabled {
             return Err(Error::Config(
-                "CDN-fronted WebSocket is not allowed in stable mode".into(),
+                "CDN fronting is not allowed in stable mode".into(),
             ));
         }
         if mode == Mode::Stable && self.experimental_h3 {
@@ -1149,8 +1167,12 @@ impl ServerAdvancedConfig {
             ));
         }
         validate_experimental_ech(self.experimental_ech)?;
-        self.stealth
-            .validate("advanced.stealth", mode, cloudflare_ws_enabled, false)?;
+        self.stealth.validate(
+            "advanced.stealth",
+            mode,
+            self.experimental_cloudflare_ws,
+            false,
+        )?;
         self.crypto.validate(mode)
     }
 }
@@ -1183,12 +1205,20 @@ impl Default for StealthConfig {
     }
 }
 
+fn default_client_stealth() -> StealthConfig {
+    let mut stealth = StealthConfig::default();
+    if browser_tls_profile_supported() {
+        stealth.tls_fingerprint = TlsFingerprintMode::BrowserMimic;
+    }
+    stealth
+}
+
 impl StealthConfig {
     fn validate(
         &self,
         field: &str,
         mode: Mode,
-        cloudflare_ws_enabled: bool,
+        experimental_cloudflare_ws: bool,
         browser_mimic_supported: bool,
     ) -> Result<()> {
         if self.tls_fingerprint == TlsFingerprintMode::BrowserMimic && !browser_mimic_supported {
@@ -1201,13 +1231,13 @@ impl StealthConfig {
                 "{field}.active_probe_resistance=false is not allowed in private mode"
             )));
         }
-        if cloudflare_ws_enabled && !self.active_probe_resistance {
+        if self.cdn_fronting.enabled && !self.active_probe_resistance {
             return Err(Error::Config(format!(
-                "{field}.active_probe_resistance=false is not allowed with CDN-fronted WebSocket"
+                "{field}.active_probe_resistance=false is not allowed with CDN fronting"
             )));
         }
         self.cdn_fronting
-            .validate(&format!("{field}.cdn_fronting"), cloudflare_ws_enabled)
+            .validate(&format!("{field}.cdn_fronting"), experimental_cloudflare_ws)
     }
 }
 
@@ -1221,6 +1251,7 @@ pub enum CdnFrontingProvider {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CdnFrontingCarrier {
+    H2,
     #[default]
     WebSocket,
 }
@@ -1238,10 +1269,23 @@ pub struct CdnFrontingConfig {
 }
 
 impl CdnFrontingConfig {
-    fn validate(&self, field: &str, cloudflare_ws_enabled: bool) -> Result<()> {
-        if cloudflare_ws_enabled && !self.enabled {
+    pub fn websocket_enabled(&self) -> bool {
+        self.enabled && self.carrier == CdnFrontingCarrier::WebSocket
+    }
+
+    pub fn h2_enabled(&self) -> bool {
+        self.enabled && self.carrier == CdnFrontingCarrier::H2
+    }
+
+    fn validate(&self, field: &str, experimental_cloudflare_ws: bool) -> Result<()> {
+        if experimental_cloudflare_ws && !self.enabled {
             return Err(Error::Config(format!(
                 "{field}.enabled must be true when CDN-fronted WebSocket is selected"
+            )));
+        }
+        if experimental_cloudflare_ws && self.carrier != CdnFrontingCarrier::WebSocket {
+            return Err(Error::Config(format!(
+                "{field}.carrier must be web_socket when advanced.experimental_cloudflare_ws is enabled"
             )));
         }
         if self.enabled && !self.trusted_tls_terminating_provider {
@@ -1686,6 +1730,27 @@ mod tests {
             log: LogConfig::default(),
             advanced: ClientAdvancedConfig::default(),
         }
+    }
+
+    #[test]
+    fn client_default_selects_the_supported_tls_profile() {
+        let expected = if browser_tls_profile_supported() {
+            TlsFingerprintMode::BrowserMimic
+        } else {
+            TlsFingerprintMode::RustlsDefault
+        };
+        assert_eq!(
+            ClientAdvancedConfig::default().stealth.tls_fingerprint,
+            expected
+        );
+    }
+
+    #[test]
+    fn cdn_fronting_v1_default_carrier_remains_websocket() {
+        assert_eq!(
+            CdnFrontingConfig::default().carrier,
+            CdnFrontingCarrier::WebSocket
+        );
     }
 
     fn server_config_with_user(user_id: &str, tunnel_path: &str) -> ServerConfig {
@@ -2312,7 +2377,7 @@ advanced:
             secret.expose_secret()
         );
         let err = ClientConfig::from_yaml_str(&input).unwrap_err();
-        assert!(err.to_string().contains("CDN-fronted WebSocket"));
+        assert!(err.to_string().contains("CDN fronting"));
     }
 
     #[cfg(not(feature = "browser-tls"))]
@@ -2386,7 +2451,7 @@ advanced:
         )
     ))]
     #[test]
-    fn private_mode_accepts_only_explicit_browser_tls_profile() {
+    fn private_mode_accepts_browser_tls_profile() {
         let secret = SecretString::generate();
         let input = format!(
             r#"
@@ -2442,7 +2507,7 @@ advanced:
     }
 
     #[test]
-    fn private_mode_rejects_default_tls_fingerprint() {
+    fn private_mode_rejects_explicit_rustls_fingerprint() {
         let secret = SecretString::generate();
         let input = format!(
             r#"
@@ -2457,6 +2522,9 @@ server:
   tunnel_path: "/assets/upload"
   credential_id: "u_abc123"
   secret: "{}"
+advanced:
+  stealth:
+    tls_fingerprint: rustls_default
 "#,
             secret.expose_secret()
         );
@@ -2482,6 +2550,8 @@ server:
   secret: "{}"
 advanced:
   experimental_cloudflare_ws: true
+  stealth:
+    tls_fingerprint: rustls_default
 "#,
             secret.expose_secret()
         );
@@ -2504,8 +2574,10 @@ server:
 advanced:
   experimental_cloudflare_ws: true
   stealth:
+    tls_fingerprint: rustls_default
     cdn_fronting:
       enabled: true
+      carrier: web_socket
 "#,
             secret.expose_secret()
         );
@@ -2532,9 +2604,11 @@ server:
 advanced:
   experimental_cloudflare_ws: true
   stealth:
+    tls_fingerprint: rustls_default
     active_probe_resistance: true
     cdn_fronting:
       enabled: true
+      carrier: web_socket
       trusted_tls_terminating_provider: true
 "#,
             secret.expose_secret()
@@ -2582,6 +2656,85 @@ advanced:
         assert!(!cfg.advanced.experimental_cloudflare_ws);
         assert!(cfg.advanced.cloudflare_ws_enabled());
         assert!(cfg.advanced.stealth.cdn_fronting.enabled);
+    }
+
+    #[cfg(all(
+        feature = "browser-tls",
+        any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )
+    ))]
+    #[test]
+    fn parses_browser_tls_cdn_fronted_h2() {
+        let secret = SecretString::generate();
+        let input = format!(
+            r#"
+version: 1
+mode: auto
+local:
+  socks5:
+    listen: "127.0.0.1:1080"
+server:
+  address: "example.com:443"
+  server_name: "example.com"
+  tunnel_path: "/assets/upload"
+  credential_id: "u_abc123"
+  secret: "{}"
+advanced:
+  stealth:
+    tls_fingerprint: browser_mimic
+    cdn_fronting:
+      enabled: true
+      provider: cloudflare
+      carrier: h2
+      trusted_tls_terminating_provider: true
+"#,
+            secret.expose_secret()
+        );
+        let cfg = ClientConfig::from_yaml_str(&input).unwrap();
+        assert!(cfg.advanced.cdn_fronted_h2_enabled());
+        assert!(cfg.advanced.tls_terminating_fronting_enabled());
+        assert!(!cfg.advanced.cloudflare_ws_enabled());
+        assert_eq!(
+            cfg.advanced.stealth.tls_fingerprint,
+            TlsFingerprintMode::BrowserMimic
+        );
+    }
+
+    #[test]
+    fn cdn_fronted_h2_rejects_required_channel_binding() {
+        let secret = SecretString::generate();
+        let input = format!(
+            r#"
+version: 1
+mode: auto
+local:
+  socks5:
+    listen: "127.0.0.1:1080"
+server:
+  address: "example.com:443"
+  server_name: "example.com"
+  tunnel_path: "/assets/upload"
+  credential_id: "u_abc123"
+  secret: "{}"
+auth:
+  channel_binding:
+    enabled: true
+    require: true
+advanced:
+  stealth:
+    tls_fingerprint: rustls_default
+    cdn_fronting:
+      enabled: true
+      provider: cloudflare
+      carrier: h2
+      trusted_tls_terminating_provider: true
+"#,
+            secret.expose_secret()
+        );
+        let err = ClientConfig::from_yaml_str(&input).unwrap_err();
+        assert!(err.to_string().contains("TLS-terminating CDN fronting"));
     }
 
     #[test]
@@ -2732,7 +2885,7 @@ advanced:
             secret.expose_secret()
         );
         let err = ServerConfig::from_yaml_str(&input).unwrap_err();
-        assert!(err.to_string().contains("CDN-fronted WebSocket"));
+        assert!(err.to_string().contains("CDN fronting"));
     }
 
     #[test]
@@ -2813,6 +2966,7 @@ advanced:
     active_probe_resistance: true
     cdn_fronting:
       enabled: true
+      carrier: web_socket
       trusted_tls_terminating_provider: true
 "#,
             secret.expose_secret()

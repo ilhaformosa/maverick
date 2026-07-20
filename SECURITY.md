@@ -1,171 +1,89 @@
 # Security Policy
 
-Maverick is a narrow stable engineering release of an experimental prototype
-and should not be treated as production security software.
+Maverick is experimental alpha software. Do not treat it as audited,
+production-ready, anonymous, censorship-resistant, or browser-identical.
 
-## Reporting Security Issues
+## Reporting a Vulnerability
 
-Use private reporting for vulnerabilities. Prefer GitHub private vulnerability
-reporting when it is available for this repository. If that GitHub entry point
-is unavailable, open a public issue with only a short, non-sensitive title such
-as "Security report coordination request" and ask the maintainer to coordinate
-privately. Do not include exploit details, real server addresses, private
-hostnames, generated credentials, access tokens, keys, HMAC tags, payload data,
-or private logs in public issues.
+Use GitHub private vulnerability reporting when available. If it is
+unavailable, open a public issue containing only a non-sensitive coordination
+request. Never place exploit details, credentials, real endpoints, private
+hostnames, account data, infrastructure identifiers, payloads, or private logs
+in a public issue.
 
-The maintainer should acknowledge security coordination requests within
-7 calendar days when possible. Public disclosure should wait until the report is
-triaged and users have a reasonable update path.
+The maintainer should acknowledge a report within seven calendar days when
+possible and coordinate disclosure only after triage and a reasonable update
+path.
 
-The complete private-report lifecycle is in
-`docs/SECURITY_DISCLOSURE_WORKFLOW.md`; finding severity and release effect are
-in `docs/AUDIT_REMEDIATION_POLICY.md`; incident playbooks are in
-`docs/INCIDENT_RESPONSE.md`.
+## Credentials and Configs
 
-## Secrets
-
-Use:
+Generate credentials with:
 
 ```sh
 maverick gen-user
 ```
 
-Generated secrets are high-entropy base64url values prefixed with `mv1_`.
-Short passwords are rejected by config validation.
+Keep client/server configs owner-readable only. Do not paste generated secrets,
+private keys, bearer tokens, HMAC material, or real endpoint details into logs,
+screenshots, issues, commits, or chat.
 
-Do not paste secrets into issue trackers, logs, screenshots, or chat messages.
-Maverick zeroizes `SecretString` storage on drop, but this is not a complete
-defense against process memory disclosure, copies, swap, crash dumps, or
-compromised hosts.
-
-## Config File Permissions
-
-Server and client configs may contain user credentials. Store them with
-restricted filesystem permissions and avoid syncing them to untrusted locations.
-The CLI creates generated and imported secret-bearing config files with
-owner-only permissions on Unix. Starting the client or server refuses
-group/other-readable configs by default; `--allow-loose-permissions` is an
-explicit operator override for test environments.
-
-## Local Listener Scope
-
-Client SOCKS5, DNS, and HTTP CONNECT listeners are loopback-only by default.
-Only set `advanced.allow_non_loopback_listeners: true` when you intentionally
-need to bind a non-loopback address. In the current v1.x line, runtime peer
-filtering still rejects non-loopback clients; Maverick does not provide an
-authenticated open-proxy mode.
+`SecretString` redacts ordinary formatting and serialization, but it cannot
+protect against a compromised process, crash dump, swap, or copied plaintext.
 
 ## TLS
 
-Use valid TLS certificates for deployed servers. The v1 client supports a custom
-CA certificate for tests or private deployments, but production deployments
-should use normal certificate hygiene.
+The supported default client build uses the BoringSSL-backed browser-like H2
+path. It includes exporter channel binding, GREASE, extension permutation, and
+pinned browser-reference settings, but measured differences remain. It is not
+an exact browser-equivalence claim.
 
-Optional `cert_pin` verifies the SHA-256 digest of the leaf certificate DER
-after normal CA and hostname validation. It is not a replacement for certificate
-validity checks.
+The CDN-fronted H2 carrier keeps the browser-like client TLS profile but
+terminates TLS at the provider edge. Maverick therefore disables exporter
+channel binding for fronted H2 and WebSocket; client-edge and edge-origin TLS
+exporters cannot match. The provider can observe authentication and tunnel
+payload. Set `trusted_tls_terminating_provider: true` only after accepting that
+tradeoff. Loopback tests do not prove real-provider behavior.
 
-Direct rustls H2/WebSocket auth can bind ClientHello and ServerHello HMACs to
-the current TLS connection using TLS exporter material. This is enabled
-opportunistically by default and can be required with
-`auth.channel_binding.require: true` on both client and server for supported
-direct TLS transports. It is not available for the experimental H3 carrier or
-TLS-terminating fronted deployments.
+`--no-default-features` builds retain the explicit rustls fallback for
+development and compatibility checks. A client config may also explicitly set
+`advanced.stealth.tls_fingerprint: rustls_default`; that path is distinguishable
+and is rejected in `private` mode.
 
-## Logging
+Use valid server certificates. Optional `cert_pin` verifies the leaf
+certificate SHA-256 after normal CA and hostname validation; it is not a
+replacement for them.
 
-Default logging is redacted. Logs must not include:
+## Network and Logging Limits
 
-- user secrets;
-- HMAC tags;
-- raw tokens;
-- payload bytes;
-- TLS keying material;
-- full target domains in `private` mode.
+Client listeners bind to loopback by default. Keep server egress blocks for
+loopback, private, link-local, multicast, shared, and unspecified ranges unless
+a separate deployment has its own isolation and review.
 
-`SecretString` redacts `Debug`, `Display`, and ordinary serde serialization by
-default. CLI config writers are the explicit paths that materialize secret
-values into owner-only config files.
+Ordinary logs must not include credentials, HMAC tags, payload bytes, TLS
+keying material, or full target domains in private mode.
 
-## v1 Limitations
+## Local Safety
 
-- Prior review input does not equal stable or production security sign-off.
-- No browser-grade TLS fingerprint claim. Client `private` mode rejects the
-  default rustls TLS fingerprint, but the `browser-tls` feature is still not
-  proof of exact browser equivalence.
-- No guarantee that active probes are perfectly indistinguishable from a normal
-  fallback origin. Failed-auth requests are routed through fallback behavior
-  while preserving method/path/header shape where possible, but timing, TLS
-  stack, and traffic shape can still differ.
-- No strong traffic-analysis resistance claim. Runtime shaping and cover
-  padding are experimental, bounded, and off by default.
-- No production-grade HTTP/3/QUIC transport claim.
-- No claim that a Cloudflare-fronted or other TLS-terminating fronting provider
-  cannot observe Maverick auth frames or tunnel payload. Fronted modes must
-  treat the fronting provider as fully trusted.
-- UDP relay is implemented as an experimental tunnel feature and is not
-  suitable for latency-sensitive production claims.
-- Per-user `rate_limit` is a simple shared byte pacer, not a precise quota,
-  accounting, or abuse-prevention system.
-- Server egress is policy-filtered by default, but authenticated proxy egress is
-  inherent to the product. Operators should keep loopback/private/link-local
-  blocks enabled unless there is a deliberate deployment reason and separate
-  network isolation.
-- Server-side connection counts, pre-auth work, fallback work, and repeated
-  failed tunnel authentication attempts are bounded by advanced overload
-  controls. This is basic overload control, not a complete WAF, account-abuse
-  system, or DDoS mitigation layer.
-- No protection if the client or server host is compromised.
+Local tests and demos use `127.0.0.1` and OS-assigned ephemeral ports. They must
+not change system proxy, DNS, routes, firewall, VPN, interfaces, or network
+services. A real-network pilot requires separately named owner-controlled
+systems and explicit authorization.
 
-Security review planning is documented in `docs/SECURITY_REVIEW_PLAN.md`.
-The 2026-06-28 external-AI review has been triaged in
-`docs/history/review/SECURITY_REVIEW_TRIAGE_2026_06_28.md`, but it is not an audit or
-production sign-off.
-The 2026-07-03 scoped independent alpha review findings have been remediated,
-but this is still not a stable or production security certification.
-The 2026-07-08 anonymous review bundle has been triaged and remediated for the
-narrow `maverick-tls-h2-cli-v1` scope; see
-`docs/history/review/S3_REVIEW_CLOSURE_2026_07_08.md`. This closes the S3
-review-input gate for an RC candidate, but it is still not a formal audit,
-production sign-off, anonymity claim, censorship-resistance claim, or browser
-fingerprint-equivalence claim.
+## Dependency Gate
 
-The pre-freeze production audit instructions are in
-`docs/INDEPENDENT_AUDIT_PACKAGE.md`. That package has not started or completed a
-formal audit. Codex, AI, maintainer, and earlier scoped reviews cannot be used as
-the independent production sign-off.
-
-## Pre-Release Dependency And Unsafe-Code Inventory
-
-Before a public source release, run:
+Before publishing a binary or accepting a security-sensitive change, run:
 
 ```sh
-./scripts/security-dependency-inventory.sh
 ./scripts/local-harness.sh
+./scripts/security-dependency-inventory.sh
 ```
 
-The public repository must also have a working private vulnerability-reporting
-entry point before its visibility is changed.
+Review the actual Rust diff and dependency output. A passing tool is supporting
+evidence, not a security sign-off.
 
-This checks dependency advisories with `cargo audit`, applies the repository
-`cargo-deny` policy for advisories, bans, licenses, and sources, then scans
-Maverick first-party Rust sources for unsafe constructs. As of the 2026-06-30
-pass, Maverick has no first-party unsafe Rust constructs. YAML config parsing
-uses `serde_yaml_ng` rather than the unmaintained `serde_yaml` crate.
-`cargo-geiger` was attempted as a dependency-wide
-unsafe inventory tool, but the current local version does not complete
-reliably on this workspace because it fails to parse
-`signal-hook-registry 1.4.8`; use the script above as the active gate and
-re-evaluate `cargo-geiger` after the toolchain or dependency graph changes.
+## Archived Material
 
-## Public CI Boundary
-
-Public pull-request and release-candidate workflows use read-only permissions,
-full action revision pins, and checkout with persisted credentials disabled.
-They require no deployment, package-publication, private-host, or private
-reference-client secret. The release-candidate workflow builds and checks an
-exact public commit but cannot push, tag, upload a package, or create a release.
-
-Treat public runner logs as public. Never add private aliases, addresses,
-provider/account data, credentials, raw runtime evidence, or exploit details to
-workflow inputs or output. See `docs/CI_AND_RELEASE_GATES.md`.
+Former audit packages, release gates, incident playbooks, evidence ledgers, and
+their checkers are retained under `docs/archive/` and `scripts/archive/`.
+They are historical references only and must not be presented as current audit
+or production approval.

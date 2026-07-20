@@ -1,143 +1,116 @@
 # Maverick Status
 
-Status: public `main` is development toward `v1.2.0` and the workspace reports
-software version `1.2.0-alpha.1`. The pre-publication `v1.1.0` release is the
-latest completed stable engineering boundary for the compatible
-`maverick-tls-h2-cli-v1` scope; its private Git objects were not imported into
-public history.
+Date: 2026-07-20
 
-## Public Description
+This is the only active current-truth document. Archived plans, manifests,
+evidence records, and release notes do not override it.
 
-```text
-Experimental Rust privacy proxy protocol; public main targets v1.2.0 and is not audited or production-ready.
-```
+## Direction Decision
 
-Do not describe Maverick as audited, production-ready, anonymous,
-censorship-resistant, browser-fingerprint-equivalent, or standardized.
+Phase 3 and every recovery alias are terminally retired. The incomplete result
+remains `No-Go`; no product result was produced, no server is active, and no
+lease or run is active. This user-first direction is a new product-learning
+track, not an amendment, completion, or relabeling of Phase 3.
 
-The pre-freeze production claim candidate is
-`maverick-linux-h2-ipv4-v1`: Ubuntu 26.04 LTS `amd64`, IPv4, the `maverick`
-server/CLI, the `maverick-reference-client` Debian service package, and the
-stable TLS 1.3 plus HTTP/2 path. It is a target, not a completed claim. The
-machine-readable result in `production-readiness.json` is currently No-Go.
+Progress now means:
 
-## Working Now
+> A real person uses the real product to complete a real task.
 
-- Local SOCKS5, DNS, HTTP CONNECT, TCP relay, and SOCKS5 UDP ASSOCIATE over
-  authenticated tunnel frames.
-- TLS 1.3 + HTTP/2 default carrier.
-- Runtime-scoped H2 connection reuse across local SOCKS5, HTTP CONNECT, DNS,
-  and UDP flows, with bounded stream admission, idle retirement, and reconnect.
-- Optional feature-gated H3 and explicit Cloudflare-fronted WebSocket
-  experiments, both off by default.
-- Auth v1 default path, explicit opt-in Auth v2, replay protection, credential
-  rotation staging, certificate pinning, fallback behavior, and loopback-only
-  metrics.
-- Static fallback and Hyper-backed HTTP reverse proxy with bounded bodies,
-  preserved H2/H3 authentication-stage request bytes, and generic upstream
-  failure responses.
-- Server global/per-source connection caps, pre-auth admission bounds, fallback
-  overload bounds, and source-IP failed-auth rate limiting.
-- Stealth policy guards for active-probing resistance, unsupported
-  browser-fingerprint mimicry, and explicit CDN-fronting acknowledgement.
-- Bounded padding, batching, pacing, and cover-padding baselines. These are
-  engineering diagnostics, not anonymity guarantees.
-- Local-only harness, conformance checks, fuzz smoke, hygiene scans, and
-  loopback integration tests.
-- Three-layer verification is defined: local preflight, a public PR gate with
-  unconditional core/docs jobs and path-scoped optional jobs, and a manual
-  exact-commit release-candidate gate. The candidate gate is checks-only and
-  does not tag, publish, or access the private reference client.
-- Optional `tun-runtime` Phase 1 packet adapter with pinned `smoltcp 0.13.1`,
-  caller-supplied packet I/O, experimental dual-stack TCP plus bounded DNS/UDP
-  mapping,
-  shared H2 flow limits, coarse snapshots, and synthetic/loopback tests. It is
-  off by default and has no platform network-setup API.
-- A separate experimental Linux reference-client project now combines the SDK
-  controller with authenticated helper IPC, journaled capture-UID IPv4 TUN,
-  route and private-DNS ownership, connection-bound capture, encrypted service
-  credentials, and signed package transactions. Bounded installed traffic,
-  crash/recovery, route/TUN fault, upgrade/rollback, purge, and independent
-  zero-residue evidence is accepted for exact revisions. It is not shipped or
-  production-ready.
-- M8 Phase 2 approved-host IPv4 evidence through a namespace-local real TUN,
-  including bounded resources, failure recovery, host-state preservation, and
-  zero-residue cleanup. IPv6 was policy-blocked, was not exercised, and is not
-  scheduled for product support.
-- S2 approved-host runtime evidence, S3 anonymous review-input closure, and
-  frozen conformance metadata for the narrow `maverick-tls-h2-cli-v1` release
-  train.
+Passing tests, safe rejection, hashes, manifests, and evidence tooling are
+quality controls. They do not count as product progress on their own.
 
-## Not Ready
+## One-Page Pilot Strategy
 
-- No formal independent security audit has been completed.
-- The frozen candidate identity is release train `1.2.0`, tag
-  `v1.2.0-alpha.1`, Maverick and reference-client software
-  `1.2.0-alpha.1`, and Debian package `1.2.0~alpha.1-1`. The Maverick workspace
-  now reports that software version. The exact Maverick release/SDK commit,
-  reference-client commit and SDK pin, package hash, and accepted Phase 3-B
-  summary are recorded in `production-readiness.json`. Phase 3-A, audit,
-  deployability, and production approval remain incomplete.
-- Formal Ubuntu 26.04 LTS `amd64` platform evidence must come from a source-bound
-  disposable target fixture; results from a physical host with another OS do not
-  satisfy that gate.
-- No post-freeze release-candidate workflow result is accepted yet. An Ubuntu
-  Actions runner is not a
-  substitute for the target fixture and private package evidence.
-- Native Maverick server-side ECH is not implemented.
-- The Phase 2 evidence runner is not a shipped network helper or reference
-  client. The separate Linux reference client has a platform route/DNS
-  implementation, but sustained resources, daily use, broader transition/leak
-  recovery, abrupt power loss, production credential-root protection, package
-  publication, and cross-platform integration remain open. IPv6 is not a
-  current milestone.
-- No shipped GUI app lives in this repository. Existing GUI work is SDK,
-  diagnostics, and smoke coverage only.
-- Browser-like TLS fingerprinting is optional, not default. The
-  `browser_mimic` mode requires a `browser-tls` build and uses a BoringSSL
-  client path with exporter channel binding and pinned Chrome-reference H2
-  settings. ALPS and newer signature-algorithm differences remain, so this is
-  not a claim of exact browser equivalence.
-- Real traffic-analysis resistance is not implemented.
-- Noise, HPKE, ML-KEM, blinded credential lookup, no-domain mode, multi-hop,
-  governance, and spec-freeze work remain experimental, disabled, or design
-  only unless a specific feature gate says otherwise.
+### 1. Who is the first user?
 
-## Near-Term Priority
+The first user is the project owner on an owner-controlled desktop. No friend,
+journalist, activist, or otherwise at-risk third party is recruited for the
+first pilot. The task is ordinary web use through Maverick for one workday.
 
-1. Preserve the accepted M6 direct TLS/H2 evidence as a regression boundary.
-2. Keep the accepted handshake/fallback decision aligned with new evidence.
-3. Preserve the completed fixed engine comparison and Phase 1 packet-runtime
-   boundary as machine-checked regressions.
-4. Preserve pre-publication `v1.1.0` as the compatible M1-M8 regression
-   boundary without recreating its tag on a different public commit.
-5. Mature the implemented experimental Linux CLI/service reference client
-   through sustained, repeated-use, transition/leak, process-recovery,
-   power-loss, credential-root, and package-publication evidence.
-6. Keep the production ledger at No-Go until candidate freeze, accepted Phase
-   3-A/3-B inputs, an independent audit, deployability, and final approval all
-   exist for the same hashes.
+### 2. What is the first adversary?
 
-See `docs/PLAN_POST_V1.md` for the governing execution order,
-`docs/PUBLIC_HISTORY_BOUNDARY.md` for the repository-history boundary, and
-`docs/STEALTH_PRIORITY.md` for the focused stealth technical queue.
+The first adversary model is the access-network observer on the selected pilot
+path. It may block endpoints using TLS metadata or traffic fingerprints and may
+actively probe the public server. No claim is made about a named country,
+firewall, or censorship system until the owner names a lawful pilot environment
+and the test actually runs there.
 
-## Deprioritized
+### 3. How does the user get the software?
 
-- Native server-side ECH until upstream server-side TLS support is practical.
-- Post-quantum hybrids until upstream TLS support and review justify them.
-- Broad TUN product/platform expansion until one reference client passes its
-  selection and lifecycle gates.
-- Standardization and governance work until there is a real second
-  implementation or external user base. These remain explicit long-term goals,
-  not abandoned tracks.
+The first delivery unit is one locally built standalone `maverick` CLI binary,
+two minimal configs, and one short start/check guide. A Debian production
+certification, package repository, updater, GUI, and broad platform matrix are
+not prerequisites for this pilot. The five-minute install path is not yet
+validated by a fresh user.
 
-## Process Notes
+### 4. What are the field threats?
 
-- JSON blocker/approval manifests are evidence indexes, not proof of runtime
-  behavior by themselves. They are not part of the default local gate.
-- `TEST_PLAN.md` now describes the default gate and major coverage areas rather
-  than every historical test.
-- `docs/CAPABILITY_REPORT.md` is the long inventory.
-- `ROADMAP.md` is a concise direction map, not evidence that a milestone is
-  complete. `docs/PLAN_POST_V1.md` owns active milestone gates.
+The first field threats are:
+
+- install or configuration friction that prevents use;
+- a distinguishable client TLS/H2 profile;
+- active probes receiving a Maverick-specific response;
+- connection instability during normal daily use;
+- DNS, timing, volume, endpoint-IP, and destination metadata that Maverick does
+  not currently hide.
+
+Compromised endpoints, a malicious server operator, global traffic correlation,
+and destination-site browser fingerprinting remain outside this pilot.
+
+## North-Star Result
+
+The first milestone passes only when all of the following are true:
+
+1. the owner installs the pilot artifact in five minutes without developer
+   intervention;
+2. the owner uses it for one normal workday on a named, lawful real-network path;
+3. the default client uses the browser-like TLS/H2 path;
+4. ordinary browsing works well enough to finish the day;
+5. the record contains no Maverick-specific active-probe response and no
+   observed block attributable to the tested Maverick fingerprint;
+6. failures and unknowns are recorded plainly.
+
+This result would still be one pilot, not proof of anonymity, broad
+censorship resistance, production readiness, or browser identity.
+
+## Current Product Truth
+
+- Workspace version: `1.2.0-alpha.1`.
+- Protocol version: `1` (unchanged).
+- Config version: `1` (unchanged).
+- Rust product core and loopback relay path: implemented.
+- Browser-like TLS backend: default build path on supported targets.
+- Generated client profile: browser-like TLS/H2 by default on supported targets.
+- Handshake-hiding primary implementation: browser-like TLS over CDN-fronted H2
+  is implemented and loopback-verified. TLS exporter channel binding is
+  disabled across provider termination because the two TLS connections cannot
+  share an exporter. A real provider path and its trust decision remain
+  unvalidated; the older WebSocket carrier remains a rustls compatibility path.
+- Local correct-credential relay and wrong-credential rejection: covered by
+  `./scripts/user-smoke.sh`.
+- Single-binary owner-pilot folder: generated locally by
+  `./scripts/build-pilot.sh`; fresh-user timing remains untested.
+- Python coordination/validation tooling: frozen under `scripts/archive/python/`.
+- Former remote/evidence shell orchestration: frozen under
+  `scripts/archive/legacy/`.
+- Non-current documents and machine-readable production ledgers: archived under
+  `docs/archive/`.
+- Real five-minute install by a fresh user: not yet demonstrated.
+- One-person, one-day real-network pilot: not started.
+- Formal independent security audit: not completed.
+- Production, anonymity, censorship-resistance, and exact browser-equivalence
+  claims: not made.
+
+## Authorization Boundary
+
+Repository-local work may build, test, and use `127.0.0.1` with OS-assigned
+ephemeral ports. Nothing in this status authorizes provider access, spending,
+SSH, a public endpoint, contacting another person, or changing any machine's
+system proxy, DNS, routes, firewall, VPN, or network services.
+
+The next external step requires one plain-language pilot envelope naming the
+pilot person, client environment, server endpoint or provider, maximum spend,
+time window, allowed network changes, and the selected handshake-hiding trust
+model. It must not require per-run hash approval. Until that envelope exists,
+the legal next actions are local artifact simplification and local verification
+only.

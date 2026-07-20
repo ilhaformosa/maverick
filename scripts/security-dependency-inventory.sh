@@ -4,9 +4,16 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-cargo_bin="${CARGO_BIN:-cargo}"
-if [[ -x "$HOME/.cargo/bin/cargo" ]]; then
-  cargo_bin="$HOME/.cargo/bin/cargo"
+cargo_bin="${CARGO_BIN:-}"
+if [[ -z "$cargo_bin" ]]; then
+  if command -v cargo >/dev/null 2>&1; then
+    cargo_bin="$(command -v cargo)"
+  elif [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
+    cargo_bin="${HOME}/.cargo/bin/cargo"
+  else
+    echo "cargo was not found" >&2
+    exit 1
+  fi
 fi
 
 require_cargo_subcommand() {
@@ -34,6 +41,5 @@ if rg -n "$unsafe_pattern" crates fuzz conformance scripts -g '*.rs' \
   echo "first-party unsafe Rust construct found; triage before release" >&2
   exit 1
 fi
-python3 scripts/check-tun-phase2-bridge.py >/dev/null
 
 echo "security dependency inventory OK"

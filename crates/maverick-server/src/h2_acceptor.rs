@@ -39,8 +39,8 @@ pub fn acceptor(config: &ServerConfig) -> Result<tokio_rustls::TlsAcceptor> {
 mod tests {
     use super::*;
     use maverick_core::config::{
-        CdnFrontingConfig, FallbackConfig, LogConfig, MaverickServerConfig, Mode, SecretString,
-        ServerAdvancedConfig, ServerAuthConfig, TlsConfig, UserConfig,
+        CdnFrontingCarrier, CdnFrontingConfig, FallbackConfig, LogConfig, MaverickServerConfig,
+        Mode, SecretString, ServerAdvancedConfig, ServerAuthConfig, TlsConfig, UserConfig,
     };
     use tempfile::TempDir;
 
@@ -90,10 +90,11 @@ mod tests {
         }
     }
 
-    fn cdn_fronting_config(tmp: &TempDir) -> ServerConfig {
+    fn cdn_fronting_config(tmp: &TempDir, carrier: CdnFrontingCarrier) -> ServerConfig {
         let mut config = test_config(tmp, false);
         config.advanced.stealth.cdn_fronting = CdnFrontingConfig {
             enabled: true,
+            carrier,
             trusted_tls_terminating_provider: true,
             ..CdnFrontingConfig::default()
         };
@@ -128,7 +129,7 @@ mod tests {
     #[test]
     fn rustls_server_config_adds_http11_for_cdn_fronting() -> Result<()> {
         let tmp = TempDir::new()?;
-        let config = cdn_fronting_config(&tmp);
+        let config = cdn_fronting_config(&tmp, CdnFrontingCarrier::WebSocket);
 
         let tls_config = rustls_server_config(&config)?;
 
@@ -136,6 +137,17 @@ mod tests {
             tls_config.alpn_protocols,
             vec![b"h2".to_vec(), b"http/1.1".to_vec()]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rustls_server_config_keeps_h2_only_for_cdn_fronted_h2() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let config = cdn_fronting_config(&tmp, CdnFrontingCarrier::H2);
+
+        let tls_config = rustls_server_config(&config)?;
+
+        assert_eq!(tls_config.alpn_protocols, vec![b"h2".to_vec()]);
         Ok(())
     }
 }

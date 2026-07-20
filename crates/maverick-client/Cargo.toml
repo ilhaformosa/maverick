@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["browser-tls"]
 browser-tls = [
   "maverick-core/browser-tls",
   "dep:boring",
@@ -28,7 +28,7 @@ h2.workspace = true
 h3 = { workspace = true, optional = true }
 h3-quinn = { workspace = true, optional = true }
 http.workspace = true
-maverick-core = { path = "../maverick-core" }
+maverick-core = { path = "../maverick-core", default-features = false }
 maverick-tun = { path = "../maverick-tun", optional = true }
 quinn = { workspace = true, optional = true }
 rustls.workspace = true

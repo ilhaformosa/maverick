@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -16,7 +16,8 @@ use maverick_client::{run_client, start_client};
 use maverick_core::config::ShapingConfig;
 use maverick_core::config::{
     ClientAdvancedConfig, ClientServerConfig, FallbackConfig, LocalConfig, LogConfig,
-    MaverickServerConfig, ServerAdvancedConfig, Socks5Config, TlsConfig, UserConfig,
+    MaverickServerConfig, ServerAdvancedConfig, Socks5Config, TlsConfig, TlsFingerprintMode,
+    UserConfig,
 };
 use maverick_core::util::redact_id;
 use maverick_core::{
@@ -180,6 +181,8 @@ enum Commands {
         #[arg(long)]
         server_shaping: bool,
     },
+    /// Prove the real product path locally with correct and wrong credentials.
+    UserSmoke,
 }
 
 #[derive(Debug, Subcommand)]
@@ -362,7 +365,7 @@ async fn main() -> Result<()> {
             println!("maverick {}", env!("CARGO_PKG_VERSION"));
             println!("protocol_version: {}", maverick_core::PROTOCOL_VERSION);
             println!(
-                "features: tls13,h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,tun-plan,tun-helper-smoke,tun-helper-preflight,tun-helper-rollback"
+                "features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
             );
             Ok(())
         }
@@ -379,9 +382,11 @@ async fn main() -> Result<()> {
                 parse_mode(&mode)?,
                 client_shaping,
                 server_shaping,
+                false,
             )
             .await
         }
+        Commands::UserSmoke => bench_local(4096, 1, Mode::Auto, false, false, true).await,
     }
 }
 
@@ -2197,6 +2202,7 @@ fn client_config_secret_yaml(cfg: &ClientConfig) -> String {
         .as_deref()
         .map(yaml_double_quoted)
         .unwrap_or_else(|| "null".to_owned());
+    let tls_fingerprint = tls_fingerprint_name(cfg.advanced.stealth.tls_fingerprint);
     format!(
         r#"version: 1
 mode: {}
@@ -2249,12 +2255,12 @@ advanced:
     cover_traffic_operator_approved: false
     cover_traffic_window_ms: 1000
   stealth:
-    tls_fingerprint: "rustls_default"
+    tls_fingerprint: "{tls_fingerprint}"
     active_probe_resistance: true
     cdn_fronting:
       enabled: false
       provider: "cloudflare"
-      carrier: "web_socket"
+      carrier: "h2"
       trusted_tls_terminating_provider: false
   allow_non_loopback_listeners: false
   experimental_h3: {}
@@ -2478,6 +2484,13 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+fn tls_fingerprint_name(mode: TlsFingerprintMode) -> &'static str {
+    match mode {
+        TlsFingerprintMode::RustlsDefault => "rustls_default",
+        TlsFingerprintMode::BrowserMimic => "browser_mimic",
+    }
+}
+
 fn validate_profile_cert_pin(pin: &str) -> Result<()> {
     let encoded = pin
         .strip_prefix("sha256/")
@@ -2670,6 +2683,8 @@ fn random_id() -> String {
 }
 
 fn example_client_config(secret: &str) -> String {
+    let tls_fingerprint =
+        tls_fingerprint_name(ClientAdvancedConfig::default().stealth.tls_fingerprint);
     format!(
         r#"version: 1
 mode: auto
@@ -2723,12 +2738,12 @@ advanced:
     cover_traffic_operator_approved: false
     cover_traffic_window_ms: 1000
   stealth:
-    tls_fingerprint: "rustls_default"
+    tls_fingerprint: "{tls_fingerprint}"
     active_probe_resistance: true
     cdn_fronting:
       enabled: false
       provider: "cloudflare"
-      carrier: "web_socket"
+      carrier: "h2"
       trusted_tls_terminating_provider: false
   allow_non_loopback_listeners: false
   experimental_h3: false
@@ -2833,7 +2848,7 @@ advanced:
     cdn_fronting:
       enabled: false
       provider: "cloudflare"
-      carrier: "web_socket"
+      carrier: "h2"
       trusted_tls_terminating_provider: false
   egress:
     allow_loopback: false
@@ -2859,6 +2874,7 @@ async fn bench_local(
     mode: Mode,
     client_shaping: bool,
     server_shaping: bool,
+    verify_wrong_credential: bool,
 ) -> Result<()> {
     anyhow::ensure!(
         (1..=128).contains(&concurrency),
@@ -2930,12 +2946,12 @@ async fn bench_local(
             ..ShapingConfig::default()
         };
     }
-    let client = start_client(ClientConfig {
+    let client_config = |credential: SecretString, advanced: ClientAdvancedConfig| ClientConfig {
         version: 1,
         mode,
         local: LocalConfig {
             socks5: Socks5Config {
-                listen: "127.0.0.1:0".parse()?,
+                listen: "127.0.0.1:0".parse().expect("valid loopback address"),
             },
             dns: None,
             http_connect: None,
@@ -2945,15 +2961,37 @@ async fn bench_local(
             server_name: "localhost".into(),
             tunnel_path: "/assets/upload".into(),
             credential_id: "u_bench".into(),
-            secret,
-            ca_cert: Some(cert_path),
+            secret: credential,
+            ca_cert: Some(cert_path.clone()),
             cert_pin: None,
         },
         auth: Default::default(),
         log: LogConfig::default(),
-        advanced: client_advanced,
-    })
-    .await?;
+        advanced,
+    };
+
+    if verify_wrong_credential {
+        let wrong_client = start_client(client_config(
+            SecretString::generate(),
+            client_advanced.clone(),
+        ))
+        .await?;
+        let wrong_result = tokio::time::timeout(
+            Duration::from_secs(15),
+            time_socks_echo_roundtrip(wrong_client.local_addr, echo_addr, 32),
+        )
+        .await
+        .context("wrong-credential check timed out")?;
+        anyhow::ensure!(
+            wrong_result.is_err(),
+            "wrong credential unexpectedly established a proxy flow"
+        );
+        wrong_client.shutdown().await?;
+        println!("wrong_credential_rejected: PASS");
+    }
+
+    let tls_fingerprint = client_advanced.stealth.tls_fingerprint;
+    let client = start_client(client_config(secret, client_advanced)).await?;
 
     let proxied =
         time_concurrent_socks_echo_roundtrips(client.local_addr, echo_addr, bytes, concurrency)
@@ -2963,6 +3001,7 @@ async fn bench_local(
     println!("mode: {}", mode_name(mode));
     println!("client_shaping: {client_shaping}");
     println!("server_shaping: {server_shaping}");
+    println!("tls_fingerprint: {}", tls_fingerprint_name(tls_fingerprint));
     println!(
         "direct_tcp_roundtrip_ms: {:.3}",
         direct.as_secs_f64() * 1000.0
@@ -2979,6 +3018,9 @@ async fn bench_local(
         "maverick_socks_avg_per_flow_ms: {:.3}",
         (proxied.as_secs_f64() * 1000.0) / concurrency as f64
     );
+    if verify_wrong_credential {
+        println!("correct_credential_roundtrip: PASS");
+    }
 
     client.shutdown().await?;
     server.shutdown().await?;

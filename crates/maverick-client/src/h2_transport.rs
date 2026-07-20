@@ -68,7 +68,7 @@ async fn connect_rustls_inner(config: &ClientConfig) -> Result<H2Connection> {
         .await
         .context("TLS handshake failed")?;
     let channel_binding =
-        rustls_client_channel_binding(tls.get_ref().1, config.auth.channel_binding.enabled)?;
+        rustls_client_channel_binding(tls.get_ref().1, end_to_end_channel_binding_enabled(config))?;
     let (sender, connection_closed) =
         finish_h2_handshake(tls, H2FingerprintProfile::MaverickDefault).await?;
     Ok(H2Connection {
@@ -158,7 +158,7 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
         }
     }
     let channel_binding =
-        boring_client_channel_binding(tls.ssl(), config.auth.channel_binding.enabled)?;
+        boring_client_channel_binding(tls.ssl(), end_to_end_channel_binding_enabled(config))?;
     let (sender, connection_closed) =
         finish_h2_handshake(tls, H2FingerprintProfile::ChromeReference).await?;
     Ok(H2Connection {
@@ -215,6 +215,10 @@ fn rustls_client_channel_binding(
         .export_keying_material([0u8; 32], TLS_CHANNEL_BINDING_EXPORTER_LABEL, None)
         .context("export TLS channel binding")?;
     Ok(Some(TlsChannelBinding::new(output)))
+}
+
+pub(crate) fn end_to_end_channel_binding_enabled(config: &ClientConfig) -> bool {
+    config.auth.channel_binding.enabled && !config.advanced.tls_terminating_fronting_enabled()
 }
 
 #[derive(Clone, Copy)]

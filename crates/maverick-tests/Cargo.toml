@@ -12,7 +12,7 @@ path = "src/bin/maverick-tun-phase2.rs"
 required-features = ["tun-phase2"]
 
 [features]
-default = []
+default = ["browser-tls"]
 browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
 ech = ["maverick-client/ech", "maverick-server/ech"]
 h3 = [
@@ -40,8 +40,8 @@ h2.workspace = true
 h3 = { workspace = true, optional = true }
 h3-quinn = { workspace = true, optional = true }
 http.workspace = true
-maverick-client = { path = "../maverick-client" }
-maverick-core = { path = "../maverick-core" }
+maverick-client = { path = "../maverick-client", default-features = false }
+maverick-core = { path = "../maverick-core", default-features = false }
 maverick-server = { path = "../maverick-server" }
 maverick-tun = { path = "../maverick-tun", optional = true }
 quinn = { workspace = true, optional = true }

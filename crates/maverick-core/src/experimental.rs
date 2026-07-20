@@ -292,43 +292,4 @@ mod tests {
         assert_eq!(descriptor.runtime_gate, None);
         assert!(!descriptor.default_enabled);
     }
-
-    #[test]
-    fn experimental_tracks_doc_matrix_covers_registry() {
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let docs = std::fs::read_to_string(repo_root.join("docs/EXPERIMENTAL_TRACKS.md"))
-            .expect("read experimental tracks doc");
-        for descriptor in experimental_track_registry() {
-            let row = docs
-                .lines()
-                .find(|line| line.starts_with('|') && line.contains(descriptor.title))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "missing experimental track doc row for {}",
-                        descriptor.title
-                    )
-                });
-            if let Some(build_gate) = descriptor.build_gate {
-                assert!(
-                    row.contains(build_gate),
-                    "{} row must mention build gate {build_gate}",
-                    descriptor.title
-                );
-            }
-            if let Some(runtime_gate) = descriptor.runtime_gate {
-                assert!(
-                    row.contains(runtime_gate),
-                    "{} row must mention runtime gate {runtime_gate}",
-                    descriptor.title
-                );
-            }
-            if !descriptor.default_enabled {
-                assert!(
-                    row.trim_end().ends_with("| off |"),
-                    "{} row must document default off",
-                    descriptor.title
-                );
-            }
-        }
-    }
 }

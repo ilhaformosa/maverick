@@ -1,108 +1,80 @@
 # Maverick Threat Model
 
-Status: current threat model for the narrow `maverick-tls-h2-cli-v1`
-engineering release. It is not a formal audit or a production security claim.
+Status: current threat model for the first owner-operated user pilot.
 
-## Production Candidate Composition
+Maverick is alpha software. This document is not an audit, production-security
+claim, anonymity claim, or guarantee against a specific censorship system.
 
-The pre-freeze `maverick-linux-h2-ipv4-v1` target combines this server/SDK threat
-model with the exact public reference-client threat model at its frozen commit.
-The combined audit must cover the Linux privileged helper, IPC, journal, route,
-private DNS, TUN, credential-root, package, APT, recovery, and removal boundaries.
+## Pilot
 
-Only a source-bound disposable Ubuntu 26.04 LTS `amd64` VM or fixture can supply
-formal target-platform evidence. A physical host with another OS may test an
-orchestration boundary but cannot prove supported-platform behavior.
+The first user is the project owner on an owner-controlled client. The server,
+if a real-network pilot is later authorized, must also be owner-controlled. The
+first task is ordinary browsing for one workday.
+
+The first adversary model is an access-network observer that can:
+
+- see endpoint IPs, connection timing, volume, and TLS metadata;
+- block based on TLS/H2 fingerprint or endpoint reputation;
+- connect to and actively probe a public server;
+- reset, delay, or drop connections.
+
+A named real-world censor is not in scope until a lawful pilot network is
+selected and tested.
 
 ## Intended Protections
 
-Maverick v1 is designed to help with:
+Maverick is intended to provide:
 
-- Passive observers seeing an outer TLS/H2 connection rather than plaintext
-  proxy protocol fields.
-- Active probing attempts that do not possess a valid user credential.
-- Replay of a captured ClientHello within the replay window.
-- Direct H2/WebSocket ClientHello replay across a different TLS connection when
-  TLS channel binding is negotiated or required.
-- Credential guessing when users use generated high-entropy secrets.
-- Malformed frame parser attacks that should return errors rather than panic.
-- Accidental secret disclosure in ordinary logs and Debug output.
-- Basic service-identification risk through static or reverse-proxy fallback
-  behavior that avoids Maverick-specific unauthenticated errors.
-- Default server egress policy that blocks authenticated relay attempts to
-  loopback, private, shared, link-local, multicast, and unspecified addresses.
+- TLS 1.3 encryption between client and server;
+- authenticated tunnel access using high-entropy credentials;
+- replay resistance for captured authentication messages;
+- browser-like client TLS/H2 behavior on supported default builds;
+- fallback content instead of Maverick-specific unauthenticated errors;
+- bounded parsers, flows, timeouts, and pre-auth work;
+- redaction of credentials and payloads from ordinary logs;
+- server egress defaults that reject common private and local address ranges.
 
 ## Explicit Non-Claims
 
-Maverick v1 does not claim to defend against:
+Maverick does not currently protect against or prove:
 
-- Global traffic correlation.
-- Compromised client or server machines.
-- Malicious proxy server operators.
-- Browser fingerprinting by destination websites.
-- All DNS, IP, certificate-chain, timing, and traffic-volume side channels.
-- Guarantees against any specific firewall or censorship system.
-- Browser-grade TLS fingerprint mimicry.
-- TLS channel binding through experimental H3 or TLS-terminating fronting
-  providers.
-- Strong traffic shaping or padding.
-- Perfect indistinguishability from the configured fallback origin.
-- Abuse resistance against high-rate connection or auth attempts.
-- Protection from a TLS-terminating fronting provider when an experimental
-  Cloudflare-fronted carrier is explicitly enabled.
+- global traffic correlation;
+- endpoint-IP blocking;
+- all TLS, HTTP/2, timing, volume, DNS, or certificate side channels;
+- exact equivalence to any browser version;
+- a compromised client or server;
+- a malicious server operator;
+- destination-site browser fingerprinting;
+- a TLS-terminating fronting provider observing tunnel content;
+- every active-probe strategy;
+- anonymity or resistance to a named censorship system.
 
 ## Trust Boundaries
 
-The client trusts:
+The client trusts the local user, the configured server, and its configured TLS
+roots or certificate pin. The server trusts its local certificate/key files,
+configured users, fallback content, and egress policy.
 
-- local applications that connect to the SOCKS5 listener;
-- the configured Maverick server;
-- the configured TLS CA or public root store.
+If a TLS-terminating fronted carrier is used later, that provider becomes a
+trusted party that can observe Maverick authentication and tunnel payload. That
+tradeoff must be explicit in the pilot record.
 
-The server trusts:
+## Safety Boundary
 
-- configured user secrets;
-- local certificate and key files;
-- the configured fallback content directory.
-- the configured egress policy and any surrounding host/network isolation.
+Repository-local tests use `127.0.0.1` and OS-assigned ephemeral ports. They do
+not change system proxy, DNS, routes, firewall, VPN, interfaces, or network
+services. Real-network testing requires a separately named environment and
+authorization.
 
-When an experimental Cloudflare-fronted carrier is enabled, both endpoints also
-trust Cloudflare as a TLS-terminating reverse proxy. Cloudflare can observe the
-origin request, Maverick auth frames, and tunnel payload carried inside that
-fronted connection. This mode is an edge-fronted experiment, not native
-server-side ECH.
+## Evidence Standard
 
-Remote unauthenticated traffic is untrusted and must never receive
-Maverick-specific protocol diagnostics.
+Loopback tests show implementation behavior only. A real pilot record must say:
 
-Authenticated users are also inside the proxy trust boundary. The default
-egress policy blocks common internal and metadata ranges, but operators should
-treat broad authenticated egress as sensitive and avoid disabling those blocks
-without a deployment-specific reason.
+- who consented to test;
+- what user task was attempted;
+- what client/server artifact was used;
+- what network observations were available;
+- what failed or remained unknown;
+- whether any system network settings were changed.
 
-GitHub-hosted public CI and its pinned third-party actions are a source-build
-trust boundary. Workflows use read-only repository permissions and do not retain
-checkout credentials. They receive no private reference-client or infrastructure
-secret and cannot publish a release. A passing public runner is regression input,
-not formal target-platform evidence, audit independence, or production approval.
-
-## Abuse Boundaries
-
-This repository is for legal privacy, secure communication, connectivity
-research, and protocol engineering. It does not implement malware behavior,
-credential theft, scanning, DDoS, spam delivery, backdoors, hidden control, or
-targeted intrusion functionality.
-
-## Future Security Work
-
-- External audit before any production use.
-- Credential rotation.
-- Anonymous or blinded credential lookup.
-- Stronger padding and shaping analysis.
-- Better HTTP/TLS profile research without brittle impersonation claims.
-- Browser TLS profile evidence and traffic-shape evidence strong enough for
-  stealth claims.
-- Fuzzing beyond the current frame parser property tests.
-
-For the production candidate, the remaining work is tracked as changing state in
-`production-readiness.json`; it is not part of the permanent non-claim list.
+One successful pilot remains one observation, not a universal security claim.

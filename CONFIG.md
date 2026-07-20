@@ -60,6 +60,14 @@ advanced:
     cover_traffic: false
     cover_traffic_operator_approved: false
     cover_traffic_window_ms: 1000
+  stealth:
+    tls_fingerprint: "browser_mimic"
+    active_probe_resistance: true
+    cdn_fronting:
+      enabled: false
+      provider: "cloudflare"
+      carrier: "h2"
+      trusted_tls_terminating_provider: false
   allow_non_loopback_listeners: false
   experimental_ech: false
   experimental_tun: false
@@ -162,15 +170,13 @@ The prototype does not support a non-redacted operational logging mode.
 - `stable`: TCP-only stable policy label.
 - `private`: stricter privacy posture and future reserved fields.
 
-Maverick does not expose transport internals as ordinary user choices.
-`private` mode fails closed unless the client explicitly sets
-`advanced.stealth.tls_fingerprint: browser_mimic` and the binary was built with
-the optional `browser-tls` feature. It does not silently fall back to rustls or
-automatically change the global `auto` default. This gate does not make
-`private` mode anonymous or browser-identical. The currently evidence-backed
-browser-tls build targets are macOS arm64 and Linux x86_64; other targets fail
-this profile's config validation until matching build and fingerprint evidence
-is added.
+Maverick does not expose transport internals as ordinary user choices. Supported
+default builds and generated client configs use
+`advanced.stealth.tls_fingerprint: browser_mimic`. The BoringSSL-backed path is
+browser-like, not browser-identical. The currently evidence-backed targets are
+macOS arm64 and Linux x86_64; other targets use or require the explicit
+`rustls_default` compatibility path until matching build and fingerprint
+evidence exists. `private` mode rejects `rustls_default`.
 
 ## Transport
 
@@ -186,19 +192,28 @@ advanced:
 If runtime H3 setup fails, the client falls back to H2 and records a short
 cooldown for that server. 0-RTT remains disabled.
 
-Cloudflare-fronted WebSocket is an explicit experimental carrier for approved
-Cloudflare-origin testing. It is off by default, rejected in `stable` mode on
-the client, and does not enable native Maverick server-side ECH. It is used
-only when both client and server set:
+The field-pilot fronting candidate is browser-like TLS/H2 to a Cloudflare edge,
+with H2 forwarded to the origin. It is off by default, rejected in `stable`
+mode, and does not enable native Maverick server-side ECH. Enable it on both
+client and server only after accepting that the provider terminates TLS and can
+observe Maverick authentication and tunnel payload:
 
 ```yaml
 advanced:
-  experimental_cloudflare_ws: true
+  stealth:
+    cdn_fronting:
+      enabled: true
+      provider: cloudflare
+      carrier: h2
+      trusted_tls_terminating_provider: true
 ```
 
-The Cloudflare-fronted carrier exists because Cloudflare can terminate ECH at
-the edge and forward a WebSocket connection to the Maverick origin. The normal
-direct transport remains H2/TLS unless this experimental flag is set.
+The older `carrier: web_socket` path remains available with
+`tls_fingerprint: rustls_default`; `experimental_cloudflare_ws: true` is its
+legacy selector. Browser mimicry is supported only by the H2 carrier. The
+normal direct transport remains H2/TLS while fronting is disabled. Loopback
+coverage does not prove that a real provider configuration accepts sustained
+bidirectional H2.
 
 ## Fallback
 
@@ -263,13 +278,15 @@ without printing secret material. Server-side Auth v2 requires
 `auth.v2.require=true` when `auth.v2.enabled=true`, so a v2-enabled server does
 not silently keep accepting v1 ClientHello messages.
 
-TLS channel binding is enabled by default for direct rustls H2/WebSocket
-transports. When both sides have TLS exporter material, the client requests the
+TLS channel binding is enabled by default for direct TLS transports. When both
+sides have end-to-end TLS exporter material, the client requests the
 `FEATURE_TLS_CHANNEL_BINDING` auth flag and both ClientHello and ServerHello
 HMACs bind to that TLS connection. Set `auth.channel_binding.require: true` on
 both client and server only for transports that support this direct TLS
 binding; required channel binding is rejected for experimental H3 and
-CDN-fronted WebSocket.
+TLS-terminating CDN fronting. Fronted H2/WebSocket disables exporter binding
+because the client-edge and edge-origin TLS connections have different
+exporters.
 
 Client rotation metadata:
 

@@ -449,6 +449,37 @@ async fn cdn_fronting_websocket_tcp_relay_roundtrip() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "browser-tls")]
+#[tokio::test]
+async fn cdn_fronted_h2_uses_browser_tls_and_relays_tcp() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        cdn_fronting_h2: true,
+        client_tls_fingerprint: Some(TlsFingerprintMode::BrowserMimic),
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let config = fixture.client_config();
+    assert!(config.advanced.cdn_fronted_h2_enabled());
+    assert!(config.advanced.tls_terminating_fronting_enabled());
+    assert!(!config.advanced.cloudflare_ws_enabled());
+
+    let echo_addr = start_echo_server().await?;
+    run_single_socks_roundtrip(
+        fixture.client.local_addr,
+        echo_addr,
+        b"maverick-cdn-h2-browser-echo",
+    )
+    .await?;
+    let snapshot = wait_for_pool_snapshot(&fixture.client, |snapshot| {
+        snapshot.connections_created == 1 && snapshot.active_streams == 0
+    })
+    .await?;
+    assert_eq!(snapshot.streams_opened, 1);
+
+    fixture.shutdown().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn cloudflare_ws_rejects_non_tunnel_path() -> Result<()> {
     let fixture = MaverickHarness::start_with_options(HarnessOptions {

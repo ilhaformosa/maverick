@@ -35,8 +35,10 @@ async fn connect_inner(config: &ClientConfig) -> Result<CloudflareWsTunnel> {
         .connect(server_name, tcp)
         .await
         .context("TLS handshake failed")?;
-    let channel_binding =
-        rustls_client_channel_binding(tls.get_ref().1, config.auth.channel_binding.enabled)?;
+    let channel_binding = rustls_client_channel_binding(
+        tls.get_ref().1,
+        crate::h2_transport::end_to_end_channel_binding_enabled(config),
+    )?;
 
     let uri = format!(
         "wss://{}{}",

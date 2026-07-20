@@ -526,8 +526,11 @@ async fn handle_tcp(
     {
         return handle_ws_tcp(tls, peer, state, pre_auth_permit).await;
     }
-    let channel_binding =
-        rustls_server_channel_binding(tls.get_ref().1, state.config.auth.channel_binding.enabled)?;
+    let channel_binding = rustls_server_channel_binding(
+        tls.get_ref().1,
+        state.config.auth.channel_binding.enabled
+            && !state.config.advanced.tls_terminating_fronting_enabled(),
+    )?;
     let mut h2 = timeout(
         handshake_timeout,
         h2::server::Builder::new()
@@ -634,8 +637,11 @@ async fn handle_ws_tcp(
     let handshake_timeout = Duration::from_millis(state.config.advanced.handshake_timeout_ms);
     let max_frame_size = state.config.advanced.max_frame_size as usize;
     let tunnel_path = state.config.maverick.tunnel_path.clone();
-    let channel_binding =
-        rustls_server_channel_binding(tls.get_ref().1, state.config.auth.channel_binding.enabled)?;
+    let channel_binding = rustls_server_channel_binding(
+        tls.get_ref().1,
+        state.config.auth.channel_binding.enabled
+            && !state.config.advanced.tls_terminating_fronting_enabled(),
+    )?;
     let ws = timeout(
         handshake_timeout,
         accept_hdr_async_with_config(

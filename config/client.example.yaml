@@ -43,12 +43,12 @@ advanced:
   max_concurrent_flows: 256
   padding: "auto"
   stealth:
-    tls_fingerprint: "rustls_default"
+    tls_fingerprint: "browser_mimic"
     active_probe_resistance: true
     cdn_fronting:
       enabled: false
       provider: "cloudflare"
-      carrier: "web_socket"
+      carrier: "h2"
       trusted_tls_terminating_provider: false
   allow_non_loopback_listeners: false
   experimental_tun: false

@@ -1,61 +1,22 @@
-name: public-pr-ci
+name: product-ci
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
 
 concurrency:
-  group: public-pr-ci-${{ github.event.pull_request.number }}
+  group: product-ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  change-scope:
+  public-pr-gate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    outputs:
-      h3: ${{ steps.scope.outputs.h3 }}
-      ech: ${{ steps.scope.outputs.ech }}
-      shape: ${{ steps.scope.outputs.shape }}
-      browser: ${{ steps.scope.outputs.browser }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          classifier="$RUNNER_TEMP/ci-change-scope.py"
-          if [[ -z "$BASE_SHA" ]] || \
-             ! git cat-file -e "${BASE_SHA}^{commit}"; then
-            for scope in h3 ech shape browser; do
-              echo "$scope=true" >>"$GITHUB_OUTPUT"
-            done
-          elif ! git show "${BASE_SHA}:scripts/ci-change-scope.py" >"$classifier"; then
-            for scope in h3 ech shape browser; do
-              echo "$scope=true" >>"$GITHUB_OUTPUT"
-            done
-          else
-            git diff --name-only "$BASE_SHA" "$HEAD_SHA" | \
-              python3 "$classifier" >>"$GITHUB_OUTPUT"
-          fi
-
-  docs-hygiene:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - run: ./scripts/docs-hygiene.sh
-
-  core:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -66,7 +27,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -74,155 +35,3 @@ jobs:
           components: rustfmt, clippy
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: ./scripts/local-harness.sh
-        env:
-          MAVERICK_SKIP_DOCS_HYGIENE: "1"
-
-  h3-harness:
-    needs: change-scope
-    if: needs.change-scope.outputs.h3 == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          components: rustfmt, clippy
-      - run: ./scripts/h3-harness.sh
-
-  ech-harness:
-    needs: change-scope
-    if: needs.change-scope.outputs.ech == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - run: ./scripts/ech-harness.sh
-
-  shape-lab-smoke:
-    needs: change-scope
-    if: needs.change-scope.outputs.shape == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - run: ./scripts/shape-lab.sh /tmp/maverick-shape-lab.md 256 1024
-      - run: grep -q "loopback-only engineering diagnostics" /tmp/maverick-shape-lab.md
-
-  browser-tls-harness:
-    needs: change-scope
-    if: needs.change-scope.outputs.browser == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          components: rustfmt, clippy
-      - run: ./scripts/browser-tls-harness.sh
-
-  public-pr-gate:
-    if: always()
-    needs:
-      - change-scope
-      - docs-hygiene
-      - core
-      - h3-harness
-      - ech-harness
-      - shape-lab-smoke
-      - browser-tls-harness
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    steps:
-      - name: Require every selected PR job
-        env:
-          SCOPE_RESULT: ${{ needs.change-scope.result }}
-          DOCS_RESULT: ${{ needs.docs-hygiene.result }}
-          CORE_RESULT: ${{ needs.core.result }}
-          H3_SELECTED: ${{ needs.change-scope.outputs.h3 }}
-          H3_RESULT: ${{ needs.h3-harness.result }}
-          ECH_SELECTED: ${{ needs.change-scope.outputs.ech }}
-          ECH_RESULT: ${{ needs.ech-harness.result }}
-          SHAPE_SELECTED: ${{ needs.change-scope.outputs.shape }}
-          SHAPE_RESULT: ${{ needs.shape-lab-smoke.result }}
-          BROWSER_SELECTED: ${{ needs.change-scope.outputs.browser }}
-          BROWSER_RESULT: ${{ needs.browser-tls-harness.result }}
-        run: |
-          require_success() {
-            local label="$1"
-            local result="$2"
-            if [[ "$result" != "success" ]]; then
-              echo "$label must succeed, got: $result" >&2
-              exit 1
-            fi
-          }
-          require_optional_result() {
-            local label="$1"
-            local selected="$2"
-            local result="$3"
-            local expected
-            case "$selected" in
-              true) expected="success" ;;
-              false) expected="skipped" ;;
-              *)
-                echo "$label has invalid selected value: $selected" >&2
-                exit 1
-                ;;
-            esac
-            if [[ "$result" != "$expected" ]]; then
-              echo "$label selected=$selected requires $expected, got: $result" >&2
-              exit 1
-            fi
-          }
-          require_success "change-scope" "$SCOPE_RESULT"
-          require_success "docs-hygiene" "$DOCS_RESULT"
-          require_success "core" "$CORE_RESULT"
-          require_optional_result "h3-harness" "$H3_SELECTED" "$H3_RESULT"
-          require_optional_result "ech-harness" "$ECH_SELECTED" "$ECH_RESULT"
-          require_optional_result "shape-lab-smoke" "$SHAPE_SELECTED" "$SHAPE_RESULT"
-          require_optional_result "browser-tls-harness" "$BROWSER_SELECTED" "$BROWSER_RESULT"

@@ -178,8 +178,8 @@ fn gui_transport_carrier(kind: TransportKind) -> GuiTransportCarrier {
 mod tests {
     use super::*;
     use maverick_core::config::{
-        CdnFrontingConfig, ClientAdvancedConfig, ClientAuthConfig, ClientServerConfig, LocalConfig,
-        LogConfig, Socks5Config,
+        CdnFrontingCarrier, CdnFrontingConfig, ClientAdvancedConfig, ClientAuthConfig,
+        ClientServerConfig, LocalConfig, LogConfig, Socks5Config,
     };
     use maverick_core::{ClientConfig, GuiTransportCarrier, Mode, SecretString};
 
@@ -207,6 +207,7 @@ mod tests {
         let mut config = client_config();
         config.advanced.stealth.cdn_fronting = CdnFrontingConfig {
             enabled: true,
+            carrier: CdnFrontingCarrier::WebSocket,
             trusted_tls_terminating_provider: true,
             ..CdnFrontingConfig::default()
         };
@@ -215,6 +216,23 @@ mod tests {
         assert_eq!(
             transport_debug_snapshot(&config).active_transport,
             GuiTransportCarrier::CloudflareWs
+        );
+    }
+
+    #[test]
+    fn cdn_fronted_h2_keeps_h2_transport() {
+        let mut config = client_config();
+        config.advanced.stealth.cdn_fronting = CdnFrontingConfig {
+            enabled: true,
+            carrier: CdnFrontingCarrier::H2,
+            trusted_tls_terminating_provider: true,
+            ..CdnFrontingConfig::default()
+        };
+
+        assert_eq!(default_transport_kind(&config), TransportKind::H2);
+        assert_eq!(
+            transport_debug_snapshot(&config).active_transport,
+            GuiTransportCarrier::H2
         );
     }
 

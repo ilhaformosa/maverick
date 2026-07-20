@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["browser-tls"]
 browser-tls = ["maverick-core/browser-tls", "maverick-client/browser-tls"]
 ech = ["maverick-core/ech", "maverick-client/ech", "maverick-server/ech"]
 h3 = ["maverick-client/h3", "maverick-server/h3"]
@@ -14,8 +14,8 @@ tun-runtime = ["maverick-client/tun-runtime", "dep:maverick-tun"]
 
 [dependencies]
 anyhow.workspace = true
-maverick-client = { path = "../maverick-client" }
-maverick-core = { path = "../maverick-core" }
+maverick-client = { path = "../maverick-client", default-features = false }
+maverick-core = { path = "../maverick-core", default-features = false }
 maverick-server = { path = "../maverick-server" }
 maverick-tun = { path = "../maverick-tun", optional = true }
 serde.workspace = true

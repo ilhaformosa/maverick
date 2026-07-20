@@ -72,5 +72,5 @@ advanced:
     cdn_fronting:
       enabled: false
       provider: "cloudflare"
-      carrier: "web_socket"
+      carrier: "h2"
       trusted_tls_terminating_provider: false

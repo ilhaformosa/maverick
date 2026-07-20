@@ -12,9 +12,9 @@ use maverick_core::auth::{
     ClientHello, ServerHello, ServerHelloV2, AUTH_V2_PROTOCOL_VERSION, PROTOCOL_VERSION,
 };
 use maverick_core::config::{
-    AuthV2Config, CdnFrontingConfig, ClientAdvancedConfig, ClientAuthConfig, ClientConfig,
-    ClientCredentialRotationConfig, ClientDnsConfig, ClientServerConfig, FallbackConfig,
-    HttpConnectConfig, LocalConfig, LogConfig, MaverickServerConfig, MetricsConfig,
+    AuthV2Config, CdnFrontingCarrier, CdnFrontingConfig, ClientAdvancedConfig, ClientAuthConfig,
+    ClientConfig, ClientCredentialRotationConfig, ClientDnsConfig, ClientServerConfig,
+    FallbackConfig, HttpConnectConfig, LocalConfig, LogConfig, MaverickServerConfig, MetricsConfig,
     PreviousCredentialConfig, SecretString, ServerAdvancedConfig, ServerAuthConfig, ServerConfig,
     ServerDnsConfig, ShapingConfig, Socks5Config, TlsConfig, TlsFingerprintMode, UserConfig,
     UserCredentialRotationConfig,
@@ -57,6 +57,7 @@ pub struct HarnessOptions {
     pub server_auth_failure_window_secs: Option<u64>,
     pub experimental_cloudflare_ws: bool,
     pub cdn_fronting: bool,
+    pub cdn_fronting_h2: bool,
     pub fallback: Option<FallbackConfig>,
     pub auth_channel_binding_require: bool,
 }
@@ -91,6 +92,7 @@ impl Default for HarnessOptions {
             server_auth_failure_window_secs: None,
             experimental_cloudflare_ws: false,
             cdn_fronting: false,
+            cdn_fronting_h2: false,
             fallback: None,
             auth_channel_binding_require: false,
         }
@@ -158,6 +160,10 @@ impl MaverickHarness {
     }
 
     pub async fn start_with_options(options: HarnessOptions) -> Result<Self> {
+        anyhow::ensure!(
+            !(options.cdn_fronting && options.cdn_fronting_h2),
+            "select only one CDN fronting carrier"
+        );
         let tmp = TempDir::new()?;
         let cert_path = tmp.path().join("cert.pem");
         let key_path = tmp.path().join("key.pem");
@@ -169,14 +175,21 @@ impl MaverickHarness {
 
         let secret = SecretString::generate();
         let cloudflare_ws_enabled = options.experimental_cloudflare_ws || options.cdn_fronting;
+        let cdn_fronting_enabled = cloudflare_ws_enabled || options.cdn_fronting_h2;
+        let cdn_fronting_carrier = if options.cdn_fronting_h2 {
+            CdnFrontingCarrier::H2
+        } else {
+            CdnFrontingCarrier::WebSocket
+        };
         let mut server_advanced = ServerAdvancedConfig {
             experimental_h3: options.experimental_h3,
             experimental_cloudflare_ws: options.experimental_cloudflare_ws,
             ..ServerAdvancedConfig::default()
         };
-        if cloudflare_ws_enabled {
+        if cdn_fronting_enabled {
             server_advanced.stealth.cdn_fronting = CdnFrontingConfig {
                 enabled: true,
+                carrier: cdn_fronting_carrier,
                 trusted_tls_terminating_provider: true,
                 ..CdnFrontingConfig::default()
             };
@@ -296,9 +309,13 @@ impl MaverickHarness {
         client_advanced.experimental_h3 = options.experimental_h3;
         client_advanced.experimental_tun = options.experimental_tun;
         client_advanced.experimental_cloudflare_ws = options.experimental_cloudflare_ws;
-        if cloudflare_ws_enabled {
+        if cdn_fronting_enabled {
+            if cloudflare_ws_enabled && options.client_tls_fingerprint.is_none() {
+                client_advanced.stealth.tls_fingerprint = TlsFingerprintMode::RustlsDefault;
+            }
             client_advanced.stealth.cdn_fronting = CdnFrontingConfig {
                 enabled: true,
+                carrier: cdn_fronting_carrier,
                 trusted_tls_terminating_provider: true,
                 ..CdnFrontingConfig::default()
             };

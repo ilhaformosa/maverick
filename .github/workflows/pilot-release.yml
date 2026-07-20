@@ -1,0 +1,103 @@
+name: pilot-release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: pilot-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+      - run: sudo apt-get update && sudo apt-get install -y clang cmake ripgrep
+      - name: Verify tag and product gates
+        run: |
+          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          test "$GITHUB_REF_NAME" = "v$version"
+          ./scripts/local-harness.sh
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang cmake
+      - name: Build shareable pilot archive
+        env:
+          MAVERICK_PILOT_TARGET: ${{ matrix.target }}
+        run: ./scripts/build-pilot.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pilot-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: pilot-*
+          path: dist
+          merge-multiple: true
+      - name: Verify and publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          for checksum in *.tar.gz.sha256; do
+            sha256sum -c "$checksum"
+          done
+          cd ..
+          notes_file="$(mktemp)"
+          printf '%s\n' \
+            "Experimental owner-pilot binaries for $GITHUB_REF_NAME." \
+            "" \
+            "Generate fresh configs locally with \`./maverick gen-config\`; the archives contain no shared credentials." \
+            "Maverick is alpha software provided without warranty. Read STATUS.md and SECURITY.md before use." \
+            >"$notes_file"
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --latest=false \
+            --title "Maverick $GITHUB_REF_NAME" \
+            --notes-file "$notes_file"

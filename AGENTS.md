@@ -24,9 +24,9 @@ separately named owner-controlled environment and explicit authorization.
 
 ## Progress Rule
 
-Product progress means a real person completed a real task with the real
-product. Tests, hashes, safe rejection, and tooling are quality controls, not
-progress by themselves.
+Use `STATUS.md` as the only definition of current product truth, progress,
+audit status, and authorization. Do not promote tests, hashes, safe rejection,
+or tooling into product results.
 
 Do not restart Phase 3, add a successor certification framework, or create new
 receipt, seal, registry, watchdog, evidence-schema, or Python coordination

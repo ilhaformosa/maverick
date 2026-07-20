@@ -2,42 +2,33 @@
 
 Status: user-first reset.
 
-## Only Milestone
+## Current Milestone
 
-One real person installs Maverick, uses it for a normal day from a real network,
-and records usability plus any network-specific block or probe behavior.
-
-Everything before that milestone is preparation. Tests and safety gates protect
-the work but do not substitute for the result.
+The sole milestone and its pass conditions live in `STATUS.md`. This document
+only orders work; it does not restate current completion or audit status.
 
 ## Execution Order
 
-1. **Name the pilot hypothesis.** Keep the first user to the owner, state the
-   access-network adversary model, define the simple artifact, and list the
-   field threats. The current hypothesis is in `STATUS.md`.
+1. **Close the named pilot decisions.** Use the hypothesis and unresolved owner
+   decisions in `STATUS.md`; do not duplicate them here.
 2. **Shrink the maintenance surface.** Keep eight active document entry points.
    Archive historical plans, release governance, production ledgers, Python
    coordination tools, and remote evidence runners without deleting history.
 3. **Prove the product locally.** Maintain one shell entry point under 200 lines
    that runs the real loopback server/client path, proves a correct credential
    relays data, and proves a wrong credential is rejected.
-4. **Use browser-like TLS by default.** The default supported client build and
-   generated config use the BoringSSL-backed browser-like H2 path. Residual
-   differences remain explicit; no browser-equivalence claim is allowed.
-5. **Activate the handshake-hiding primary path.** The technical candidate is
-   browser-like TLS over CDN-fronted H2; the old WebSocket carrier remains the
-   rustls compatibility path. Before real restricted-network use, name the
-   provider and accept its TLS-termination trust tradeoff in the pilot envelope.
-   If that trust is rejected, replace it with owner-controlled handshake
-   forwarding. Loopback coverage does not complete real-provider validation.
-6. **Make a five-minute pilot artifact.** Produce one standalone CLI binary,
-   two minimal configs, and one short start/check guide. Ask a fresh user to
-   time the install; developer rehearsal does not satisfy this step.
-7. **Run one person for one day.** Only after a single plain-language pilot
-   envelope names the person, environment, provider or server, budget, expiry,
-   allowed network changes, and handshake-hiding path, run ordinary browsing
-   and record usability, disconnects, blocks, and probe observations. Do not
-   require per-run hash approval.
+4. **Maintain the selected default TLS path.** Its current implementation and
+   limitations are recorded only in `STATUS.md` and the transport reference.
+5. **Activate the handshake-hiding primary path.** Follow the candidate and
+   trust boundary recorded in `STATUS.md`. Loopback coverage does not complete
+   real-provider validation.
+6. **Make a five-minute pilot artifact.** Publish one standalone CLI binary and
+   short guide through the channel named in `STATUS.md`. Generate fresh configs
+   on the user's machine, then ask a fresh user to time the install; developer
+   rehearsal does not satisfy this step.
+7. **Run one person for one day.** Only after the remaining owner decisions in
+   `STATUS.md` are closed, run ordinary browsing and record usability,
+   disconnects, blocks, and probe observations under that authorization.
 8. **Choose the next transport change from field evidence.** If the pilot shows
    direct TLS/H2 fingerprint or probing failure, prioritize handshake-layer
    forwarding or a clearly trusted fronted path. Do not choose it from abstract

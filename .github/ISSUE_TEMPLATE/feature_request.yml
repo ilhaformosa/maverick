@@ -54,7 +54,7 @@ body:
     attributes:
       label: Boundary confirmation
       options:
-        - label: I understand this project does not claim audited, production-ready, anonymity, or censorship-resistance status.
+        - label: I understand this project does not claim production-ready, anonymity, or censorship-resistance status, and that any audit is point-in-time rather than a warranty.
           required: true
         - label: I have not included secrets, generated credentials, real hostnames, IP addresses, account names, certificate paths, or local private paths.
           required: true

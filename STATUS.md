@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-07-20
+Date: 2026-07-21
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -37,11 +37,13 @@ and the test actually runs there.
 
 ### 3. How does the user get the software?
 
-The first delivery unit is one locally built standalone `maverick` CLI binary,
-two minimal configs, and one short start/check guide. A Debian production
-certification, package repository, updater, GUI, and broad platform matrix are
-not prerequisites for this pilot. The five-minute install path is not yet
-validated by a fresh user.
+The first distribution channel is a GitHub prerelease containing a standalone
+`maverick` CLI binary and one short start/check guide for each supported pilot
+target. The user generates fresh credentials and two minimal configs locally;
+public archives never carry shared credentials. `./scripts/build-pilot.sh`
+produces the same shareable archive from a source checkout. A package repository,
+updater, GUI, and broad platform matrix are not prerequisites. The five-minute
+install path is not yet validated by a fresh user.
 
 ### 4. What are the field threats?
 
@@ -88,8 +90,9 @@ censorship resistance, production readiness, or browser identity.
   unvalidated; the older WebSocket carrier remains a rustls compatibility path.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
-- Single-binary owner-pilot folder: generated locally by
-  `./scripts/build-pilot.sh`; fresh-user timing remains untested.
+- Single-binary owner-pilot folder and shareable archive: generated locally by
+  `./scripts/build-pilot.sh`; version tags publish equivalent GitHub prerelease
+  assets for the supported pilot targets. Fresh-user timing remains untested.
 - Python coordination/validation tooling: frozen under `scripts/archive/python/`.
 - Former remote/evidence shell orchestration: frozen under
   `scripts/archive/legacy/`.
@@ -97,7 +100,13 @@ censorship resistance, production readiness, or browser identity.
   `docs/archive/`.
 - Real five-minute install by a fresh user: not yet demonstrated.
 - One-person, one-day real-network pilot: not started.
-- Formal independent security audit: not completed.
+- Owner-confirmed audit checkpoint (2026-07-21): the latest formal independent
+  security audit of the then-current repository code completed with no open
+  findings reported. This is a point-in-time result, not a warranty,
+  certification, or claim that later changes inherit the same review.
+- Future formal audits are optional and are not a pilot, release, or progress
+  requirement. Open-source users remain responsible for deciding whether the
+  software and its threat model fit their use.
 - Production, anonymity, censorship-resistance, and exact browser-equivalence
   claims: not made.
 
@@ -108,9 +117,10 @@ ephemeral ports. Nothing in this status authorizes provider access, spending,
 SSH, a public endpoint, contacting another person, or changing any machine's
 system proxy, DNS, routes, firewall, VPN, or network services.
 
-The next external step requires one plain-language pilot envelope naming the
-pilot person, client environment, server endpoint or provider, maximum spend,
-time window, allowed network changes, and the selected handshake-hiding trust
-model. It must not require per-run hash approval. Until that envelope exists,
-the legal next actions are local artifact simplification and local verification
-only.
+The first envelope already fixes the pilot person as the owner, the duration as
+one normal workday, and allowed network changes as application-local proxy
+configuration only. The owner still must name the lawful client environment,
+accept or reject TLS termination at the proposed Cloudflare edge, and set the
+maximum spend for the owner-controlled origin. It must not require per-run hash
+approval. Until those three decisions exist, the legal next actions are local
+artifact work and local verification only.

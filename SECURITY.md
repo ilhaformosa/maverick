@@ -1,7 +1,11 @@
 # Security Policy
 
-Maverick is experimental alpha software. Do not treat it as audited,
-production-ready, anonymous, censorship-resistant, or browser-identical.
+Maverick is experimental alpha software provided without warranty. A
+point-in-time audit does not make it production-ready, anonymous,
+censorship-resistant, or browser-identical. Current audit status is recorded
+only in `STATUS.md`; future formal audits are optional rather than release or
+usage gates. Open-source users are responsible for evaluating whether Maverick
+and its threat model fit their use.
 
 ## Reporting a Vulnerability
 

@@ -9,30 +9,22 @@ only orders work; it does not restate current completion or audit status.
 
 ## Execution Order
 
-1. **Close the named pilot decisions.** Use the hypothesis and unresolved owner
-   decisions in `STATUS.md`; do not duplicate them here.
-2. **Shrink the maintenance surface.** Keep eight active document entry points.
-   Archive historical plans, release governance, production ledgers, Python
-   coordination tools, and remote evidence runners without deleting history.
-3. **Prove the product locally.** Maintain one shell entry point under 200 lines
-   that runs the real loopback server/client path, proves a correct credential
-   relays data, and proves a wrong credential is rejected.
-4. **Maintain the selected default TLS path.** Its current implementation and
-   limitations are recorded only in `STATUS.md` and the transport reference.
-5. **Activate the handshake-hiding primary path.** Follow the candidate and
-   trust boundary recorded in `STATUS.md`. Loopback coverage does not complete
-   real-provider validation.
-6. **Make a five-minute pilot artifact.** Publish one standalone CLI binary and
-   short guide through the channel named in `STATUS.md`. Generate fresh configs
-   on the user's machine, then ask a fresh user to time the install; developer
-   rehearsal does not satisfy this step.
-7. **Run one person for one day.** Only after the remaining owner decisions in
-   `STATUS.md` are closed, run ordinary browsing and record usability,
-   disconnects, blocks, and probe observations under that authorization.
-8. **Choose the next transport change from field evidence.** If the pilot shows
-   direct TLS/H2 fingerprint or probing failure, prioritize handshake-layer
-   forwarding or a clearly trusted fronted path. Do not choose it from abstract
-   roadmap preference.
+1. **Confirm the private targets.** Privately confirm the exact provider team,
+   neutral origin name, region, containing Cloudflare zone, dedicated pilot
+   hostname, and access method for the owner-controlled pilot laptop. Keep
+   these details out of git.
+2. **Prepare the authorized route.** Within the envelope in `STATUS.md`, create
+   the single origin, dedicated proxied DNS record, and H2 route, generate
+   fresh credentials and configs locally, and verify the route without changing
+   existing DNS records, zone-wide settings, or host-wide networking.
+3. **Time the clean install.** On the spare laptop, start from the published
+   prerelease and guide. The owner performs the final timed attempt without
+   developer intervention; rehearsal does not satisfy the milestone.
+4. **Run the 24-hour pilot.** Use ordinary non-sensitive browsing on the named
+   client path and record usability, disconnects, blocks, and probe observations
+   without publishing private network or account details.
+5. **Choose the next change from field evidence.** Fix the shortest observed
+   failure first. Do not choose a new transport from abstract roadmap preference.
 
 ## Work Explicitly Stopped
 
@@ -43,8 +35,8 @@ only orders work; it does not restate current completion or audit status.
   broad ecosystem work before the first pilot.
 - No production-readiness relabeling from local tests or disposable-VM package
   installation.
-- No remote, paid, privileged, or host-network action without a separately
-  named owner authorization.
+- No remote, paid, privileged, or host-network action outside the current
+  authorization recorded in `STATUS.md`.
 
 ## After the First Pilot
 

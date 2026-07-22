@@ -1,15 +1,15 @@
 # Maverick Status
 
-Date: 2026-07-22
+Date: 2026-07-23
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
 
 ## Direction Decision
 
-Phase 3 and every recovery alias are terminally retired. The incomplete result
-remains `No-Go`; no product result was produced, no server is active, and no
-lease or run is active. This user-first direction is a new product-learning
+Phase 3 and every recovery alias are terminally retired. Its incomplete result
+remains `No-Go`; it produced no product result, and no Phase 3 server, lease, or
+run is active. The separately authorized owner pilot is a new product-learning
 track, not an amendment, completion, or relabeling of Phase 3.
 
 Progress now means:
@@ -83,32 +83,41 @@ censorship resistance, production readiness, or browser identity.
 
 ## Current Product Truth
 
-- Workspace version: `1.2.0-alpha.1`.
+- Workspace version: `1.2.0-alpha.2`.
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.
 - Handshake-hiding primary implementation: browser-like TLS over CDN-fronted H2
-  is implemented and loopback-verified. TLS exporter channel binding is
-  disabled across provider termination because the two TLS connections cannot
-  share an exporter. The owner has accepted Cloudflare TLS termination only for
-  this owner-only 24-hour pilot and understands that Cloudflare can observe
-  Maverick authentication information and tunnel traffic. Real-provider
-  operation remains unvalidated; the older WebSocket carrier remains a rustls
-  compatibility path.
+  is implemented and loopback-verified. The first live-provider deployment
+  check exposed and fixed missing HTTP/2 scheme and authority metadata. After
+  that fix, one authenticated end-to-end proxy request through the single
+  temporary provider route succeeded from an operator-controlled setup machine.
+  This is deployment-path validation only; it does not validate the spare-laptop
+  install or the 24-hour restricted-network pilot. TLS exporter channel binding
+  remains disabled across provider termination because the two TLS connections
+  cannot share an exporter. The owner has accepted Cloudflare TLS termination
+  only for this owner-only 24-hour pilot and understands that Cloudflare can
+  observe Maverick authentication information and tunnel traffic. The older
+  WebSocket carrier remains a rustls compatibility path.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by
   `./scripts/build-pilot.sh`; version tags publish equivalent GitHub prerelease
   assets for the supported pilot targets. Fresh-user timing remains untested.
+- Timed-install artifact: `v1.2.0-alpha.2` or later. The earlier
+  `v1.2.0-alpha.1` artifact is superseded because it lacks the live-provider H2
+  request fix.
 - Python coordination/validation tooling: frozen under `scripts/archive/python/`.
 - Former remote/evidence shell orchestration: frozen under
   `scripts/archive/legacy/`.
 - Non-current documents and machine-readable production ledgers: archived under
   `docs/archive/`.
-- Real five-minute install by a fresh user: not yet demonstrated.
-- Owner-only, 24-hour real-network pilot: authorized but not started.
+- Real five-minute install by the owner on the spare laptop: not yet
+  demonstrated.
+- Owner-only, 24-hour real-network pilot: authorized and route-prepared, but not
+  started.
 - Owner-confirmed audit checkpoint (2026-07-21): the latest formal independent
   security audit of the then-current repository code completed with no open
   findings reported. This is a point-in-time result, not a warranty,
@@ -134,27 +143,28 @@ pilot and does not create standing authorization for later runs:
   proxy, DNS, route, firewall, VPN, interface, or network-service change;
 - CDN trust: Cloudflare may terminate TLS for this run; the owner accepts that
   it can observe Maverick authentication information and tunnel traffic;
-- CDN change scope: only one dedicated pilot hostname and its new DNS record;
-  do not modify existing records or zone-wide settings;
+- CDN change scope: one new dedicated pilot hostname and DNS record, one
+  seven-day origin certificate limited to that hostname, one hostname-only
+  strict-origin TLS rule, and enablement of the zone's gRPC capability; do not
+  modify existing DNS records or the zone-wide SSL mode;
+- temporary CDN credential: at most one token expiring within 24 hours, limited
+  to the selected zone and origin-certificate editing, with no DNS, account, or
+  other-zone permission;
 - Cloudflare spend: paid-product budget is `US$0`;
 - origin: at most one small owner-controlled VPS, retained for at most seven
-  days, with total pilot spend capped at `US$10`;
+  days, with total pilot spend capped at `US$5`;
 - excluded purchases: backups, additional disks, load balancers, and every
   other paid add-on; and
 - stop rule: any additional resource, duration, person, network, trust change,
   or possible cost above these limits requires a new owner decision first.
 
-Provider access, creation of the single origin, narrowly scoped SSH setup, and
-creation of the Cloudflare route are permitted inside this envelope only after
-the exact provider account or team, neutral resource name, region, containing
-owner-controlled zone, and dedicated pilot hostname are confirmed privately.
-The selected zone must already use Cloudflare Full (strict), or equivalent
-origin-authenticated TLS, and H2-to-origin; otherwise stop for a separate owner
-decision rather than changing zone-wide settings. Credentials, account
-identifiers, real endpoints, and private environment details must not enter the
-repository. No per-run hash approval is required.
+The exact provider account or team, neutral resource name, region, containing
+owner-controlled zone, dedicated pilot hostname, and access method were
+confirmed privately. They remain private operational details and must not enter
+the repository. No provider change beyond the envelope above is standing
+authorization. No per-run hash approval is required.
 
-The next legal actions are to confirm those private targets, rehearse the
-published install path, provision the authorized route, and then run the pilot.
-None of those actions counts as a product result until the North-Star Result is
-actually observed and recorded.
+The next legal actions are to publish the corrected prerelease, let the owner
+perform the five-minute install attempt on the spare laptop, and, if that
+succeeds, begin the 24-hour real-network pilot. Neither deployment-path
+validation nor rehearsal counts as the North-Star Result.

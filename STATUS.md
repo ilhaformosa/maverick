@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-07-21
+Date: 2026-07-22
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -23,17 +23,22 @@ quality controls. They do not count as product progress on their own.
 
 ### 1. Who is the first user?
 
-The first user is the project owner on an owner-controlled desktop. No friend,
-journalist, activist, or otherwise at-risk third party is recruited for the
-first pilot. The task is ordinary web use through Maverick for one workday.
+The first user is the project owner on an owner-controlled spare macOS laptop.
+No friend, journalist, activist, or otherwise at-risk third party is recruited
+for the first pilot. The task is ordinary, non-sensitive web use through
+Maverick during one 24-hour observation window; continuous browsing is not
+required.
 
 ### 2. What is the first adversary?
 
 The first adversary model is the access-network observer on the selected pilot
 path. It may block endpoints using TLS metadata or traffic fingerprints and may
-actively probe the public server. No claim is made about a named country,
-firewall, or censorship system until the owner names a lawful pilot environment
-and the test actually runs there.
+actively probe the public server. The primary client path for this pilot is one
+privately identified, owner-controlled lawful restricted access network; its
+type, provider, address, endpoint, and location are not public project data. A
+second access-network run would be a separate later test. No claim is made about
+a named country, firewall, or censorship system unless the test actually
+produces evidence that supports it.
 
 ### 3. How does the user get the software?
 
@@ -65,7 +70,8 @@ The first milestone passes only when all of the following are true:
 
 1. the owner installs the pilot artifact in five minutes without developer
    intervention;
-2. the owner uses it for one normal workday on a named, lawful real-network path;
+2. the owner performs ordinary browsing during one 24-hour observation window
+   on the privately named, lawful real-network path;
 3. the default client uses the browser-like TLS/H2 path;
 4. ordinary browsing works well enough to finish the day;
 5. the record contains no Maverick-specific active-probe response and no
@@ -86,8 +92,11 @@ censorship resistance, production readiness, or browser identity.
 - Handshake-hiding primary implementation: browser-like TLS over CDN-fronted H2
   is implemented and loopback-verified. TLS exporter channel binding is
   disabled across provider termination because the two TLS connections cannot
-  share an exporter. A real provider path and its trust decision remain
-  unvalidated; the older WebSocket carrier remains a rustls compatibility path.
+  share an exporter. The owner has accepted Cloudflare TLS termination only for
+  this owner-only 24-hour pilot and understands that Cloudflare can observe
+  Maverick authentication information and tunnel traffic. Real-provider
+  operation remains unvalidated; the older WebSocket carrier remains a rustls
+  compatibility path.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by
@@ -99,7 +108,7 @@ censorship resistance, production readiness, or browser identity.
 - Non-current documents and machine-readable production ledgers: archived under
   `docs/archive/`.
 - Real five-minute install by a fresh user: not yet demonstrated.
-- One-person, one-day real-network pilot: not started.
+- Owner-only, 24-hour real-network pilot: authorized but not started.
 - Owner-confirmed audit checkpoint (2026-07-21): the latest formal independent
   security audit of the then-current repository code completed with no open
   findings reported. This is a point-in-time result, not a warranty,
@@ -113,14 +122,39 @@ censorship resistance, production readiness, or browser identity.
 ## Authorization Boundary
 
 Repository-local work may build, test, and use `127.0.0.1` with OS-assigned
-ephemeral ports. Nothing in this status authorizes provider access, spending,
-SSH, a public endpoint, contacting another person, or changing any machine's
-system proxy, DNS, routes, firewall, VPN, or network services.
+ephemeral ports. The following owner authorization applies only to the first
+pilot and does not create standing authorization for later runs:
 
-The first envelope already fixes the pilot person as the owner, the duration as
-one normal workday, and allowed network changes as application-local proxy
-configuration only. The owner still must name the lawful client environment,
-accept or reject TLS termination at the proposed Cloudflare edge, and set the
-maximum spend for the owner-controlled origin. It must not require per-run hash
-approval. Until those three decisions exist, the legal next actions are local
-artifact work and local verification only.
+- person and client: the owner on one owner-controlled spare macOS laptop;
+- client path: the privately identified, owner-controlled lawful restricted
+  access network; a second access-network test is outside this run;
+- duration and use: one 24-hour observation window, ordinary non-sensitive web
+  use, and no recruited third party;
+- client network changes: application-local proxy configuration only; no system
+  proxy, DNS, route, firewall, VPN, interface, or network-service change;
+- CDN trust: Cloudflare may terminate TLS for this run; the owner accepts that
+  it can observe Maverick authentication information and tunnel traffic;
+- CDN change scope: only one dedicated pilot hostname and its new DNS record;
+  do not modify existing records or zone-wide settings;
+- Cloudflare spend: paid-product budget is `US$0`;
+- origin: at most one small owner-controlled VPS, retained for at most seven
+  days, with total pilot spend capped at `US$10`;
+- excluded purchases: backups, additional disks, load balancers, and every
+  other paid add-on; and
+- stop rule: any additional resource, duration, person, network, trust change,
+  or possible cost above these limits requires a new owner decision first.
+
+Provider access, creation of the single origin, narrowly scoped SSH setup, and
+creation of the Cloudflare route are permitted inside this envelope only after
+the exact provider account or team, neutral resource name, region, containing
+owner-controlled zone, and dedicated pilot hostname are confirmed privately.
+The selected zone must already use Cloudflare Full (strict), or equivalent
+origin-authenticated TLS, and H2-to-origin; otherwise stop for a separate owner
+decision rather than changing zone-wide settings. Credentials, account
+identifiers, real endpoints, and private environment details must not enter the
+repository. No per-run hash approval is required.
+
+The next legal actions are to confirm those private targets, rehearse the
+published install path, provision the authorized route, and then run the pilot.
+None of those actions counts as a product result until the North-Star Result is
+actually observed and recorded.

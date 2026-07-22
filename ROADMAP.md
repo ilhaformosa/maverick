@@ -14,9 +14,10 @@ only orders work; it does not restate current completion or audit status.
    hostname, and access method for the owner-controlled pilot laptop. Keep
    these details out of git.
 2. **Prepare the authorized route.** Within the envelope in `STATUS.md`, create
-   the single origin, dedicated proxied DNS record, and H2 route, generate
-   fresh credentials and configs locally, and verify the route without changing
-   existing DNS records, zone-wide settings, or host-wide networking.
+   the single origin, dedicated proxied DNS record, and H2 route, generate fresh
+   credentials and configs locally, enable only the specifically authorized zone
+   gRPC capability, and verify the route without changing existing DNS records,
+   the zone-wide SSL mode, or host-wide networking.
 3. **Time the clean install.** On the spare laptop, start from the published
    prerelease and guide. The owner performs the final timed attempt without
    developer intervention; rehearsal does not satisfy the milestone.

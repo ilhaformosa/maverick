@@ -205,15 +205,7 @@ async fn open_h2(
     mut transport: transport::H2TunnelRequestSender,
     connection_lease: Option<crate::connection_manager::H2ConnectionLease>,
 ) -> Result<ClientTunnel> {
-    let req = Request::builder()
-        .method("POST")
-        .uri(config.server.tunnel_path.as_str())
-        // Cloudflare gates bidirectional H2 streaming through its gRPC path.
-        // The body uses gRPC message envelopes that carry Maverick frames,
-        // not protobuf messages.
-        .header("content-type", "application/grpc")
-        .header("te", "trailers")
-        .body(())?;
+    let req = build_h2_tunnel_request(config)?;
     let channel_binding = transport.channel_binding;
     let (response_fut, mut send_stream) = transport.sender.send_request(req, false)?;
     let hello = ClientHandshake::new(config, channel_binding)?;
@@ -248,6 +240,23 @@ async fn open_h2(
     tunnel.max_frame_size =
         validate_negotiated_max_frame_size(hello.verify_server_hello(&server_frame.payload)?)?;
     Ok(ClientTunnel::H2(Box::new(tunnel)))
+}
+
+fn build_h2_tunnel_request(config: &ClientConfig) -> Result<Request<()>> {
+    let uri = format!(
+        "https://{}{}",
+        config.server.server_name, config.server.tunnel_path
+    );
+    Ok(Request::builder()
+        .method("POST")
+        .version(http::Version::HTTP_2)
+        .uri(uri)
+        // Cloudflare gates bidirectional H2 streaming through its gRPC path.
+        // The body uses gRPC message envelopes that carry Maverick frames,
+        // not protobuf messages.
+        .header("content-type", "application/grpc")
+        .header("te", "trailers")
+        .body(())?)
 }
 
 async fn open_cloudflare_ws(
@@ -653,6 +662,70 @@ mod tests {
         assert!(
             validate_negotiated_max_frame_size((MAX_NEGOTIATED_FRAME_SIZE + 1) as u32).is_err()
         );
+    }
+
+    #[test]
+    fn h2_tunnel_request_has_https_authority_and_http2_version() -> Result<()> {
+        let config = client_config(SecretString::generate());
+        let request = build_h2_tunnel_request(&config)?;
+
+        assert_eq!(request.version(), http::Version::HTTP_2);
+        assert_eq!(request.uri().scheme_str(), Some("https"));
+        assert_eq!(
+            request
+                .uri()
+                .authority()
+                .map(|authority| authority.as_str()),
+            Some("example.com")
+        );
+        assert_eq!(request.uri().path(), "/assets/upload");
+        assert_eq!(request.headers()["content-type"], "application/grpc");
+        assert_eq!(request.headers()["te"], "trailers");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn h2_tunnel_request_preserves_https_authority_on_wire() -> Result<()> {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(server_io).await?;
+            let (request, mut respond) = connection
+                .accept()
+                .await
+                .context("client closed before sending a request")??;
+
+            assert_eq!(request.version(), http::Version::HTTP_2);
+            assert_eq!(request.uri().scheme_str(), Some("https"));
+            assert_eq!(
+                request
+                    .uri()
+                    .authority()
+                    .map(|authority| authority.as_str()),
+                Some("example.com")
+            );
+            assert_eq!(request.uri().path(), "/assets/upload");
+
+            respond.send_response(http::Response::new(()), true)?;
+            while let Some(request) = connection.accept().await {
+                request?;
+            }
+            Result::<()>::Ok(())
+        });
+
+        let (mut sender, connection) = h2::client::handshake(client_io).await?;
+        let client = tokio::spawn(connection);
+        let (response, _body) = sender.send_request(
+            build_h2_tunnel_request(&client_config(SecretString::generate()))?,
+            true,
+        )?;
+
+        assert!(response.await?.status().is_success());
+        drop(sender);
+        server.abort();
+        client.abort();
+        let _ = server.await;
+        let _ = client.await;
+        Ok(())
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-07-23
+Date: 2026-07-26
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -48,7 +48,9 @@ target. The user generates fresh credentials and two minimal configs locally;
 public archives never carry shared credentials. `./scripts/build-pilot.sh`
 produces the same shareable archive from a source checkout. A package repository,
 updater, GUI, and broad platform matrix are not prerequisites. The five-minute
-install path is not yet validated by a fresh user.
+install path was attempted by the owner from the published prerelease. The
+first successful proxied page load occurred after 5 minutes 18 seconds, so the
+path worked but missed the strict target by 18 seconds.
 
 ### 4. What are the field threats?
 
@@ -89,23 +91,34 @@ censorship resistance, production readiness, or browser identity.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.
-- Handshake-hiding primary implementation: browser-like TLS over CDN-fronted H2
-  is implemented and loopback-verified. The first live-provider deployment
-  check exposed and fixed missing HTTP/2 scheme and authority metadata. After
-  that fix, one authenticated end-to-end proxy request through the single
-  temporary provider route succeeded from an operator-controlled setup machine.
-  This is deployment-path validation only; it does not validate the spare-laptop
-  install or the 24-hour restricted-network pilot. TLS exporter channel binding
-  remains disabled across provider termination because the two TLS connections
-  cannot share an exporter. The owner has accepted Cloudflare TLS termination
-  only for this owner-only 24-hour pilot and understands that Cloudflare can
-  observe Maverick authentication information and tunnel traffic. The older
-  WebSocket carrier remains a rustls compatibility path.
+- Provider-fronted origin-address-hiding implementation: browser-like TLS over
+  CDN-fronted H2 is implemented, loopback-verified, and exercised by the first
+  owner pilot. The first live-provider deployment check exposed and fixed
+  missing HTTP/2 scheme and authority metadata. The corrected path then carried
+  the timed spare-laptop setup and real-network observation described below.
+  This validates one provider-terminated reverse-proxy path, not native ECH or
+  provider-independent handshake privacy. The browser-like client sent ECH
+  GREASE but did not load a real ECHConfig or confirm ECH acceptance, so the
+  pilot did not demonstrate that ECH hid the outer SNI. Native Maverick
+  server-side ECH remains unimplemented and its runtime flag remains
+  fail-closed. TLS exporter channel binding remains disabled across provider
+  termination because the two TLS connections cannot share an exporter. The
+  owner accepted Cloudflare TLS termination for the authorized owner-only
+  24-hour observation window and understands that Cloudflare can observe
+  Maverick authentication information and tunnel traffic. The older WebSocket
+  carrier remains a rustls compatibility path.
+- Transport naming and dependency decision: the CDN-fronted H2 path is a
+  `provider-fronted workaround`, not ECH. The project will track upstream rustls
+  server-side ECH work and will not fork rustls or vendor an unmerged ECH patch
+  in the current execution plan. A native implementation remains a separately
+  gated future option, not authorized current work.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by
   `./scripts/build-pilot.sh`; version tags publish equivalent GitHub prerelease
-  assets for the supported pilot targets. Fresh-user timing remains untested.
+  assets for the supported pilot targets. The first timed owner setup completed
+  all artifact, product-smoke, and configuration checks and reached a proxied
+  page in 5 minutes 18 seconds.
 - Timed-install artifact: `v1.2.0-alpha.2` or later. The earlier
   `v1.2.0-alpha.1` artifact is superseded because it lacks the live-provider H2
   request fix.
@@ -114,10 +127,11 @@ censorship resistance, production readiness, or browser identity.
   `scripts/archive/legacy/`.
 - Non-current documents and machine-readable production ledgers: archived under
   `docs/archive/`.
-- Real five-minute install by the owner on the spare laptop: not yet
-  demonstrated.
-- Owner-only, 24-hour real-network pilot: authorized and route-prepared, but not
-  started.
+- Real install by the owner on the spare laptop: demonstrated, but the strict
+  five-minute target was missed by 18 seconds.
+- Owner-only real-network pilot: completed. The planned 24-hour observation
+  window was followed by an unplanned 48-hour 18-minute overrun, for a total
+  client run of 72 hours 18 minutes.
 - Owner-confirmed audit checkpoint (2026-07-21): the latest formal independent
   security audit of the then-current repository code completed with no open
   findings reported. This is a point-in-time result, not a warranty,
@@ -127,6 +141,33 @@ censorship resistance, production readiness, or browser identity.
   software and its threat model fit their use.
 - Production, anonymity, censorship-resistance, and exact browser-equivalence
   claims: not made.
+
+## First Pilot Result
+
+General web browsing was smooth during the owner-only real-network pilot.
+Three usability exceptions remain open:
+
+- one major video service loaded its interface and supported most non-playback
+  actions, but video playback did not work;
+- some images on one news site loaded extremely slowly or appeared not to
+  finish; and
+- during weaker connectivity, some pages continued to show an active loading
+  indicator after their visible content appeared complete.
+
+These are observed symptoms, not established causes. Current evidence does not
+show whether they came from provider TLS termination, Maverick's H2 carrier,
+the destination services, browser behavior, or the underlying network.
+Reconciled server-side service logs show authenticated activity across the run
+without a service restart or error-like line in the retained journal, but those
+logs are not detailed enough to diagnose the three symptoms. All three
+observations came from the Firefox instance configured to use Maverick; Chrome
+was not used during the pilot.
+
+The planned 24-hour observation remains valid product evidence. The North-Star
+milestone did not pass because the timed setup exceeded five minutes by 18
+seconds, and the usability findings above remain unresolved. The result does
+not support production, anonymity, broad censorship-resistance, or exact
+browser-equivalence claims.
 
 ## Authorization Boundary
 
@@ -164,7 +205,20 @@ confirmed privately. They remain private operational details and must not enter
 the repository. No provider change beyond the envelope above is standing
 authorization. No per-run hash approval is required.
 
-The next legal actions are to publish the corrected prerelease, let the owner
-perform the five-minute install attempt on the spare laptop, and, if that
-succeeds, begin the 24-hour real-network pilot. Neither deployment-path
-validation nor rehearsal counts as the North-Star Result.
+The actual client run exceeded the authorized observation duration by 48 hours
+18 minutes. This operational deviation does not erase the completed 24-hour
+observation, does not count as a second pilot, and does not create broader or
+standing authorization. The temporary origin remained inside the existing
+seven-day retention and spending limits; no additional remote resource or paid
+add-on was created.
+
+The first pilot has ended and its temporary remote resources have been removed
+after explicit owner approval. The temporary origin and dedicated provider DNS
+record and hostname-only strict-origin rule were deleted, and the provider's
+zone-wide gRPC capability was restored to its pre-pilot disabled state. The
+zone-wide SSL mode was not changed, no unrelated provider setting was modified,
+and the short-lived origin certificate may expire naturally.
+
+The next legal actions are privacy-safe local diagnosis of the observed setup
+and usability failures. Any new live-field run, remote resource, provider
+change, spending, or native-ECH implementation requires a new owner decision.

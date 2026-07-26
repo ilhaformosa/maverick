@@ -192,11 +192,11 @@ advanced:
 If runtime H3 setup fails, the client falls back to H2 and records a short
 cooldown for that server. 0-RTT remains disabled.
 
-The field-pilot fronting candidate is browser-like TLS/H2 to a Cloudflare edge,
-with H2 forwarded to the origin. It is off by default, rejected in `stable`
-mode, and does not enable native Maverick server-side ECH. Enable it on both
-client and server only after accepting that the provider terminates TLS and can
-observe Maverick authentication and tunnel payload:
+The owner-pilot fronting path is browser-like TLS/H2 to a Cloudflare edge, with
+H2 forwarded to the origin. It is off by default, rejected in `stable` mode,
+and does not enable native Maverick server-side ECH. Enable it on both client
+and server only after accepting that the provider terminates TLS and can observe
+Maverick authentication and tunnel payload:
 
 ```yaml
 advanced:
@@ -212,8 +212,10 @@ The older `carrier: web_socket` path remains available with
 `tls_fingerprint: rustls_default`; `experimental_cloudflare_ws: true` is its
 legacy selector. Browser mimicry is supported only by the H2 carrier. The
 normal direct transport remains H2/TLS while fronting is disabled. Loopback
-coverage does not prove that a real provider configuration accepts sustained
-bidirectional H2.
+coverage alone does not prove that a real provider configuration accepts
+sustained bidirectional H2. The first owner pilot exercised the path through a
+real provider and network; `STATUS.md` records the bounded success and open
+usability failures.
 
 ## Fallback
 
@@ -384,8 +386,12 @@ advanced:
 `experimental_ech: true` is rejected until native server-side TLS stack support,
 ECH config distribution, and controlled integration coverage are ready. In
 `private` mode, `ech_fallback_policy: "allow_plain_sni"` is rejected even when
-ECH itself is disabled. The separate Cloudflare-fronted WebSocket carrier is an
-edge-fronted experiment and does not enable this native ECH flag.
+ECH itself is disabled. The Cloudflare-fronted H2 carrier and older WebSocket
+carrier are provider-fronted experiments and do not enable this native ECH
+flag. The browser-like client currently sends ECH GREASE only; it does not load
+a real ECHConfig or establish that ECH was accepted. Treat the H2 path as a
+`provider-fronted workaround`, not ECH. The current plan tracks upstream rustls
+server-side ECH work and does not fork rustls or vendor an unmerged ECH patch.
 
 ## Metrics
 

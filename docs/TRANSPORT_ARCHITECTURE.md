@@ -21,9 +21,11 @@ checks authentication and replay state before opening a relay target.
 ## Default TLS Path
 
 On supported macOS arm64 and Linux x86_64 builds, the default client enables the
-BoringSSL-backed browser-like H2 profile. It uses GREASE, extension
+BoringSSL-backed browser-like H2 profile. It uses TLS and ECH GREASE, extension
 permutation, exporter channel binding, and pinned browser-reference TLS/H2
-settings. Known differences remain; the profile is not browser-identical.
+settings. ECH GREASE provides protocol cover but does not encrypt the
+ClientHello without a real ECHConfig. Known differences remain; the profile is
+not browser-identical.
 
 The rustls path remains available through an explicit config selection or a
 `--no-default-features` build. It is a compatibility/debug path, not the
@@ -38,8 +40,18 @@ TLS-terminating provider. The provider can observe tunnel content.
 
 TLS exporter channel binding is disabled on this path because the client-edge
 and edge-origin connections have different exporters. Direct H2 keeps exporter
-binding. The fronted path is loopback-tested but has not yet passed a real
-provider or restricted-network pilot.
+binding. This provider-dependent path works around the absence of native
+server-side ECH by placing a reverse proxy in front of the origin. Its project
+name is `provider-fronted workaround`; it is not ECH and is not equivalent to
+native ECH. It hides the origin address and delegates client-facing TLS to the
+provider; the first pilot did not load a real ECHConfig or demonstrate ECH
+acceptance. The current plan tracks upstream rustls server-side ECH work without
+forking rustls or vendoring an unmerged patch.
+
+The fronted path is loopback-tested and completed one owner-only real-provider,
+real-network pilot. General browsing was smooth, but video playback, large-image
+loading, and weak-network completion behavior exposed open usability problems.
+`STATUS.md` is authoritative for the result and claim boundary.
 
 ## Unauthenticated Requests
 

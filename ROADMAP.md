@@ -9,23 +9,18 @@ only orders work; it does not restate current completion or audit status.
 
 ## Execution Order
 
-1. **Confirm the private targets.** Privately confirm the exact provider team,
-   neutral origin name, region, containing Cloudflare zone, dedicated pilot
-   hostname, and access method for the owner-controlled pilot laptop. Keep
-   these details out of git.
-2. **Prepare the authorized route.** Within the envelope in `STATUS.md`, create
-   the single origin, dedicated proxied DNS record, and H2 route, generate fresh
-   credentials and configs locally, enable only the specifically authorized zone
-   gRPC capability, and verify the route without changing existing DNS records,
-   the zone-wide SSL mode, or host-wide networking.
-3. **Time the clean install.** On the spare laptop, start from the published
-   prerelease and guide. The owner performs the final timed attempt without
-   developer intervention; rehearsal does not satisfy the milestone.
-4. **Run the 24-hour pilot.** Use ordinary non-sensitive browsing on the named
-   client path and record usability, disconnects, blocks, and probe observations
-   without publishing private network or account details.
-5. **Choose the next change from field evidence.** Fix the shortest observed
-   failure first. Do not choose a new transport from abstract roadmap preference.
+1. **Diagnose the field symptoms.** Reproduce the video-playback failure, slow
+   image loading, and lingering page-load completion locally. Do not assume a
+   provider or protocol cause.
+2. **Remove setup friction.** Simplify the artifact or guide enough to beat the
+   measured five-minute target.
+3. **Make the smallest evidence-backed fix.** Change only the component shown
+   to cause the problem.
+4. **Track native server-side ECH upstream.** Keep the current provider-fronted
+   path labeled as a workaround, not ECH. Do not fork rustls or vendor an
+   unmerged ECH patch in the current plan.
+5. **Request a new bounded field run only if needed.** The completed pilot does
+   not automatically authorize another live test.
 
 ## Work Explicitly Stopped
 
@@ -36,10 +31,12 @@ only orders work; it does not restate current completion or audit status.
   broad ecosystem work before the first pilot.
 - No production-readiness relabeling from local tests or disposable-VM package
   installation.
+- No rustls fork or vendored unmerged server-ECH patch in the current execution
+  plan.
 - No remote, paid, privileged, or host-network action outside the current
   authorization recorded in `STATUS.md`.
 
-## After the First Pilot
+## Failure-Driven Follow-Up
 
 Use the shortest failure-driven next step:
 

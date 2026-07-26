@@ -85,7 +85,7 @@ censorship resistance, production readiness, or browser identity.
 
 ## Current Product Truth
 
-- Workspace version: `1.2.0-alpha.2`.
+- Workspace version: `1.2.0-alpha.3`.
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
 - Rust product core and loopback relay path: implemented.
@@ -119,9 +119,10 @@ censorship resistance, production readiness, or browser identity.
   assets for the supported pilot targets. The first timed owner setup completed
   all artifact, product-smoke, and configuration checks and reached a proxied
   page in 5 minutes 18 seconds.
-- Timed-install artifact: `v1.2.0-alpha.2` or later. The earlier
+- First timed-install artifact: `v1.2.0-alpha.2`. The earlier
   `v1.2.0-alpha.1` artifact is superseded because it lacks the live-provider H2
-  request fix.
+  request fix. The shorter `alpha.3` fast-start path has passed local checks but
+  has not yet been timed by a person.
 - Python coordination/validation tooling: frozen under `scripts/archive/python/`.
 - Former remote/evidence shell orchestration: frozen under
   `scripts/archive/legacy/`.
@@ -168,6 +169,48 @@ milestone did not pass because the timed setup exceeded five minutes by 18
 seconds, and the usability findings above remain unresolved. The result does
 not support production, anonymity, broad censorship-resistance, or exact
 browser-equivalence claims.
+
+## Alpha.3 Reliability Hardening
+
+The `1.2.0-alpha.3` workspace is a locally verified hardening candidate, not a
+Beta, Stable, or mature release.
+
+Local diagnosis reproduced one definite server-side defect: the H2 response
+path could accept more target data without waiting for the receiver's flow
+control window, allowing the H2 library to buffer an unbounded amount. The
+server now waits for real H2 capacity and keeps only one prepared target frame
+pending, while still allowing upload traffic to move when the download window
+is full. The same bounded send behavior now covers the other Maverick
+protocol-frame sends on the server H2 path and client H2 uploads.
+
+Regression coverage now proves that:
+
+- a large server send waits when the receiver stops granting capacity and
+  completes byte-for-byte after capacity returns;
+- client H2 sends and server protocol-frame sends outside the TCP downlink relay
+  stop after no capacity progress; a slow client H2 send that keeps making
+  progress may continue beyond one idle interval;
+- a blocked download direction does not stop upload traffic on the same flow;
+- a slow large stream does not indefinitely starve a small stream on the same
+  H2 connection;
+- both a Maverick TCP reset and an actual H2 request-stream reset release the
+  server relay promptly instead of waiting for the ordinary idle timeout;
+- a local application or target that stops reading cannot leave a relay write
+  blocked beyond the configured idle bound, while slow writes that keep making
+  progress are not stopped merely because their total duration is longer; and
+- a normal client half-close still receives a delayed target response.
+
+The pilot start guide now puts the already-authorized private-client path first
+and reduces its terminal work to one fail-closed pasted block. Generated
+example configs are also checked to retain owner-only file permissions. The
+complete loopback harness, workspace tests, browser-like default build, rustls
+compatibility build, generated-config checks, and local product smoke pass.
+
+This proves the reproduced code defects are fixed locally. It does not prove
+that video playback, slow images, or the lingering Firefox loading indicator
+are fixed in a real provider path. It also does not prove that the shorter
+install path beats five minutes for a person. Those questions require a later,
+separately authorized owner retest using a published `alpha.3` artifact.
 
 ## Authorization Boundary
 

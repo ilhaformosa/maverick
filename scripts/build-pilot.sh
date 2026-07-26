@@ -95,27 +95,49 @@ find "$output_dir" -maxdepth 1 -type f -name '.binary-strings' -delete
 cat >"$output_dir/START_HERE.txt" <<'GUIDE'
 Maverick owner pilot
 
-1. Confirm the binary and run the local product check:
-   ./maverick version
-   ./maverick user-smoke
+Fast client start
 
-2. Generate fresh credentials and two local configs on this machine:
-   ./maverick gen-config
-   chmod 600 client.generated.yaml server.generated.yaml
+Use this path only when a separately authorized pilot has already provided a
+private client.generated.yaml beside the maverick binary. The public archive
+never contains that file.
 
-3. Before any real-network use, replace every example hostname and certificate
-   path in both generated YAML files. Never reuse configs from a public archive.
+Open a terminal in this folder. Paste the whole block once; each step runs only
+if the preceding step succeeded:
 
-4. Validate:
-   ./maverick check-config --kind server -c server.generated.yaml
-   ./maverick check-config --kind client -c client.generated.yaml
+chmod 700 . &&
+chmod 600 client.generated.yaml &&
+(
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c SHA256SUMS
+  else
+    sha256sum -c SHA256SUMS
+  fi
+) &&
+./maverick version &&
+./maverick user-smoke &&
+./maverick client -c ./client.generated.yaml
 
-5. Stop here for local rehearsal. Generated configs select the H2 carrier but
-   leave CDN fronting disabled. A real-network pilot still requires an explicit
-   owner decision accepting or rejecting TLS termination at the CDN edge.
+The final command keeps running. Stop it with Control-C.
 
-6. Point only the chosen application at Maverick's loopback SOCKS5 listener.
-   Do not change system proxy, DNS, routes, firewall, or VPN settings.
+Generate new local example configs
+
+If no private client config was provided, generate fresh client and server
+examples locally:
+
+./maverick gen-config
+
+The generated files are owner-only. Replace every example hostname and
+certificate path before use, then validate both:
+
+./maverick check-config --kind server -c server.generated.yaml
+./maverick check-config --kind client -c client.generated.yaml
+
+Generated configs select the H2 carrier but leave provider fronting disabled.
+Real-network use still requires a separate owner decision about the environment
+and any provider TLS termination.
+
+Point only the chosen application at Maverick's loopback SOCKS5 listener. Do
+not change system proxy, DNS, routes, firewall, or VPN settings.
 
 This artifact is experimental alpha software, provided without warranty. It is
 not production-ready, anonymous, censorship-resistant, or browser-identical.

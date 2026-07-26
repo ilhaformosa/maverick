@@ -9,18 +9,20 @@ only orders work; it does not restate current completion or audit status.
 
 ## Execution Order
 
-1. **Diagnose the field symptoms.** Reproduce the video-playback failure, slow
-   image loading, and lingering page-load completion locally. Do not assume a
-   provider or protocol cause.
-2. **Remove setup friction.** Simplify the artifact or guide enough to beat the
-   measured five-minute target.
-3. **Make the smallest evidence-backed fix.** Change only the component shown
-   to cause the problem.
+1. **Publish an Alpha.3 prerelease only after repository review.** Commit and
+   push the reviewed candidate, then build the same standalone artifacts already
+   defined by the release workflow. This does not make the project Beta.
+2. **Request one short, bounded owner retest.** Re-time installation and check
+   video playback, slow images, and lingering page-load completion. Do not
+   assume the local fix resolved any field symptom. A new live run requires new
+   explicit authorization.
+3. **Decide whether Beta is justified.** Enter Beta only if the owner retest
+   beats five minutes and the important browsing failures are either gone or
+   understood with an acceptable documented boundary. Otherwise remain Alpha
+   and fix only the next reproduced cause.
 4. **Track native server-side ECH upstream.** Keep the current provider-fronted
    path labeled as a workaround, not ECH. Do not fork rustls or vendor an
    unmerged ECH patch in the current plan.
-5. **Request a new bounded field run only if needed.** The completed pilot does
-   not automatically authorize another live test.
 
 ## Work Explicitly Stopped
 

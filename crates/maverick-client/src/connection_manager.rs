@@ -64,6 +64,10 @@ impl ClientTunnelPool {
             .await
             {
                 Ok(Ok(tunnel)) => return Ok(tunnel),
+                Ok(Err(err)) if err.downcast_ref::<tunnel::H2SendStalled>().is_some() => {
+                    self.h2.record_handshake_timeout();
+                    return Err(err.context("pooled H2 tunnel handshake timed out"));
+                }
                 Ok(Err(err)) if err.downcast_ref::<h2::Error>().is_some() => {
                     self.h2.invalidate_after_stream_open_failure(generation);
                     last_error = Some(err.context("pooled H2 stream open failed"));

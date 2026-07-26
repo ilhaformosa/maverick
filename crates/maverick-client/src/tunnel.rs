@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "h3")]
@@ -15,12 +15,24 @@ use maverick_core::frame::{Frame, FrameType};
 use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
 use maverick_core::padding::{RuntimeBatcher, RuntimeCoverTraffic, RuntimePadding};
 use maverick_core::{ClientConfig, SecretString};
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::transport::{self, TunnelRequestSender};
 
 const DEFAULT_MAX_FRAME_SIZE: usize = 65_536;
 const MAX_NEGOTIATED_FRAME_SIZE: usize = 1024 * 1024;
+
+#[derive(Debug)]
+pub(crate) struct H2SendStalled;
+
+impl std::fmt::Display for H2SendStalled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("h2 send stalled while waiting for receiver capacity")
+    }
+}
+
+impl std::error::Error for H2SendStalled {}
 
 pub enum ClientTunnel {
     H2(Box<H2ClientTunnel>),
@@ -37,6 +49,7 @@ pub struct H2ClientTunnel {
     padding: RuntimePadding,
     cover_traffic: RuntimeCoverTraffic,
     batcher: RuntimeBatcher,
+    send_stall_timeout: Duration,
     _connection_lease: Option<crate::connection_manager::H2ConnectionLease>,
 }
 
@@ -83,22 +96,35 @@ impl ClientTunnel {
                         frame.payload.len(),
                         max_frame_size,
                     ) {
-                        send_h2_frame(&mut tunnel.send_stream, padding, max_frame_size, false)
-                            .await?;
+                        send_h2_frame(
+                            &mut tunnel.send_stream,
+                            padding,
+                            max_frame_size,
+                            false,
+                            tunnel.send_stall_timeout,
+                        )
+                        .await?;
                     }
                     for cover_frame in tunnel.cover_traffic.padding_frames(
                         frame.frame_type,
                         frame.payload.len(),
                         max_frame_size,
                     ) {
-                        send_h2_frame(&mut tunnel.send_stream, cover_frame, max_frame_size, false)
-                            .await?;
+                        send_h2_frame(
+                            &mut tunnel.send_stream,
+                            cover_frame,
+                            max_frame_size,
+                            false,
+                            tunnel.send_stall_timeout,
+                        )
+                        .await?;
                     }
                     send_h2_frame(
                         &mut tunnel.send_stream,
                         frame,
                         max_frame_size,
                         end_stream && idx == last,
+                        tunnel.send_stall_timeout,
                     )
                     .await?;
                 }
@@ -209,11 +235,15 @@ async fn open_h2(
     let channel_binding = transport.channel_binding;
     let (response_fut, mut send_stream) = transport.sender.send_request(req, false)?;
     let hello = ClientHandshake::new(config, channel_binding)?;
+    // ClientAdvancedConfig has no separate handshake timeout. Its connect timeout
+    // is already the client's tunnel-handshake budget.
+    let handshake_stall_timeout = Duration::from_millis(config.advanced.connect_timeout_ms);
     send_h2_frame(
         &mut send_stream,
         Frame::new(FrameType::ClientHello, 0, 0, hello.encode()?),
         DEFAULT_MAX_FRAME_SIZE,
         false,
+        handshake_stall_timeout,
     )
     .await?;
 
@@ -229,6 +259,7 @@ async fn open_h2(
         padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
         cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
         batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
+        send_stall_timeout: Duration::from_secs(config.advanced.idle_timeout_secs),
         _connection_lease: connection_lease,
     };
     let server_frame = read_next_h2_frame(&mut tunnel)
@@ -523,19 +554,38 @@ async fn send_h2_frame(
     frame: Frame,
     max_frame_size: usize,
     end_stream: bool,
+    stall_timeout: Duration,
 ) -> Result<()> {
     send_h2_bytes_with_capacity(
         stream,
         encode_grpc_frame(frame, max_frame_size)?,
         end_stream,
+        stall_timeout,
     )
     .await
+}
+
+async fn wait_h2_capacity(stream: &mut h2::SendStream<Bytes>, desired: usize) -> Result<usize> {
+    stream.reserve_capacity(desired);
+    loop {
+        let current = stream.capacity();
+        if current > 0 {
+            return Ok(current.min(desired));
+        }
+        let assigned = poll_fn(|cx| stream.poll_capacity(cx))
+            .await
+            .context("h2 send stream closed before capacity was available")??;
+        if assigned > 0 {
+            return Ok(assigned.min(desired));
+        }
+    }
 }
 
 async fn send_h2_bytes_with_capacity(
     stream: &mut h2::SendStream<Bytes>,
     mut bytes: Bytes,
     end_stream: bool,
+    stall_timeout: Duration,
 ) -> Result<()> {
     if bytes.is_empty() {
         stream.send_data(bytes, end_stream)?;
@@ -543,13 +593,13 @@ async fn send_h2_bytes_with_capacity(
     }
 
     while !bytes.is_empty() {
-        stream.reserve_capacity(bytes.len());
-        let capacity = poll_fn(|cx| stream.poll_capacity(cx))
-            .await
-            .context("h2 send stream closed before capacity was available")??;
-        if capacity == 0 {
-            continue;
-        }
+        let capacity = match timeout(stall_timeout, wait_h2_capacity(stream, bytes.len())).await {
+            Ok(result) => result?,
+            Err(_) => {
+                stream.reserve_capacity(0);
+                return Err(H2SendStalled.into());
+            }
+        };
         let chunk_len = capacity.min(bytes.len());
         let chunk = bytes.split_to(chunk_len);
         stream.send_data(chunk, end_stream && bytes.is_empty())?;
@@ -720,6 +770,140 @@ mod tests {
         )?;
 
         assert!(response.await?.status().is_success());
+        drop(sender);
+        server.abort();
+        client.abort();
+        let _ = server.await;
+        let _ = client.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn h2_send_times_out_when_receiver_never_releases_capacity() -> Result<()> {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut builder = h2::server::Builder::new();
+            builder.initial_window_size(0);
+            let mut connection = builder.handshake::<_, Bytes>(server_io).await?;
+            let (request, mut respond) = connection
+                .accept()
+                .await
+                .context("client closed before sending a request")??;
+            respond.send_response(http::Response::new(()), true)?;
+            let held_request_body = request.into_body();
+            while let Some(request) = connection.accept().await {
+                request?;
+            }
+            drop(held_request_body);
+            Result::<()>::Ok(())
+        });
+
+        let (mut sender, connection) = h2::client::handshake(client_io).await?;
+        let client = tokio::spawn(connection);
+        sender = sender.ready().await?;
+        let request = http::Request::builder().method("POST").uri("/").body(())?;
+        let (response, mut request_body) = sender.send_request(request, false)?;
+        assert!(response.await?.status().is_success());
+
+        let result = timeout(
+            Duration::from_secs(1),
+            send_h2_frame(
+                &mut request_body,
+                Frame::new(
+                    FrameType::TcpData,
+                    0,
+                    1,
+                    Bytes::from_static(b"capacity must be granted"),
+                ),
+                DEFAULT_MAX_FRAME_SIZE,
+                true,
+                Duration::from_millis(25),
+            ),
+        )
+        .await
+        .context("H2 send did not honor its stall timeout")?;
+        let error = result.expect_err("a zero receive window must stall the H2 send");
+        assert!(error
+            .to_string()
+            .contains("h2 send stalled while waiting for receiver capacity"));
+
+        drop(request_body);
+        drop(sender);
+        server.abort();
+        client.abort();
+        let _ = server.await;
+        let _ = client.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn h2_send_timeout_resets_after_each_capacity_progress() -> Result<()> {
+        const WINDOW_SIZE: u32 = 256;
+        let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut builder = h2::server::Builder::new();
+            builder.initial_window_size(WINDOW_SIZE);
+            let mut connection = builder.handshake::<_, Bytes>(server_io).await?;
+            let (request, mut respond) = connection
+                .accept()
+                .await
+                .context("client closed before sending a request")??;
+            respond.send_response(http::Response::new(()), true)?;
+            let mut request_body = request.into_body();
+            tokio::spawn(async move {
+                let mut received = BytesMut::new();
+                while let Some(chunk) = request_body.data().await {
+                    let chunk = chunk?;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    request_body.flow_control().release_capacity(chunk.len())?;
+                    received.extend_from_slice(&chunk);
+                }
+                let _ = received_tx.send(received);
+                Result::<()>::Ok(())
+            });
+            while let Some(request) = connection.accept().await {
+                request?;
+            }
+            Result::<()>::Ok(())
+        });
+
+        let (mut sender, connection) = h2::client::handshake(client_io).await?;
+        let client = tokio::spawn(connection);
+        sender = sender.ready().await?;
+        let request = http::Request::builder().method("POST").uri("/").body(())?;
+        let (response, mut request_body) = sender.send_request(request, false)?;
+        assert!(response.await?.status().is_success());
+
+        let payload = Bytes::from(vec![0x5a; 8 * 1024]);
+        let stall_timeout = Duration::from_millis(150);
+        let started = tokio::time::Instant::now();
+        timeout(
+            Duration::from_secs(3),
+            send_h2_frame(
+                &mut request_body,
+                Frame::new(FrameType::TcpData, 0, 1, payload.clone()),
+                DEFAULT_MAX_FRAME_SIZE,
+                true,
+                stall_timeout,
+            ),
+        )
+        .await
+        .context("H2 send did not finish while capacity kept advancing")??;
+        assert!(
+            started.elapsed() > stall_timeout,
+            "the transfer must outlast one stall window to test progress resets"
+        );
+
+        let mut received = timeout(Duration::from_secs(1), received_rx)
+            .await
+            .context("server did not receive the complete H2 frame")??;
+        let frame = decode_grpc_frame_from(&mut received, DEFAULT_MAX_FRAME_SIZE)?
+            .context("server did not receive a complete Maverick frame")?;
+        assert_eq!(frame.payload, payload);
+        assert!(received.is_empty());
+
+        drop(request_body);
         drop(sender);
         server.abort();
         client.abort();

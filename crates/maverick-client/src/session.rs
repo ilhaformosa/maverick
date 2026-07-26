@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use maverick_core::frame::{ErrorCode, Frame, FrameType, OpenTcpPayload};
 use maverick_core::ClientConfig;
@@ -189,7 +189,9 @@ where
                 remote_frame = tunnel.read_next_frame() => {
                     match remote_frame? {
                         Some(frame) => {
-                            if let Some(close) = handle_remote_frame(frame, &mut local_write).await? {
+                            if let Some(close) =
+                                handle_remote_frame(frame, &mut local_write, idle_timeout).await?
+                            {
                                 return Ok(close);
                             }
                         }
@@ -228,7 +230,9 @@ where
             remote_frame = tunnel.read_next_frame() => {
                 match remote_frame? {
                     Some(frame) => {
-                        if let Some(close) = handle_remote_frame(frame, &mut local_write).await? {
+                        if let Some(close) =
+                            handle_remote_frame(frame, &mut local_write, idle_timeout).await?
+                        {
                             return Ok(close);
                         }
                     }
@@ -240,7 +244,11 @@ where
     Ok(RelayClose::Graceful)
 }
 
-async fn handle_remote_frame<W>(frame: Frame, local_write: &mut W) -> Result<Option<RelayClose>>
+async fn handle_remote_frame<W>(
+    frame: Frame,
+    local_write: &mut W,
+    idle_timeout: Duration,
+) -> Result<Option<RelayClose>>
 where
     W: AsyncWrite + Unpin,
 {
@@ -249,7 +257,7 @@ where
     }
     match frame.frame_type {
         FrameType::TcpData => {
-            local_write.write_all(&frame.payload).await?;
+            write_all_with_idle_timeout(local_write, &frame.payload, idle_timeout).await?;
             Ok(None)
         }
         FrameType::TcpFin | FrameType::CloseFlow => {
@@ -262,6 +270,26 @@ where
         }
         _ => Ok(None),
     }
+}
+
+async fn write_all_with_idle_timeout<W>(
+    writer: &mut W,
+    mut bytes: &[u8],
+    idle_timeout: Duration,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    while !bytes.is_empty() {
+        let written = timeout(idle_timeout, writer.write(bytes))
+            .await
+            .context("local relay write timed out")??;
+        if written == 0 {
+            bail!("local relay writer closed before the frame was complete");
+        }
+        bytes = &bytes[written..];
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -288,7 +316,7 @@ mod tests {
         let (mut local_write, mut peer) = connected_local_write_half().await?;
         let frame = Frame::new(FrameType::TcpData, 0, FLOW_ID, Bytes::from_static(b"hello"));
 
-        let close = handle_remote_frame(frame, &mut local_write).await?;
+        let close = handle_remote_frame(frame, &mut local_write, Duration::from_secs(1)).await?;
 
         assert_eq!(close, None);
         let mut buf = [0u8; 5];
@@ -303,7 +331,8 @@ mod tests {
             let (mut local_write, mut peer) = connected_local_write_half().await?;
             let frame = Frame::new(frame_type, 0, FLOW_ID, Bytes::new());
 
-            let close = handle_remote_frame(frame, &mut local_write).await?;
+            let close =
+                handle_remote_frame(frame, &mut local_write, Duration::from_secs(1)).await?;
 
             assert_eq!(close, Some(RelayClose::Reset));
             let mut buf = [0u8; 1];
@@ -318,7 +347,8 @@ mod tests {
             let (mut local_write, mut peer) = connected_local_write_half().await?;
             let frame = Frame::new(frame_type, 0, FLOW_ID, Bytes::new());
 
-            let close = handle_remote_frame(frame, &mut local_write).await?;
+            let close =
+                handle_remote_frame(frame, &mut local_write, Duration::from_secs(1)).await?;
 
             assert_eq!(close, Some(RelayClose::Graceful));
             let mut buf = [0u8; 1];
@@ -337,13 +367,62 @@ mod tests {
             Bytes::from_static(b"ignored"),
         );
 
-        let close = handle_remote_frame(frame, &mut local_write).await?;
+        let close = handle_remote_frame(frame, &mut local_write, Duration::from_secs(1)).await?;
 
         assert_eq!(close, None);
         let mut buf = [0u8; 1];
         assert!(timeout(Duration::from_millis(25), peer.read(&mut buf))
             .await
             .is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blocked_local_sink_does_not_outlive_idle_timeout() -> Result<()> {
+        let (local, _blocked_peer) = tokio::io::duplex(1);
+        let (_, mut local_write) = tokio::io::split(local);
+        let frame = Frame::new(
+            FrameType::TcpData,
+            0,
+            FLOW_ID,
+            Bytes::from(vec![0x33; 64 * 1024]),
+        );
+
+        let result = timeout(
+            Duration::from_secs(1),
+            handle_remote_frame(frame, &mut local_write, Duration::from_millis(25)),
+        )
+        .await
+        .expect("blocked local write outlived the relay idle timeout");
+        assert!(result.is_err(), "blocked local write should time out");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn slow_local_sink_with_continuous_progress_does_not_time_out() -> Result<()> {
+        let payload = Bytes::from_static(b"slow-progress");
+        let (local, mut peer) = tokio::io::duplex(1);
+        let (_, mut local_write) = tokio::io::split(local);
+        let expected_len = payload.len();
+        let reader = tokio::spawn(async move {
+            let mut received = Vec::with_capacity(expected_len);
+            for _ in 0..expected_len {
+                let mut byte = [0u8; 1];
+                peer.read_exact(&mut byte).await?;
+                received.push(byte[0]);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Result::<Vec<u8>>::Ok(received)
+        });
+        let started = tokio::time::Instant::now();
+
+        write_all_with_idle_timeout(&mut local_write, &payload, Duration::from_millis(100)).await?;
+
+        assert!(
+            started.elapsed() > Duration::from_millis(100),
+            "test must take longer than one idle-timeout interval"
+        );
+        assert_eq!(reader.await??, payload);
         Ok(())
     }
 }

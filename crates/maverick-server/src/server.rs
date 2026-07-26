@@ -80,21 +80,28 @@ fn server_cover_traffic(state: &ServerState) -> RuntimeCoverTraffic {
     )
 }
 
-fn send_h2_server_frame(
+async fn send_h2_server_frame(
     stream: &mut h2::SendStream<Bytes>,
     frame: Frame,
     max_frame_size: usize,
     end_stream: bool,
     state: &ServerState,
 ) -> Result<()> {
+    let stall_timeout = if frame.frame_type == FrameType::ServerHello {
+        Duration::from_millis(state.config.advanced.handshake_timeout_ms)
+    } else {
+        Duration::from_secs(state.config.advanced.idle_timeout_secs)
+    };
     let padding_bytes = relay::send_frame_with_padding(
         stream,
         frame,
         max_frame_size,
         end_stream,
+        stall_timeout,
         &server_padding(state),
         &server_cover_traffic(state),
-    )?;
+    )
+    .await?;
     state.metrics.record_shaping_padding(padding_bytes);
     Ok(())
 }
@@ -1223,7 +1230,8 @@ async fn handle_tunnel(
         max_frame_size,
         false,
         &state,
-    )?;
+    )
+    .await?;
 
     let open_frame = match timeout(
         Duration::from_millis(state.config.advanced.handshake_timeout_ms),
@@ -1239,7 +1247,8 @@ async fn handle_tunnel(
                 max_frame_size,
                 true,
                 &state,
-            )?;
+            )
+            .await?;
             return Ok(());
         }
         Ok(Err(err)) => return Err(err),
@@ -1254,7 +1263,8 @@ async fn handle_tunnel(
                     max_frame_size,
                     true,
                     &state,
-                )?;
+                )
+                .await?;
                 return Ok(());
             }
         };
@@ -1277,7 +1287,8 @@ async fn handle_tunnel(
                     max_frame_size,
                     true,
                     &state,
-                )?;
+                )
+                .await?;
                 return Ok(());
             }
         };
@@ -1302,7 +1313,8 @@ async fn handle_tunnel(
                     max_frame_size,
                     true,
                     &state,
-                )?;
+                )
+                .await?;
                 return Ok(());
             }
         };
@@ -1322,7 +1334,8 @@ async fn handle_tunnel(
             max_frame_size,
             true,
             &state,
-        )?;
+        )
+        .await?;
         return Ok(());
     }
     let open = match OpenTcpPayload::decode(&open_frame.payload) {
@@ -1334,7 +1347,8 @@ async fn handle_tunnel(
                 max_frame_size,
                 true,
                 &state,
-            )?;
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -1347,7 +1361,8 @@ async fn handle_tunnel(
                 max_frame_size,
                 true,
                 &state,
-            )?;
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -1367,7 +1382,8 @@ async fn handle_tunnel(
                 max_frame_size,
                 true,
                 &state,
-            )?;
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -1379,7 +1395,8 @@ async fn handle_tunnel(
         max_frame_size,
         false,
         &state,
-    )?;
+    )
+    .await?;
     relay::relay_target_and_tunnel(
         target,
         send_stream,
@@ -2151,7 +2168,8 @@ async fn handle_udp_packet(
                 max_frame_size,
                 true,
                 state,
-            )?;
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -2175,15 +2193,19 @@ async fn handle_udp_packet(
                 max_frame_size,
                 true,
                 state,
-            )?
+            )
+            .await?
         }
-        Err(_) => send_h2_server_frame(
-            &mut send_stream,
-            relay::error_frame(frame.flow_id, ErrorCode::TargetConnectFailed),
-            max_frame_size,
-            true,
-            state,
-        )?,
+        Err(_) => {
+            send_h2_server_frame(
+                &mut send_stream,
+                relay::error_frame(frame.flow_id, ErrorCode::TargetConnectFailed),
+                max_frame_size,
+                true,
+                state,
+            )
+            .await?
+        }
     }
     Ok(())
 }
@@ -2206,7 +2228,8 @@ async fn handle_udp_flow(
                 max_frame_size,
                 true,
                 state,
-            )?;
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -2216,7 +2239,8 @@ async fn handle_udp_flow(
         max_frame_size,
         false,
         state,
-    )?;
+    )
+    .await?;
 
     loop {
         let next_frame = timeout(
@@ -2235,7 +2259,8 @@ async fn handle_udp_flow(
                     max_frame_size,
                     true,
                     state,
-                )?;
+                )
+                .await?;
                 break;
             }
         };
@@ -2249,7 +2274,8 @@ async fn handle_udp_flow(
                 max_frame_size,
                 false,
                 state,
-            )?;
+            )
+            .await?;
             continue;
         }
         send_udp_packet_response(frame, &mut send_stream, state, user_policy, max_frame_size)
@@ -2284,7 +2310,8 @@ async fn send_udp_packet_response(
                 max_frame_size,
                 false,
                 state,
-            )?;
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -2308,15 +2335,19 @@ async fn send_udp_packet_response(
                 max_frame_size,
                 false,
                 state,
-            )?
+            )
+            .await?
         }
-        Err(_) => send_h2_server_frame(
-            send_stream,
-            relay::error_frame(frame.flow_id, ErrorCode::TargetConnectFailed),
-            max_frame_size,
-            false,
-            state,
-        )?,
+        Err(_) => {
+            send_h2_server_frame(
+                send_stream,
+                relay::error_frame(frame.flow_id, ErrorCode::TargetConnectFailed),
+                max_frame_size,
+                false,
+                state,
+            )
+            .await?
+        }
     }
     Ok(())
 }
@@ -2336,7 +2367,8 @@ async fn handle_dns_query(
             max_frame_size,
             true,
             state,
-        )?;
+        )
+        .await?;
         return Ok(());
     };
     if let Some(limiter) = &user_policy.rate_limiter {
@@ -2361,15 +2393,19 @@ async fn handle_dns_query(
                 max_frame_size,
                 true,
                 state,
-            )?
+            )
+            .await?
         }
-        Err(_) => send_h2_server_frame(
-            &mut send_stream,
-            relay::error_frame(frame.flow_id, ErrorCode::InternalError),
-            max_frame_size,
-            true,
-            state,
-        )?,
+        Err(_) => {
+            send_h2_server_frame(
+                &mut send_stream,
+                relay::error_frame(frame.flow_id, ErrorCode::InternalError),
+                max_frame_size,
+                true,
+                state,
+            )
+            .await?
+        }
     }
     Ok(())
 }

@@ -35,7 +35,13 @@ trap 'rm -rf "$config_tmp"' EXIT
   cd "$config_tmp"
   "$cargo_bin" run --quiet --manifest-path "$repo_root/Cargo.toml" \
     -p maverick-cli -- gen-config >/dev/null
-  chmod 600 client.generated.yaml server.generated.yaml
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    [[ "$(stat -f '%Lp' client.generated.yaml)" == "600" ]]
+    [[ "$(stat -f '%Lp' server.generated.yaml)" == "600" ]]
+  else
+    [[ "$(stat -c '%a' client.generated.yaml)" == "600" ]]
+    [[ "$(stat -c '%a' server.generated.yaml)" == "600" ]]
+  fi
   rg -q 'tls_fingerprint: "browser_mimic"' client.generated.yaml
   rg -q 'carrier: "h2"' client.generated.yaml
   rg -q 'carrier: "h2"' server.generated.yaml
@@ -89,6 +95,22 @@ then
   echo "active source contains a private path or key marker" >&2
   exit 1
 fi
+
+pilot_guide="$(
+  sed -n "/^cat >.*START_HERE\\.txt.*<<'GUIDE'$/,/^GUIDE$/p" \
+    scripts/build-pilot.sh
+)"
+for required_line in \
+  "chmod 600 client.generated.yaml &&" \
+  "shasum -a 256 -c SHA256SUMS" \
+  "./maverick version &&" \
+  "./maverick user-smoke &&" \
+  "./maverick client -c ./client.generated.yaml"; do
+  grep -Fq "$required_line" <<<"$pilot_guide" || {
+    echo "pilot fast-start guide is missing: $required_line" >&2
+    exit 1
+  }
+done
 
 git diff --check
 bash -n scripts/local-harness.sh scripts/user-smoke.sh scripts/build-pilot.sh \

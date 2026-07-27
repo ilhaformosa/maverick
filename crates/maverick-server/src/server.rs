@@ -92,17 +92,25 @@ async fn send_h2_server_frame(
     } else {
         Duration::from_secs(state.config.advanced.idle_timeout_secs)
     };
+    let complete_response = end_stream;
     let padding_bytes = relay::send_frame_with_padding(
         stream,
         frame,
         max_frame_size,
-        end_stream,
+        false,
         stall_timeout,
         &server_padding(state),
         &server_cover_traffic(state),
     )
     .await?;
     state.metrics.record_shaping_padding(padding_bytes);
+    if complete_response {
+        // A fully delivered Maverick response (including an application-level
+        // Error or timer-generated CloseFlow) is successful at the outer gRPC
+        // transport layer. Incomplete H2/I/O paths return before this point and
+        // remain resets.
+        relay::send_grpc_ok_trailers(stream)?;
+    }
     Ok(())
 }
 
@@ -1367,10 +1375,12 @@ async fn handle_tunnel(
         }
     };
 
-    let target = match relay::open_target(
+    let target_metrics = state.metrics.target_open_sinks();
+    let target = match relay::open_target_with_metrics(
         &open,
         state.config.advanced.tcp_connect_timeout_ms,
         &state.config.advanced.egress,
+        &target_metrics,
     )
     .await
     {
@@ -1576,10 +1586,12 @@ where
             return Ok(());
         }
     };
-    let target = match relay::open_target(
+    let target_metrics = state.metrics.target_open_sinks();
+    let target = match relay::open_target_with_metrics(
         &open,
         state.config.advanced.tcp_connect_timeout_ms,
         &state.config.advanced.egress,
+        &target_metrics,
     )
     .await
     {
@@ -2105,10 +2117,12 @@ async fn handle_h3_tunnel(
         }
     };
 
-    let target = match relay::open_target(
+    let target_metrics = state.metrics.target_open_sinks();
+    let target = match relay::open_target_with_metrics(
         &open,
         state.config.advanced.tcp_connect_timeout_ms,
         &state.config.advanced.egress,
+        &target_metrics,
     )
     .await
     {
@@ -2265,7 +2279,10 @@ async fn handle_udp_flow(
             }
         };
         if frame.frame_type == FrameType::CloseFlow {
-            break;
+            // This is an explicit, complete application close. Bare request
+            // EOF and receive errors leave the response open so h2 resets it.
+            relay::send_grpc_ok_trailers(&mut send_stream)?;
+            return Ok(());
         }
         if frame.frame_type != FrameType::UdpPacket {
             send_h2_server_frame(

@@ -9,18 +9,30 @@ only orders work; it does not restate current completion or audit status.
 
 ## Execution Order
 
-1. **Publish an Alpha.3 prerelease only after repository review.** Commit and
-   push the reviewed candidate, then build the same standalone artifacts already
-   defined by the release workflow. This does not make the project Beta.
-2. **Request one short, bounded owner retest.** Re-time installation and check
-   video playback, slow images, and lingering page-load completion. Do not
-   assume the local fix resolved any field symptom. A new live run requires new
-   explicit authorization.
-3. **Decide whether Beta is justified.** Enter Beta only if the owner retest
-   beats five minutes and the important browsing failures are either gone or
-   understood with an acceptable documented boundary. Otherwise remain Alpha
-   and fix only the next reproduced cause.
-4. **Track native server-side ECH upstream.** Keep the current provider-fronted
+1. **Remain Alpha and fix the confirmed install default.** Disable the optional
+   local DNS listener in newly generated configs, make listener failures identify
+   the responsible setting, and preserve compatibility with existing configs.
+2. **Add privacy-safe failure-class diagnostics.** Distinguish target DNS,
+   target connection, H2 acquisition/stall/reset, and graceful-close outcomes
+   without recording domains, addresses, URLs, credentials, or browsing
+   content. Correct any confirmed provider-carrier protocol-completion defect
+   needed to make those results trustworthy.
+3. **Choose only an evidence-supported reliability fix.** Use local
+   reproductions and the new aggregate counters to decide whether the next
+   bounded change is target-address connection handling, a small multi-connection
+   H2 pool, or another narrower cause. Do not bundle every hypothesis.
+4. **Publish a later Alpha prerelease only after repository review.** Run local
+   gates first, then use the minimum required GitHub checks and one release
+   workflow. Do not replace or mutate the published `alpha.3` release.
+5. **Request one new short, bounded owner retest.** Re-time a clean install and
+   check video playback, slow images, and lingering page-load completion. A new
+   live run, provider change, origin, or spend requires new explicit
+   authorization.
+6. **Decide whether Beta is justified.** Enter Beta only if a clean default
+   install beats five minutes and the important browsing failures are either
+   gone or understood with an acceptable documented boundary. Otherwise remain
+   Alpha and fix only the next reproduced cause.
+7. **Track native server-side ECH upstream.** Keep the current provider-fronted
    path labeled as a workaround, not ECH. Do not fork rustls or vendor an
    unmerged ECH patch in the current plan.
 

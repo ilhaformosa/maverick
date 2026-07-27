@@ -110,9 +110,13 @@ async fn resolve_with_tunnel(mut tunnel: tunnel::ClientTunnel, query: Bytes) -> 
         Some(frame)
             if frame.frame_type == FrameType::DnsResponse && frame.flow_id == DNS_FLOW_ID =>
         {
+            tunnel.finish_response().await?;
             Ok(frame.payload)
         }
-        Some(frame) if frame.frame_type == FrameType::Error => bail!("DNS relay failed"),
+        Some(frame) if frame.frame_type == FrameType::Error => {
+            tunnel.finish_response().await?;
+            bail!("DNS relay failed")
+        }
         _ => bail!("server closed before DNS response"),
     }
 }

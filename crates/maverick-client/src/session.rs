@@ -126,12 +126,11 @@ pub(crate) async fn open_tcp_tunnel(
         Some(frame) if frame.frame_type == FrameType::WindowUpdate && frame.flow_id == FLOW_ID => {
             Ok(tunnel)
         }
-        Some(frame)
-            if matches!(
-                frame.frame_type,
-                FrameType::Error | FrameType::TcpReset | FrameType::CloseFlow
-            ) =>
-        {
+        Some(frame) if matches!(frame.frame_type, FrameType::Error | FrameType::CloseFlow) => {
+            tunnel.finish_response().await?;
+            bail!("remote target connection failed")
+        }
+        Some(frame) if frame.frame_type == FrameType::TcpReset => {
             bail!("remote target connection failed")
         }
         _ => bail!("server closed before flow opened"),
@@ -189,9 +188,13 @@ where
                 remote_frame = tunnel.read_next_frame() => {
                     match remote_frame? {
                         Some(frame) => {
+                            let finish_response = response_frame_is_complete(frame.frame_type);
                             if let Some(close) =
                                 handle_remote_frame(frame, &mut local_write, idle_timeout).await?
                             {
+                                if finish_response {
+                                    tunnel.finish_response().await?;
+                                }
                                 return Ok(close);
                             }
                         }
@@ -230,9 +233,13 @@ where
             remote_frame = tunnel.read_next_frame() => {
                 match remote_frame? {
                     Some(frame) => {
+                        let finish_response = response_frame_is_complete(frame.frame_type);
                         if let Some(close) =
                             handle_remote_frame(frame, &mut local_write, idle_timeout).await?
                         {
+                            if finish_response {
+                                tunnel.finish_response().await?;
+                            }
                             return Ok(close);
                         }
                     }
@@ -242,6 +249,13 @@ where
         }
     }
     Ok(RelayClose::Graceful)
+}
+
+fn response_frame_is_complete(frame_type: FrameType) -> bool {
+    matches!(
+        frame_type,
+        FrameType::TcpFin | FrameType::CloseFlow | FrameType::Error
+    )
 }
 
 async fn handle_remote_frame<W>(

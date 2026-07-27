@@ -4,9 +4,7 @@ mode: auto
 local:
   socks5:
     listen: "127.0.0.1:1080"
-  dns:
-    enabled: true
-    listen: "127.0.0.1:5353"
+  dns: null
   http_connect:
     enabled: false
     listen: "127.0.0.1:18080"

@@ -11,6 +11,10 @@ pub(crate) struct ServerRuntimeMetrics {
     pub(crate) fallback_overload_rejections: AtomicU64,
     pub(crate) tcp_flows: AtomicU64,
     pub(crate) dns_queries: AtomicU64,
+    target_resolution_timeouts: Arc<AtomicU64>,
+    target_resolution_failures: Arc<AtomicU64>,
+    target_connect_timeouts: Arc<AtomicU64>,
+    target_connect_failures: Arc<AtomicU64>,
     pub(crate) active_flows: AtomicU64,
     pub(crate) flow_limit_rejections: AtomicU64,
     pub(crate) active_connections: AtomicU64,
@@ -61,6 +65,15 @@ impl ServerRuntimeMetrics {
         }
     }
 
+    pub(crate) fn target_open_sinks(&self) -> relay::TargetOpenMetricSinks {
+        relay::TargetOpenMetricSinks {
+            resolution_timeouts: Arc::clone(&self.target_resolution_timeouts),
+            resolution_failures: Arc::clone(&self.target_resolution_failures),
+            connect_timeouts: Arc::clone(&self.target_connect_timeouts),
+            connect_failures: Arc::clone(&self.target_connect_failures),
+        }
+    }
+
     pub(crate) fn json_snapshot(&self) -> String {
         format!(
             concat!(
@@ -71,6 +84,10 @@ impl ServerRuntimeMetrics {
                 "\"fallback_overload_rejections\":{},",
                 "\"tcp_flows\":{},",
                 "\"dns_queries\":{},",
+                "\"target_resolution_timeouts\":{},",
+                "\"target_resolution_failures\":{},",
+                "\"target_connect_timeouts\":{},",
+                "\"target_connect_failures\":{},",
                 "\"active_flows\":{},",
                 "\"flow_limit_rejections\":{},",
                 "\"active_connections\":{},",
@@ -92,6 +109,10 @@ impl ServerRuntimeMetrics {
             self.fallback_overload_rejections.load(Ordering::Relaxed),
             self.tcp_flows.load(Ordering::Relaxed),
             self.dns_queries.load(Ordering::Relaxed),
+            self.target_resolution_timeouts.load(Ordering::Relaxed),
+            self.target_resolution_failures.load(Ordering::Relaxed),
+            self.target_connect_timeouts.load(Ordering::Relaxed),
+            self.target_connect_failures.load(Ordering::Relaxed),
             self.active_flows.load(Ordering::Relaxed),
             self.flow_limit_rejections.load(Ordering::Relaxed),
             self.active_connections.load(Ordering::Relaxed),
@@ -107,5 +128,38 @@ impl ServerRuntimeMetrics {
             self.cover_traffic_padding_frames.load(Ordering::Relaxed),
             self.cover_traffic_padding_bytes.load(Ordering::Relaxed)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_failure_metrics_render_as_fixed_numeric_fields_only() {
+        let metrics = ServerRuntimeMetrics::default();
+        metrics
+            .target_resolution_timeouts
+            .store(1, Ordering::Relaxed);
+        metrics
+            .target_resolution_failures
+            .store(2, Ordering::Relaxed);
+        metrics.target_connect_timeouts.store(3, Ordering::Relaxed);
+        metrics.target_connect_failures.store(4, Ordering::Relaxed);
+
+        let snapshot = metrics.json_snapshot();
+        assert!(snapshot.contains("\"target_resolution_timeouts\":1"));
+        assert!(snapshot.contains("\"target_resolution_failures\":2"));
+        assert!(snapshot.contains("\"target_connect_timeouts\":3"));
+        assert!(snapshot.contains("\"target_connect_failures\":4"));
+        for private_value in [
+            "private.example",
+            "192.0.2.25",
+            "u_private",
+            "secret-value",
+            "https://private.example/path",
+        ] {
+            assert!(!snapshot.contains(private_value));
+        }
     }
 }

@@ -22,7 +22,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use maverick_core::ClientConfig;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
@@ -32,6 +32,38 @@ use tracing::{debug, info, warn};
 use connection_manager::{ClientTunnelPool, H2ConnectionPoolSnapshot};
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+
+fn h2_pool_shutdown_summary(snapshot: H2ConnectionPoolSnapshot) -> String {
+    format!(
+        concat!(
+            "Maverick H2 pool shutdown summary: ",
+            "connections_created={} ",
+            "streams_opened={} ",
+            "streams_reused={} ",
+            "reconnects={} ",
+            "readiness_failures={} ",
+            "stream_open_failures={} ",
+            "handshake_timeouts={} ",
+            "idle_retirements={} ",
+            "closed_retirements={} ",
+            "active_streams={} ",
+            "cached_connection={} ",
+            "shutdown={}"
+        ),
+        snapshot.connections_created,
+        snapshot.streams_opened,
+        snapshot.streams_reused,
+        snapshot.reconnects,
+        snapshot.readiness_failures,
+        snapshot.stream_open_failures,
+        snapshot.handshake_timeouts,
+        snapshot.idle_retirements,
+        snapshot.closed_retirements,
+        snapshot.active_streams,
+        snapshot.cached_connection,
+        snapshot.shutdown
+    )
+}
 
 pub struct ClientHandle {
     pub local_addr: SocketAddr,
@@ -124,6 +156,10 @@ impl ClientHandle {
                 }
             }
         }
+        info!(
+            "{}",
+            h2_pool_shutdown_summary(self.tunnel_pool.h2_snapshot())
+        );
         #[cfg(feature = "tun-runtime")]
         tun_result?;
         #[cfg(feature = "tun-runtime")]
@@ -139,7 +175,9 @@ pub async fn start_client(config: ClientConfig) -> Result<ClientHandle> {
         !config.advanced.experimental_tun,
         "advanced.experimental_tun requires the tun-runtime build feature"
     );
-    let listener = TcpListener::bind(config.local.socks5.listen).await?;
+    let listener = TcpListener::bind(config.local.socks5.listen)
+        .await
+        .context("bind local.socks5.listen")?;
     let local_addr = listener.local_addr()?;
     if !local_addr.ip().is_loopback() {
         warn!(
@@ -173,7 +211,9 @@ pub async fn start_client(config: ClientConfig) -> Result<ClientHandle> {
     if let Some(dns_config) = &config.local.dns {
         if dns_config.enabled {
             if let Some(listen) = dns_config.listen {
-                let socket = UdpSocket::bind(listen).await?;
+                let socket = UdpSocket::bind(listen)
+                    .await
+                    .context("bind local.dns.listen")?;
                 let addr = socket.local_addr()?;
                 if !addr.ip().is_loopback() {
                     warn!(
@@ -202,7 +242,9 @@ pub async fn start_client(config: ClientConfig) -> Result<ClientHandle> {
     if let Some(http_config) = &config.local.http_connect {
         if http_config.enabled {
             if let Some(listen) = http_config.listen {
-                let listener = TcpListener::bind(listen).await?;
+                let listener = TcpListener::bind(listen)
+                    .await
+                    .context("bind local.http_connect.listen")?;
                 let addr = listener.local_addr()?;
                 if !addr.ip().is_loopback() {
                     warn!(
@@ -329,17 +371,13 @@ pub(crate) async fn backoff_after_listener_error() {
 mod build_gate_tests {
     use super::*;
     use maverick_core::config::{
-        ClientAdvancedConfig, ClientServerConfig, LocalConfig, LogConfig, Socks5Config,
+        ClientAdvancedConfig, ClientDnsConfig, ClientServerConfig, HttpConnectConfig, LocalConfig,
+        LogConfig, Socks5Config,
     };
     use maverick_core::{Mode, SecretString};
 
-    #[tokio::test]
-    async fn tun_runtime_config_requires_build_feature() {
-        let advanced = ClientAdvancedConfig {
-            experimental_tun: true,
-            ..ClientAdvancedConfig::default()
-        };
-        let config = ClientConfig {
+    fn test_client_config() -> ClientConfig {
+        ClientConfig {
             version: 1,
             mode: Mode::Auto,
             local: LocalConfig {
@@ -353,14 +391,121 @@ mod build_gate_tests {
                 address: "127.0.0.1:1".into(),
                 server_name: "localhost".into(),
                 tunnel_path: "/assets/upload".into(),
-                credential_id: "u_build_gate".into(),
+                credential_id: "u_test".into(),
                 secret: SecretString::generate(),
                 ca_cert: None,
                 cert_pin: None,
             },
             auth: Default::default(),
             log: LogConfig::default(),
+            advanced: ClientAdvancedConfig::default(),
+        }
+    }
+
+    #[test]
+    fn h2_shutdown_summary_has_a_fixed_privacy_safe_schema() {
+        let summary = h2_pool_shutdown_summary(H2ConnectionPoolSnapshot {
+            connections_created: 1,
+            streams_opened: 2,
+            streams_reused: 3,
+            reconnects: 4,
+            readiness_failures: 5,
+            stream_open_failures: 6,
+            handshake_timeouts: 7,
+            idle_retirements: 8,
+            closed_retirements: 9,
+            active_streams: 10,
+            cached_connection: false,
+            shutdown: true,
+        });
+
+        assert_eq!(
+            summary,
+            concat!(
+                "Maverick H2 pool shutdown summary: ",
+                "connections_created=1 ",
+                "streams_opened=2 ",
+                "streams_reused=3 ",
+                "reconnects=4 ",
+                "readiness_failures=5 ",
+                "stream_open_failures=6 ",
+                "handshake_timeouts=7 ",
+                "idle_retirements=8 ",
+                "closed_retirements=9 ",
+                "active_streams=10 ",
+                "cached_connection=false ",
+                "shutdown=true"
+            )
+        );
+        for private_value in [
+            "private.example",
+            "192.0.2.25",
+            "u_private",
+            "secret-value",
+            "https://private.example/path",
+        ] {
+            assert!(!summary.contains(private_value));
+        }
+    }
+
+    async fn start_error(config: ClientConfig) -> anyhow::Error {
+        match start_client(config).await {
+            Ok(handle) => {
+                handle.shutdown().await.unwrap();
+                panic!("client unexpectedly started");
+            }
+            Err(err) => err,
+        }
+    }
+
+    #[tokio::test]
+    async fn socks_bind_error_names_config_field() {
+        let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = test_client_config();
+        config.local.socks5.listen = occupied.local_addr().unwrap();
+
+        let err = start_error(config).await;
+
+        assert!(err.to_string().contains("local.socks5.listen"));
+    }
+
+    #[tokio::test]
+    async fn dns_bind_error_names_config_field() {
+        let occupied = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut config = test_client_config();
+        config.local.dns = Some(ClientDnsConfig {
+            enabled: true,
+            listen: Some(occupied.local_addr().unwrap()),
+        });
+
+        let err = start_error(config).await;
+
+        assert!(err.to_string().contains("local.dns.listen"));
+    }
+
+    #[tokio::test]
+    async fn http_connect_bind_error_names_config_field() {
+        let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = test_client_config();
+        config.local.http_connect = Some(HttpConnectConfig {
+            enabled: true,
+            listen: Some(occupied.local_addr().unwrap()),
+        });
+
+        let err = start_error(config).await;
+
+        assert!(err.to_string().contains("local.http_connect.listen"));
+    }
+
+    #[tokio::test]
+    async fn tun_runtime_config_requires_build_feature() {
+        let advanced = ClientAdvancedConfig {
+            experimental_tun: true,
+            ..ClientAdvancedConfig::default()
+        };
+        let config = ClientConfig {
             advanced,
+            ..test_client_config()
         };
 
         let err = match start_client(config).await {

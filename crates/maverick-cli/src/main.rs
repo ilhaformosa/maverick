@@ -2692,9 +2692,7 @@ mode: auto
 local:
   socks5:
     listen: "127.0.0.1:1080"
-  dns:
-    enabled: true
-    listen: "127.0.0.1:5353"
+  dns: null
   http_connect:
     enabled: false
     listen: "127.0.0.1:18080"
@@ -3153,6 +3151,17 @@ mod tests {
         let pin = cert_pin_from_pem(certified.cert.pem().as_bytes()).unwrap();
         assert!(pin.starts_with("sha256/"));
         assert_eq!(pin.len(), "sha256/".len() + 43);
+    }
+
+    #[test]
+    fn generated_client_config_keeps_v1_and_disables_optional_dns_relay() {
+        let secret = SecretString::generate();
+        let rendered = example_client_config(secret.expose_secret());
+        let config = ClientConfig::from_yaml_str(&rendered).unwrap();
+
+        assert_eq!(config.version, 1);
+        assert_eq!(maverick_core::PROTOCOL_VERSION, 1);
+        assert!(config.local.dns.is_none());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
-use http::{Method, Request, StatusCode};
+use http::{HeaderMap, Method, Request, StatusCode};
 use maverick_client::{
     connection_manager::H2ConnectionPoolSnapshot, transport, udp::UdpAssociation,
 };
@@ -17,8 +17,8 @@ use maverick_core::config::{
     AuthV2Config, ClientAuthConfig, ClientConfig, ClientCredentialRotationConfig,
     ClientNextCredentialConfig, FallbackConfig, PreviousCredentialConfig, ShapingConfig,
 };
-use maverick_core::frame::{Frame, FrameType};
-use maverick_core::grpc::encode_grpc_frame;
+use maverick_core::frame::{Frame, FrameType, OpenUdpPayload};
+use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
 use maverick_core::SecretString;
 use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
 use rustls::RootCertStore;
@@ -89,6 +89,29 @@ async fn wait_for_metric_value(
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+async fn collect_h2_response(body: &mut h2::RecvStream) -> Result<(BytesMut, HeaderMap)> {
+    let mut response_bytes = BytesMut::new();
+    while let Some(chunk) = body.data().await {
+        let chunk = chunk?;
+        body.flow_control().release_capacity(chunk.len())?;
+        response_bytes.extend_from_slice(&chunk);
+    }
+    let trailers = body
+        .trailers()
+        .await?
+        .context("complete gRPC response did not contain trailers")?;
+    Ok((response_bytes, trailers))
+}
+
+fn assert_grpc_status_ok(trailers: &HeaderMap) {
+    assert_eq!(
+        trailers
+            .get("grpc-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("0")
+    );
 }
 
 async fn wait_for_pool_snapshot(
@@ -1365,15 +1388,150 @@ async fn h2_authenticated_stream_times_out_before_open_frame() -> Result<()> {
         encode_grpc_frame(Frame::new(FrameType::ClientHello, 0, 0, hello), 65_536)?,
         false,
     )?;
-    let mut response = response_fut.await?;
-    let server_hello = timeout(Duration::from_secs(1), response.body_mut().data())
-        .await?
-        .context("missing server hello")??;
-    assert!(!server_hello.is_empty());
-
+    let response = response_fut.await?;
+    let mut body = response.into_body();
     let started = Instant::now();
-    let _ = timeout(Duration::from_secs(2), response.body_mut().data()).await?;
+    let (mut response_bytes, trailers) =
+        timeout(Duration::from_secs(2), collect_h2_response(&mut body)).await??;
     assert!(started.elapsed() < Duration::from_secs(1));
+    assert_grpc_status_ok(&trailers);
+
+    let mut frame_types = Vec::new();
+    while let Some(frame) = decode_grpc_frame_from(&mut response_bytes, 65_536)? {
+        frame_types.push(frame.frame_type);
+    }
+    assert!(response_bytes.is_empty());
+    assert_eq!(frame_types, vec![FrameType::ServerHello, FrameType::Error]);
+
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn h2_udp_explicit_close_flow_ends_with_grpc_ok_trailers() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let config = fixture.client_config();
+    let sender = transport::connect(&config).await?;
+    let mut h2 = match sender {
+        transport::TunnelRequestSender::H2(h2) => h2,
+        _ => anyhow::bail!("expected h2 transport"),
+    };
+    let request = Request::builder()
+        .method("POST")
+        .uri(config.server.tunnel_path.as_str())
+        .header("content-type", "application/grpc")
+        .header("te", "trailers")
+        .body(())?;
+    let (response_fut, mut send_stream) = h2.sender.send_request(request, false)?;
+    let hello = ClientHello::new(
+        config.server.credential_id.clone(),
+        &config.server.secret,
+        &config.server.tunnel_path,
+        config.mode,
+        0,
+    )?
+    .encode();
+    send_stream.send_data(
+        encode_grpc_frame(Frame::new(FrameType::ClientHello, 0, 0, hello), 65_536)?,
+        false,
+    )?;
+    send_stream.send_data(
+        encode_grpc_frame(
+            Frame::new(
+                FrameType::OpenUdp,
+                0,
+                1,
+                OpenUdpPayload::new(1_000).encode(),
+            ),
+            65_536,
+        )?,
+        false,
+    )?;
+    send_stream.send_data(
+        encode_grpc_frame(Frame::new(FrameType::CloseFlow, 0, 1, Bytes::new()), 65_536)?,
+        true,
+    )?;
+
+    let response = response_fut.await?;
+    let mut body = response.into_body();
+    let (mut response_bytes, trailers) =
+        timeout(Duration::from_secs(2), collect_h2_response(&mut body)).await??;
+    assert_grpc_status_ok(&trailers);
+
+    let mut frame_types = Vec::new();
+    while let Some(frame) = decode_grpc_frame_from(&mut response_bytes, 65_536)? {
+        frame_types.push(frame.frame_type);
+    }
+    assert!(response_bytes.is_empty());
+    assert_eq!(
+        frame_types,
+        vec![FrameType::ServerHello, FrameType::WindowUpdate]
+    );
+
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn h2_udp_bare_request_eof_resets_without_grpc_ok_trailers() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let config = fixture.client_config();
+    let sender = transport::connect(&config).await?;
+    let mut h2 = match sender {
+        transport::TunnelRequestSender::H2(h2) => h2,
+        _ => anyhow::bail!("expected h2 transport"),
+    };
+    let request = Request::builder()
+        .method("POST")
+        .uri(config.server.tunnel_path.as_str())
+        .header("content-type", "application/grpc")
+        .header("te", "trailers")
+        .body(())?;
+    let (response_fut, mut send_stream) = h2.sender.send_request(request, false)?;
+    let hello = ClientHello::new(
+        config.server.credential_id.clone(),
+        &config.server.secret,
+        &config.server.tunnel_path,
+        config.mode,
+        0,
+    )?
+    .encode();
+    send_stream.send_data(
+        encode_grpc_frame(Frame::new(FrameType::ClientHello, 0, 0, hello), 65_536)?,
+        false,
+    )?;
+    send_stream.send_data(
+        encode_grpc_frame(
+            Frame::new(
+                FrameType::OpenUdp,
+                0,
+                1,
+                OpenUdpPayload::new(1_000).encode(),
+            ),
+            65_536,
+        )?,
+        true,
+    )?;
+
+    let response = response_fut.await?;
+    let mut body = response.into_body();
+    let mut saw_reset = false;
+    loop {
+        match timeout(Duration::from_secs(2), body.data()).await? {
+            Some(Ok(chunk)) => {
+                body.flow_control().release_capacity(chunk.len())?;
+            }
+            Some(Err(_)) => {
+                saw_reset = true;
+                break;
+            }
+            None => break,
+        }
+    }
+    assert!(
+        saw_reset,
+        "bare UDP request EOF must reset instead of sending grpc-status: 0"
+    );
 
     fixture.shutdown().await?;
     Ok(())
@@ -1680,6 +1838,10 @@ async fn metrics_endpoint_reports_loopback_counts() -> Result<()> {
     let response = fetch_metrics(metrics_addr).await?;
     assert!(response.contains("\"authenticated_sessions\":0"));
     assert!(response.contains("\"fallback_requests\":0"));
+    assert_eq!(metric_value(&response, "target_resolution_timeouts")?, 0);
+    assert_eq!(metric_value(&response, "target_resolution_failures")?, 0);
+    assert_eq!(metric_value(&response, "target_connect_timeouts")?, 0);
+    assert_eq!(metric_value(&response, "target_connect_failures")?, 0);
     assert_eq!(metric_value(&response, "active_flows")?, 0);
     assert_eq!(metric_value(&response, "active_connections")?, 0);
     assert_eq!(metric_value(&response, "connection_limit_rejections")?, 0);

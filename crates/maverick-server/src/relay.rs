@@ -1,11 +1,16 @@
 use anyhow::{bail, Context, Result};
 use bytes::{Bytes, BytesMut};
 use futures::future::poll_fn;
+use http::{HeaderMap, HeaderValue};
 use maverick_core::config::ServerEgressPolicyConfig;
 use maverick_core::frame::{ErrorCode, Frame, FrameType, OpenTcpPayload, UdpPacketPayload};
 use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
 use maverick_core::padding::{RuntimeCoverTraffic, RuntimePadding};
 use std::collections::VecDeque;
+use std::error::Error as StdError;
+use std::fmt;
+use std::future::Future;
+use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -35,6 +40,77 @@ pub struct ShapingMetricSinks {
     pub padding_bytes: Arc<AtomicU64>,
     pub cover_traffic_padding_frames: Arc<AtomicU64>,
     pub cover_traffic_padding_bytes: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TargetOpenMetricSinks {
+    pub(crate) resolution_timeouts: Arc<AtomicU64>,
+    pub(crate) resolution_failures: Arc<AtomicU64>,
+    pub(crate) connect_timeouts: Arc<AtomicU64>,
+    pub(crate) connect_failures: Arc<AtomicU64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TargetOpenFailureKind {
+    ResolutionTimeout,
+    ResolutionFailure,
+    EgressPolicyRejected,
+    ConnectTimeout,
+    ConnectFailure,
+}
+
+#[derive(Debug)]
+struct TargetOpenFailure {
+    kind: TargetOpenFailureKind,
+    source: Option<io::Error>,
+}
+
+impl TargetOpenFailure {
+    fn new(kind: TargetOpenFailureKind) -> Self {
+        Self { kind, source: None }
+    }
+
+    fn with_source(kind: TargetOpenFailureKind, source: io::Error) -> Self {
+        Self {
+            kind,
+            source: Some(source),
+        }
+    }
+}
+
+impl fmt::Display for TargetOpenFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.kind {
+            TargetOpenFailureKind::ResolutionTimeout => "target resolution timed out",
+            TargetOpenFailureKind::ResolutionFailure => "target resolution failed",
+            TargetOpenFailureKind::EgressPolicyRejected => "egress policy rejected target",
+            TargetOpenFailureKind::ConnectTimeout => "target connect timed out",
+            TargetOpenFailureKind::ConnectFailure => "target connect failed",
+        })
+    }
+}
+
+impl StdError for TargetOpenFailure {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.source
+            .as_ref()
+            .map(|source| source as &(dyn StdError + 'static))
+    }
+}
+
+impl TargetOpenMetricSinks {
+    fn record(&self, kind: TargetOpenFailureKind) {
+        let counter = match kind {
+            TargetOpenFailureKind::ResolutionTimeout => Some(&self.resolution_timeouts),
+            TargetOpenFailureKind::ResolutionFailure => Some(&self.resolution_failures),
+            TargetOpenFailureKind::EgressPolicyRejected => None,
+            TargetOpenFailureKind::ConnectTimeout => Some(&self.connect_timeouts),
+            TargetOpenFailureKind::ConnectFailure => Some(&self.connect_failures),
+        };
+        if let Some(counter) = counter {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 impl ShapingMetricSinks {
@@ -115,15 +191,48 @@ pub async fn open_target(
     timeout_ms: u64,
     egress: &ServerEgressPolicyConfig,
 ) -> Result<TcpStream> {
+    open_target_inner(open, timeout_ms, egress, None).await
+}
+
+pub(crate) async fn open_target_with_metrics(
+    open: &OpenTcpPayload,
+    timeout_ms: u64,
+    egress: &ServerEgressPolicyConfig,
+    metrics: &TargetOpenMetricSinks,
+) -> Result<TcpStream> {
+    open_target_inner(open, timeout_ms, egress, Some(metrics)).await
+}
+
+async fn open_target_inner(
+    open: &OpenTcpPayload,
+    timeout_ms: u64,
+    egress: &ServerEgressPolicyConfig,
+    metrics: Option<&TargetOpenMetricSinks>,
+) -> Result<TcpStream> {
     let authority = open.target.to_authority(open.port);
-    let addrs = resolve_allowed_authority(&authority, timeout_ms, egress).await?;
-    timeout(
-        Duration::from_millis(timeout_ms),
+    let addrs = match resolve_allowed_authority_classified(&authority, timeout_ms, egress).await {
+        Ok(addrs) => addrs,
+        Err(failure) => {
+            if let Some(metrics) = metrics {
+                metrics.record(failure.kind);
+            }
+            return Err(anyhow::Error::new(failure).context("resolve target"));
+        }
+    };
+    match connect_with_timeout(
         TcpStream::connect(addrs.as_slice()),
+        Duration::from_millis(timeout_ms),
     )
     .await
-    .context("target connect timed out")?
-    .with_context(|| "target connect failed")
+    {
+        Ok(target) => Ok(target),
+        Err(failure) => {
+            if let Some(metrics) = metrics {
+                metrics.record(failure.kind);
+            }
+            Err(anyhow::Error::new(failure))
+        }
+    }
 }
 
 pub async fn relay_target_and_tunnel(
@@ -162,12 +271,10 @@ pub async fn relay_target_and_tunnel(
                     continue;
                 }
                 let pending = pending_send.as_mut().expect("pending H2 send");
-                let is_last_frame = pending.frames.len() == 1;
                 let front = pending.frames.front_mut().expect("pending H2 frame");
                 let chunk = front.split_to(capacity.min(front.len()));
                 let frame_finished = front.is_empty();
-                let end_stream = pending.end_stream && is_last_frame && frame_finished;
-                send_stream.send_data(chunk, end_stream)?;
+                send_stream.send_data(chunk, false)?;
                 if frame_finished {
                     pending.frames.pop_front();
                 }
@@ -175,6 +282,10 @@ pub async fn relay_target_and_tunnel(
                     let completed = pending_send.take().expect("completed H2 send");
                     policy.record_padding(completed.emission);
                     if completed.end_stream {
+                        // The Maverick terminal frame is complete. Close the
+                        // outer gRPC response with trailers, never DATA
+                        // END_STREAM.
+                        send_grpc_ok_trailers(&mut send_stream)?;
                         break;
                     }
                 }
@@ -241,12 +352,23 @@ pub async fn relay_target_and_tunnel(
                     Some(_) => {}
                     None => {
                         let _ = target_write.shutdown().await;
-                        client_eof = true;
+                        // Request EOS without a Maverick FIN/CloseFlow is an
+                        // abrupt protocol end. Dropping the still-open response
+                        // stream makes h2 send RST_STREAM instead of a false
+                        // grpc-status: 0.
+                        break;
                     }
                 }
             }
         }
     }
+    Ok(())
+}
+
+pub(crate) fn send_grpc_ok_trailers(stream: &mut h2::SendStream<Bytes>) -> Result<()> {
+    let mut trailers = HeaderMap::new();
+    trailers.insert("grpc-status", HeaderValue::from_static("0"));
+    stream.send_trailers(trailers)?;
     Ok(())
 }
 
@@ -520,24 +642,89 @@ async fn resolve_allowed_authority(
     timeout_ms: u64,
     egress: &ServerEgressPolicyConfig,
 ) -> Result<Vec<SocketAddr>> {
-    let resolved = timeout(Duration::from_millis(timeout_ms), lookup_host(authority))
+    resolve_allowed_authority_classified(authority, timeout_ms, egress)
         .await
-        .context("target resolution timed out")?
-        .with_context(|| format!("resolve target {authority}"))?;
-    let allowed: Vec<SocketAddr> = resolved
+        .map_err(anyhow::Error::new)
+        .with_context(|| format!("resolve target {authority}"))
+}
+
+async fn resolve_allowed_authority_classified(
+    authority: &str,
+    timeout_ms: u64,
+    egress: &ServerEgressPolicyConfig,
+) -> std::result::Result<Vec<SocketAddr>, TargetOpenFailure> {
+    let resolved = async {
+        lookup_host(authority)
+            .await
+            .map(|resolved| resolved.collect::<Vec<_>>())
+    };
+    resolve_allowed_addresses(resolved, Duration::from_millis(timeout_ms), egress).await
+}
+
+async fn resolve_allowed_addresses<F>(
+    resolved: F,
+    timeout_duration: Duration,
+    egress: &ServerEgressPolicyConfig,
+) -> std::result::Result<Vec<SocketAddr>, TargetOpenFailure>
+where
+    F: Future<Output = io::Result<Vec<SocketAddr>>>,
+{
+    let resolved = match timeout(timeout_duration, resolved).await {
+        Ok(Ok(resolved)) if !resolved.is_empty() => resolved,
+        Ok(Ok(_)) => {
+            return Err(TargetOpenFailure::new(
+                TargetOpenFailureKind::ResolutionFailure,
+            ))
+        }
+        Ok(Err(source)) => {
+            return Err(TargetOpenFailure::with_source(
+                TargetOpenFailureKind::ResolutionFailure,
+                source,
+            ))
+        }
+        Err(_) => {
+            return Err(TargetOpenFailure::new(
+                TargetOpenFailureKind::ResolutionTimeout,
+            ))
+        }
+    };
+    let allowed = resolved
+        .into_iter()
         .filter(|addr| egress.allows_ip(addr.ip()))
-        .collect();
+        .collect::<Vec<_>>();
     if allowed.is_empty() {
-        bail!("egress policy rejected target {authority}");
+        return Err(TargetOpenFailure::new(
+            TargetOpenFailureKind::EgressPolicyRejected,
+        ));
     }
     Ok(allowed)
+}
+
+async fn connect_with_timeout<T, F>(
+    connected: F,
+    timeout_duration: Duration,
+) -> std::result::Result<T, TargetOpenFailure>
+where
+    F: Future<Output = io::Result<T>>,
+{
+    match timeout(timeout_duration, connected).await {
+        Ok(Ok(connected)) => Ok(connected),
+        Ok(Err(source)) => Err(TargetOpenFailure::with_source(
+            TargetOpenFailureKind::ConnectFailure,
+            source,
+        )),
+        Err(_) => Err(TargetOpenFailure::new(
+            TargetOpenFailureKind::ConnectTimeout,
+        )),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        relay_dns_query, relay_target_and_tunnel, relay_udp_packet, send_frame,
-        write_all_with_idle_timeout, RateLimiter, TunnelRelayPolicy,
+        connect_with_timeout, relay_dns_query, relay_target_and_tunnel, relay_udp_packet,
+        resolve_allowed_addresses, send_frame, write_all_with_idle_timeout, RateLimiter,
+        TargetOpenFailureKind, TargetOpenMetricSinks, TunnelRelayPolicy,
     };
     use anyhow::Result;
     use bytes::{Bytes, BytesMut};
@@ -545,16 +732,141 @@ mod tests {
     use maverick_core::frame::{Frame, FrameType, TargetAddr, UdpPacketPayload};
     use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
     use maverick_core::padding::{RuntimeCoverTraffic, RuntimePadding};
+    use std::future::{pending, ready};
+    use std::io;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
     use tokio::time::{timeout, Duration};
+
+    async fn assert_grpc_ok_trailers(body: &mut h2::RecvStream) -> Result<()> {
+        let trailers = body
+            .trailers()
+            .await?
+            .expect("complete gRPC response must contain trailers");
+        assert_eq!(
+            trailers
+                .get("grpc-status")
+                .and_then(|value| value.to_str().ok()),
+            Some("0")
+        );
+        Ok(())
+    }
 
     #[test]
     fn rate_limiter_computes_expected_delay() {
         let limiter = RateLimiter::new(1_000);
         assert_eq!(limiter.delay_for(500), Duration::from_millis(500));
         assert_eq!(limiter.delay_for(0), Duration::ZERO);
+    }
+
+    fn target_metric_sinks() -> TargetOpenMetricSinks {
+        TargetOpenMetricSinks {
+            resolution_timeouts: Arc::new(AtomicU64::new(0)),
+            resolution_failures: Arc::new(AtomicU64::new(0)),
+            connect_timeouts: Arc::new(AtomicU64::new(0)),
+            connect_failures: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn target_metric_values(metrics: &TargetOpenMetricSinks) -> [u64; 4] {
+        [
+            metrics.resolution_timeouts.load(Ordering::Relaxed),
+            metrics.resolution_failures.load(Ordering::Relaxed),
+            metrics.connect_timeouts.load(Ordering::Relaxed),
+            metrics.connect_failures.load(Ordering::Relaxed),
+        ]
+    }
+
+    fn loopback_egress_policy() -> ServerEgressPolicyConfig {
+        ServerEgressPolicyConfig {
+            allow_loopback: true,
+            ..ServerEgressPolicyConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn target_resolution_timeout_increments_only_its_counter() {
+        let failure = resolve_allowed_addresses(
+            pending::<io::Result<Vec<SocketAddr>>>(),
+            Duration::from_millis(1),
+            &loopback_egress_policy(),
+        )
+        .await
+        .expect_err("pending resolver must time out");
+        assert_eq!(failure.kind, TargetOpenFailureKind::ResolutionTimeout);
+
+        let metrics = target_metric_sinks();
+        metrics.record(failure.kind);
+        assert_eq!(target_metric_values(&metrics), [1, 0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn target_resolution_failure_increments_only_its_counter() {
+        let failure = resolve_allowed_addresses(
+            ready(Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "synthetic resolver failure",
+            ))),
+            Duration::from_secs(1),
+            &loopback_egress_policy(),
+        )
+        .await
+        .expect_err("resolver error must fail");
+        assert_eq!(failure.kind, TargetOpenFailureKind::ResolutionFailure);
+
+        let metrics = target_metric_sinks();
+        metrics.record(failure.kind);
+        assert_eq!(target_metric_values(&metrics), [0, 1, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn target_connect_timeout_increments_only_its_counter() {
+        let failure = connect_with_timeout(pending::<io::Result<()>>(), Duration::from_millis(1))
+            .await
+            .expect_err("pending connector must time out");
+        assert_eq!(failure.kind, TargetOpenFailureKind::ConnectTimeout);
+
+        let metrics = target_metric_sinks();
+        metrics.record(failure.kind);
+        assert_eq!(target_metric_values(&metrics), [0, 0, 1, 0]);
+    }
+
+    #[tokio::test]
+    async fn target_connect_failure_increments_only_its_counter() {
+        let failure = connect_with_timeout(
+            ready(Err::<(), io::Error>(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "synthetic connector failure",
+            ))),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("connector error must fail");
+        assert_eq!(failure.kind, TargetOpenFailureKind::ConnectFailure);
+
+        let metrics = target_metric_sinks();
+        metrics.record(failure.kind);
+        assert_eq!(target_metric_values(&metrics), [0, 0, 0, 1]);
+    }
+
+    #[tokio::test]
+    async fn egress_policy_rejection_does_not_increment_failure_counters() {
+        let loopback: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let failure = resolve_allowed_addresses(
+            ready(Ok(vec![loopback])),
+            Duration::from_secs(1),
+            &ServerEgressPolicyConfig::default(),
+        )
+        .await
+        .expect_err("default policy must reject loopback");
+        assert_eq!(failure.kind, TargetOpenFailureKind::EgressPolicyRejected);
+
+        let metrics = target_metric_sinks();
+        metrics.record(failure.kind);
+        assert_eq!(target_metric_values(&metrics), [0, 0, 0, 0]);
     }
 
     #[tokio::test]
@@ -691,21 +1003,27 @@ mod tests {
         let target = TcpStream::connect(target_listener.local_addr()?).await?;
         let (_held_target, _) = target_listener.accept().await?;
         let (client_io, server_io) = duplex(16 * 1024);
-        let relay_task = tokio::spawn(async move {
-            let mut h2 = h2::server::handshake(server_io).await?;
-            let (request, mut respond) = h2.accept().await.expect("h2 request")?;
-            let response = http::Response::builder().status(200).body(())?;
-            let send_stream = respond.send_response(response, false)?;
-            relay_target_and_tunnel(
-                target,
-                send_stream,
-                request.into_body(),
-                BytesMut::new(),
-                65_536,
-                1,
-                test_relay_policy(),
-            )
-            .await
+        let (relay_completed_tx, relay_completed_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut h2 = h2::server::handshake(server_io).await.unwrap();
+            if let Some(Ok((request, mut respond))) = h2.accept().await {
+                let response = http::Response::builder().status(200).body(()).unwrap();
+                let send_stream = respond.send_response(response, false).unwrap();
+                tokio::spawn(async move {
+                    let result = relay_target_and_tunnel(
+                        target,
+                        send_stream,
+                        request.into_body(),
+                        BytesMut::new(),
+                        65_536,
+                        1,
+                        test_relay_policy(),
+                    )
+                    .await;
+                    let _ = relay_completed_tx.send(result);
+                });
+            }
+            while h2.accept().await.is_some() {}
         });
         let (client, connection) = h2::client::handshake(client_io).await?;
         tokio::spawn(async move {
@@ -713,16 +1031,23 @@ mod tests {
         });
         let mut client = client.ready().await?;
         let request = http::Request::builder().method("POST").uri("/").body(())?;
-        let (_response, mut body) = client.send_request(request, false)?;
+        let (response, mut body) = client.send_request(request, false)?;
+        let mut response_body = response.await?.into_body();
         body.send_data(
             encode_grpc_frame(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()), 65_536)?,
             true,
         )?;
 
-        let joined = timeout(Duration::from_secs(1), relay_task)
+        timeout(Duration::from_secs(1), relay_completed_rx)
             .await
-            .expect("relay task should exit after idle timeout");
-        joined.expect("relay task should not panic")?;
+            .expect("relay task should exit after idle timeout")??;
+        let response_end = timeout(Duration::from_secs(1), response_body.data())
+            .await
+            .expect("timed-out relay response should reset promptly");
+        assert!(
+            matches!(response_end, Some(Err(_))),
+            "relay timeout must reset instead of sending grpc-status: 0"
+        );
         Ok(())
     }
 
@@ -932,6 +1257,7 @@ mod tests {
             response_bytes.extend_from_slice(&chunk);
             response_body.flow_control().release_capacity(chunk.len())?;
         }
+        assert_grpc_ok_trailers(&mut response_body).await?;
 
         let mut relayed_bytes = 0usize;
         let mut saw_fin = false;
@@ -993,7 +1319,8 @@ mod tests {
         });
         let mut client = client.ready().await?;
         let request = http::Request::builder().method("POST").uri("/").body(())?;
-        let (_response, mut request_body) = client.send_request(request, false)?;
+        let (response, mut request_body) = client.send_request(request, false)?;
+        let mut response_body = response.await?.into_body();
         request_body.send_data(
             encode_grpc_frame(Frame::new(FrameType::TcpReset, 0, 1, Bytes::new()), 65_536)?,
             true,
@@ -1002,6 +1329,13 @@ mod tests {
         timeout(Duration::from_secs(1), relay_completed_rx)
             .await
             .expect("TCP reset must release the relay promptly")??;
+        let response_end = timeout(Duration::from_secs(1), response_body.data())
+            .await
+            .expect("TCP reset response should end promptly");
+        assert!(
+            matches!(response_end, Some(Err(_))),
+            "TCP reset must remain RST_STREAM instead of grpc-status: 0"
+        );
         Ok(())
     }
 
@@ -1125,6 +1459,7 @@ mod tests {
             response_bytes.extend_from_slice(&chunk);
             response_body.flow_control().release_capacity(chunk.len())?;
         }
+        assert_grpc_ok_trailers(&mut response_body).await?;
 
         let mut payload = BytesMut::new();
         let mut saw_fin = false;

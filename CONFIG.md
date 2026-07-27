@@ -11,9 +11,7 @@ mode: auto
 local:
   socks5:
     listen: "127.0.0.1:1080"
-  dns:
-    enabled: true
-    listen: "127.0.0.1:5353"
+  dns: null
   http_connect:
     enabled: false
     listen: "127.0.0.1:18080"
@@ -77,6 +75,21 @@ advanced:
 Client local listeners must stay on loopback addresses by default. Setting a
 SOCKS5, DNS, or HTTP CONNECT listener to `0.0.0.0` or a LAN address is rejected
 unless `advanced.allow_non_loopback_listeners: true` is set explicitly.
+
+`local.dns` is an optional UDP DNS relay. Firefox using a SOCKS5 proxy with
+**Proxy DNS when using SOCKS v5** enabled sends hostname lookups through SOCKS
+and does not need this separate UDP listener. Generated and example configs
+therefore use `local.dns: null`.
+
+Software that specifically needs a local UDP DNS port can opt in with an unused
+loopback port:
+
+```yaml
+local:
+  dns:
+    enabled: true
+    listen: "127.0.0.1:15353"
+```
 
 `log.redact` is a safety gate in this prototype. It must remain `true`;
 `log.redact: false` is rejected instead of acting like a supported unsafe mode.
@@ -216,6 +229,12 @@ coverage alone does not prove that a real provider configuration accepts
 sustained bidirectional H2. The first owner pilot exercised the path through a
 real provider and network; `STATUS.md` records the bounded success and open
 usability failures.
+
+The H2 carrier uses gRPC message envelopes for Maverick frames. A complete
+response ends with a `grpc-status: 0` trailer; a reset, incomplete message, or
+transport failure must not be presented as a successful gRPC response. The
+client drains and validates that trailer while remaining compatible with
+Alpha.3 servers that ended terminal DATA without trailers.
 
 ## Fallback
 
@@ -403,7 +422,35 @@ metrics:
   listen: "127.0.0.1:19090"
 ```
 
-The endpoint is `GET /metrics` and returns aggregate JSON counters only.
+The endpoint is `GET /metrics` and returns process-lifetime aggregate JSON
+counters only. Target-opening diagnostics include:
+
+- `target_resolution_timeouts`: hostname resolution exceeded
+  `advanced.tcp_connect_timeout_ms`;
+- `target_resolution_failures`: hostname resolution returned an error, excluding
+  timeouts and egress-policy rejection;
+- `target_connect_timeouts`: resolution succeeded, but the target TCP connection
+  exceeded `advanced.tcp_connect_timeout_ms`; and
+- `target_connect_failures`: resolution succeeded, but the target TCP connection
+  returned an error before the timeout.
+
+These resolution counters cover hostnames carried by ordinary SOCKS5 TCP flows.
+They are separate from the optional UDP DNS relay's existing `dns_queries`
+counter. An address rejected by the server egress policy is intentionally not
+counted as either a DNS or target-connect failure.
+
+Metrics have a fixed, unlabeled numeric schema. They do not contain domains, IP
+addresses, ports, URLs, flow identifiers, user identifiers, credentials,
+browsing content, error strings, or per-event timestamps. The metrics listener
+is disabled unless configured and must remain loopback-only; Maverick does not
+upload or persist these counters.
+
+On a controlled client shutdown, Maverick also logs one fixed aggregate H2 pool
+summary containing only the existing integer and boolean connection-pool
+snapshot fields. It never includes the server address, a destination, a
+credential, an error string, browsing content, or any user-provided string.
+The process-lifetime connection and stream counts are still activity-volume
+metadata and should be handled accordingly.
 
 ## Certificate Pinning
 

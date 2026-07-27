@@ -273,18 +273,18 @@ logs do not separate target DNS failure, target connection failure, H2 stream
 wait, reset, or graceful close. The field evidence therefore cannot choose
 among those hypotheses.
 
-## Unpublished Alpha.4 Reliability Candidate
+## Alpha.4 Reliability Prerelease
 
-The current local branch is an unpublished Alpha.4 candidate. It remains Alpha
-and is not Beta, Stable, mature, production-ready, or provider-independent.
+The published GitHub prerelease is `v1.2.0-alpha.4`. It remains Alpha and is
+not Beta, Stable, mature, production-ready, or provider-independent.
 
-The confirmed default-install defect is fixed locally: newly generated and
+The release fixes the confirmed default-install defect: newly generated and
 example client configurations no longer enable the optional UDP DNS listener,
 and SOCKS5, DNS, and HTTP CONNECT bind failures name the responsible setting.
 Existing version-1 configurations that explicitly enable the DNS relay remain
 accepted; the configuration and wire-protocol versions remain `1`.
 
-The candidate adds four fixed, aggregate server counters for target-resolution
+The release adds four fixed, aggregate server counters for target-resolution
 timeout, target-resolution failure, target-connect timeout, and target-connect
 failure. Egress-policy rejection is not mislabeled as one of those failures.
 The counters contain no domain, address, URL, credential, browsing content,
@@ -293,9 +293,9 @@ shutdown also reports the existing aggregate H2 connection-pool numbers and
 booleans; those counts are activity-volume metadata even though they contain no
 destination or user-provided string.
 
-Local review also confirmed that the H2 carrier declared `application/grpc`
+Release review also confirmed that the H2 carrier declared `application/grpc`
 without completing successful responses with the required `grpc-status`
-trailer. The candidate now sends `grpc-status: 0` only after a complete
+trailer. Alpha.4 sends `grpc-status: 0` only after a complete
 Maverick response, while reset, incomplete-message, I/O, stall, and other
 incomplete transport paths remain failures. The production client drains and
 validates successful trailers, accepts the older Alpha.3 terminal-DATA behavior
@@ -305,11 +305,17 @@ other free-form trailer text into its error.
 
 The repository-local user smoke and complete local harness pass, including
 formatting, strict linting, workspace tests, H2 completion/reset integration
-tests, generated-config checks, rustls compatibility, and product smoke. These
-results prove only the local fixes and diagnostic behavior. They have not been
-tested through a new real provider path and do not prove that the major-video,
-slow-image, or lingering-loading symptoms are fixed. A new live run remains a
-separately authorized future action.
+tests, generated-config checks, rustls compatibility, and product smoke. The
+required pull-request gate, CodeQL checks, main-branch CodeQL, and the single
+release workflow also passed. Both public archives were downloaded again and
+passed outer and inner SHA-256 checks, source/version, content, executable-mode,
+and privacy checks. The downloaded Apple Silicon binary passed `version` and
+`user-smoke` locally.
+
+These results prove only the release integrity, local fixes, and diagnostic
+behavior. Alpha.4 has not been tested through a new real provider path and does
+not prove that the major-video, slow-image, or lingering-loading symptoms are
+fixed. A new live run remains a separately authorized future action.
 
 ## Authorization Boundary
 
@@ -369,7 +375,7 @@ identities, unrelated DNS records observed immediately around cleanup, and
 zone-wide SSL mode were unchanged by cleanup. The short-lived origin
 certificate may expire naturally.
 
-The next legal actions are continued privacy-safe local review and preparation
-of the unpublished Alpha.4 candidate. Any commit, publication, live-field run,
-remote resource, provider change, spending, or native-ECH implementation
-requires a new owner decision.
+The separately authorized Alpha.4 repository publication is complete. The owner
+has authorized continued privacy-safe repository-local development. Any new
+live-field run, remote resource, provider change, spending, production/Beta
+claim, or native-ECH implementation requires a new owner decision.

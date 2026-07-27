@@ -88,7 +88,7 @@ censorship resistance, production readiness, or browser identity.
 
 ## Current Product Truth
 
-- Workspace version: `1.2.0-alpha.4`.
+- Workspace version: `1.2.0-alpha.5` (unpublished local candidate).
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
 - Rust product core and loopback relay path: implemented.
@@ -316,6 +316,42 @@ These results prove only the release integrity, local fixes, and diagnostic
 behavior. Alpha.4 has not been tested through a new real provider path and does
 not prove that the major-video, slow-image, or lingering-loading symptoms are
 fixed. A new live run remains a separately authorized future action.
+
+## Alpha.5 Local Reliability Candidate
+
+The workspace contains an unpublished `1.2.0-alpha.5` local candidate. It is
+not a GitHub release and has not used a new pull request or CI run.
+
+Source inspection confirmed that the server previously passed every resolved
+target address to Tokio's slice-form TCP connect operation. Tokio 1.52.3 tries
+that slice strictly in order, so a slow first address can consume the entire
+target-connect deadline before an address from the other IP family is tried.
+This is a confirmed limitation in Maverick's former connection path, but the
+existing field evidence does not prove that it caused the observed video,
+slow-image, or lingering-loading symptoms.
+
+For targets that resolve to both IPv4 and IPv6, the candidate now starts the
+first resolver-selected address immediately and may start the other address
+family after a fixed 250-millisecond delay. A fast failure starts the next
+candidate immediately. At most two attempts are active, all attempts share the
+existing request-level connection deadline, the first success cancels unfinished
+attempts, and the server's egress policy still filters every address before any
+connection is attempted. Single-address and same-family results keep their
+previous sequential order. Request-level target failure metrics remain counted
+once rather than once per address attempt.
+
+Regression tests cover delayed alternate-family startup, immediate replacement
+after a quick failure, the two-attempt ceiling, winner and deadline
+cancellation, resolver-order error behavior, same-family sequencing,
+egress-before-connect ordering, and request-level metric classification. The
+repository user smoke, complete local harness, formatting, strict linting, and
+workspace tests pass. An independent read-only review reported no P0, P1, P2,
+or P3 finding.
+
+This proves only the local implementation and regression behavior. It does not
+show that any field symptom is fixed, does not justify Beta or Stable, and does
+not authorize publication, CI use, a provider deployment, or another owner
+retest.
 
 ## Authorization Boundary
 

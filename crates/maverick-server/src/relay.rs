@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use bytes::{Bytes, BytesMut};
-use futures::future::poll_fn;
+use futures::{future::poll_fn, stream::FuturesUnordered, StreamExt};
 use http::{HeaderMap, HeaderValue};
 use maverick_core::config::ServerEgressPolicyConfig;
 use maverick_core::frame::{ErrorCode, Frame, FrameType, OpenTcpPayload, UdpPacketPayload};
@@ -18,6 +18,8 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 use tokio::time::{sleep_until, timeout, Duration, Instant};
+
+const TARGET_CONNECT_RACE_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -220,7 +222,7 @@ async fn open_target_inner(
         }
     };
     match connect_with_timeout(
-        TcpStream::connect(addrs.as_slice()),
+        connect_target_addresses(addrs, TARGET_CONNECT_RACE_DELAY, TcpStream::connect),
         Duration::from_millis(timeout_ms),
     )
     .await
@@ -700,6 +702,111 @@ where
     Ok(allowed)
 }
 
+#[derive(Clone, Copy)]
+struct ConnectCandidate {
+    addr: SocketAddr,
+    original_index: usize,
+}
+
+async fn connect_target_addresses<T, C, F>(
+    addrs: Vec<SocketAddr>,
+    race_delay: Duration,
+    mut connect: C,
+) -> io::Result<T>
+where
+    C: FnMut(SocketAddr) -> F,
+    F: Future<Output = io::Result<T>>,
+{
+    if addrs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "target address set is empty",
+        ));
+    }
+
+    let has_ipv4 = addrs.iter().any(SocketAddr::is_ipv4);
+    let has_ipv6 = addrs.iter().any(SocketAddr::is_ipv6);
+    if !(has_ipv4 && has_ipv6) {
+        let mut last_error = None;
+        for addr in addrs {
+            match connect(addr).await {
+                Ok(connected) => return Ok(connected),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        return Err(last_error.expect("non-empty target address set must produce an error"));
+    }
+
+    let first_is_ipv4 = addrs[0].is_ipv4();
+    let mut first_family = VecDeque::new();
+    let mut other_family = VecDeque::new();
+    for (original_index, addr) in addrs.iter().copied().enumerate() {
+        let candidate = ConnectCandidate {
+            addr,
+            original_index,
+        };
+        if addr.is_ipv4() == first_is_ipv4 {
+            first_family.push_back(candidate);
+        } else {
+            other_family.push_back(candidate);
+        }
+    }
+
+    let mut pending_candidates = VecDeque::with_capacity(addrs.len());
+    while !first_family.is_empty() || !other_family.is_empty() {
+        if let Some(candidate) = first_family.pop_front() {
+            pending_candidates.push_back(candidate);
+        }
+        if let Some(candidate) = other_family.pop_front() {
+            pending_candidates.push_back(candidate);
+        }
+    }
+
+    let mut errors = (0..addrs.len())
+        .map(|_| None)
+        .collect::<Vec<Option<io::Error>>>();
+    let mut make_attempt = |candidate: ConnectCandidate| {
+        let connected = connect(candidate.addr);
+        async move { (candidate.original_index, connected.await) }
+    };
+    let mut in_flight = FuturesUnordered::new();
+    let first = pending_candidates
+        .pop_front()
+        .expect("mixed-family target address set must be non-empty");
+    in_flight.push(make_attempt(first));
+
+    loop {
+        let completed = if !pending_candidates.is_empty() && in_flight.len() < 2 {
+            tokio::select! {
+                completed = in_flight.next() => completed,
+                _ = tokio::time::sleep(race_delay) => None,
+            }
+        } else {
+            in_flight.next().await
+        };
+
+        if let Some((original_index, result)) = completed {
+            match result {
+                Ok(connected) => return Ok(connected),
+                Err(error) => errors[original_index] = Some(error),
+            }
+            if let Some(candidate) = pending_candidates.pop_front() {
+                in_flight.push(make_attempt(candidate));
+            }
+        } else if let Some(candidate) = pending_candidates.pop_front() {
+            in_flight.push(make_attempt(candidate));
+        }
+
+        if in_flight.is_empty() && pending_candidates.is_empty() {
+            return Err(errors
+                .into_iter()
+                .last()
+                .flatten()
+                .expect("all target connection attempts must have an error"));
+        }
+    }
+}
+
 async fn connect_with_timeout<T, F>(
     connected: F,
     timeout_duration: Duration,
@@ -722,12 +829,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_with_timeout, relay_dns_query, relay_target_and_tunnel, relay_udp_packet,
-        resolve_allowed_addresses, send_frame, write_all_with_idle_timeout, RateLimiter,
-        TargetOpenFailureKind, TargetOpenMetricSinks, TunnelRelayPolicy,
+        connect_target_addresses, connect_with_timeout, relay_dns_query, relay_target_and_tunnel,
+        relay_udp_packet, resolve_allowed_addresses, send_frame, write_all_with_idle_timeout,
+        RateLimiter, TargetOpenFailureKind, TargetOpenMetricSinks, TunnelRelayPolicy,
+        TARGET_CONNECT_RACE_DELAY,
     };
     use anyhow::Result;
     use bytes::{Bytes, BytesMut};
+    use futures::poll;
     use maverick_core::config::ServerEgressPolicyConfig;
     use maverick_core::frame::{Frame, FrameType, TargetAddr, UdpPacketPayload};
     use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
@@ -735,11 +844,11 @@ mod tests {
     use std::future::{pending, ready};
     use std::io;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{advance, timeout, Duration};
 
     async fn assert_grpc_ok_trailers(body: &mut h2::RecvStream) -> Result<()> {
         let trailers = body
@@ -784,6 +893,14 @@ mod tests {
         ServerEgressPolicyConfig {
             allow_loopback: true,
             ..ServerEgressPolicyConfig::default()
+        }
+    }
+
+    struct DropCounter(Arc<AtomicUsize>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -850,6 +967,308 @@ mod tests {
         let metrics = target_metric_sinks();
         metrics.record(failure.kind);
         assert_eq!(target_metric_values(&metrics), [0, 0, 0, 1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dual_stack_connect_starts_other_family_after_race_delay() {
+        let first: SocketAddr = "[::1]:41001".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:41002".parse().unwrap();
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let recorded_attempts = Arc::clone(&attempts);
+        let mut connected = Box::pin(connect_target_addresses(
+            vec![first, second],
+            TARGET_CONNECT_RACE_DELAY,
+            move |addr| {
+                let attempts = Arc::clone(&recorded_attempts);
+                async move {
+                    attempts.lock().unwrap().push(addr);
+                    if addr == first {
+                        pending::<io::Result<SocketAddr>>().await
+                    } else {
+                        Ok(addr)
+                    }
+                }
+            },
+        ));
+
+        assert!(poll!(connected.as_mut()).is_pending());
+        assert_eq!(*attempts.lock().unwrap(), vec![first]);
+
+        advance(TARGET_CONNECT_RACE_DELAY - Duration::from_millis(1)).await;
+        assert!(poll!(connected.as_mut()).is_pending());
+        assert_eq!(*attempts.lock().unwrap(), vec![first]);
+
+        advance(Duration::from_millis(1)).await;
+        assert_eq!(connected.await.unwrap(), second);
+        assert_eq!(*attempts.lock().unwrap(), vec![first, second]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn same_family_connects_remain_sequential() {
+        let first: SocketAddr = "127.0.0.1:41003".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:41004".parse().unwrap();
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let recorded_attempts = Arc::clone(&attempts);
+        let mut connected = Box::pin(connect_target_addresses(
+            vec![first, second],
+            TARGET_CONNECT_RACE_DELAY,
+            move |addr| {
+                let attempts = Arc::clone(&recorded_attempts);
+                async move {
+                    attempts.lock().unwrap().push(addr);
+                    if addr == first {
+                        pending::<io::Result<SocketAddr>>().await
+                    } else {
+                        Ok(addr)
+                    }
+                }
+            },
+        ));
+
+        assert!(poll!(connected.as_mut()).is_pending());
+        advance(TARGET_CONNECT_RACE_DELAY * 4).await;
+        assert!(poll!(connected.as_mut()).is_pending());
+        assert_eq!(*attempts.lock().unwrap(), vec![first]);
+    }
+
+    #[tokio::test]
+    async fn same_family_failures_preserve_resolver_order_and_last_error() {
+        let first: SocketAddr = "127.0.0.1:41023".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:41024".parse().unwrap();
+        let last: SocketAddr = "127.0.0.1:41025".parse().unwrap();
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let recorded_attempts = Arc::clone(&attempts);
+
+        let error = connect_target_addresses(
+            vec![first, second, last],
+            TARGET_CONNECT_RACE_DELAY,
+            move |addr| {
+                let attempts = Arc::clone(&recorded_attempts);
+                async move {
+                    attempts.lock().unwrap().push(addr);
+                    Err::<SocketAddr, _>(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        format!("synthetic failure for {}", addr.port()),
+                    ))
+                }
+            },
+        )
+        .await
+        .expect_err("all failed same-family connections must fail");
+
+        assert_eq!(*attempts.lock().unwrap(), vec![first, second, last]);
+        assert_eq!(
+            error.to_string(),
+            format!("synthetic failure for {}", last.port())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_preferred_family_starts_alternate_immediately() {
+        let first: SocketAddr = "[::1]:41005".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:41006".parse().unwrap();
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let recorded_attempts = Arc::clone(&attempts);
+
+        let connected = connect_target_addresses(
+            vec![first, second],
+            TARGET_CONNECT_RACE_DELAY,
+            move |addr| {
+                let attempts = Arc::clone(&recorded_attempts);
+                async move {
+                    attempts.lock().unwrap().push(addr);
+                    if addr == first {
+                        Err(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            "synthetic preferred-family failure",
+                        ))
+                    } else {
+                        Ok(addr)
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(connected, second);
+        assert_eq!(*attempts.lock().unwrap(), vec![first, second]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dual_stack_connect_never_starts_more_than_two_attempts() {
+        let first: SocketAddr = "[::1]:41007".parse().unwrap();
+        let second_first_family: SocketAddr = "[::1]:41008".parse().unwrap();
+        let first_other_family: SocketAddr = "127.0.0.1:41009".parse().unwrap();
+        let second_other_family: SocketAddr = "127.0.0.1:41010".parse().unwrap();
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let recorded_attempts = Arc::clone(&attempts);
+        let mut connected = Box::pin(connect_target_addresses(
+            vec![
+                first,
+                second_first_family,
+                first_other_family,
+                second_other_family,
+            ],
+            TARGET_CONNECT_RACE_DELAY,
+            move |addr| {
+                let attempts = Arc::clone(&recorded_attempts);
+                async move {
+                    attempts.lock().unwrap().push(addr);
+                    pending::<io::Result<SocketAddr>>().await
+                }
+            },
+        ));
+
+        assert!(poll!(connected.as_mut()).is_pending());
+        advance(TARGET_CONNECT_RACE_DELAY).await;
+        assert!(poll!(connected.as_mut()).is_pending());
+        assert_eq!(*attempts.lock().unwrap(), vec![first, first_other_family]);
+
+        advance(TARGET_CONNECT_RACE_DELAY * 10).await;
+        assert!(poll!(connected.as_mut()).is_pending());
+        assert_eq!(attempts.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dual_stack_winner_cancels_pending_attempt() {
+        let first: SocketAddr = "[::1]:41011".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:41012".parse().unwrap();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let dropped_attempts = Arc::clone(&dropped);
+        let mut connected = Box::pin(connect_target_addresses(
+            vec![first, second],
+            TARGET_CONNECT_RACE_DELAY,
+            move |addr| {
+                let dropped = Arc::clone(&dropped_attempts);
+                async move {
+                    if addr == first {
+                        let _drop_counter = DropCounter(dropped);
+                        pending::<io::Result<SocketAddr>>().await
+                    } else {
+                        Ok(addr)
+                    }
+                }
+            },
+        ));
+
+        assert!(poll!(connected.as_mut()).is_pending());
+        advance(TARGET_CONNECT_RACE_DELAY).await;
+        assert_eq!(connected.await.unwrap(), second);
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn dual_stack_all_failures_return_last_resolver_error() {
+        let first: SocketAddr = "[::1]:41013".parse().unwrap();
+        let second_first_family: SocketAddr = "[::1]:41014".parse().unwrap();
+        let last_in_resolver_order: SocketAddr = "127.0.0.1:41015".parse().unwrap();
+
+        let error = connect_target_addresses(
+            vec![first, second_first_family, last_in_resolver_order],
+            TARGET_CONNECT_RACE_DELAY,
+            |addr| async move {
+                Err::<SocketAddr, _>(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    format!("synthetic failure for {}", addr.port()),
+                ))
+            },
+        )
+        .await
+        .expect_err("all failed target connections must fail");
+
+        assert_eq!(
+            error.to_string(),
+            format!("synthetic failure for {}", last_in_resolver_order.port())
+        );
+    }
+
+    #[tokio::test]
+    async fn dual_stack_all_failures_record_one_request_level_failure() {
+        let first: SocketAddr = "[::1]:41016".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:41017".parse().unwrap();
+        let failure = connect_with_timeout(
+            connect_target_addresses(vec![first, second], TARGET_CONNECT_RACE_DELAY, |_| {
+                ready(Err::<SocketAddr, _>(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "synthetic target connection failure",
+                )))
+            }),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("failed target connections must fail");
+        assert_eq!(failure.kind, TargetOpenFailureKind::ConnectFailure);
+
+        let metrics = target_metric_sinks();
+        metrics.record(failure.kind);
+        assert_eq!(target_metric_values(&metrics), [0, 0, 0, 1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dual_stack_deadline_records_one_request_level_timeout() {
+        let first: SocketAddr = "[::1]:41018".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:41019".parse().unwrap();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let dropped_attempts = Arc::clone(&dropped);
+        let failure = connect_with_timeout(
+            connect_target_addresses(vec![first, second], TARGET_CONNECT_RACE_DELAY, move |_| {
+                let dropped = Arc::clone(&dropped_attempts);
+                async move {
+                    let _drop_counter = DropCounter(dropped);
+                    pending::<io::Result<SocketAddr>>().await
+                }
+            }),
+            TARGET_CONNECT_RACE_DELAY + Duration::from_millis(1),
+        )
+        .await
+        .expect_err("pending target connections must time out");
+        assert_eq!(failure.kind, TargetOpenFailureKind::ConnectTimeout);
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
+
+        let metrics = target_metric_sinks();
+        metrics.record(failure.kind);
+        assert_eq!(target_metric_values(&metrics), [0, 0, 1, 0]);
+    }
+
+    #[tokio::test]
+    async fn egress_filter_runs_before_dual_stack_connect_attempts() {
+        let blocked: SocketAddr = "10.0.0.1:41020".parse().unwrap();
+        let first_allowed: SocketAddr = "[::1]:41021".parse().unwrap();
+        let second_allowed: SocketAddr = "127.0.0.1:41022".parse().unwrap();
+        let allowed = resolve_allowed_addresses(
+            ready(Ok(vec![blocked, first_allowed, second_allowed])),
+            Duration::from_secs(1),
+            &loopback_egress_policy(),
+        )
+        .await
+        .expect("loopback targets should remain allowed");
+        assert_eq!(allowed, vec![first_allowed, second_allowed]);
+
+        let attempts = Arc::new(StdMutex::new(Vec::new()));
+        let recorded_attempts = Arc::clone(&attempts);
+        let connected = connect_target_addresses(allowed, TARGET_CONNECT_RACE_DELAY, move |addr| {
+            let attempts = Arc::clone(&recorded_attempts);
+            async move {
+                attempts.lock().unwrap().push(addr);
+                if addr == first_allowed {
+                    Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        "synthetic first-family failure",
+                    ))
+                } else {
+                    Ok(addr)
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(connected, second_allowed);
+        assert_eq!(
+            *attempts.lock().unwrap(),
+            vec![first_allowed, second_allowed]
+        );
     }
 
     #[tokio::test]

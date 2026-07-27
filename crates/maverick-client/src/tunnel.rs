@@ -206,6 +206,34 @@ impl ClientTunnel {
             Self::H3(tunnel) => read_next_h3_frame(tunnel).await,
         }
     }
+
+    pub(crate) async fn finish_response(&mut self) -> Result<()> {
+        self.finish_response_with_legacy_udp_reset(false).await
+    }
+
+    pub(crate) async fn finish_response_after_explicit_udp_close(&mut self) -> Result<()> {
+        self.finish_response_with_legacy_udp_reset(true).await
+    }
+
+    async fn finish_response_with_legacy_udp_reset(
+        &mut self,
+        allow_legacy_udp_reset: bool,
+    ) -> Result<()> {
+        match self {
+            Self::H2(tunnel) => {
+                let finish_timeout = tunnel.send_stall_timeout;
+                timeout(
+                    finish_timeout,
+                    finish_h2_response(tunnel, allow_legacy_udp_reset),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("gRPC response completion timed out"))?
+            }
+            Self::CloudflareWs(_) => Ok(()),
+            #[cfg(feature = "h3")]
+            Self::H3(_) => Ok(()),
+        }
+    }
 }
 
 pub async fn open(config: &ClientConfig) -> Result<ClientTunnel> {
@@ -265,6 +293,15 @@ async fn open_h2(
     let server_frame = read_next_h2_frame(&mut tunnel)
         .await?
         .context("missing ServerHello")?;
+    if server_frame.frame_type == FrameType::Error {
+        timeout(
+            handshake_stall_timeout,
+            finish_h2_response(&mut tunnel, false),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("gRPC handshake response completion timed out"))??;
+        bail!("server rejected handshake");
+    }
     if server_frame.frame_type != FrameType::ServerHello {
         bail!("missing ServerHello");
     }
@@ -630,6 +667,66 @@ async fn read_next_h2_frame(tunnel: &mut H2ClientTunnel) -> Result<Option<Frame>
     }
 }
 
+async fn finish_h2_response(
+    tunnel: &mut H2ClientTunnel,
+    allow_legacy_udp_reset: bool,
+) -> Result<()> {
+    loop {
+        while let Some(frame) = decode_grpc_frame_from(&mut tunnel.recv_buf, tunnel.max_frame_size)?
+        {
+            if frame.frame_type != FrameType::Padding {
+                bail!("gRPC response contained data after terminal frame");
+            }
+        }
+        match tunnel.recv_stream.data().await {
+            Some(Ok(bytes)) => {
+                let consumed = bytes.len();
+                tunnel
+                    .recv_stream
+                    .flow_control()
+                    .release_capacity(consumed)
+                    .map_err(|_| anyhow::anyhow!("gRPC response flow control failed"))?;
+                tunnel.recv_buf.extend_from_slice(&bytes);
+            }
+            Some(Err(err))
+                if allow_legacy_udp_reset
+                    && err.is_reset()
+                    && err.is_remote()
+                    && tunnel.recv_buf.is_empty() =>
+            {
+                // Alpha.3 dropped its persistent UDP response after receiving
+                // an explicit CloseFlow. Limit that compatibility exception to
+                // this caller-selected close path.
+                return Ok(());
+            }
+            Some(Err(_)) => bail!("gRPC response body failed"),
+            None => break,
+        }
+    }
+
+    if !tunnel.recv_buf.is_empty() {
+        bail!("gRPC response ended with incomplete data");
+    }
+
+    let Some(trailers) = tunnel
+        .recv_stream
+        .trailers()
+        .await
+        .map_err(|_| anyhow::anyhow!("gRPC response trailers failed"))?
+    else {
+        // Alpha.3 ended a complete response with DATA END_STREAM and did not
+        // send gRPC trailers. Keep that wire behavior compatible.
+        return Ok(());
+    };
+
+    let mut statuses = trailers.get_all("grpc-status").iter();
+    match (statuses.next(), statuses.next()) {
+        (Some(status), None) if status.as_bytes() == b"0" => Ok(()),
+        (None, _) => bail!("gRPC response trailers missing status"),
+        _ => bail!("gRPC response status was not successful"),
+    }
+}
+
 async fn read_next_ws_frame(tunnel: &mut WsClientTunnel) -> Result<Option<Frame>> {
     loop {
         if let Some(frame) = Frame::decode_from(&mut tunnel.recv_buf, tunnel.max_frame_size)? {
@@ -666,6 +763,7 @@ fn validate_negotiated_max_frame_size(value: u32) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::{HeaderMap, HeaderValue};
     use maverick_core::auth::{ServerHello, ServerHelloV2};
     use maverick_core::config::{
         AuthV2Config, ClientAdvancedConfig, ClientAuthConfig, ClientCredentialRotationConfig,
@@ -696,6 +794,103 @@ mod tests {
             log: LogConfig::default(),
             advanced: ClientAdvancedConfig::default(),
         }
+    }
+
+    async fn test_h2_tunnel(
+        terminal_frame: Frame,
+        trailing_padding: bool,
+        end_with_data: bool,
+        trailers: Option<HeaderMap>,
+        trailer_gate: Option<tokio::sync::oneshot::Receiver<()>>,
+    ) -> Result<(
+        ClientTunnel,
+        tokio::task::JoinHandle<Result<()>>,
+        tokio::task::JoinHandle<Result<()>>,
+    )> {
+        let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+        let server = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(server_io).await?;
+            let (request, mut respond) = connection
+                .accept()
+                .await
+                .context("client closed before sending a request")??;
+            let held_request_body = request.into_body();
+            let driver = tokio::spawn(async move {
+                while let Some(request) = connection.accept().await {
+                    request?;
+                }
+                Result::<()>::Ok(())
+            });
+
+            let response = http::Response::builder()
+                .header("content-type", "application/grpc")
+                .body(())?;
+            let mut response_body = respond.send_response(response, false)?;
+            response_body.send_data(
+                encode_grpc_frame(terminal_frame, DEFAULT_MAX_FRAME_SIZE)?,
+                end_with_data,
+            )?;
+            if trailing_padding {
+                response_body.send_data(
+                    encode_grpc_frame(
+                        Frame::new(FrameType::Padding, 0, 0, Bytes::from_static(b"pad")),
+                        DEFAULT_MAX_FRAME_SIZE,
+                    )?,
+                    false,
+                )?;
+            }
+            if let Some(gate) = trailer_gate {
+                let _ = gate.await;
+            }
+            if let Some(trailers) = trailers {
+                response_body.send_trailers(trailers)?;
+            }
+
+            drop(response_body);
+            drop(held_request_body);
+            driver.await??;
+            Ok(())
+        });
+
+        let (mut sender, connection) = h2::client::handshake(client_io).await?;
+        let client = tokio::spawn(async move {
+            connection.await?;
+            Result::<()>::Ok(())
+        });
+        sender = sender.ready().await?;
+        let request = http::Request::builder().method("POST").uri("/").body(())?;
+        let (response, send_stream) = sender.send_request(request, false)?;
+        let recv_stream = response.await?.into_body();
+        drop(sender);
+
+        let config = client_config(SecretString::generate());
+        let tunnel = ClientTunnel::H2(Box::new(H2ClientTunnel {
+            send_stream,
+            recv_stream,
+            recv_buf: BytesMut::new(),
+            max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+            padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
+            cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
+            batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
+            send_stall_timeout: Duration::from_secs(1),
+            _connection_lease: None,
+        }));
+        Ok((tunnel, server, client))
+    }
+
+    async fn finish_test_h2_tasks(
+        tunnel: ClientTunnel,
+        server: tokio::task::JoinHandle<Result<()>>,
+        client: tokio::task::JoinHandle<Result<()>>,
+    ) -> Result<()> {
+        drop(tunnel);
+        timeout(Duration::from_secs(1), server)
+            .await
+            .context("test H2 server did not stop")???;
+        timeout(Duration::from_secs(1), client)
+            .await
+            .context("test H2 client did not stop")???;
+        Ok(())
     }
 
     #[test]
@@ -776,6 +971,117 @@ mod tests {
         let _ = server.await;
         let _ = client.await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn h2_finish_drains_padding_and_waits_for_delayed_ok_trailer() -> Result<()> {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("grpc-status", HeaderValue::from_static("0"));
+        let (release_trailer, wait_for_release) = tokio::sync::oneshot::channel();
+        let (mut tunnel, server, client) = test_h2_tunnel(
+            Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()),
+            true,
+            false,
+            Some(trailers),
+            Some(wait_for_release),
+        )
+        .await?;
+
+        let frame = timeout(Duration::from_secs(1), tunnel.read_next_frame())
+            .await
+            .context("terminal DATA did not arrive before the trailer")??
+            .context("terminal DATA was missing")?;
+        assert_eq!(frame.frame_type, FrameType::TcpFin);
+        release_trailer
+            .send(())
+            .expect("test trailer receiver dropped");
+        tunnel.finish_response().await?;
+
+        finish_test_h2_tasks(tunnel, server, client).await
+    }
+
+    #[tokio::test]
+    async fn h2_finish_accepts_alpha3_data_end_stream_without_trailer() -> Result<()> {
+        let (mut tunnel, server, client) = test_h2_tunnel(
+            Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()),
+            false,
+            true,
+            None,
+            None,
+        )
+        .await?;
+
+        let frame = tunnel
+            .read_next_frame()
+            .await?
+            .context("terminal DATA was missing")?;
+        assert_eq!(frame.frame_type, FrameType::TcpFin);
+        tunnel.finish_response().await?;
+
+        finish_test_h2_tasks(tunnel, server, client).await
+    }
+
+    #[tokio::test]
+    async fn h2_finish_rejects_nonzero_grpc_status_without_echoing_it() -> Result<()> {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("grpc-status", HeaderValue::from_static("7"));
+        trailers.insert(
+            "grpc-message",
+            HeaderValue::from_static("private upstream detail"),
+        );
+        let (mut tunnel, server, client) = test_h2_tunnel(
+            Frame::new(FrameType::Error, 0, 1, Bytes::new()),
+            false,
+            false,
+            Some(trailers),
+            None,
+        )
+        .await?;
+
+        let frame = tunnel
+            .read_next_frame()
+            .await?
+            .context("terminal DATA was missing")?;
+        assert_eq!(frame.frame_type, FrameType::Error);
+        let error = tunnel
+            .finish_response()
+            .await
+            .expect_err("nonzero grpc-status must fail");
+        assert_eq!(error.to_string(), "gRPC response status was not successful");
+        assert!(!error.to_string().contains("private upstream detail"));
+
+        finish_test_h2_tasks(tunnel, server, client).await
+    }
+
+    #[tokio::test]
+    async fn h2_finish_rejects_trailers_without_grpc_status() -> Result<()> {
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            "grpc-message",
+            HeaderValue::from_static("private upstream detail"),
+        );
+        let (mut tunnel, server, client) = test_h2_tunnel(
+            Frame::new(FrameType::Error, 0, 1, Bytes::new()),
+            false,
+            false,
+            Some(trailers),
+            None,
+        )
+        .await?;
+
+        let frame = tunnel
+            .read_next_frame()
+            .await?
+            .context("terminal DATA was missing")?;
+        assert_eq!(frame.frame_type, FrameType::Error);
+        let error = tunnel
+            .finish_response()
+            .await
+            .expect_err("missing grpc-status must fail");
+        assert_eq!(error.to_string(), "gRPC response trailers missing status");
+        assert!(!error.to_string().contains("private upstream detail"));
+
+        finish_test_h2_tasks(tunnel, server, client).await
     }
 
     #[tokio::test]

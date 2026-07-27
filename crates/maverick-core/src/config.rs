@@ -1837,6 +1837,40 @@ server:
     }
 
     #[test]
+    fn parses_v1_client_config_with_optional_dns_relay() {
+        let secret = SecretString::generate();
+        let input = format!(
+            r#"
+version: 1
+mode: auto
+local:
+  socks5:
+    listen: "127.0.0.1:1080"
+  dns:
+    enabled: true
+    listen: "127.0.0.1:15353"
+server:
+  address: "example.com:443"
+  server_name: "example.com"
+  tunnel_path: "/assets/upload"
+  credential_id: "u_abc123"
+  secret: "{}"
+"#,
+            secret.expose_secret()
+        );
+
+        let config = ClientConfig::from_yaml_str(&input).unwrap();
+
+        assert_eq!(config.version, 1);
+        let dns = config.local.dns.expect("optional DNS relay");
+        assert!(dns.enabled);
+        assert_eq!(
+            dns.listen.unwrap(),
+            "127.0.0.1:15353".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
     fn rejects_client_log_redaction_disablement() {
         let secret = SecretString::generate();
         let mut cfg = client_config_with_server(client_server_config("u_abc123", secret));

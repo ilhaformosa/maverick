@@ -56,7 +56,10 @@ impl UdpAssociation {
                     response_timeout: Duration::from_millis(config.advanced.udp_idle_timeout_ms),
                 })
             }
-            Some(frame) if frame.frame_type == FrameType::Error => bail!("UDP open failed"),
+            Some(frame) if frame.frame_type == FrameType::Error => {
+                tunnel.finish_response().await?;
+                bail!("UDP open failed")
+            }
             _ => bail!("server closed before UDP flow opened"),
         }
     }
@@ -73,6 +76,9 @@ impl UdpAssociation {
             loop {
                 match self.tunnel.read_next_frame().await? {
                     Some(frame) => {
+                        if frame.frame_type == FrameType::CloseFlow {
+                            self.tunnel.finish_response().await?;
+                        }
                         if let Some(packet) = udp_response_from_frame(frame, self.flow_id)? {
                             return Ok(packet);
                         }
@@ -91,7 +97,8 @@ impl UdpAssociation {
                 Frame::new(FrameType::CloseFlow, 0, self.flow_id, Bytes::new()),
                 true,
             )
-            .await
+            .await?;
+        self.tunnel.finish_response_after_explicit_udp_close().await
     }
 }
 

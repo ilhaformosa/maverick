@@ -9,22 +9,14 @@ only orders work; it does not restate current completion or audit status.
 
 ## Execution Order
 
-1. **Complete the Beta.1 release closeout.** Prepare `v1.2.0-beta.1` from the
-   reviewed current tree, run the complete local release gates, publish through
-   one pull request with the required CI, tag only the merged commit, create one
-   prerelease, and independently re-download and verify every published
-   artifact and checksum. Keep the historical Alpha.6 release and tag named
-   Alpha.6; do not move, replace, or retrospectively rename them. Beta.1 remains
-   a prerelease and is not Stable, mature, production-ready, or a production
-   deployment authorization.
-2. **Fix only reproduced Beta failures.** After Beta.1, use the smallest local
+1. **Fix only reproduced Beta failures.** After Beta.1, use the smallest local
    reproduction and repair for a failure that a Beta user or an authorized
    field run actually observes. Preserve destination-free diagnostics and the
    existing privacy boundaries. Do not add speculative transports, tuning,
    orchestration, or connection-health machinery merely because Beta has
    started. A product-binary change requires a new reviewed Beta artifact; a
    documentation-only clarification must not pretend to be a product fix.
-3. **Validate the Stable candidate on a fresh origin.** Before any Stable
+2. **Validate the Stable candidate on a fresh origin.** Before any Stable
    decision, obtain separate authorization for one freshly provisioned clean
    temporary origin and repeat artifact verification, from-scratch installation,
    ordinary browsing, and the applicable reliability and compatibility checks
@@ -33,7 +25,7 @@ only orders work; it does not restate current completion or audit status.
    Beta result cannot replace this clean-origin gate, and this roadmap item does
    not itself authorize a server, provider change, spending, network change, or
    Stable claim.
-4. **Track native server-side ECH upstream.** Keep the current provider-fronted
+3. **Track native server-side ECH upstream.** Keep the current provider-fronted
    path labeled as a workaround, not ECH. Do not fork rustls or vendor an
    unmerged ECH patch in the current plan.
 

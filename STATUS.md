@@ -92,10 +92,10 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace and first Beta release-candidate version: `1.2.0-beta.1`.
-- Last independently reverified public artifact as of this candidate:
-  `v1.2.0-alpha.6`. Beta.1 publication and public-asset verification must be
-  recorded only after they occur.
+- Workspace and current published Beta prerelease version: `1.2.0-beta.1`.
+- Last independently reverified public artifact: `v1.2.0-beta.1`. The
+  historical `v1.2.0-alpha.6` release remains Alpha and was not moved,
+  replaced, or retroactively renamed.
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
 - Rust product core and loopback relay path: implemented.
@@ -578,13 +578,14 @@ does not justify Stable, mature, production-ready, anonymity, broad
 censorship-resistance, exact browser-equivalence, or provider-independent
 claims.
 
-## Beta.1 Release Candidate
+## Beta.1 Release
 
-The workspace is prepared as `v1.2.0-beta.1`, the first Beta prerelease
-candidate. Its Rust protocol and config behavior are unchanged from the
-field-tested Alpha.6 build; protocol and config versions remain `1`. The
-candidate combines the Beta-stage documentation and version transition with
-the reviewed test-host persistence correction described below.
+The published GitHub prerelease is `v1.2.0-beta.1`, the first Beta prerelease.
+It is neither a draft nor the repository's Latest release. Its Rust protocol
+and config behavior are unchanged from the field-tested Alpha.6 build; protocol
+and config versions remain `1`. The release combines the Beta-stage
+documentation and version transition with the reviewed test-host persistence
+correction described below.
 
 The host gate now persists the already approved active `fq` or `fq_codel`
 selection through a native `systemd-networkd` drop-in. It validates the
@@ -597,10 +598,20 @@ The scheduled parser-fuzz workflow no longer calls an archived script. It
 checks both current fuzz binaries and runs the `frame_decode` and `auth_decode`
 targets for 256 bounded iterations each with a pinned nightly compiler. The same
 bounded run passes locally. The GitHub parser-fuzz, product, CodeQL, and
-supply-chain checks must pass on the final reviewed pull-request head before
-the Beta.1 tag is created.
+supply-chain checks passed on the final reviewed pull-request head. The merged
+tree then passed the main-branch product and CodeQL checks.
 
-This candidate is still experimental prerelease software. It does not authorize
+The annotated `v1.2.0-beta.1` tag resolves to the reviewed merge commit. The
+single release workflow re-ran the complete product gate, built the Apple
+Silicon macOS and x86-64 Linux archives, verified their outer checksums, and
+published exactly those two archives and their two checksum files. All four
+public assets were then downloaded independently. Both checksum layers, exact
+file lists, clean source revision, version, target, executable permissions, and
+binary architectures passed verification. The downloaded Apple Silicon binary
+also passed `version` and `user-smoke`, and the release assets passed the
+private-string scan.
+
+This release is still experimental prerelease software. It does not authorize
 production deployment or support Stable, mature, anonymity, broad
 censorship-resistance, exact browser-equivalence, native-ECH, or
 provider-independent claims.

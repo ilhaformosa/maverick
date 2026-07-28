@@ -139,7 +139,7 @@ and any provider TLS termination.
 Point only the chosen application at Maverick's loopback SOCKS5 listener. Do
 not change system proxy, DNS, routes, firewall, or VPN settings.
 
-This artifact is experimental alpha software, provided without warranty. It is
+This artifact is experimental prerelease software, provided without warranty. It is
 not production-ready, anonymous, censorship-resistant, or browser-identical.
 GUIDE
 

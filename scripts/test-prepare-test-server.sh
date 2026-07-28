@@ -29,12 +29,16 @@ make_fixture() {
     "$root/etc/modules-load.d" \
     "$root/etc/sysctl.d" \
     "$root/etc/modprobe.d" \
+    "$root/etc/systemd/network" \
     "$root/run/sysctl.d" \
     "$root/run/modprobe.d" \
+    "$root/run/systemd/network" \
     "$root/usr/local/lib/sysctl.d" \
     "$root/usr/local/lib/modprobe.d" \
+    "$root/usr/local/lib/systemd/network" \
     "$root/usr/lib/sysctl.d" \
     "$root/usr/lib/modprobe.d" \
+    "$root/usr/lib/systemd/network" \
     "$root/lib/sysctl.d" \
     "$root/lib/modprobe.d" \
     "$root/var/run" \
@@ -51,6 +55,13 @@ make_fixture() {
   printf 'bbr\n' >"$root/runtime/cc"
   printf 'fq_codel\n' >"$root/runtime/default-qdisc"
   printf 'reno cubic bbr\n' >"$root/runtime/available"
+  printf '%s\n' \
+    '[Match]' \
+    'Name=test0' \
+    '' \
+    '[Network]' \
+    'DHCP=yes' \
+    >"$root/run/systemd/network/10-netplan-test0.network"
   printf 'packaged module fixture\n' >"$root/$module_relative"
   printf 'packaged image fixture\n' >"$root/boot/vmlinuz-$running_kernel"
   printf '%s  %s\n' "$expected_md5" "$module_relative" \
@@ -70,7 +81,7 @@ if [[ "$*" == "-o APT::Update::Error-Mode=any update" &&
   "${FAKE_APT_UPDATE_FAIL:-0}" == "1" ]]; then
   printf 'partial fetch rejected\n' >&2
   exit 1
-elif [[ "$*" == "-s full-upgrade" ]]; then
+elif [[ "$*" == "-o APT::Get::Always-Include-Phased-Updates=true -s full-upgrade" ]]; then
   count_file="$MAVERICK_TEST_ROOT/runtime/simulation-count"
   count=0
   [[ ! -f "$count_file" ]] || count="$(cat "$count_file")"
@@ -84,7 +95,8 @@ elif [[ "$*" == "-s full-upgrade" ]]; then
   else
     printf '0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n'
   fi
-elif [[ "$*" == "--no-remove -y full-upgrade" && "${FAKE_REBOOT_REQUIRED:-0}" == "1" ]]; then
+elif [[ "$*" == "-o APT::Get::Always-Include-Phased-Updates=true --no-remove -y full-upgrade" &&
+  "${FAKE_REBOOT_REQUIRED:-0}" == "1" ]]; then
   : >"$MAVERICK_TEST_ROOT/var/run/reboot-required"
 fi
 EOF
@@ -276,6 +288,25 @@ set -euo pipefail
 printf 'default dev test0\n'
 EOF
 
+  cat >"$bin/networkctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'networkctl %s\n' "$*" >>"$MAVERICK_TEST_ROOT/runtime/commands"
+if [[ "$*" == "--no-pager --full status test0" ]]; then
+  [[ "${FAKE_NETWORK_STATUS_FAIL:-0}" != "1" ]] || exit 1
+  network_file="${FAKE_NETWORK_FILE:-/run/systemd/network/10-netplan-test0.network}"
+  if [[ "${FAKE_NETWORK_FILE_COUNT:-1}" == "0" ]]; then
+    printf 'State: routable\n'
+  elif [[ "${FAKE_NETWORK_FILE_COUNT:-1}" == "2" ]]; then
+    printf 'Network File: %s\nNetwork File: %s\n' "$network_file" "$network_file"
+  else
+    printf 'Network File: %s\n' "$network_file"
+  fi
+  exit 0
+fi
+exit 1
+EOF
+
   cat >"$bin/tc" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -383,6 +414,9 @@ invoke() {
     FAKE_MODPROBE_BBR_FAIL="${FAKE_MODPROBE_BBR_FAIL:-0}" \
     FAKE_MODPROBE_QDISC_FAIL="${FAKE_MODPROBE_QDISC_FAIL:-0}" \
     FAKE_SYSCTL_APPLY_FAIL="${FAKE_SYSCTL_APPLY_FAIL:-}" \
+    FAKE_NETWORK_STATUS_FAIL="${FAKE_NETWORK_STATUS_FAIL:-0}" \
+    FAKE_NETWORK_FILE="${FAKE_NETWORK_FILE:-/run/systemd/network/10-netplan-test0.network}" \
+    FAKE_NETWORK_FILE_COUNT="${FAKE_NETWORK_FILE_COUNT:-1}" \
     MAVERICK_TEST_FAIL_SECOND_POLICY_MOVE="${MAVERICK_TEST_FAIL_SECOND_POLICY_MOVE:-0}" \
     FAKE_QDISC="${FAKE_QDISC:-fq-codel}" \
     APT_CONFIG="${TEST_APT_CONFIG:-}" \
@@ -565,14 +599,23 @@ grep -Fxq 'net.core.default_qdisc = fq_codel' \
   "$root/etc/sysctl.d/99-maverick-test-network.conf"
 grep -Fxq 'net.ipv4.tcp_congestion_control = bbr' \
   "$root/etc/sysctl.d/99-maverick-test-network.conf"
+grep -Fxq '[FairQueueingControlledDelay]' \
+  "$root/etc/systemd/network/10-netplan-test0.network.d/99-maverick-test-qdisc.conf"
 if grep -Fq 'autoremove' "$root/runtime/commands"; then
   fail_test "prepare invoked autoremove"
 fi
 grep -Fxq 'apt-get -o APT::Update::Error-Mode=any update' \
   "$root/runtime/commands" ||
   fail_test "prepare did not use strict apt update error mode"
+grep -Fxq \
+  'apt-get -o APT::Get::Always-Include-Phased-Updates=true --no-remove -y full-upgrade' \
+  "$root/runtime/commands" ||
+  fail_test "prepare did not include Ubuntu phased updates"
 if grep -Eq '^tc qdisc (replace|add|change)' "$root/runtime/commands"; then
   fail_test "prepare attempted an online tc mutation"
+fi
+if grep -Eq '^networkctl .* (reload|reconfigure)' "$root/runtime/commands"; then
+  fail_test "prepare attempted a live networkd qdisc mutation"
 fi
 pass_count=$((pass_count + 1))
 
@@ -587,16 +630,18 @@ grep -Fxq 'tcp_bbr' "$root/etc/modules-load.d/99-maverick-test-network.conf"
 grep -Fxq 'sch_fq' "$root/etc/modules-load.d/99-maverick-test-network.conf"
 grep -Fxq 'net.core.default_qdisc = fq' \
   "$root/etc/sysctl.d/99-maverick-test-network.conf"
+grep -Fxq '[FairQueueing]' \
+  "$root/etc/systemd/network/10-netplan-test0.network.d/99-maverick-test-qdisc.conf"
 pass_count=$((pass_count + 1))
 
 rm -f "$root/sys/module/tcp_bbr/version"
-invoke "$root" "$bin" verify >/dev/null
+FAKE_QDISC=fq invoke "$root" "$bin" verify >/dev/null
 pass_count=$((pass_count + 1))
 printf '1\n' >"$root/sys/module/tcp_bbr/version"
-invoke "$root" "$bin" verify >/dev/null
+FAKE_QDISC=fq invoke "$root" "$bin" verify >/dev/null
 pass_count=$((pass_count + 1))
 printf '3\n' >"$root/sys/module/tcp_bbr/version"
-expect_exit 22 invoke "$root" "$bin" verify
+FAKE_QDISC=fq expect_exit 22 invoke "$root" "$bin" verify
 
 fixture="$(make_fixture virtual 26.04 virtual)"
 root="${fixture%%$'\n'*}"
@@ -688,7 +733,7 @@ root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
 printf 'fq\n' >"$root/runtime/default-qdisc"
 printf 'blacklist sch_fq\n' >"$root/etc/modprobe.d/qdisc.conf"
-expect_exit 21 invoke "$root" "$bin" prepare
+FAKE_QDISC=fq expect_exit 21 invoke "$root" "$bin" prepare
 [[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
   fail_test "fq module conflict wrote managed settings"
 
@@ -755,6 +800,11 @@ root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
 FAKE_QDISC=fq invoke "$root" "$bin" prepare >/dev/null
 FAKE_QDISC=fq invoke "$root" "$bin" verify >/dev/null
+grep -Fxq 'sch_fq' "$root/etc/modules-load.d/99-maverick-test-network.conf"
+grep -Fxq 'net.core.default_qdisc = fq' \
+  "$root/etc/sysctl.d/99-maverick-test-network.conf"
+grep -Fxq '[FairQueueing]' \
+  "$root/etc/systemd/network/10-netplan-test0.network.d/99-maverick-test-qdisc.conf"
 if grep -Eq '^tc qdisc (replace|add|change)' "$root/runtime/commands"; then
   fail_test "prepare forced one supported qdisc to replace another"
 fi
@@ -845,9 +895,19 @@ fixture="$(make_fixture wrong-qdisc 26.04)"
 root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
 FAKE_QDISC=pfifo-fast expect_exit 20 invoke "$root" "$bin" prepare
+grep -Fxq '[FairQueueingControlledDelay]' \
+  "$root/etc/systemd/network/10-netplan-test0.network.d/99-maverick-test-qdisc.conf"
 FAKE_QDISC=pfifo-fast expect_exit 24 invoke "$root" "$bin" verify
 FAKE_QDISC=fq-codel invoke "$root" "$bin" verify >/dev/null
 pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture networkd-dropin-symlink 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+mkdir -p "$root/etc/systemd/network/10-netplan-test0.network.d"
+ln -s "$root/etc/os-release" \
+  "$root/etc/systemd/network/10-netplan-test0.network.d/99-maverick-test-qdisc.conf"
+expect_exit 21 invoke "$root" "$bin" preflight
 
 fixture="$(make_fixture runtime-default 26.04)"
 root="${fixture%%$'\n'*}"

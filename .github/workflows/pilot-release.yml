@@ -92,7 +92,7 @@ jobs:
             "Experimental owner-pilot binaries for $GITHUB_REF_NAME." \
             "" \
             "Generate fresh configs locally with \`./maverick gen-config\`; the archives contain no shared credentials." \
-            "Maverick is alpha software provided without warranty. Read STATUS.md and SECURITY.md before use." \
+            "Maverick is experimental prerelease software provided without warranty. Read STATUS.md and SECURITY.md before use." \
             >"$notes_file"
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \

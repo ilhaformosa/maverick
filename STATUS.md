@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-07-28
+Date: 2026-07-29
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -88,7 +88,14 @@ censorship resistance, production readiness, or browser identity.
 
 ## Current Product Truth
 
-- Workspace version: `1.2.0-alpha.6`.
+- Development stage: **Beta**. The owner entered Beta after the fresh-origin
+  Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
+  gates described below passed. This is a development-stage decision, not a
+  retroactive rename of an already published artifact.
+- Workspace and first Beta release-candidate version: `1.2.0-beta.1`.
+- Last independently reverified public artifact as of this candidate:
+  `v1.2.0-alpha.6`. Beta.1 publication and public-asset verification must be
+  recorded only after they occur.
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
 - Rust product core and loopback relay path: implemented.
@@ -125,6 +132,8 @@ censorship resistance, production readiness, or browser identity.
   same user-visible checks and first proxied page in 3 minutes 44 seconds. The
   `alpha.5` retest completed all five artifact checks, both product smoke
   checks, listener startup, and the first proxied page in 1 minute 45 seconds.
+  The fresh-origin `alpha.6` run completed those gates and reached its first
+  proxied page in 1 minute 44 seconds.
 - First timed-install artifact: `v1.2.0-alpha.2`. The earlier
   `v1.2.0-alpha.1` artifact is superseded because it lacks the live-provider H2
   request fix. The published `alpha.3` fast-start path has now been timed by the
@@ -141,7 +150,9 @@ censorship resistance, production readiness, or browser identity.
   `alpha.2` attempt missed five minutes by 18 seconds. The corrected second
   `alpha.3` attempt beat five minutes, but the first `alpha.3` attempt failed
   because of the generated DNS default. The clean `alpha.5` path also beat five
-  minutes without using the optional DNS listener.
+  minutes without using the optional DNS listener. The fresh-origin `alpha.6`
+  path completed from-scratch deployment and the client start gate, then beat
+  five minutes in the owner-operated field run.
 - Owner-only real-network pilot: completed. The planned 24-hour observation
   window was followed by an unplanned 48-hour 18-minute overrun, for a total
   client run of 72 hours 18 minutes.
@@ -152,13 +163,14 @@ censorship resistance, production readiness, or browser identity.
 - Future formal audits are optional and are not a pilot, release, or progress
   requirement. Open-source users remain responsible for deciding whether the
   software and its threat model fit their use.
-- Production, anonymity, censorship-resistance, and exact browser-equivalence
-  claims: not made.
+- Stable, mature, production-ready, anonymity, broad censorship-resistance, and
+  exact browser-equivalence claims: not made. Entering Beta does not imply any
+  of those claims.
 
 ## First Pilot Result
 
 General web browsing was smooth during the owner-only real-network pilot.
-Three usability exceptions remain open:
+At that time, three usability exceptions remained open:
 
 - one major video service loaded its interface and supported most non-playback
   actions, but video playback did not work;
@@ -167,20 +179,21 @@ Three usability exceptions remain open:
 - during weaker connectivity, some pages continued to show an active loading
   indicator after their visible content appeared complete.
 
-These are observed symptoms, not established causes. Current evidence does not
-show whether they came from provider TLS termination, Maverick's H2 carrier,
-the destination services, browser behavior, or the underlying network.
+These were observed symptoms, not established causes. Evidence from that run
+did not show whether they came from provider TLS termination, Maverick's H2
+carrier, the destination services, browser behavior, or the underlying network.
 Reconciled server-side service logs show authenticated activity across the run
 without a service restart or error-like line in the retained journal, but those
 logs are not detailed enough to diagnose the three symptoms. All three
 observations came from the Firefox instance configured to use Maverick; Chrome
 was not used during the pilot.
 
-The planned 24-hour observation remains valid product evidence. The North-Star
-milestone did not pass because the timed setup exceeded five minutes by 18
-seconds, and the usability findings above remain unresolved. The result does
-not support production, anonymity, broad censorship-resistance, or exact
-browser-equivalence claims.
+The planned 24-hour observation remains valid product evidence. At the end of
+that run, the North-Star milestone had not passed because the timed setup
+exceeded five minutes by 18 seconds and the usability findings above were
+unresolved. Later sections record the corrected installation and diagnostic
+results; the first-pilot result itself still does not support production,
+anonymity, broad censorship-resistance, or exact browser-equivalence claims.
 
 ## Alpha.3 Reliability Hardening
 
@@ -402,18 +415,21 @@ profile or player state, a destination-specific media-host failure, or a
 Maverick carrier defect. The sleep/resume finding is separately consistent with
 a stale pooled H2 connection being reused until refresh.
 
-Beta is not justified yet. The default install now beats five minutes, but the
-important major-video failure is still reproducible and is neither fixed nor
-understood with an acceptable documented boundary. Maverick therefore remains
-Alpha.
+At the end of the Alpha.5 retest, Beta was not justified. The default install
+beat five minutes, but the important major-video failure was still reproducible
+and was neither fixed nor understood with an acceptable documented boundary.
+That was the Alpha.5 conclusion; the later fresh-origin Alpha.6 result below
+supersedes it as current stage evidence.
 
 ## Alpha.6 Reliability Prerelease
 
-The published GitHub prerelease is `v1.2.0-alpha.6`. It remains Alpha and is
-not Beta, Stable, mature, production-ready, or provider-independent. Its first
-field attempt was diagnostically invalid because the origin's ordinary browsing
-performance failed the baseline gate; one valid replacement run remains
-pending.
+The published GitHub prerelease is `v1.2.0-alpha.6`. That artifact remains an
+Alpha prerelease and is not retroactively renamed by the later stage decision.
+Its first field attempt was diagnostically invalid because the origin's
+ordinary browsing performance failed the baseline gate. The valid fresh-origin
+replacement run described below is now complete and moved current development
+into Beta; it did not make Maverick Stable, mature, production-ready, or
+provider-independent.
 
 The H2 connection pool now handles one confirmed stale-cache shape
 conservatively. If a tunnel handshake or ClientHello send stalls, the client
@@ -436,15 +452,15 @@ setup and tunnel open plus server target resolution and connect use the fixed
 millisecond cumulative buckets. They retain no destination, address, URL, SNI,
 credential, stream identifier, free-form error text, or per-event timestamp.
 
-The remaining major-video symptom is still unexplained. The active diagnosis
-guide now orders the owner's preferred hypotheses: current Firefox state,
-an isolated clean-Chrome comparison, player or media request
+At Alpha.6 publication time, the remaining major-video symptom was unexplained.
+The active diagnosis guide ordered the owner's preferred hypotheses: current
+Firefox state, an isolated clean-Chrome comparison, player or media request
 rejection/failure, and Maverick/provider-fronted path compatibility, including
-a careful comparison inspired by the similar Mozilla proxy-service report. It
-requires one-variable tests, a return-to-baseline check after an apparent
-success, a no-direct-fallback check for Chrome, privacy-safe response
-categories, and separate authorization before a direct SSH SOCKS or
-direct-origin comparison. The Mozilla case is an analogy, not a Maverick
+a careful comparison inspired by the similar Mozilla proxy-service report. The
+later fresh-origin comparison separated a signed-out service-authentication
+challenge from the shared path's ability to carry high-definition video. It did
+not prove that an exit address alone caused the challenge or that Firefox
+itself is defective. The Mozilla case remains an analogy, not a Maverick
 diagnosis, and provider termination of Maverick's outer TLS does not by itself
 decrypt the inner browser-to-destination HTTPS connection.
 
@@ -483,7 +499,7 @@ server-to-target TCP connections continues to use the server TCP policy.
 
 The repository-local gate passes formatting, strict workspace linting, all 492
 Rust tests, the rustls compatibility build, both required loopback product
-checks, and 77 isolated fake-host preparation checks. Those fake-host checks
+checks, and 78 isolated fake-host preparation checks. Those fake-host checks
 exercise the stock BBRv1 path without numeric version metadata, rejection of
 declared non-v1 or unavailable BBR, partial package-index updates, stale or
 substituted kernel packages, unsafe configuration conflicts, incomplete
@@ -503,11 +519,91 @@ metadata, executable modes, and privacy path scans passed. The remote tag
 resolves to the reviewed merge commit, and the downloaded Apple Silicon binary
 passed `version` and `user-smoke` locally.
 
-These results prove only release integrity, the reviewed implementation, and
-local regression behavior. They do not resolve the major-video result, show
-that stale-connection recovery works after a real sleep/resume event, prove that
-BBR improves field experience, justify a custom kernel, or justify Beta.
-Maverick remains Alpha.
+At publication time, these results proved only release integrity, the reviewed
+implementation, and local regression behavior. They did not then resolve the
+major-video result, show stale-connection recovery after a real sleep/resume
+event, prove that BBR improves field experience, justify a custom kernel, or
+justify Beta. The later field result below supplies the missing Beta-entry
+evidence without changing those narrower publication-time claims.
+
+## Alpha.6 Fresh-Origin Beta Entry Result
+
+One fresh owner-controlled temporary origin completed the from-scratch
+deployment gate. All offered system and default-kernel updates were applied,
+required reboots were completed, the host verifier passed, independently
+verified Alpha.6 assets were deployed, and the origin and provider-fronted path
+passed configuration, service, listener, TLS, fallback, edge, end-to-end SOCKS,
+fail-closed, and post-test health checks.
+
+On the spare owner-controlled macOS client, all five public artifact checks,
+both product smoke checks, client configuration, and the SOCKS5 listener passed.
+The first proxied page loaded 1 minute 44 seconds after the owner began the
+guided run. Ordinary browsing was acceptable: control and search pages worked,
+the previously affected news site and its embedded video worked, short-form
+video played smoothly, and the lingering loading indicator was markedly
+improved.
+
+The major-video comparison then produced a narrower boundary. The current
+Firefox profile, Firefox Troubleshoot Mode, and a clean Firefox profile all
+reported `Video unavailable`; the clean profile's client-stop check proved that
+it did not bypass Maverick. A new isolated Chrome profile also passed its
+client-stop fail-closed check. While signed out, Chrome presented a
+service-authentication challenge instead of ordinary playback. After the owner
+authenticated inside that isolated temporary profile, the same test video
+played smoothly at both 720p and 1080p, and seeking remained usable.
+The planned player/media request-category Test E was not performed, so no
+`403`, `429`, reset, timeout, or other request category was collected.
+
+This establishes that the shared Maverick/provider-fronted path can carry the
+service's high-definition video. It does not establish that the exit address is
+the sole cause, that every data-center exit receives the same policy, or that
+Firefox itself is defective. Exit reputation, service anti-abuse policy, and
+browser/service interaction remain possible combined factors. No account
+identifier, cookie, full URL, media hostname, or temporary profile path is
+project evidence.
+
+After the client slept for about 7 to 8 minutes, ordinary browsing and
+short-form video resumed smoothly without a refresh. The fixed aggregate target
+resolution and connection timeout/failure counters stayed at zero, the service
+did not restart, and the retained journal contained no error, panic, or fatal
+line. Aggregate H2 stream resets were observed, but without a target failure,
+capacity stall, service restart, or matching user-visible failure they are not
+by themselves evidence of a product defect.
+
+The owner determined that this fresh-origin run satisfies the earlier
+from-scratch installation, basic-browsing, applicable browser-diagnosis, and
+sleep/resume gate and entered Maverick into the Beta development stage. The
+result does not prove that BBR or the selected qdisc caused the improvement and
+does not justify Stable, mature, production-ready, anonymity, broad
+censorship-resistance, exact browser-equivalence, or provider-independent
+claims.
+
+## Beta.1 Release Candidate
+
+The workspace is prepared as `v1.2.0-beta.1`, the first Beta prerelease
+candidate. Its Rust protocol and config behavior are unchanged from the
+field-tested Alpha.6 build; protocol and config versions remain `1`. The
+candidate combines the Beta-stage documentation and version transition with
+the reviewed test-host persistence correction described below.
+
+The host gate now persists the already approved active `fq` or `fq_codel`
+selection through a native `systemd-networkd` drop-in. It validates the
+effective network file and its parent directory, creates no custom helper or
+long-running service, and performs no live `tc` or `networkctl` mutation. A
+reboot followed by `verify` remains the point at which the real default-route
+qdisc must prove the persisted choice.
+
+The scheduled parser-fuzz workflow no longer calls an archived script. It
+checks both current fuzz binaries and runs the `frame_decode` and `auth_decode`
+targets for 256 bounded iterations each with a pinned nightly compiler. The same
+bounded run passes locally. The GitHub parser-fuzz, product, CodeQL, and
+supply-chain checks must pass on the final reviewed pull-request head before
+the Beta.1 tag is created.
+
+This candidate is still experimental prerelease software. It does not authorize
+production deployment or support Stable, mature, anonymity, broad
+censorship-resistance, exact browser-equivalence, native-ECH, or
+provider-independent claims.
 
 ## Authorization Boundary
 
@@ -592,15 +688,29 @@ failure is therefore inconclusive, not an Alpha.6 product failure.
 Destination-free host measurements found no sustained resource exhaustion or
 interface errors. After the diagnostic summaries were retained, that exact
 origin was deleted with owner approval. One manually selected replacement
-origin is pending; its qdisc may be either `fq` or `fq_codel` under the current
-policy.
+origin has now passed the ordinary host verifier: all offered package and
+default-kernel updates were applied, required reboots were completed, stock
+Ubuntu BBRv1 is active, and one of the two approved qdisc choices is both active
+and persistent. The exact choice is not public project data, and this status
+does not prefer `fq` or `fq_codel`.
 
-The owner has separately authorized that exact manually selected replacement,
-after it passes the ordinary-browsing baseline and host verifier, to serve as a
-fixed reference origin for no more than 30 consecutive days from its provider
-creation time. It may keep the origin-side address, operating system, provider
-path, and host policy constant for the authorized Alpha.6 browser,
-major-video, and sleep/resume diagnosis. It must not host unrelated work.
+The independently downloaded Alpha.6 release assets and their published and
+inner checksums passed before deployment. The installed server passed
+configuration validation, service, listener, direct TLS, static fallback,
+fronting-provider edge, end-to-end SOCKS, client-stop fail-closed, and
+post-test health checks. A new owner-only macOS handoff package was generated
+outside the repository from the independently verified release asset and
+passed its own checksum, configuration, version, and smoke checks. These
+results first established deployment plumbing. The later owner field result
+recorded above adds the ordinary-browsing baseline, browser comparison,
+major-video boundary, and sleep/resume observation.
+
+The owner separately authorized that exact manually selected replacement,
+which has now passed both the ordinary-browsing baseline and host verifier, to
+serve as a fixed reference origin for no more than 30 consecutive days from its
+provider creation time. It may keep the origin-side address, operating system,
+provider path, and host policy constant for any remaining authorized Beta
+reference checks. It must not host unrelated work.
 Before every authorized session, apply all offered package and default-kernel
 updates, reboot when required, and pass the host verifier before Maverick
 starts. Expiry, a failed baseline or verifier, unexplained configuration drift,
@@ -611,23 +721,34 @@ This authorization changes only the lifetime and diagnostic role of that one
 replacement. It does not rewrite the completed first pilot's seven-day
 boundary, authorize Codex to create the manually selected server, authorize a
 second concurrent origin, a different provider or specification, paid add-ons,
-unrelated users or networks, automatic renewal, production use, or a Beta or
-Stable claim. The last exact total-spend ceiling remains `US$5`; stop before
-retention could exceed it and obtain a new owner decision instead. Evidence
-from the reference origin cannot by itself justify Beta or Stable. Before Beta,
-one separately authorized freshly provisioned clean temporary origin must
-repeat the from-scratch installation, basic browsing, and applicable diagnostic
-checks. Before Stable, fresh-origin validation must be repeated for the Stable
-candidate. Neither requirement grants authority to create a server.
+unrelated users or networks, automatic renewal, production use, or a Stable
+claim. The last exact total-spend ceiling remains `US$6`; stop before retention
+could exceed it and obtain a new owner decision instead. The owner determined
+that this same freshly provisioned clean replacement, its from-scratch
+deployment, basic browsing, and applicable diagnostic checks satisfy the prior
+Beta-entry requirement. Before Stable, fresh-origin validation must be repeated
+for the Stable candidate. That requirement does not grant authority to create
+a server.
 
-For the Alpha.6 reference trial, the owner has also authorized an
+The replacement's current origin certificate is deliberately short-lived and
+does not authorize automatic renewal. If its validity cannot cover a later
+authorized session, stop and obtain a separate owner decision before renewing
+or replacing it. The replacement has passed the ordinary-browsing baseline and
+is accepted as the fixed reference origin only within the recorded lifetime,
+cost, certificate, person, network, and stop boundaries.
+
+For the Alpha.6 reference trial, the owner also authorized and completed an
 application-local comparison between a clean Firefox profile and one temporary
-isolated Chrome profile. Chrome must use its own new data directory,
-Maverick's loopback-only SOCKS5 listener, no direct fallback, resolver
-containment, and a client-stop fail-closed check. Neither browser may reuse a
-signed-in daily profile. Safari and every macOS system proxy, DNS, route,
-firewall, VPN, interface, or other network-service change remain outside
-authorization.
+isolated Chrome profile. Chrome used its own new data directory, Maverick's
+loopback-only SOCKS5 listener, no direct fallback, resolver containment, and a
+client-stop fail-closed check. When the signed-out Chrome test surfaced a
+service-authentication challenge, the owner chose to authenticate inside that
+isolated temporary profile and the video played. This added authentication as
+a test variable, so the result establishes path capability but does not by
+itself attribute the Firefox presentation or the service policy to one cause.
+No signed-in daily browser profile was reused. Safari and every macOS system
+proxy, DNS, route, firewall, VPN, interface, or other network-service change
+remained outside the comparison.
 
 For future API-created Maverick test origins, the owner has established an
 address gate: inspect the public IPv4 address before DNS, certificates, or
@@ -641,6 +762,6 @@ the owner says they are creating manually remains on the separately
 communicated manual path.
 
 Beyond that one manual replacement, its approved 30-day reference trial, and
-the browser-local comparison above, any new live-field run, remote resource,
-provider change, spending, production/Beta claim, or native-ECH implementation
-requires a new owner decision.
+the completed browser-local comparison above, any new live-field run, remote
+resource, provider change, spending, production or Stable claim, or native-ECH
+implementation requires a new owner decision.

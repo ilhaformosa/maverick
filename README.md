@@ -1,6 +1,6 @@
 # Maverick
 
-Maverick is an experimental Rust privacy proxy. It remains alpha software, is
+Maverick is an experimental Rust privacy proxy. It is Beta software, is
 not production-ready, and does not claim anonymity, censorship resistance, or
 exact browser fingerprint equivalence.
 
@@ -81,7 +81,7 @@ install an Ubuntu-provided default-kernel update.
 - [STATUS.md](STATUS.md): the single current-truth and pilot decision record.
 - [ROADMAP.md](ROADMAP.md): the user-first execution order.
 - [CONFIG.md](CONFIG.md): configuration reference.
-- [THREAT_MODEL.md](THREAT_MODEL.md): the current pilot threat model.
+- [THREAT_MODEL.md](THREAT_MODEL.md): the current Beta threat model.
 - [SECURITY.md](SECURITY.md): reporting, secret handling, and security limits.
 - [docs/TRANSPORT_ARCHITECTURE.md](docs/TRANSPORT_ARCHITECTURE.md): compact
   product architecture.

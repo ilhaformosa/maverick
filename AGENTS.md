@@ -55,7 +55,7 @@ Both commands must remain local-only.
 ## Development Rules
 
 - Preserve the project name `Maverick`.
-- Preserve honest alpha/non-production claim boundaries.
+- Preserve honest Beta/non-production claim boundaries.
 - Keep generated credentials and real endpoints out of git.
 - Prefer Rust product tests over new orchestration tools.
 - Keep `scripts/user-smoke.sh` under 200 lines and understandable in one read.

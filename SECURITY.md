@@ -1,6 +1,6 @@
 # Security Policy
 
-Maverick is experimental alpha software provided without warranty. A
+Maverick is experimental Beta software provided without warranty. A
 point-in-time audit does not make it production-ready, anonymous,
 censorship-resistant, or browser-identical. Current audit status is recorded
 only in `STATUS.md`; future formal audits are optional rather than release or

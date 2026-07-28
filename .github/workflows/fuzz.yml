@@ -27,9 +27,14 @@ jobs:
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: nightly-2026-07-21
       - run: cargo install cargo-fuzz --version 0.13.2 --locked
-      - run: ./scripts/fuzz-smoke.sh
-        env:
-          MAVERICK_RUN_CARGO_FUZZ: "1"
-          MAVERICK_FUZZ_RUNS: "256"
+      - name: Check fuzz targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
+      - name: Run bounded parser fuzzing
+        working-directory: fuzz
+        run: |
+          cargo +nightly-2026-07-21 fuzz run frame_decode -- -runs=256
+          cargo +nightly-2026-07-21 fuzz run auth_decode -- -runs=256

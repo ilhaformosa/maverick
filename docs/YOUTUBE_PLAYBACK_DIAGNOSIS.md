@@ -256,6 +256,15 @@ How to read it:
 Restore the authorized baseline after the comparison. Do not change unrelated
 DNS records, zone-wide TLS settings, or other provider settings.
 
+Provider operations are API-first. The dedicated test zone keeps gRPC enabled,
+and the dedicated hostname's hostname-only Full (strict) rule remains in place
+between runs; restoring the baseline does not toggle or rebuild either setting.
+When an authorized replacement exit is introduced, change only the dedicated
+DNS target and issue a new short-lived Origin CA certificate from that node's
+own private key and CSR. Remove the DNS target when no origin owns the released
+address. Use browser control only for a required capability that has no
+documented usable API.
+
 ## Test G: Same Maverick Path, Different Exit
 
 Run this only after explicit authorization to create or use the second exit.

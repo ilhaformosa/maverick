@@ -9,14 +9,22 @@ only orders work; it does not restate current completion or audit status.
 
 ## Execution Order
 
-1. **Request one bounded Alpha.6 diagnostic field run.** A new live run,
-   origin, provider change, or spend requires separate owner authorization.
-   If authorized, use Ubuntu 26.04 LTS first; Ubuntu 24.04 LTS is an explicitly
-   justified fallback. Apply every offered package and default-kernel update,
-   reboot when Ubuntu requires it, and pass the host verifier before Maverick
-   starts. Use the stock Ubuntu kernel's native BBR implementation (commonly
-   called BBRv1) plus `fq`; do not install or maintain a custom BBRv3 kernel or
-   run a congestion-control A/B.
+1. **Complete one bounded Alpha.6 replacement diagnostic field run.** The first
+   origin was rejected after its basic browsing gate failed, so its video result
+   is inconclusive. A further live run, origin, provider change, or spend beyond
+   the single decided replacement requires separate owner authorization. Use
+   Ubuntu 26.04 LTS first; Ubuntu 24.04 LTS is an explicitly justified fallback.
+   Apply every offered package and default-kernel update, reboot when Ubuntu
+   requires it, and pass the host verifier before Maverick starts. Require the
+   stock Ubuntu kernel's native BBR implementation (commonly called BBRv1) and
+   preserve either `fq` or `fq_codel` without preferring one. Reject every other
+   qdisc; do not install or maintain a custom BBRv3 kernel or run a
+   congestion-control A/B. If Codex creates the replacement through a provider
+   API, reject and delete that exact new resource before deployment when its
+   public IPv4 first octet is `64`, then retry only inside the already approved
+   resource and spend boundary. Stop and ask the owner if that boundary cannot
+   produce an acceptable address. An owner-created replacement follows the
+   separately communicated manual path.
 2. **Isolate the remaining major-video failure with one-variable tests.** First
    compare the current Firefox profile, Troubleshoot Mode, and a clean profile;
    then record only privacy-safe player/media response categories. If needed,

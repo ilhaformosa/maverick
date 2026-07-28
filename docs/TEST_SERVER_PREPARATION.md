@@ -29,6 +29,26 @@ the owner's live instructions.
 - Never hide held packages, approve package removals, run `autoremove`, or start
   Maverick before the post-reboot verification passes.
 
+## Reference-Origin Reuse
+
+A test origin may be reused as a fixed reference only while `STATUS.md` records
+current authorization for that role. Reuse holds origin-side variables
+constant; it is not a production deployment and does not satisfy a fresh-origin
+Beta or Stable gate.
+
+Before every authorized session, complete the normal package and
+default-kernel update, obey any reboot requirement, and pass `verify` before
+Maverick starts. Use a reviewed Maverick artifact and fresh test credentials.
+Do not add unrelated workloads merely because the host is being retained. Do
+not erase a healthy host between comparisons without a reproduced reason,
+because doing so would also remove the stable baseline.
+
+Retire the origin when its authorization expires, its ordinary-browsing
+baseline or verifier fails, its state can no longer be accounted for,
+compromise or credential exposure is suspected, or its routing or reputation
+is no longer suitable for comparison. Creating a replacement always requires
+the authority recorded in `STATUS.md`.
+
 ## Default Network Policy
 
 Maverick test origins must use the stock Ubuntu kernel implementation named

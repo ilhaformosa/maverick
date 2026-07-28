@@ -438,14 +438,15 @@ credential, stream identifier, free-form error text, or per-event timestamp.
 
 The remaining major-video symptom is still unexplained. The active diagnosis
 guide now orders the owner's preferred hypotheses: current Firefox state,
-player or media request rejection/failure, and Maverick/provider-fronted path
-compatibility, including a careful comparison inspired by the similar Mozilla
-proxy-service report. It requires one-variable tests, a return-to-baseline
-check after an apparent success, privacy-safe response categories, and separate
-authorization before a direct SSH SOCKS or direct-origin comparison. The
-Mozilla case is an analogy, not a Maverick diagnosis, and provider termination
-of Maverick's outer TLS does not by itself decrypt the inner
-Firefox-to-destination HTTPS connection.
+an isolated clean-Chrome comparison, player or media request
+rejection/failure, and Maverick/provider-fronted path compatibility, including
+a careful comparison inspired by the similar Mozilla proxy-service report. It
+requires one-variable tests, a return-to-baseline check after an apparent
+success, a no-direct-fallback check for Chrome, privacy-safe response
+categories, and separate authorization before a direct SSH SOCKS or
+direct-origin comparison. The Mozilla case is an analogy, not a Maverick
+diagnosis, and provider termination of Maverick's outer TLS does not by itself
+decrypt the inner browser-to-destination HTTPS connection.
 
 The standing test-host policy is now Ubuntu 26.04 LTS first. Ubuntu 24.04 LTS
 is accepted only as an explicitly justified fallback when 26.04 cannot perform
@@ -594,6 +595,40 @@ origin was deleted with owner approval. One manually selected replacement
 origin is pending; its qdisc may be either `fq` or `fq_codel` under the current
 policy.
 
+The owner has separately authorized that exact manually selected replacement,
+after it passes the ordinary-browsing baseline and host verifier, to serve as a
+fixed reference origin for no more than 30 consecutive days from its provider
+creation time. It may keep the origin-side address, operating system, provider
+path, and host policy constant for the authorized Alpha.6 browser,
+major-video, and sleep/resume diagnosis. It must not host unrelated work.
+Before every authorized session, apply all offered package and default-kernel
+updates, reboot when required, and pass the host verifier before Maverick
+starts. Expiry, a failed baseline or verifier, unexplained configuration drift,
+suspected compromise or credential exposure, or degraded routing or reputation
+requires retirement and a new owner decision before replacement.
+
+This authorization changes only the lifetime and diagnostic role of that one
+replacement. It does not rewrite the completed first pilot's seven-day
+boundary, authorize Codex to create the manually selected server, authorize a
+second concurrent origin, a different provider or specification, paid add-ons,
+unrelated users or networks, automatic renewal, production use, or a Beta or
+Stable claim. The last exact total-spend ceiling remains `US$5`; stop before
+retention could exceed it and obtain a new owner decision instead. Evidence
+from the reference origin cannot by itself justify Beta or Stable. Before Beta,
+one separately authorized freshly provisioned clean temporary origin must
+repeat the from-scratch installation, basic browsing, and applicable diagnostic
+checks. Before Stable, fresh-origin validation must be repeated for the Stable
+candidate. Neither requirement grants authority to create a server.
+
+For the Alpha.6 reference trial, the owner has also authorized an
+application-local comparison between a clean Firefox profile and one temporary
+isolated Chrome profile. Chrome must use its own new data directory,
+Maverick's loopback-only SOCKS5 listener, no direct fallback, resolver
+containment, and a client-stop fail-closed check. Neither browser may reuse a
+signed-in daily profile. Safari and every macOS system proxy, DNS, route,
+firewall, VPN, interface, or other network-service change remain outside
+authorization.
+
 For future API-created Maverick test origins, the owner has established an
 address gate: inspect the public IPv4 address before DNS, certificates, or
 deployment; if its first octet is `64`, immediately delete that exact newly
@@ -605,6 +640,7 @@ claim that the entire `64.0.0.0/8` network is technically defective. A server
 the owner says they are creating manually remains on the separately
 communicated manual path.
 
-Beyond the single decided replacement, any new live-field run, remote resource,
+Beyond that one manual replacement, its approved 30-day reference trial, and
+the browser-local comparison above, any new live-field run, remote resource,
 provider change, spending, production/Beta claim, or native-ECH implementation
 requires a new owner decision.

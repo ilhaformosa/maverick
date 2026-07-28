@@ -26,7 +26,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch, Notify};
 use tokio::time::{timeout, Duration, Instant};
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::{client_async, tungstenite::Message};
@@ -1842,6 +1842,24 @@ async fn metrics_endpoint_reports_loopback_counts() -> Result<()> {
     assert_eq!(metric_value(&response, "target_resolution_failures")?, 0);
     assert_eq!(metric_value(&response, "target_connect_timeouts")?, 0);
     assert_eq!(metric_value(&response, "target_connect_failures")?, 0);
+    assert_eq!(
+        metric_value(&response, "target_resolution_duration_ms_count")?,
+        0
+    );
+    assert_eq!(
+        metric_value(&response, "target_resolution_duration_ms_le_inf")?,
+        0
+    );
+    assert_eq!(
+        metric_value(&response, "target_connect_duration_ms_count")?,
+        0
+    );
+    assert_eq!(
+        metric_value(&response, "target_connect_duration_ms_le_inf")?,
+        0
+    );
+    assert_eq!(metric_value(&response, "h2_stream_resets")?, 0);
+    assert_eq!(metric_value(&response, "h2_send_stalls")?, 0);
     assert_eq!(metric_value(&response, "active_flows")?, 0);
     assert_eq!(metric_value(&response, "active_connections")?, 0);
     assert_eq!(metric_value(&response, "connection_limit_rejections")?, 0);
@@ -1873,6 +1891,22 @@ async fn metrics_endpoint_reports_active_flow_pressure() -> Result<()> {
 
     assert_eq!(metric_value(&response, "active_flows")?, 1);
     assert_eq!(metric_value(&response, "tcp_flows")?, 1);
+    assert_eq!(
+        metric_value(&response, "target_resolution_duration_ms_count")?,
+        1
+    );
+    assert_eq!(
+        metric_value(&response, "target_resolution_duration_ms_le_inf")?,
+        1
+    );
+    assert_eq!(
+        metric_value(&response, "target_connect_duration_ms_count")?,
+        1
+    );
+    assert_eq!(
+        metric_value(&response, "target_connect_duration_ms_le_inf")?,
+        1
+    );
 
     first.shutdown().await?;
     fixture.shutdown().await?;
@@ -1926,6 +1960,55 @@ async fn run_single_socks_roundtrip(
     anyhow::ensure!(echoed == payload, "echo payload mismatch");
     socks.shutdown().await?;
     Ok(())
+}
+
+async fn start_stallable_first_connection_proxy(
+    upstream_addr: SocketAddr,
+) -> Result<(SocketAddr, watch::Sender<bool>, Arc<Notify>)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let proxy_addr = listener.local_addr()?;
+    let (stall_tx, stall_rx) = watch::channel(false);
+    let first_stalled = Arc::new(Notify::new());
+    let proxy_first_stalled = Arc::clone(&first_stalled);
+    tokio::spawn(async move {
+        let mut first_connection = true;
+        while let Ok((mut client, _)) = listener.accept().await {
+            let Ok(mut upstream) = TcpStream::connect(upstream_addr).await else {
+                continue;
+            };
+            if first_connection {
+                first_connection = false;
+                let mut stall_rx = stall_rx.clone();
+                let first_stalled = Arc::clone(&proxy_first_stalled);
+                tokio::spawn(async move {
+                    let stalled = {
+                        let copy = tokio::io::copy_bidirectional(&mut client, &mut upstream);
+                        tokio::pin!(copy);
+                        tokio::select! {
+                            _ = &mut copy => false,
+                            changed = async {
+                                while !*stall_rx.borrow() {
+                                    stall_rx.changed().await?;
+                                }
+                                Result::<()>::Ok(())
+                            } => changed.is_ok(),
+                        }
+                    };
+                    if stalled {
+                        first_stalled.notify_one();
+                        let _client = client;
+                        let _upstream = upstream;
+                        std::future::pending::<()>().await;
+                    }
+                });
+            } else {
+                tokio::spawn(async move {
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                });
+            }
+        }
+    });
+    Ok((proxy_addr, stall_tx, first_stalled))
 }
 
 #[tokio::test]
@@ -2086,6 +2169,8 @@ async fn h2_pool_capacity_timeout_keeps_healthy_connection() -> Result<()> {
     assert_eq!(timed_out.readiness_failures, 0);
     assert_eq!(timed_out.stream_open_failures, 0);
     assert_eq!(timed_out.handshake_timeouts, 1);
+    assert_eq!(timed_out.timeout_retirements, 0);
+    assert_eq!(timed_out.timeout_recoveries, 0);
     assert_eq!(timed_out.active_streams, 1);
 
     first.shutdown().await?;
@@ -2104,7 +2189,52 @@ async fn h2_pool_capacity_timeout_keeps_healthy_connection() -> Result<()> {
     assert_eq!(snapshot.readiness_failures, 0);
     assert_eq!(snapshot.stream_open_failures, 0);
     assert_eq!(snapshot.handshake_timeouts, 1);
+    assert_eq!(snapshot.timeout_retirements, 0);
+    assert_eq!(snapshot.timeout_recoveries, 0);
 
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn h2_pool_recovers_once_after_unshared_tunnel_handshake_timeout() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let (proxy_addr, stall_tx, first_stalled) =
+        start_stallable_first_connection_proxy(fixture.server.local_addr).await?;
+    let mut client_config = fixture.client_config();
+    client_config.local.socks5.listen = "127.0.0.1:0".parse()?;
+    client_config.server.address = proxy_addr.to_string();
+    client_config.advanced.connect_timeout_ms = 250;
+    let client = maverick_client::start_client(client_config).await?;
+    let echo_addr = start_echo_server().await?;
+
+    run_single_socks_roundtrip(client.local_addr, echo_addr, b"before-stall").await?;
+    wait_for_pool_snapshot(&client, |snapshot| {
+        snapshot.connections_created == 1
+            && snapshot.active_streams == 0
+            && snapshot.cached_connection
+    })
+    .await?;
+
+    stall_tx.send(true)?;
+    timeout(Duration::from_secs(1), first_stalled.notified())
+        .await
+        .context("first proxy connection did not enter its deterministic stall")?;
+
+    run_single_socks_roundtrip(client.local_addr, echo_addr, b"after-stall").await?;
+    let recovered = wait_for_pool_snapshot(&client, |snapshot| {
+        snapshot.connections_created == 2
+            && snapshot.timeout_retirements == 1
+            && snapshot.timeout_recoveries == 1
+            && snapshot.active_streams == 0
+    })
+    .await?;
+    assert_eq!(recovered.reconnects, 1);
+    assert_eq!(recovered.handshake_timeouts, 1);
+    assert_eq!(recovered.readiness_failures, 0);
+    assert_eq!(recovered.stream_open_failures, 0);
+
+    client.shutdown().await?;
     fixture.shutdown().await?;
     Ok(())
 }

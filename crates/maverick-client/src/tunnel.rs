@@ -50,7 +50,7 @@ pub struct H2ClientTunnel {
     cover_traffic: RuntimeCoverTraffic,
     batcher: RuntimeBatcher,
     send_stall_timeout: Duration,
-    _connection_lease: Option<crate::connection_manager::H2ConnectionLease>,
+    connection_lease: Option<crate::connection_manager::H2ConnectionLease>,
 }
 
 pub struct WsClientTunnel {
@@ -87,48 +87,53 @@ impl ClientTunnel {
         let max_frame_size = self.max_frame_size();
         match self {
             Self::H2(tunnel) => {
-                let frames =
-                    prepare_outgoing_frames(frame, &mut tunnel.batcher, &tunnel.padding).await;
-                let last = frames.len().saturating_sub(1);
-                for (idx, frame) in frames.into_iter().enumerate() {
-                    if let Some(padding) = tunnel.padding.padding_frame(
-                        frame.frame_type,
-                        frame.payload.len(),
-                        max_frame_size,
-                    ) {
+                let result: Result<()> = async {
+                    let frames =
+                        prepare_outgoing_frames(frame, &mut tunnel.batcher, &tunnel.padding).await;
+                    let last = frames.len().saturating_sub(1);
+                    for (idx, frame) in frames.into_iter().enumerate() {
+                        if let Some(padding) = tunnel.padding.padding_frame(
+                            frame.frame_type,
+                            frame.payload.len(),
+                            max_frame_size,
+                        ) {
+                            send_h2_frame(
+                                &mut tunnel.send_stream,
+                                padding,
+                                max_frame_size,
+                                false,
+                                tunnel.send_stall_timeout,
+                            )
+                            .await?;
+                        }
+                        for cover_frame in tunnel.cover_traffic.padding_frames(
+                            frame.frame_type,
+                            frame.payload.len(),
+                            max_frame_size,
+                        ) {
+                            send_h2_frame(
+                                &mut tunnel.send_stream,
+                                cover_frame,
+                                max_frame_size,
+                                false,
+                                tunnel.send_stall_timeout,
+                            )
+                            .await?;
+                        }
                         send_h2_frame(
                             &mut tunnel.send_stream,
-                            padding,
+                            frame,
                             max_frame_size,
-                            false,
+                            end_stream && idx == last,
                             tunnel.send_stall_timeout,
                         )
                         .await?;
                     }
-                    for cover_frame in tunnel.cover_traffic.padding_frames(
-                        frame.frame_type,
-                        frame.payload.len(),
-                        max_frame_size,
-                    ) {
-                        send_h2_frame(
-                            &mut tunnel.send_stream,
-                            cover_frame,
-                            max_frame_size,
-                            false,
-                            tunnel.send_stall_timeout,
-                        )
-                        .await?;
-                    }
-                    send_h2_frame(
-                        &mut tunnel.send_stream,
-                        frame,
-                        max_frame_size,
-                        end_stream && idx == last,
-                        tunnel.send_stall_timeout,
-                    )
-                    .await?;
+                    Ok(())
                 }
-                Ok(())
+                .await;
+                record_h2_runtime_failure(tunnel, &result);
+                result
             }
             Self::CloudflareWs(tunnel) => {
                 let frames =
@@ -200,7 +205,11 @@ impl ClientTunnel {
 
     pub async fn read_next_frame(&mut self) -> Result<Option<Frame>> {
         match self {
-            Self::H2(tunnel) => read_next_h2_frame(tunnel).await,
+            Self::H2(tunnel) => {
+                let result = read_next_h2_frame(tunnel).await;
+                record_h2_runtime_failure(tunnel, &result);
+                result
+            }
             Self::CloudflareWs(tunnel) => read_next_ws_frame(tunnel).await,
             #[cfg(feature = "h3")]
             Self::H3(tunnel) => read_next_h3_frame(tunnel).await,
@@ -222,17 +231,59 @@ impl ClientTunnel {
         match self {
             Self::H2(tunnel) => {
                 let finish_timeout = tunnel.send_stall_timeout;
-                timeout(
+                let result = match timeout(
                     finish_timeout,
                     finish_h2_response(tunnel, allow_legacy_udp_reset),
                 )
                 .await
-                .map_err(|_| anyhow::anyhow!("gRPC response completion timed out"))?
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(anyhow::anyhow!("gRPC response completion timed out")),
+                };
+                record_h2_runtime_failure(tunnel, &result);
+                result
             }
             Self::CloudflareWs(_) => Ok(()),
             #[cfg(feature = "h3")]
             Self::H3(_) => Ok(()),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum H2RuntimeFailureKind {
+    StreamReset,
+    SendStall,
+}
+
+fn classify_h2_runtime_failure(error: &anyhow::Error) -> Option<H2RuntimeFailureKind> {
+    if error
+        .chain()
+        .any(|source| source.downcast_ref::<H2SendStalled>().is_some())
+    {
+        return Some(H2RuntimeFailureKind::SendStall);
+    }
+    if error.chain().any(|source| {
+        source
+            .downcast_ref::<h2::Error>()
+            .is_some_and(h2::Error::is_reset)
+    }) {
+        return Some(H2RuntimeFailureKind::StreamReset);
+    }
+    None
+}
+
+fn record_h2_runtime_failure<T>(tunnel: &H2ClientTunnel, result: &Result<T>) {
+    let Err(error) = result else {
+        return;
+    };
+    let Some(lease) = tunnel.connection_lease.as_ref() else {
+        return;
+    };
+    match classify_h2_runtime_failure(error) {
+        Some(H2RuntimeFailureKind::StreamReset) => lease.record_runtime_stream_reset(),
+        Some(H2RuntimeFailureKind::SendStall) => lease.record_runtime_send_stall(),
+        None => {}
     }
 }
 
@@ -288,7 +339,7 @@ async fn open_h2(
         cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
         batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
         send_stall_timeout: Duration::from_secs(config.advanced.idle_timeout_secs),
-        _connection_lease: connection_lease,
+        connection_lease,
     };
     let server_frame = read_next_h2_frame(&mut tunnel)
         .await?
@@ -685,7 +736,7 @@ async fn finish_h2_response(
                     .recv_stream
                     .flow_control()
                     .release_capacity(consumed)
-                    .map_err(|_| anyhow::anyhow!("gRPC response flow control failed"))?;
+                    .context("gRPC response flow control failed")?;
                 tunnel.recv_buf.extend_from_slice(&bytes);
             }
             Some(Err(err))
@@ -699,7 +750,9 @@ async fn finish_h2_response(
                 // this caller-selected close path.
                 return Ok(());
             }
-            Some(Err(_)) => bail!("gRPC response body failed"),
+            Some(Err(err)) => {
+                return Err(anyhow::Error::new(err).context("gRPC response body failed"));
+            }
             None => break,
         }
     }
@@ -712,7 +765,7 @@ async fn finish_h2_response(
         .recv_stream
         .trailers()
         .await
-        .map_err(|_| anyhow::anyhow!("gRPC response trailers failed"))?
+        .context("gRPC response trailers failed")?
     else {
         // Alpha.3 ended a complete response with DATA END_STREAM and did not
         // send gRPC trailers. Keep that wire behavior compatible.
@@ -873,7 +926,7 @@ mod tests {
             cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
             batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
             send_stall_timeout: Duration::from_secs(1),
-            _connection_lease: None,
+            connection_lease: None,
         }));
         Ok((tunnel, server, client))
     }
@@ -907,6 +960,85 @@ mod tests {
         assert!(
             validate_negotiated_max_frame_size((MAX_NEGOTIATED_FRAME_SIZE + 1) as u32).is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn h2_runtime_failure_classification_uses_error_types() -> Result<()> {
+        let stalled = anyhow::Error::new(H2SendStalled).context("outer operation failed");
+        assert_eq!(
+            classify_h2_runtime_failure(&stalled),
+            Some(H2RuntimeFailureKind::SendStall)
+        );
+        let misleading_text =
+            anyhow::anyhow!("h2 send stalled while waiting for receiver capacity");
+        assert_eq!(classify_h2_runtime_failure(&misleading_text), None);
+
+        let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+        let (reset_tx, reset_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(server_io).await?;
+            let (_request, mut respond) = connection
+                .accept()
+                .await
+                .context("client closed before sending a request")??;
+            let response = http::Response::builder()
+                .header("content-type", "application/grpc")
+                .body(())?;
+            let mut response_body = respond.send_response(response, false)?;
+            let resetter = tokio::spawn(async move {
+                let _ = reset_rx.await;
+                response_body.send_reset(h2::Reason::CANCEL);
+            });
+            while let Some(request) = connection.accept().await {
+                request?;
+            }
+            resetter.await?;
+            Result::<()>::Ok(())
+        });
+
+        let (mut sender, connection) = h2::client::handshake(client_io).await?;
+        let client = tokio::spawn(connection);
+        sender = sender.ready().await?;
+        let request = http::Request::builder().method("POST").uri("/").body(())?;
+        let (response, request_body) = sender.send_request(request, true)?;
+        let response = response.await?;
+        let config = client_config(SecretString::generate());
+        let pool =
+            crate::connection_manager::ClientTunnelPool::new(std::sync::Arc::new(config.clone()));
+        let mut tunnel = ClientTunnel::H2(Box::new(H2ClientTunnel {
+            send_stream: request_body,
+            recv_stream: response.into_body(),
+            recv_buf: BytesMut::new(),
+            max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+            padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
+            cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
+            batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
+            send_stall_timeout: Duration::from_secs(1),
+            connection_lease: Some(pool.test_h2_runtime_metrics_lease()),
+        }));
+        reset_tx.send(()).expect("reset receiver dropped");
+        let reset = timeout(Duration::from_secs(1), tunnel.read_next_frame())
+            .await
+            .context("remote H2 reset did not arrive")?
+            .expect_err("remote H2 stream returned data instead of a reset");
+        assert!(reset
+            .downcast_ref::<h2::Error>()
+            .is_some_and(h2::Error::is_reset));
+        assert_eq!(
+            classify_h2_runtime_failure(&reset),
+            Some(H2RuntimeFailureKind::StreamReset)
+        );
+        let snapshot = pool.h2_snapshot();
+        assert_eq!(snapshot.runtime_stream_resets, 1);
+        assert_eq!(snapshot.runtime_send_stalls, 0);
+
+        drop(tunnel);
+        drop(sender);
+        server.abort();
+        client.abort();
+        let _ = server.await;
+        let _ = client.await;
+        Ok(())
     }
 
     #[test]
@@ -1108,22 +1240,34 @@ mod tests {
         let client = tokio::spawn(connection);
         sender = sender.ready().await?;
         let request = http::Request::builder().method("POST").uri("/").body(())?;
-        let (response, mut request_body) = sender.send_request(request, false)?;
-        assert!(response.await?.status().is_success());
+        let (response, request_body) = sender.send_request(request, false)?;
+        let response = response.await?;
+        assert!(response.status().is_success());
+        let config = client_config(SecretString::generate());
+        let pool =
+            crate::connection_manager::ClientTunnelPool::new(std::sync::Arc::new(config.clone()));
+        let mut tunnel = ClientTunnel::H2(Box::new(H2ClientTunnel {
+            send_stream: request_body,
+            recv_stream: response.into_body(),
+            recv_buf: BytesMut::new(),
+            max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+            padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
+            cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
+            batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
+            send_stall_timeout: Duration::from_millis(25),
+            connection_lease: Some(pool.test_h2_runtime_metrics_lease()),
+        }));
 
         let result = timeout(
             Duration::from_secs(1),
-            send_h2_frame(
-                &mut request_body,
+            tunnel.send_frame(
                 Frame::new(
                     FrameType::TcpData,
                     0,
                     1,
                     Bytes::from_static(b"capacity must be granted"),
                 ),
-                DEFAULT_MAX_FRAME_SIZE,
                 true,
-                Duration::from_millis(25),
             ),
         )
         .await
@@ -1132,8 +1276,12 @@ mod tests {
         assert!(error
             .to_string()
             .contains("h2 send stalled while waiting for receiver capacity"));
+        assert!(error.downcast_ref::<H2SendStalled>().is_some());
+        let snapshot = pool.h2_snapshot();
+        assert_eq!(snapshot.runtime_send_stalls, 1);
+        assert_eq!(snapshot.runtime_stream_resets, 0);
 
-        drop(request_body);
+        drop(tunnel);
         drop(sender);
         server.abort();
         client.abort();

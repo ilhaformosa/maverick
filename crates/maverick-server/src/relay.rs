@@ -20,6 +20,9 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep_until, timeout, Duration, Instant};
 
 const TARGET_CONNECT_RACE_DELAY: Duration = Duration::from_millis(250);
+pub(crate) const TARGET_OPEN_LATENCY_BUCKETS_MS: [u64; 10] =
+    [10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000];
+const TARGET_OPEN_LATENCY_BUCKET_COUNT: usize = TARGET_OPEN_LATENCY_BUCKETS_MS.len() + 1;
 
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -50,7 +53,69 @@ pub(crate) struct TargetOpenMetricSinks {
     pub(crate) resolution_failures: Arc<AtomicU64>,
     pub(crate) connect_timeouts: Arc<AtomicU64>,
     pub(crate) connect_failures: Arc<AtomicU64>,
+    pub(crate) resolution_latency: CumulativeLatencyMetric,
+    pub(crate) connect_latency: CumulativeLatencyMetric,
 }
+
+#[derive(Clone, Debug)]
+pub(crate) struct CumulativeLatencyMetric {
+    count: Arc<AtomicU64>,
+    sum_ms: Arc<AtomicU64>,
+    cumulative_buckets: Arc<[AtomicU64; TARGET_OPEN_LATENCY_BUCKET_COUNT]>,
+}
+
+impl Default for CumulativeLatencyMetric {
+    fn default() -> Self {
+        Self {
+            count: Arc::new(AtomicU64::new(0)),
+            sum_ms: Arc::new(AtomicU64::new(0)),
+            cumulative_buckets: Arc::new(std::array::from_fn(|_| AtomicU64::new(0))),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CumulativeLatencySnapshot {
+    pub(crate) count: u64,
+    pub(crate) sum_ms: u64,
+    pub(crate) cumulative_buckets: [u64; TARGET_OPEN_LATENCY_BUCKET_COUNT],
+}
+
+impl CumulativeLatencyMetric {
+    pub(crate) fn record(&self, elapsed: Duration) {
+        let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.sum_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
+        for (index, bound_ms) in TARGET_OPEN_LATENCY_BUCKETS_MS.iter().enumerate() {
+            if elapsed <= Duration::from_millis(*bound_ms) {
+                self.cumulative_buckets[index].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.cumulative_buckets[TARGET_OPEN_LATENCY_BUCKET_COUNT - 1]
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn snapshot(&self) -> CumulativeLatencySnapshot {
+        CumulativeLatencySnapshot {
+            count: self.count.load(Ordering::Relaxed),
+            sum_ms: self.sum_ms.load(Ordering::Relaxed),
+            cumulative_buckets: std::array::from_fn(|index| {
+                self.cumulative_buckets[index].load(Ordering::Relaxed)
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct H2SendStall;
+
+impl fmt::Display for H2SendStall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("h2 send stalled while waiting for receiver capacity")
+    }
+}
+
+impl StdError for H2SendStall {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TargetOpenFailureKind {
@@ -212,8 +277,16 @@ async fn open_target_inner(
     metrics: Option<&TargetOpenMetricSinks>,
 ) -> Result<TcpStream> {
     let authority = open.target.to_authority(open.port);
+    let resolution_started = Instant::now();
     let addrs = match resolve_allowed_authority_classified(&authority, timeout_ms, egress).await {
-        Ok(addrs) => addrs,
+        Ok(addrs) => {
+            if let Some(metrics) = metrics {
+                metrics
+                    .resolution_latency
+                    .record(resolution_started.elapsed());
+            }
+            addrs
+        }
         Err(failure) => {
             if let Some(metrics) = metrics {
                 metrics.record(failure.kind);
@@ -221,13 +294,19 @@ async fn open_target_inner(
             return Err(anyhow::Error::new(failure).context("resolve target"));
         }
     };
+    let connect_started = Instant::now();
     match connect_with_timeout(
-        connect_target_addresses(addrs, TARGET_CONNECT_RACE_DELAY, TcpStream::connect),
+        connect_target_addresses(addrs, TARGET_CONNECT_RACE_DELAY, connect_target_tcp),
         Duration::from_millis(timeout_ms),
     )
     .await
     {
-        Ok(target) => Ok(target),
+        Ok(target) => {
+            if let Some(metrics) = metrics {
+                metrics.connect_latency.record(connect_started.elapsed());
+            }
+            Ok(target)
+        }
         Err(failure) => {
             if let Some(metrics) = metrics {
                 metrics.record(failure.kind);
@@ -235,6 +314,17 @@ async fn open_target_inner(
             Err(anyhow::Error::new(failure))
         }
     }
+}
+
+async fn connect_target_tcp(addr: SocketAddr) -> io::Result<TcpStream> {
+    let target = TcpStream::connect(addr).await?;
+    target.set_nodelay(true).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("enable TCP_NODELAY on target connection: {error}"),
+        )
+    })?;
+    Ok(target)
 }
 
 pub async fn relay_target_and_tunnel(
@@ -262,6 +352,9 @@ pub async fn relay_target_and_tunnel(
 
         tokio::select! {
             _ = tokio::time::sleep(policy.idle_timeout) => {
+                if pending_send.is_some() {
+                    return Err(H2SendStall.into());
+                }
                 break;
             }
 
@@ -481,7 +574,7 @@ async fn send_bytes_with_capacity(
             Ok(result) => result?,
             Err(_) => {
                 stream.reserve_capacity(0);
-                bail!("h2 send stalled while waiting for receiver capacity");
+                return Err(H2SendStall.into());
             }
         };
         if capacity == 0 {
@@ -829,16 +922,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_target_addresses, connect_with_timeout, relay_dns_query, relay_target_and_tunnel,
-        relay_udp_packet, resolve_allowed_addresses, send_frame, write_all_with_idle_timeout,
-        RateLimiter, TargetOpenFailureKind, TargetOpenMetricSinks, TunnelRelayPolicy,
-        TARGET_CONNECT_RACE_DELAY,
+        connect_target_addresses, connect_target_tcp, connect_with_timeout,
+        open_target_with_metrics, relay_dns_query, relay_target_and_tunnel, relay_udp_packet,
+        resolve_allowed_addresses, send_frame, write_all_with_idle_timeout,
+        CumulativeLatencyMetric, H2SendStall, RateLimiter, TargetOpenFailureKind,
+        TargetOpenMetricSinks, TunnelRelayPolicy, TARGET_CONNECT_RACE_DELAY,
     };
     use anyhow::Result;
     use bytes::{Bytes, BytesMut};
     use futures::poll;
     use maverick_core::config::ServerEgressPolicyConfig;
-    use maverick_core::frame::{Frame, FrameType, TargetAddr, UdpPacketPayload};
+    use maverick_core::frame::{Frame, FrameType, OpenTcpPayload, TargetAddr, UdpPacketPayload};
     use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
     use maverick_core::padding::{RuntimeCoverTraffic, RuntimePadding};
     use std::future::{pending, ready};
@@ -877,6 +971,8 @@ mod tests {
             resolution_failures: Arc::new(AtomicU64::new(0)),
             connect_timeouts: Arc::new(AtomicU64::new(0)),
             connect_failures: Arc::new(AtomicU64::new(0)),
+            resolution_latency: CumulativeLatencyMetric::default(),
+            connect_latency: CumulativeLatencyMetric::default(),
         }
     }
 
@@ -894,6 +990,55 @@ mod tests {
             allow_loopback: true,
             ..ServerEgressPolicyConfig::default()
         }
+    }
+
+    #[tokio::test]
+    async fn target_tcp_connector_enables_nodelay() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let target = connect_target_tcp(listener.local_addr()?).await?;
+        let (_peer, _) = listener.accept().await?;
+
+        assert!(target.nodelay()?);
+        Ok(())
+    }
+
+    #[test]
+    fn target_latency_metric_uses_fixed_cumulative_buckets() {
+        let metric = CumulativeLatencyMetric::default();
+        metric.record(Duration::from_millis(5));
+        metric.record(Duration::from_millis(250));
+        metric.record(Duration::from_millis(10_001));
+
+        let snapshot = metric.snapshot();
+        assert_eq!(snapshot.count, 3);
+        assert_eq!(snapshot.sum_ms, 10_256);
+        assert_eq!(
+            snapshot.cumulative_buckets,
+            [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_target_open_records_resolution_and_connect_latency() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let target_addr = listener.local_addr()?;
+        let accepted = tokio::spawn(async move { listener.accept().await });
+        let open = OpenTcpPayload::new(TargetAddr::Ipv4(Ipv4Addr::LOCALHOST), target_addr.port());
+        let metrics = target_metric_sinks();
+
+        let target =
+            open_target_with_metrics(&open, 1_000, &loopback_egress_policy(), &metrics).await?;
+        let (_peer, _) = accepted.await??;
+
+        assert_eq!(metrics.resolution_latency.snapshot().count, 1);
+        assert_eq!(metrics.connect_latency.snapshot().count, 1);
+        assert_eq!(
+            metrics.resolution_latency.snapshot().cumulative_buckets[10],
+            1
+        );
+        assert_eq!(metrics.connect_latency.snapshot().cumulative_buckets[10], 1);
+        drop(target);
+        Ok(())
     }
 
     struct DropCounter(Arc<AtomicUsize>);
@@ -1575,9 +1720,77 @@ mod tests {
             .expect("zero-window H2 send should remain bounded")
             .expect("server send task should report its result");
         let error = result.expect_err("zero-window H2 send should time out");
+        assert!(error.downcast_ref::<H2SendStall>().is_some());
         assert!(error
             .to_string()
             .contains("h2 send stalled while waiting for receiver capacity"));
+        let metrics = crate::runtime_metrics::ServerRuntimeMetrics::default();
+        metrics.record_h2_request_error(&error);
+        assert!(metrics.json_snapshot().contains("\"h2_send_stalls\":1"));
+        assert!(metrics.json_snapshot().contains("\"h2_stream_resets\":0"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn h2_bulk_relay_zero_window_records_one_send_stall() -> Result<()> {
+        let target_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let target = TcpStream::connect(target_listener.local_addr()?).await?;
+        let (mut target_peer, _) = target_listener.accept().await?;
+        let (client_io, server_io) = duplex(16 * 1024);
+        let (relay_completed_tx, relay_completed_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let mut h2 = h2::server::handshake(server_io).await.unwrap();
+            if let Some(Ok((request, mut respond))) = h2.accept().await {
+                let response = http::Response::builder().status(200).body(()).unwrap();
+                let send_stream = respond.send_response(response, false).unwrap();
+                tokio::spawn(async move {
+                    let result = relay_target_and_tunnel(
+                        target,
+                        send_stream,
+                        request.into_body(),
+                        BytesMut::new(),
+                        65_536,
+                        1,
+                        TunnelRelayPolicy {
+                            idle_timeout: Duration::from_millis(25),
+                            rate_limiter: None,
+                            padding: RuntimePadding::disabled(),
+                            cover_traffic: RuntimeCoverTraffic::disabled(),
+                            shaping_metrics: None,
+                        },
+                    )
+                    .await;
+                    let _ = relay_completed_tx.send(result);
+                });
+            }
+            while h2.accept().await.is_some() {}
+        });
+
+        let mut builder = h2::client::Builder::new();
+        builder.initial_window_size(0);
+        let (client, connection) = builder.handshake::<_, Bytes>(client_io).await?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let mut client = client.ready().await?;
+        let request = http::Request::builder().method("POST").uri("/").body(())?;
+        let (response, _request_body) = client.send_request(request, false)?;
+        let _response_body = response.await?.into_body();
+
+        target_peer.write_all(b"blocked bulk response").await?;
+        let relay_error = timeout(Duration::from_secs(1), relay_completed_rx)
+            .await
+            .expect("zero-window bulk relay must remain bounded")
+            .expect("relay task must report its result")
+            .expect_err("zero-window bulk relay must report a send stall");
+        assert!(relay_error.downcast_ref::<H2SendStall>().is_some());
+
+        let metrics = crate::runtime_metrics::ServerRuntimeMetrics::default();
+        metrics.record_h2_request_error(&relay_error);
+        let snapshot = metrics.json_snapshot();
+        assert!(snapshot.contains("\"h2_send_stalls\":1"));
+        assert!(snapshot.contains("\"h2_stream_resets\":0"));
         Ok(())
     }
 
@@ -1808,10 +2021,12 @@ mod tests {
             .await
             .expect("H2 request reset must release the relay promptly")
             .expect("relay task should report its result");
-        assert!(
-            relay_result.is_err(),
-            "an H2 request reset should terminate the relay with an error"
-        );
+        let relay_error =
+            relay_result.expect_err("an H2 request reset should terminate the relay with an error");
+        let metrics = crate::runtime_metrics::ServerRuntimeMetrics::default();
+        metrics.record_h2_request_error(&relay_error);
+        assert!(metrics.json_snapshot().contains("\"h2_stream_resets\":1"));
+        assert!(metrics.json_snapshot().contains("\"h2_send_stalls\":0"));
         drop(response_body);
         Ok(())
     }

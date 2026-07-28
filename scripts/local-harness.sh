@@ -56,6 +56,9 @@ trap 'rm -rf "$config_tmp"' EXIT
 echo "==> local product smoke"
 CARGO_BIN="$cargo_bin" ./scripts/user-smoke.sh
 
+echo "==> isolated test-server preparation checks"
+./scripts/test-prepare-test-server.sh
+
 echo "==> active-surface checks"
 active_python="$(
   find . \
@@ -78,6 +81,8 @@ active_docs=(
   THREAT_MODEL.md
   SECURITY.md
   docs/TRANSPORT_ARCHITECTURE.md
+  docs/TEST_SERVER_PREPARATION.md
+  docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md
   docs/archive/README.md
 )
 for doc_path in "${active_docs[@]}"; do
@@ -89,8 +94,10 @@ done
 
 if rg -l '/Users/|file://|ssh-rsa|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY' \
   AGENTS.md README.md STATUS.md ROADMAP.md CONFIG.md THREAT_MODEL.md SECURITY.md \
-  docs/TRANSPORT_ARCHITECTURE.md scripts/user-smoke.sh scripts/build-pilot.sh \
-  crates config .github/workflows
+  docs/TRANSPORT_ARCHITECTURE.md docs/TEST_SERVER_PREPARATION.md \
+  docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md scripts/user-smoke.sh \
+  scripts/build-pilot.sh scripts/prepare-test-server.sh \
+  scripts/test-prepare-test-server.sh crates config .github/workflows
 then
   echo "active source contains a private path or key marker" >&2
   exit 1
@@ -114,6 +121,7 @@ done
 
 git diff --check
 bash -n scripts/local-harness.sh scripts/user-smoke.sh scripts/build-pilot.sh \
-  scripts/security-dependency-inventory.sh
+  scripts/security-dependency-inventory.sh scripts/prepare-test-server.sh \
+  scripts/test-prepare-test-server.sh
 
 echo "local harness OK"

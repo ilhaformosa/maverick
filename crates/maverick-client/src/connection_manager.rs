@@ -11,6 +11,16 @@ use crate::transport::{self, H2TunnelRequestSender, TransportKind};
 use crate::tunnel::{self, ClientTunnel};
 
 const MAX_READY_ATTEMPTS: usize = 2;
+pub const H2_DURATION_BUCKET_UPPER_BOUNDS_MS: [u64; 10] =
+    [10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000];
+const H2_DURATION_BUCKET_COUNT: usize = H2_DURATION_BUCKET_UPPER_BOUNDS_MS.len() + 1;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct H2DurationHistogramSnapshot {
+    pub count: u64,
+    pub sum_ms: u64,
+    pub buckets: [u64; H2_DURATION_BUCKET_COUNT],
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct H2ConnectionPoolSnapshot {
@@ -21,8 +31,14 @@ pub struct H2ConnectionPoolSnapshot {
     pub readiness_failures: u64,
     pub stream_open_failures: u64,
     pub handshake_timeouts: u64,
+    pub timeout_retirements: u64,
+    pub timeout_recoveries: u64,
     pub idle_retirements: u64,
     pub closed_retirements: u64,
+    pub runtime_stream_resets: u64,
+    pub runtime_send_stalls: u64,
+    pub connection_setup_duration_ms: H2DurationHistogramSnapshot,
+    pub tunnel_open_duration_ms: H2DurationHistogramSnapshot,
     pub active_streams: u32,
     pub cached_connection: bool,
     pub shutdown: bool,
@@ -54,7 +70,9 @@ impl ClientTunnelPool {
 
     async fn open_h2(&self) -> Result<ClientTunnel> {
         let mut last_error = None;
-        for _ in 0..MAX_READY_ATTEMPTS {
+        let mut timeout_recovery_pending = false;
+        for attempt in 0..MAX_READY_ATTEMPTS {
+            let tunnel_open_started_at = Instant::now();
             let managed = self.h2.acquire().await?;
             let generation = managed.generation;
             match timeout(
@@ -63,10 +81,29 @@ impl ClientTunnelPool {
             )
             .await
             {
-                Ok(Ok(tunnel)) => return Ok(tunnel),
+                Ok(Ok(tunnel)) => {
+                    self.h2
+                        .record_tunnel_open_duration(tunnel_open_started_at.elapsed());
+                    if timeout_recovery_pending {
+                        self.h2.record_timeout_recovery();
+                    }
+                    return Ok(tunnel);
+                }
                 Ok(Err(err)) if err.downcast_ref::<tunnel::H2SendStalled>().is_some() => {
-                    self.h2.record_handshake_timeout();
-                    return Err(err.context("pooled H2 tunnel handshake timed out"));
+                    // A healthy connection at its peer-advertised concurrent
+                    // stream limit can also stall here. Keep that generation
+                    // cached instead of silently bypassing its capacity with
+                    // another outer H2 connection.
+                    let retired = self
+                        .h2
+                        .retire_after_handshake_timeout_if_unshared(generation);
+                    let err = err.context("pooled H2 tunnel handshake timed out");
+                    if retired && attempt + 1 < MAX_READY_ATTEMPTS {
+                        timeout_recovery_pending = true;
+                        last_error = Some(err);
+                        continue;
+                    }
+                    return Err(err);
                 }
                 Ok(Err(err)) if err.downcast_ref::<h2::Error>().is_some() => {
                     self.h2.invalidate_after_stream_open_failure(generation);
@@ -74,8 +111,16 @@ impl ClientTunnelPool {
                 }
                 Ok(Err(err)) => return Err(err),
                 Err(_) => {
-                    self.h2.record_handshake_timeout();
-                    bail!("pooled H2 tunnel handshake timed out");
+                    let retired = self
+                        .h2
+                        .retire_after_handshake_timeout_if_unshared(generation);
+                    let err = anyhow::anyhow!("pooled H2 tunnel handshake timed out");
+                    if retired && attempt + 1 < MAX_READY_ATTEMPTS {
+                        timeout_recovery_pending = true;
+                        last_error = Some(err);
+                        continue;
+                    }
+                    return Err(err);
                 }
             }
         }
@@ -84,6 +129,14 @@ impl ClientTunnelPool {
 
     pub(crate) fn h2_snapshot(&self) -> H2ConnectionPoolSnapshot {
         self.h2.snapshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_h2_runtime_metrics_lease(&self) -> H2ConnectionLease {
+        H2ConnectionLease {
+            inner: Arc::downgrade(&self.h2.inner),
+            generation: 0,
+        }
     }
 
     pub(crate) fn shutdown(&self) {
@@ -115,10 +168,46 @@ struct H2ConnectionPoolState {
     readiness_failures: u64,
     stream_open_failures: u64,
     handshake_timeouts: u64,
+    timeout_retirements: u64,
+    timeout_recoveries: u64,
     idle_retirements: u64,
     closed_retirements: u64,
+    runtime_stream_resets: u64,
+    runtime_send_stalls: u64,
+    connection_setup_duration_ms: H2DurationHistogram,
+    tunnel_open_duration_ms: H2DurationHistogram,
     active_streams: u32,
     shutdown: bool,
+}
+
+#[derive(Default)]
+struct H2DurationHistogram {
+    count: u64,
+    sum_ms: u64,
+    buckets: [u64; H2_DURATION_BUCKET_COUNT],
+}
+
+impl H2DurationHistogram {
+    fn record(&mut self, elapsed: Duration) {
+        let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        self.count = self.count.saturating_add(1);
+        self.sum_ms = self.sum_ms.saturating_add(elapsed_ms);
+        for (index, upper_bound_ms) in H2_DURATION_BUCKET_UPPER_BOUNDS_MS.iter().enumerate() {
+            if elapsed_ms <= *upper_bound_ms {
+                self.buckets[index] = self.buckets[index].saturating_add(1);
+            }
+        }
+        let infinite_bucket = H2_DURATION_BUCKET_COUNT - 1;
+        self.buckets[infinite_bucket] = self.buckets[infinite_bucket].saturating_add(1);
+    }
+
+    fn snapshot(&self) -> H2DurationHistogramSnapshot {
+        H2DurationHistogramSnapshot {
+            count: self.count,
+            sum_ms: self.sum_ms,
+            buckets: self.buckets,
+        }
+    }
 }
 
 struct CachedH2Connection {
@@ -164,6 +253,24 @@ impl Drop for H2ConnectionLease {
         if connection.active_streams == 0 {
             connection.idle_since = Some(Instant::now());
         }
+    }
+}
+
+impl H2ConnectionLease {
+    pub(crate) fn record_runtime_stream_reset(&self) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let mut state = lock_state(&inner.state);
+        state.runtime_stream_resets = state.runtime_stream_resets.saturating_add(1);
+    }
+
+    pub(crate) fn record_runtime_send_stall(&self) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let mut state = lock_state(&inner.state);
+        state.runtime_send_stalls = state.runtime_send_stalls.saturating_add(1);
     }
 }
 
@@ -227,7 +334,9 @@ impl H2ConnectionManager {
             return Ok(checkout);
         }
 
+        let connection_setup_started_at = Instant::now();
         let connection = crate::h2_transport::connect_with_status(&self.inner.config).await?;
+        self.record_connection_setup_duration(connection_setup_started_at.elapsed());
         self.install_and_checkout(connection)
     }
 
@@ -331,9 +440,34 @@ impl H2ConnectionManager {
         }
     }
 
-    fn record_handshake_timeout(&self) {
+    fn retire_after_handshake_timeout_if_unshared(&self, generation: u64) -> bool {
         let mut state = lock_state(&self.inner.state);
         state.handshake_timeouts = state.handshake_timeouts.saturating_add(1);
+        let should_retire = state.connection.as_ref().is_some_and(|connection| {
+            connection.generation == generation && connection.active_streams == 0
+        });
+        if should_retire {
+            state.connection.take();
+            state.timeout_retirements = state.timeout_retirements.saturating_add(1);
+            debug!(generation, "retired timed-out pooled H2 connection");
+            return true;
+        }
+        false
+    }
+
+    fn record_timeout_recovery(&self) {
+        let mut state = lock_state(&self.inner.state);
+        state.timeout_recoveries = state.timeout_recoveries.saturating_add(1);
+    }
+
+    fn record_connection_setup_duration(&self, elapsed: Duration) {
+        let mut state = lock_state(&self.inner.state);
+        state.connection_setup_duration_ms.record(elapsed);
+    }
+
+    fn record_tunnel_open_duration(&self, elapsed: Duration) {
+        let mut state = lock_state(&self.inner.state);
+        state.tunnel_open_duration_ms.record(elapsed);
     }
 
     fn snapshot(&self) -> H2ConnectionPoolSnapshot {
@@ -346,8 +480,14 @@ impl H2ConnectionManager {
             readiness_failures: state.readiness_failures,
             stream_open_failures: state.stream_open_failures,
             handshake_timeouts: state.handshake_timeouts,
+            timeout_retirements: state.timeout_retirements,
+            timeout_recoveries: state.timeout_recoveries,
             idle_retirements: state.idle_retirements,
             closed_retirements: state.closed_retirements,
+            runtime_stream_resets: state.runtime_stream_resets,
+            runtime_send_stalls: state.runtime_send_stalls,
+            connection_setup_duration_ms: state.connection_setup_duration_ms.snapshot(),
+            tunnel_open_duration_ms: state.tunnel_open_duration_ms.snapshot(),
             active_streams: state.active_streams,
             cached_connection: state.connection.is_some(),
             shutdown: state.shutdown,
@@ -426,6 +566,41 @@ mod tests {
         ClientAdvancedConfig, ClientServerConfig, LocalConfig, LogConfig, Socks5Config,
     };
     use maverick_core::{Mode, SecretString};
+    use tokio::io::duplex;
+
+    async fn test_h2_connection() -> crate::h2_transport::H2Connection {
+        let (client_io, server_io) = duplex(64 * 1024);
+        tokio::spawn(async move {
+            let Ok(mut connection) = h2::server::Builder::new()
+                .handshake::<_, bytes::Bytes>(server_io)
+                .await
+            else {
+                return;
+            };
+            while let Some(request) = connection.accept().await {
+                let Ok((_request, mut respond)) = request else {
+                    break;
+                };
+                let _ = respond.send_response(http::Response::new(()), true);
+            }
+        });
+
+        let (sender, connection) = h2::client::handshake(client_io)
+            .await
+            .expect("test H2 client handshake");
+        let (closed_tx, closed_rx) = watch::channel(false);
+        tokio::spawn(async move {
+            let _ = connection.await;
+            let _ = closed_tx.send(true);
+        });
+        crate::h2_transport::H2Connection {
+            transport: H2TunnelRequestSender {
+                sender,
+                channel_binding: None,
+            },
+            connection_closed: closed_rx,
+        }
+    }
 
     fn test_config() -> Arc<ClientConfig> {
         Arc::new(ClientConfig {
@@ -474,5 +649,122 @@ mod tests {
             maintenance_interval(Duration::from_secs(10)),
             Duration::from_secs(1)
         );
+    }
+
+    #[tokio::test]
+    async fn duration_histograms_use_fixed_cumulative_buckets() {
+        let manager = H2ConnectionManager::new(test_config());
+        manager.record_connection_setup_duration(Duration::from_millis(10));
+        manager.record_connection_setup_duration(Duration::from_millis(11));
+        manager.record_connection_setup_duration(Duration::from_millis(10_001));
+        manager.record_tunnel_open_duration(Duration::from_millis(25));
+
+        let snapshot = manager.snapshot();
+        assert_eq!(
+            snapshot.connection_setup_duration_ms,
+            H2DurationHistogramSnapshot {
+                count: 3,
+                sum_ms: 10_022,
+                buckets: [1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3],
+            }
+        );
+        assert_eq!(
+            snapshot.tunnel_open_duration_ms,
+            H2DurationHistogramSnapshot {
+                count: 1,
+                sum_ms: 25,
+                buckets: [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_failure_counters_are_numeric_and_saturating() {
+        let manager = H2ConnectionManager::new(test_config());
+        let lease = H2ConnectionLease {
+            inner: Arc::downgrade(&manager.inner),
+            generation: 0,
+        };
+        lease.record_runtime_stream_reset();
+        lease.record_runtime_send_stall();
+        lease.record_runtime_send_stall();
+
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.runtime_stream_resets, 1);
+        assert_eq!(snapshot.runtime_send_stalls, 2);
+    }
+
+    #[tokio::test]
+    async fn timeout_retirement_requires_unshared_exact_generation() {
+        let manager = H2ConnectionManager::new(test_config());
+        let first = manager
+            .install_and_checkout(test_h2_connection().await)
+            .expect("install first test connection");
+        let first_generation = first.generation;
+
+        assert!(
+            !manager.retire_after_handshake_timeout_if_unshared(first_generation),
+            "an active generation must not be retired"
+        );
+        let while_active = manager.snapshot();
+        assert_eq!(while_active.handshake_timeouts, 1);
+        assert_eq!(while_active.timeout_retirements, 0);
+        assert!(while_active.cached_connection);
+        assert_eq!(while_active.active_streams, 1);
+
+        let H2Checkout {
+            transport: first_transport,
+            lease: first_lease,
+            ..
+        } = first;
+        drop(first_lease);
+        assert!(
+            manager.retire_after_handshake_timeout_if_unshared(first_generation),
+            "an unshared timed-out generation should be retired"
+        );
+        let after_retirement = manager.snapshot();
+        assert_eq!(after_retirement.handshake_timeouts, 2);
+        assert_eq!(after_retirement.timeout_retirements, 1);
+        assert!(!after_retirement.cached_connection);
+        assert_eq!(after_retirement.active_streams, 0);
+
+        let second = manager
+            .install_and_checkout(test_h2_connection().await)
+            .expect("install replacement test connection");
+        let second_generation = second.generation;
+        assert_ne!(second_generation, first_generation);
+
+        // A delayed timeout report from the retired generation must not remove
+        // the newer cached generation.
+        assert!(
+            !manager.retire_after_handshake_timeout_if_unshared(first_generation),
+            "an old timeout must not retire the replacement generation"
+        );
+        let after_late_timeout = manager.snapshot();
+        assert_eq!(after_late_timeout.handshake_timeouts, 3);
+        assert_eq!(after_late_timeout.timeout_retirements, 1);
+        assert_eq!(after_late_timeout.timeout_recoveries, 0);
+        assert!(after_late_timeout.cached_connection);
+        assert_eq!(
+            lock_state(&manager.inner.state)
+                .connection
+                .as_ref()
+                .map(|connection| connection.generation),
+            Some(second_generation)
+        );
+
+        // Removing the cache's sender clone does not terminate handles already
+        // checked out on the retired generation.
+        let H2TunnelRequestSender {
+            sender,
+            channel_binding: _,
+        } = first_transport;
+        timeout(Duration::from_secs(1), sender.ready())
+            .await
+            .expect("old checkout readiness timed out")
+            .expect("old checkout was closed by cache retirement");
+
+        drop(second);
+        assert_eq!(manager.snapshot().active_streams, 0);
     }
 }

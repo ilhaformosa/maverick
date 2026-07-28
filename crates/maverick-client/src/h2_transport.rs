@@ -58,6 +58,7 @@ async fn connect_rustls_inner(config: &ClientConfig) -> Result<H2Connection> {
     let tcp = TcpStream::connect(&config.server.address)
         .await
         .with_context(|| format!("connect {}", config.server.address))?;
+    enable_outer_tcp_nodelay(&tcp)?;
     let mut tls_config = rustls_client_config(config)?;
     tls_config.alpn_protocols = vec![b"h2".to_vec()];
     let connector = TlsConnector::from(Arc::new(tls_config));
@@ -90,6 +91,7 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
     let tcp = TcpStream::connect(&config.server.address)
         .await
         .with_context(|| format!("connect {}", config.server.address))?;
+    enable_outer_tcp_nodelay(&tcp)?;
     let mut builder =
         SslConnector::builder(SslMethod::tls()).context("build browser TLS connector")?;
     builder
@@ -168,6 +170,11 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
         },
         connection_closed,
     })
+}
+
+fn enable_outer_tcp_nodelay(tcp: &TcpStream) -> Result<()> {
+    tcp.set_nodelay(true)
+        .context("enable TCP_NODELAY on Maverick server connection")
 }
 
 #[cfg(feature = "browser-tls")]
@@ -376,5 +383,24 @@ mod ech_api_tests {
         let _ = std::any::type_name::<rustls::pki_types::EchConfigListBytes<'static>>();
         let _with_ech =
             rustls::ConfigBuilder::<rustls::ClientConfig, rustls::WantsVersions>::with_ech;
+    }
+}
+
+#[cfg(test)]
+mod tcp_socket_tests {
+    use super::enable_outer_tcp_nodelay;
+    use anyhow::Result;
+    use tokio::net::{TcpListener, TcpStream};
+
+    #[tokio::test]
+    async fn outer_tcp_configuration_enables_nodelay() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let client = TcpStream::connect(listener.local_addr()?).await?;
+        let (_server, _) = listener.accept().await?;
+
+        enable_outer_tcp_nodelay(&client)?;
+
+        assert!(client.nodelay()?);
+        Ok(())
     }
 }

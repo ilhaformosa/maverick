@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-07-27
+Date: 2026-07-28
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -88,7 +88,7 @@ censorship resistance, production readiness, or browser identity.
 
 ## Current Product Truth
 
-- Workspace version: `1.2.0-alpha.5`.
+- Workspace version: `1.2.0-alpha.6`.
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
 - Rust product core and loopback relay path: implemented.
@@ -122,7 +122,9 @@ censorship resistance, production readiness, or browser identity.
   assets for the supported pilot targets. The first timed owner setup completed
   all artifact, product-smoke, and configuration checks and reached a proxied
   page in 5 minutes 18 seconds. The corrected `alpha.3` retest completed the
-  same user-visible checks and first proxied page in 3 minutes 44 seconds.
+  same user-visible checks and first proxied page in 3 minutes 44 seconds. The
+  `alpha.5` retest completed all five artifact checks, both product smoke
+  checks, listener startup, and the first proxied page in 1 minute 45 seconds.
 - First timed-install artifact: `v1.2.0-alpha.2`. The earlier
   `v1.2.0-alpha.1` artifact is superseded because it lacks the live-provider H2
   request fix. The published `alpha.3` fast-start path has now been timed by the
@@ -138,7 +140,8 @@ censorship resistance, production readiness, or browser identity.
 - Real install by the owner on the spare laptop: demonstrated. The original
   `alpha.2` attempt missed five minutes by 18 seconds. The corrected second
   `alpha.3` attempt beat five minutes, but the first `alpha.3` attempt failed
-  because of the generated DNS default.
+  because of the generated DNS default. The clean `alpha.5` path also beat five
+  minutes without using the optional DNS listener.
 - Owner-only real-network pilot: completed. The planned 24-hour observation
   window was followed by an unplanned 48-hour 18-minute overrun, for a total
   client run of 72 hours 18 minutes.
@@ -362,6 +365,131 @@ behavior. It does not show that any field symptom is fixed, does not justify
 Beta or Stable, and does not authorize a provider deployment or another owner
 retest.
 
+## Alpha.5 Owner Retest Result
+
+The published Apple Silicon `v1.2.0-alpha.5` artifact was retested by the owner
+on the same owner-controlled spare laptop and lawful real-network path. All five
+artifact checks and both product smoke checks passed, the SOCKS5 listener
+started, and the first proxied page opened 1 minute 45 seconds after the timed
+start. The complete session lasted 1 hour 37 minutes 12 seconds.
+
+The owner reported materially faster page loading and shorter lingering-loading
+indicators than in the previous retest. The previously slow news site worked
+normally, search and a complex interactive site felt faster, and short-form
+video played with only occasional waits. These percentages and impressions are
+subjective comparisons, not controlled benchmarks.
+
+Two reliability findings remain:
+
+- the same major video service still showed `Video unavailable` for main
+  videos, even though some advertisements and video on other services played;
+  and
+- after the laptop slept and resumed, short-form video became slow and reported
+  a playback problem until the page was refreshed.
+
+The server's final aggregate counters recorded 1,364 TCP flows and four target
+connection failures. Target-resolution timeout, target-resolution failure,
+target-connect timeout, admission rejection, overload rejection, and
+authentication rejection counters remained zero. The retained service journal
+contained no Maverick H2/gRPC reset, stall, or timeout line during the client
+window. These destination-free counters cannot show whether the four failures
+belonged to the major video service.
+
+This evidence makes a universally broken video carrier, simple origin resource
+exhaustion, or provider decryption of inner destination HTTPS unlikely. It does
+not distinguish a destination decision about the exit network, a Firefox
+profile or player state, a destination-specific media-host failure, or a
+Maverick carrier defect. The sleep/resume finding is separately consistent with
+a stale pooled H2 connection being reused until refresh.
+
+Beta is not justified yet. The default install now beats five minutes, but the
+important major-video failure is still reproducible and is neither fixed nor
+understood with an acceptable documented boundary. Maverick therefore remains
+Alpha.
+
+## Alpha.6 Reliability Candidate
+
+The owner authorized continued repository-local reliability work after the
+Alpha.5 retest. The resulting `v1.2.0-alpha.6` candidate has passed the local
+repository gate described below. It is not yet a published prerelease and has
+not been field-tested.
+
+The H2 connection pool now handles one confirmed stale-cache shape
+conservatively. If a tunnel handshake or ClientHello send stalls, the client
+retires only the exact cached connection generation involved, only after its
+failed lease has been released and no other flow is using that generation. It
+then creates one fresh connection and retries once. It does not terminate an
+unrelated live flow, bypass a healthy peer concurrency limit, build a hidden
+multi-H2 pool, or add a periodic heartbeat. A sleep/resume case that leaves
+apparently active flows on a half-dead connection remains an explicit boundary
+for later evidence rather than a claimed complete fix.
+
+`TCP_NODELAY` is now fail-closed on the client-to-server outer H2/TCP
+connection, the server's accepted outer TCP connection, and each
+server-to-target TCP connection. Fixed destination-free metrics now distinguish
+exact timeout
+retirement and recovery, H2 stream reset, H2 capacity-send stall, closed and
+idle retirement, and successful connection-latency classes. Client connection
+setup and tunnel open plus server target resolution and connect use the fixed
+10, 25, 50, 100, 250, 500, 1,000, 2,500, 5,000, 10,000, and infinity
+millisecond cumulative buckets. They retain no destination, address, URL, SNI,
+credential, stream identifier, free-form error text, or per-event timestamp.
+
+The remaining major-video symptom is still unexplained. The active diagnosis
+guide now orders the owner's preferred hypotheses: current Firefox state,
+player or media request rejection/failure, and Maverick/provider-fronted path
+compatibility, including a careful comparison inspired by the similar Mozilla
+proxy-service report. It requires one-variable tests, a return-to-baseline
+check after an apparent success, privacy-safe response categories, and separate
+authorization before a direct SSH SOCKS or direct-origin comparison. The
+Mozilla case is an analogy, not a Maverick diagnosis, and provider termination
+of Maverick's outer TLS does not by itself decrypt the inner
+Firefox-to-destination HTTPS connection.
+
+The standing test-host policy is now Ubuntu 26.04 LTS first. Ubuntu 24.04 LTS
+is accepted only as an explicitly justified fallback when 26.04 cannot perform
+the test. Before Maverick starts, the host must apply every offered package and
+default-kernel update, stop for a manual reboot whenever Ubuntu requires one,
+and pass a post-reboot verifier. The owner superseded the earlier BBRv3 request:
+the deployment default is now the stock Ubuntu kernel's native BBR
+implementation (commonly called BBRv1) plus `fq`, with no congestion-control
+A/B and no custom BBRv3 kernel.
+
+The host gate validates the selected Ubuntu default-kernel package track,
+declared `Origin: Ubuntu`, current package candidates, running image and module
+ownership, and local package-checksum agreement before loading BBR. It then
+persists `bbr` plus `fq` and checks the available and selected congestion
+control, default qdisc, and the first IPv4 default-route qdisc. Mainline
+`tcp_bbr` normally publishes no numeric module-version field, so missing
+version metadata is not mislabeled as an error or used as fake proof. An
+explicitly declared version other than `1` is rejected to avoid silently
+changing the requested baseline. These checks establish package provenance and
+runtime state, not a formal proof of every algorithm detail.
+
+BBR and `fq` are server operating-system deployment settings, not Maverick wire
+or YAML settings. They govern packets sent by that server; they cannot make the
+owner's Mac, a provider edge, or a remote website use Linux BBR. The `stable`
+mode is always H2/TCP; `auto` and `private` default to H2/TCP, so all three
+normal carriers' server-sent halves can use the host's BBRv1 plus `fq`.
+Explicit experimental H3/QUIC uses UDP and its userspace congestion controller
+instead of TCP BBR, although its outgoing packets still pass through the
+server queue. The server-sent half of all three modes' server-to-target TCP
+connections continues to use the server TCP policy.
+
+The repository-local gate passes formatting, strict workspace linting, all 492
+Rust tests, the rustls compatibility build, both required loopback product
+checks, and 42 isolated fake-host preparation checks. Those fake-host checks
+exercise the stock BBRv1 path without numeric version metadata, rejection of
+declared non-v1 or unavailable BBR, partial package-index updates, stale or
+substituted kernel packages, unsafe configuration conflicts, incomplete
+persistence, rollback, and reboot-required states. No real server, route,
+qdisc, system proxy, DNS, VPN, or other host-network setting was changed by
+this verification.
+
+These changes do not resolve the major-video result, prove that BBR improves
+the field experience, justify a custom kernel, or justify Beta. Maverick
+remains Alpha.
+
 ## Authorization Boundary
 
 Repository-local work may build, test, and use `127.0.0.1` with OS-assigned
@@ -421,6 +549,16 @@ zone-wide SSL mode were unchanged by cleanup. The short-lived origin
 certificate may expire naturally.
 
 The separately authorized Alpha.5 repository publication is complete. The owner
-has authorized continued privacy-safe repository-local development. Any new
-live-field run, remote resource, provider change, spending, production/Beta
-claim, or native-ECH implementation requires a new owner decision.
+has authorized continued privacy-safe repository-local development.
+
+The separately authorized Alpha.5 owner retest has also ended. Its one temporary
+origin, exact dedicated DNS record, hostname-only strict-origin rule, and
+short-lived Origin CA certificate were removed or revoked by exact resource
+identity. The zone-wide SSL mode and unrelated DNS records were not changed.
+Under the owner's standing decision that the selected zone is dedicated to
+Maverick testing, the zone's gRPC capability remains enabled instead of being
+repeatedly toggled between tests.
+
+Any new live-field run, remote resource, provider change, spending,
+production/Beta claim, or native-ECH implementation requires a new owner
+decision.

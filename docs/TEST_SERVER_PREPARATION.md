@@ -32,9 +32,10 @@ the owner's live instructions.
 ## Reference-Origin Reuse
 
 A test origin may be reused as a fixed reference only while `STATUS.md` records
-current authorization for that role. Reuse holds origin-side variables
-constant; it is not a production deployment and does not satisfy a fresh-origin
-Beta or Stable gate.
+current authorization for that role. Its first from-scratch run may satisfy a
+stage's fresh-origin gate when `STATUS.md` records that decision. Later reuse
+holds origin-side variables constant; it is not a production deployment and
+does not satisfy a later fresh-origin gate such as the Stable gate.
 
 Before every authorized session, complete the normal package and
 default-kernel update, obey any reboot requirement, and pass `verify` before

@@ -63,6 +63,7 @@ Safe notes look like:
 
 ```text
 Test: E
+Service gate: none
 Player request: 2xx
 Media request: 403
 Playback: Video unavailable
@@ -70,12 +71,15 @@ Playback: Video unavailable
 
 Use only these categories:
 
+- service gate: `none` or `authentication challenge`;
 - request: `not seen`, `2xx/206`, `403`, `429`, `other 4xx`, `5xx`,
   `reset`, or `timeout`;
-- playback: `plays`, `buffers`, or `Video unavailable`.
+- playback: `plays`, `buffers`, `Video unavailable`, or `not reached`.
 
 In child-simple words:
 
+- `authentication challenge`: the service asks the person to prove who they
+  are before it will decide whether to play the video;
 - `2xx/206`: the server said yes; `206` means it sent one piece of the video;
 - `403`: the server saw the request but refused it;
 - `429`: the server wants the client to slow down and try later;
@@ -193,24 +197,53 @@ Before reading the video result:
    a proxy-connection failure. If it loads, mark the comparison `invalid` and
    close the test Chrome.
 4. Restart the same Maverick client and confirm the control page works again.
-5. Test `Video A` once and record only the playback category.
+5. Test `Video A` once and record only the service-gate and playback
+   categories. If the service presents an authentication challenge, record
+   `authentication challenge` plus `not reached`; do not sign in as part of
+   Test D.
 
 Quit the isolated Chrome instance after the comparison. The new temporary data
 directory may then be removed by exact path; do not delete any daily Chrome
 profile.
 
+### Authentication-Challenge Branch
+
+An authentication challenge is a service decision, not proof of a broken
+transport. It may depend on the exit environment, browser behavior, session
+state, or other service policy that this checklist does not observe.
+
+Keep the clean browser-family comparison signed out. If the owner separately
+chooses to make a signed-in observation, label it `D-authenticated` and keep it
+separate from Test D. Signing in changes an additional variable: account and
+authentication state. Do not record the account, cookies, challenge details,
+full request host names, or signed media URLs.
+
+How to read the separate observation:
+
+- signed-out Chrome receives an authentication challenge: the service-policy
+  hypothesis becomes stronger, but the challenge alone does not prove a pure
+  IP or ASN block;
+- signed-in Chrome plays: the tested browser and Maverick path can carry that
+  media under the authenticated service decision, but this is not a pure
+  Firefox-versus-Chrome comparison; and
+- Firefox and Chrome show different signed-out messages: the visible wording
+  does not prove that both browsers received the same underlying decision.
+
 How to read it:
 
-- Chrome plays while clean Firefox still fails: a browser-specific profile,
-  player, or service interaction becomes the leading cause. The shared
-  Maverick/provider path is not universally unable to carry the video.
+- Signed-out Chrome plays while signed-out clean Firefox still fails: a
+  browser-specific profile, player, or service interaction becomes the leading
+  cause. The shared Maverick/provider path is not universally unable to carry
+  the video.
 - Both clean browsers fail: a Firefox-only explanation becomes less likely;
   continue with the privacy-safe request categories and later carrier tests.
-- Chrome plays: return to clean Firefox Test C immediately. If C still fails,
-  repeat Chrome once before treating the browser difference as stable.
-- Both play: apply the return-to-A rule before calling the earlier result fixed.
-- Chrome alone fails: verify the command-line and fail-closed gates before
-  drawing any product conclusion.
+- Signed-out Chrome plays: return to clean Firefox Test C immediately. If C
+  still fails, repeat signed-out Chrome once before treating the browser
+  difference as stable.
+- Both signed-out browsers play: apply the return-to-A rule before calling the
+  earlier result fixed.
+- Signed-out Chrome alone fails: verify the command-line and fail-closed gates
+  before drawing any product conclusion.
 
 ## Test E: Record Only the Failure Category
 
@@ -349,16 +382,43 @@ Do not record the real exit addresses. Call them `Exit A` and `Exit B`.
 
 Copy only this table into private test notes:
 
-| Test | One changed item | Player | Media | Playback |
-| --- | --- | --- | --- | --- |
-| A | none, reference | not measured | not measured | category |
-| B | Troubleshoot Mode | not measured | not measured | category |
-| C | clean profile | not measured | not measured | category |
-| D | isolated Chrome | not measured | not measured | category |
-| E | Network Monitor | category | category | category |
-| F | SSH SOCKS | not measured | not measured | category |
-| G | direct carrier | not measured | not measured | category |
-| H | Exit B | not measured | not measured | category |
+| Test | One changed item | Service gate | Player | Media | Playback |
+| --- | --- | --- | --- | --- | --- |
+| A | none, reference | category | not measured | not measured | category |
+| B | Troubleshoot Mode | category | not measured | not measured | category |
+| C | clean profile | category | not measured | not measured | category |
+| D | isolated Chrome | category | not measured | not measured | category |
+| E | Network Monitor | category | category | category | category |
+| F | SSH SOCKS | category | not measured | not measured | category |
+| G | direct carrier | category | not measured | not measured | category |
+| H | Exit B | category | not measured | not measured | category |
+
+## Recorded Alpha.6 Outcome
+
+This is a privacy-safe diagnostic summary from one authorized Alpha.6
+reference-origin session. `STATUS.md` remains the authority for current product
+truth and authorization.
+
+- The current Firefox profile, Troubleshoot Mode, and a clean Firefox profile
+  were all signed out and each reported `Video unavailable`.
+- The isolated Chrome profile was signed out and reached an
+  `authentication challenge` before playback.
+- The owner then signed in within that isolated Chrome profile. This was a
+  separate `D-authenticated` observation, not the clean browser-family
+  comparison. In that authenticated state, both 720p and 1080p playback were
+  smooth through the same Maverick path.
+- Ordinary browsing and unrelated video playback worked during the session. One
+  seven-to-eight-minute sleep/resume cycle showed no observed stall or required
+  refresh.
+- The planned Test E player/media request inspection was skipped. No `403`,
+  `429`, reset, timeout, or other request category was collected.
+
+The authenticated result demonstrates that the tested Maverick and
+provider-fronted path can carry sustained 720p and 1080p media. It makes a
+universal video-transport failure unlikely. It does not establish a pure IP
+block, a Firefox defect, authentication as the sole fix, or any other unique
+root cause. One successful sleep/resume cycle is positive field evidence, not a
+claim that every sleep duration or network condition is fixed.
 
 ## Decision Point
 

@@ -10,6 +10,15 @@ interfaces, or other network-service settings. Local tests and demos use
 `127.0.0.1` plus OS-assigned ephemeral ports. A real-network pilot requires a
 separately named owner-controlled environment and explicit authorization.
 
+When Codex creates an authorized Maverick test origin through a provider API,
+inspect its public IPv4 address before configuring or deploying it. If the
+first octet is `64`, delete that exact newly created resource by provider ID
+and create a replacement within the same approved team, region, specification,
+time, and total-spend boundary. Never point DNS at or deploy Maverick to the
+rejected origin. Stop and ask the owner if a non-`64` address cannot be obtained
+within the approved boundary. This automatic rejection does not apply to a
+server that the owner says they are creating manually.
+
 ## Product Map
 
 - `crates/maverick-core`: config, auth, frames, replay, padding, metrics.

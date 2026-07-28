@@ -209,6 +209,8 @@ if [[ "$*" == "tcp_bbr" ]]; then
   else
     rm -f "$MAVERICK_TEST_ROOT/sys/module/tcp_bbr/version"
   fi
+elif [[ "$*" == "sch_fq" || "$*" == "sch_fq_codel" ]]; then
+  [[ "${FAKE_MODPROBE_QDISC_FAIL:-0}" != "1" ]] || exit 1
 fi
 EOF
 
@@ -230,6 +232,9 @@ if [[ "${1:-}" == "-w" ]]; then
   value="${2#*=}"
   if [[ "$key" == "net.ipv4.tcp_congestion_control" &&
     "${FAKE_SYSCTL_APPLY_FAIL:-}" == "cc" && "$value" == "bbr" ]]; then
+    exit 1
+  elif [[ "$key" == "net.core.default_qdisc" &&
+    "${FAKE_SYSCTL_APPLY_FAIL:-}" == "qdisc" ]]; then
     exit 1
   fi
   case "$key" in
@@ -275,7 +280,7 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'tc %s\n' "$*" >>"$MAVERICK_TEST_ROOT/runtime/commands"
-case "${FAKE_QDISC:-fq}" in
+case "${FAKE_QDISC:-fq-codel}" in
   fq)
     printf 'qdisc fq 8001: root refcnt 2\n'
     ;;
@@ -286,6 +291,65 @@ case "${FAKE_QDISC:-fq}" in
     ;;
   fq-codel)
     printf 'qdisc fq_codel 0: root\n'
+    ;;
+  mq-fq-codel)
+    printf 'qdisc mq 0: root\n'
+    printf 'qdisc fq_codel 0: parent :1\n'
+    printf 'qdisc fq_codel 0: parent :2\n'
+    ;;
+  mq-mixed)
+    printf 'qdisc mq 0: root\n'
+    printf 'qdisc fq 0: parent :1\n'
+    printf 'qdisc fq_codel 0: parent :2\n'
+    ;;
+  mq-no-leaf)
+    printf 'qdisc mq 0: root\n'
+    ;;
+  mq-unsupported)
+    printf 'qdisc mq 0: root\n'
+    printf 'qdisc fq_codel 0: parent :1\n'
+    printf 'qdisc cake 0: parent :2\n'
+    ;;
+  mq-hex)
+    printf 'qdisc mq 0: root\n'
+    printf 'qdisc fq_codel 0: parent :1\n'
+    printf 'qdisc fq_codel 0: parent :a\n'
+    ;;
+  mq-hex-unsupported)
+    printf 'qdisc mq 0: root\n'
+    printf 'qdisc fq_codel 0: parent :1\n'
+    printf 'qdisc cake 0: parent :a\n'
+    ;;
+  mq-with-ingress)
+    printf 'qdisc mq 0: root\n'
+    printf 'qdisc fq_codel 0: parent :1\n'
+    printf 'qdisc fq_codel 0: parent :2\n'
+    printf 'qdisc ingress ffff: parent ffff:fff1\n'
+    ;;
+  direct-multiple-roots)
+    printf 'qdisc fq_codel 0: root\n'
+    printf 'qdisc cake 0: root\n'
+    ;;
+  direct-two-supported-roots)
+    printf 'qdisc fq 0: root\n'
+    printf 'qdisc fq_codel 0: root\n'
+    ;;
+  direct-with-child)
+    printf 'qdisc fq_codel 0: root\n'
+    printf 'qdisc fq_codel 0: parent 1:1\n'
+    ;;
+  fq-with-dev-token)
+    printf 'qdisc fq 8001: dev test0 root refcnt 2\n'
+    ;;
+  failure-with-output)
+    printf 'qdisc fq_codel 0: root\n'
+    exit 1
+    ;;
+  pfifo-fast)
+    printf 'qdisc pfifo_fast 0: root\n'
+    ;;
+  cake)
+    printf 'qdisc cake 0: root\n'
     ;;
 esac
 EOF
@@ -317,9 +381,10 @@ invoke() {
     FAKE_IMAGE_MD5_BAD="${FAKE_IMAGE_MD5_BAD:-0}" \
     FAKE_LOADED_BBR_VERSION="${FAKE_LOADED_BBR_VERSION:-}" \
     FAKE_MODPROBE_BBR_FAIL="${FAKE_MODPROBE_BBR_FAIL:-0}" \
+    FAKE_MODPROBE_QDISC_FAIL="${FAKE_MODPROBE_QDISC_FAIL:-0}" \
     FAKE_SYSCTL_APPLY_FAIL="${FAKE_SYSCTL_APPLY_FAIL:-}" \
     MAVERICK_TEST_FAIL_SECOND_POLICY_MOVE="${MAVERICK_TEST_FAIL_SECOND_POLICY_MOVE:-0}" \
-    FAKE_QDISC="${FAKE_QDISC:-fq}" \
+    FAKE_QDISC="${FAKE_QDISC:-fq-codel}" \
     APT_CONFIG="${TEST_APT_CONFIG:-}" \
     DPKG_ROOT="${TEST_DPKG_ROOT:-}" \
     DPKG_ADMINDIR="${TEST_DPKG_ADMINDIR:-}" \
@@ -342,6 +407,14 @@ root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
 invoke "$root" "$bin" preflight >/dev/null
 pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture unsupported-default-qdisc 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'cake\n' >"$root/runtime/default-qdisc"
+expect_exit 21 invoke "$root" "$bin" preflight
+[[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
+  fail_test "unsupported default qdisc wrote persistent settings"
 
 fixture="$(make_fixture fallback-24 24.04)"
 root="${fixture%%$'\n'*}"
@@ -487,8 +560,8 @@ invoke "$root" "$bin" prepare >/dev/null
 invoke "$root" "$bin" prepare >/dev/null
 invoke "$root" "$bin" verify >/dev/null
 grep -Fxq 'tcp_bbr' "$root/etc/modules-load.d/99-maverick-test-network.conf"
-grep -Fxq 'sch_fq' "$root/etc/modules-load.d/99-maverick-test-network.conf"
-grep -Fxq 'net.core.default_qdisc = fq' \
+grep -Fxq 'sch_fq_codel' "$root/etc/modules-load.d/99-maverick-test-network.conf"
+grep -Fxq 'net.core.default_qdisc = fq_codel' \
   "$root/etc/sysctl.d/99-maverick-test-network.conf"
 grep -Fxq 'net.ipv4.tcp_congestion_control = bbr' \
   "$root/etc/sysctl.d/99-maverick-test-network.conf"
@@ -501,6 +574,19 @@ grep -Fxq 'apt-get -o APT::Update::Error-Mode=any update' \
 if grep -Eq '^tc qdisc (replace|add|change)' "$root/runtime/commands"; then
   fail_test "prepare attempted an online tc mutation"
 fi
+pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture prepare-fq 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'fq\n' >"$root/runtime/default-qdisc"
+FAKE_QDISC=fq invoke "$root" "$bin" prepare >/dev/null
+FAKE_QDISC=fq invoke "$root" "$bin" prepare >/dev/null
+FAKE_QDISC=fq invoke "$root" "$bin" verify >/dev/null
+grep -Fxq 'tcp_bbr' "$root/etc/modules-load.d/99-maverick-test-network.conf"
+grep -Fxq 'sch_fq' "$root/etc/modules-load.d/99-maverick-test-network.conf"
+grep -Fxq 'net.core.default_qdisc = fq' \
+  "$root/etc/sysctl.d/99-maverick-test-network.conf"
 pass_count=$((pass_count + 1))
 
 rm -f "$root/sys/module/tcp_bbr/version"
@@ -519,10 +605,44 @@ FAKE_INSTALLED_META=virtual-only invoke "$root" "$bin" prepare >/dev/null
 FAKE_INSTALLED_META=virtual-only invoke "$root" "$bin" verify >/dev/null
 pass_count=$((pass_count + 1))
 
-fixture="$(make_fixture conflict 26.04)"
+fixture="$(make_fixture existing-supported-qdisc 26.04)"
 root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
 printf 'net.core.default_qdisc = fq_codel\n' >"$root/etc/sysctl.d/existing.conf"
+invoke "$root" "$bin" prepare >/dev/null
+invoke "$root" "$bin" verify >/dev/null
+pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture earlier-supported-qdisc-config 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'net.core.default_qdisc = fq\n' \
+  >"$root/etc/sysctl.d/50-existing.conf"
+invoke "$root" "$bin" prepare >/dev/null
+invoke "$root" "$bin" verify >/dev/null
+pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture later-supported-qdisc-conflict 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'net.core.default_qdisc = fq\n' \
+  >"$root/etc/sysctl.d/zz-after-maverick.conf"
+expect_exit 21 invoke "$root" "$bin" prepare
+[[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
+  fail_test "later supported qdisc conflict wrote managed settings"
+
+fixture="$(make_fixture sysctl-conf-supported-qdisc-conflict 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'net.core.default_qdisc = fq\n' >"$root/etc/sysctl.conf"
+expect_exit 21 invoke "$root" "$bin" prepare
+[[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
+  fail_test "sysctl.conf qdisc conflict wrote managed settings"
+
+fixture="$(make_fixture unsupported-qdisc-config 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'net.core.default_qdisc = cake\n' >"$root/etc/sysctl.d/existing.conf"
 expect_exit 21 invoke "$root" "$bin" prepare
 [[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
   fail_test "conflict gate overwrote settings"
@@ -539,7 +659,7 @@ expect_exit 21 invoke "$root" "$bin" prepare
 fixture="$(make_fixture normalized-sysctl-conflict 26.04)"
 root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
-printf '%s\n' '-net/core/default_qdisc = fq_codel' \
+printf '%s\n' '-net/core/default_qdisc = cake' \
   >"$root/run/sysctl.d/normalized.conf"
 expect_exit 21 invoke "$root" "$bin" prepare
 [[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
@@ -553,6 +673,24 @@ printf 'install tcp-bbr /bin/false\n' \
 expect_exit 21 invoke "$root" "$bin" prepare
 [[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
   fail_test "normalized module conflict wrote managed settings"
+
+fixture="$(make_fixture fq-codel-module-conflict 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'install sch-fq-codel /bin/false\n' \
+  >"$root/usr/local/lib/modprobe.d/qdisc.conf"
+expect_exit 21 invoke "$root" "$bin" prepare
+[[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
+  fail_test "fq_codel module conflict wrote managed settings"
+
+fixture="$(make_fixture fq-module-conflict 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'fq\n' >"$root/runtime/default-qdisc"
+printf 'blacklist sch_fq\n' >"$root/etc/modprobe.d/qdisc.conf"
+expect_exit 21 invoke "$root" "$bin" prepare
+[[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
+  fail_test "fq module conflict wrote managed settings"
 
 fixture="$(make_fixture rollback-move 26.04)"
 root="${fixture%%$'\n'*}"
@@ -575,6 +713,36 @@ FAKE_SYSCTL_APPLY_FAIL=cc expect_exit 24 invoke "$root" "$bin" prepare
 grep -Fxq 'fq_codel' "$root/runtime/default-qdisc" ||
   fail_test "runtime rollback did not restore default_qdisc"
 
+fixture="$(make_fixture qdisc-module-failure 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_MODPROBE_QDISC_FAIL=1 expect_exit 24 invoke "$root" "$bin" prepare
+[[ ! -e "$root/etc/modules-load.d/99-maverick-test-network.conf" ]] ||
+  fail_test "qdisc module failure left the modules file"
+[[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
+  fail_test "qdisc module failure left the sysctl file"
+
+fixture="$(make_fixture qdisc-sysctl-failure 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_SYSCTL_APPLY_FAIL=qdisc expect_exit 24 invoke "$root" "$bin" prepare
+[[ ! -e "$root/etc/modules-load.d/99-maverick-test-network.conf" ]] ||
+  fail_test "qdisc sysctl failure left the modules file"
+[[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
+  fail_test "qdisc sysctl failure left the sysctl file"
+grep -Fxq 'fq_codel' "$root/runtime/default-qdisc" ||
+  fail_test "qdisc sysctl failure changed runtime default_qdisc"
+
+fixture="$(make_fixture apply-bbr-from-cubic 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'cubic\n' >"$root/runtime/cc"
+invoke "$root" "$bin" prepare >/dev/null
+grep -Fxq 'bbr' "$root/runtime/cc" ||
+  fail_test "prepare did not select BBR"
+invoke "$root" "$bin" verify >/dev/null
+pass_count=$((pass_count + 1))
+
 fixture="$(make_fixture mq 26.04)"
 root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
@@ -582,17 +750,117 @@ FAKE_QDISC=mq-fq invoke "$root" "$bin" prepare >/dev/null
 FAKE_QDISC=mq-fq invoke "$root" "$bin" verify >/dev/null
 pass_count=$((pass_count + 1))
 
+fixture="$(make_fixture supported-qdisc-no-forced-alignment 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=fq invoke "$root" "$bin" prepare >/dev/null
+FAKE_QDISC=fq invoke "$root" "$bin" verify >/dev/null
+if grep -Eq '^tc qdisc (replace|add|change)' "$root/runtime/commands"; then
+  fail_test "prepare forced one supported qdisc to replace another"
+fi
+pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture mq-fq-codel 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=mq-fq-codel invoke "$root" "$bin" prepare >/dev/null
+FAKE_QDISC=mq-fq-codel invoke "$root" "$bin" verify >/dev/null
+pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture mq-mixed 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=mq-mixed expect_exit 20 invoke "$root" "$bin" prepare
+FAKE_QDISC=mq-mixed expect_exit 24 invoke "$root" "$bin" verify
+
+fixture="$(make_fixture mq-no-leaf 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=mq-no-leaf expect_exit 24 invoke "$root" "$bin" prepare
+FAKE_QDISC=mq-no-leaf expect_exit 24 invoke "$root" "$bin" verify
+
+fixture="$(make_fixture mq-unsupported 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=mq-unsupported expect_exit 20 invoke "$root" "$bin" prepare
+FAKE_QDISC=mq-unsupported expect_exit 24 invoke "$root" "$bin" verify
+
+fixture="$(make_fixture mq-hex 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=mq-hex invoke "$root" "$bin" prepare >/dev/null
+FAKE_QDISC=mq-hex invoke "$root" "$bin" verify >/dev/null
+pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture mq-hex-unsupported 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=mq-hex-unsupported expect_exit 20 invoke "$root" "$bin" prepare
+FAKE_QDISC=mq-hex-unsupported expect_exit 24 invoke "$root" "$bin" verify
+
+fixture="$(make_fixture mq-with-ingress 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=mq-with-ingress invoke "$root" "$bin" prepare >/dev/null
+FAKE_QDISC=mq-with-ingress invoke "$root" "$bin" verify >/dev/null
+pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture direct-multiple-roots 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=direct-multiple-roots expect_exit 24 invoke "$root" "$bin" prepare
+FAKE_QDISC=direct-multiple-roots expect_exit 24 invoke "$root" "$bin" verify
+
+fixture="$(make_fixture direct-two-supported-roots 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=direct-two-supported-roots expect_exit 24 invoke "$root" "$bin" prepare
+FAKE_QDISC=direct-two-supported-roots expect_exit 24 invoke "$root" "$bin" verify
+
+fixture="$(make_fixture direct-with-child 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=direct-with-child expect_exit 24 invoke "$root" "$bin" prepare
+FAKE_QDISC=direct-with-child expect_exit 24 invoke "$root" "$bin" verify
+
+fixture="$(make_fixture fq-with-dev-token 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+printf 'fq\n' >"$root/runtime/default-qdisc"
+FAKE_QDISC=fq-with-dev-token invoke "$root" "$bin" prepare >/dev/null
+FAKE_QDISC=fq-with-dev-token invoke "$root" "$bin" verify >/dev/null
+pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture tc-failure-with-output 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+FAKE_QDISC=failure-with-output expect_exit 24 invoke "$root" "$bin" prepare
+[[ ! -e "$root/etc/modules-load.d/99-maverick-test-network.conf" ]] ||
+  fail_test "failed qdisc inspection left the modules file"
+[[ ! -e "$root/etc/sysctl.d/99-maverick-test-network.conf" ]] ||
+  fail_test "failed qdisc inspection left the sysctl file"
+FAKE_QDISC=failure-with-output expect_exit 24 invoke "$root" "$bin" verify
+
 fixture="$(make_fixture wrong-qdisc 26.04)"
 root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
-FAKE_QDISC=fq-codel expect_exit 20 invoke "$root" "$bin" prepare
-FAKE_QDISC=fq-codel expect_exit 24 invoke "$root" "$bin" verify
+FAKE_QDISC=pfifo-fast expect_exit 20 invoke "$root" "$bin" prepare
+FAKE_QDISC=pfifo-fast expect_exit 24 invoke "$root" "$bin" verify
+FAKE_QDISC=fq-codel invoke "$root" "$bin" verify >/dev/null
+pass_count=$((pass_count + 1))
 
 fixture="$(make_fixture runtime-default 26.04)"
 root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
 invoke "$root" "$bin" prepare >/dev/null
-printf 'fq_codel\n' >"$root/runtime/default-qdisc"
+printf 'cake\n' >"$root/runtime/default-qdisc"
+expect_exit 21 invoke "$root" "$bin" verify
+
+fixture="$(make_fixture runtime-supported-drift 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+invoke "$root" "$bin" prepare >/dev/null
+printf 'fq\n' >"$root/runtime/default-qdisc"
 expect_exit 24 invoke "$root" "$bin" verify
 
 fixture="$(make_fixture runtime-cc 26.04)"
@@ -611,6 +879,17 @@ if printf '%s\n' "$output" |
   fail_test "output exposed host or network identity"
 fi
 pass_count=$((pass_count + 1))
+
+fixture="$(make_fixture inherited-awk-function 26.04)"
+root="${fixture%%$'\n'*}"
+bin="${fixture#*$'\n'}"
+# shellcheck disable=SC2329 # Exported to the child shell as the test payload.
+awk() {
+  return 0
+}
+export -f awk
+FAKE_QDISC=direct-multiple-roots expect_exit 24 invoke "$root" "$bin" prepare
+unset -f awk
 
 actual=0
 MAVERICK_TEST_MODE=1 "$subject" preflight >/dev/null 2>&1 || actual=$?

@@ -410,8 +410,10 @@ Alpha.
 ## Alpha.6 Reliability Prerelease
 
 The published GitHub prerelease is `v1.2.0-alpha.6`. It remains Alpha and is
-not Beta, Stable, mature, production-ready, or provider-independent. It has not
-yet been field-tested.
+not Beta, Stable, mature, production-ready, or provider-independent. Its first
+field attempt was diagnostically invalid because the origin's ordinary browsing
+performance failed the baseline gate; one valid replacement run remains
+pending.
 
 The H2 connection pool now handles one confirmed stale-cache shape
 conservatively. If a tunnel handshake or ClientHello send stalls, the client
@@ -436,14 +438,15 @@ credential, stream identifier, free-form error text, or per-event timestamp.
 
 The remaining major-video symptom is still unexplained. The active diagnosis
 guide now orders the owner's preferred hypotheses: current Firefox state,
-player or media request rejection/failure, and Maverick/provider-fronted path
-compatibility, including a careful comparison inspired by the similar Mozilla
-proxy-service report. It requires one-variable tests, a return-to-baseline
-check after an apparent success, privacy-safe response categories, and separate
-authorization before a direct SSH SOCKS or direct-origin comparison. The
-Mozilla case is an analogy, not a Maverick diagnosis, and provider termination
-of Maverick's outer TLS does not by itself decrypt the inner
-Firefox-to-destination HTTPS connection.
+an isolated clean-Chrome comparison, player or media request
+rejection/failure, and Maverick/provider-fronted path compatibility, including
+a careful comparison inspired by the similar Mozilla proxy-service report. It
+requires one-variable tests, a return-to-baseline check after an apparent
+success, a no-direct-fallback check for Chrome, privacy-safe response
+categories, and separate authorization before a direct SSH SOCKS or
+direct-origin comparison. The Mozilla case is an analogy, not a Maverick
+diagnosis, and provider termination of Maverick's outer TLS does not by itself
+decrypt the inner browser-to-destination HTTPS connection.
 
 The standing test-host policy is now Ubuntu 26.04 LTS first. Ubuntu 24.04 LTS
 is accepted only as an explicitly justified fallback when 26.04 cannot perform
@@ -451,33 +454,36 @@ the test. Before Maverick starts, the host must apply every offered package and
 default-kernel update, stop for a manual reboot whenever Ubuntu requires one,
 and pass a post-reboot verifier. The owner superseded the earlier BBRv3 request:
 the deployment default is now the stock Ubuntu kernel's native BBR
-implementation (commonly called BBRv1) plus `fq`, with no congestion-control
-A/B and no custom BBRv3 kernel.
+implementation (commonly called BBRv1), with no congestion-control A/B and no
+custom BBRv3 kernel. The host's qdisc must be either `fq` or `fq_codel`.
+Neither is preferred; an existing approved selection is preserved and every
+other value is rejected.
 
 The host gate validates the selected Ubuntu default-kernel package track,
 declared `Origin: Ubuntu`, current package candidates, running image and module
 ownership, and local package-checksum agreement before loading BBR. It then
-persists `bbr` plus `fq` and checks the available and selected congestion
-control, default qdisc, and the first IPv4 default-route qdisc. Mainline
+persists `bbr` plus the host's existing approved qdisc and checks the available
+and selected congestion control, default qdisc, and the first IPv4
+default-route qdisc. Mainline
 `tcp_bbr` normally publishes no numeric module-version field, so missing
 version metadata is not mislabeled as an error or used as fake proof. An
 explicitly declared version other than `1` is rejected to avoid silently
 changing the requested baseline. These checks establish package provenance and
 runtime state, not a formal proof of every algorithm detail.
 
-BBR and `fq` are server operating-system deployment settings, not Maverick wire
-or YAML settings. They govern packets sent by that server; they cannot make the
-owner's Mac, a provider edge, or a remote website use Linux BBR. The `stable`
-mode is always H2/TCP; `auto` and `private` default to H2/TCP, so all three
-normal carriers' server-sent halves can use the host's BBRv1 plus `fq`.
-Explicit experimental H3/QUIC uses UDP and its userspace congestion controller
-instead of TCP BBR, although its outgoing packets still pass through the
-server queue. The server-sent half of all three modes' server-to-target TCP
-connections continues to use the server TCP policy.
+BBR and the approved qdisc are server operating-system deployment settings, not
+Maverick wire or YAML settings. They govern packets sent by that server; they
+cannot make the owner's Mac, a provider edge, or a remote website use Linux
+BBR. The `stable` mode is always H2/TCP; `auto` and `private` default to H2/TCP,
+so all three normal carriers' server-sent halves can use the host's BBRv1 plus
+`fq` or `fq_codel`. Explicit experimental H3/QUIC uses UDP and its userspace
+congestion controller instead of TCP BBR, although its outgoing packets still
+pass through the server queue. The server-sent half of all three modes'
+server-to-target TCP connections continues to use the server TCP policy.
 
 The repository-local gate passes formatting, strict workspace linting, all 492
 Rust tests, the rustls compatibility build, both required loopback product
-checks, and 42 isolated fake-host preparation checks. Those fake-host checks
+checks, and 77 isolated fake-host preparation checks. Those fake-host checks
 exercise the stock BBRv1 path without numeric version metadata, rejection of
 declared non-v1 or unavailable BBR, partial package-index updates, stale or
 substituted kernel packages, unsafe configuration conflicts, incomplete
@@ -569,9 +575,72 @@ origin, exact dedicated DNS record, hostname-only strict-origin rule, and
 short-lived Origin CA certificate were removed or revoked by exact resource
 identity. The zone-wide SSL mode and unrelated DNS records were not changed.
 Under the owner's standing decision that the selected zone is dedicated to
-Maverick testing, the zone's gRPC capability remains enabled instead of being
-repeatedly toggled between tests.
+Maverick testing, Cloudflare operations are API-first and the zone's gRPC
+capability remains enabled instead of being repeatedly toggled between tests.
+The dedicated hostname's hostname-only Full (strict) rule is a persistent test
+setting rather than a per-run resource. A replacement origin updates the
+dedicated DNS target and receives its own short-lived Origin CA certificate; a
+retired origin's DNS target must not remain pointed at a released address.
+Browser control is used only when the required capability has no documented
+usable API. These standing operational settings do not authorize a new origin,
+spend, provider change, or live-field run.
 
-Any new live-field run, remote resource, provider change, spending,
-production/Beta claim, or native-ECH implementation requires a new owner
-decision.
+The first separately authorized Alpha.6 diagnostic origin passed package
+integrity, local smoke, listener, and basic-connectivity checks, but its ordinary
+browsing performance was too poor to support diagnosis. The observed major-video
+failure is therefore inconclusive, not an Alpha.6 product failure.
+Destination-free host measurements found no sustained resource exhaustion or
+interface errors. After the diagnostic summaries were retained, that exact
+origin was deleted with owner approval. One manually selected replacement
+origin is pending; its qdisc may be either `fq` or `fq_codel` under the current
+policy.
+
+The owner has separately authorized that exact manually selected replacement,
+after it passes the ordinary-browsing baseline and host verifier, to serve as a
+fixed reference origin for no more than 30 consecutive days from its provider
+creation time. It may keep the origin-side address, operating system, provider
+path, and host policy constant for the authorized Alpha.6 browser,
+major-video, and sleep/resume diagnosis. It must not host unrelated work.
+Before every authorized session, apply all offered package and default-kernel
+updates, reboot when required, and pass the host verifier before Maverick
+starts. Expiry, a failed baseline or verifier, unexplained configuration drift,
+suspected compromise or credential exposure, or degraded routing or reputation
+requires retirement and a new owner decision before replacement.
+
+This authorization changes only the lifetime and diagnostic role of that one
+replacement. It does not rewrite the completed first pilot's seven-day
+boundary, authorize Codex to create the manually selected server, authorize a
+second concurrent origin, a different provider or specification, paid add-ons,
+unrelated users or networks, automatic renewal, production use, or a Beta or
+Stable claim. The last exact total-spend ceiling remains `US$5`; stop before
+retention could exceed it and obtain a new owner decision instead. Evidence
+from the reference origin cannot by itself justify Beta or Stable. Before Beta,
+one separately authorized freshly provisioned clean temporary origin must
+repeat the from-scratch installation, basic browsing, and applicable diagnostic
+checks. Before Stable, fresh-origin validation must be repeated for the Stable
+candidate. Neither requirement grants authority to create a server.
+
+For the Alpha.6 reference trial, the owner has also authorized an
+application-local comparison between a clean Firefox profile and one temporary
+isolated Chrome profile. Chrome must use its own new data directory,
+Maverick's loopback-only SOCKS5 listener, no direct fallback, resolver
+containment, and a client-stop fail-closed check. Neither browser may reuse a
+signed-in daily profile. Safari and every macOS system proxy, DNS, route,
+firewall, VPN, interface, or other network-service change remain outside
+authorization.
+
+For future API-created Maverick test origins, the owner has established an
+address gate: inspect the public IPv4 address before DNS, certificates, or
+deployment; if its first octet is `64`, immediately delete that exact newly
+created resource by provider ID and create a replacement within the same
+approved team, region, specification, lifetime, and total-spend boundary. If
+that boundary cannot produce a non-`64` address, stop and ask instead of
+creating without limit. This is an owner-selected operational exclusion, not a
+claim that the entire `64.0.0.0/8` network is technically defective. A server
+the owner says they are creating manually remains on the separately
+communicated manual path.
+
+Beyond that one manual replacement, its approved 30-day reference trial, and
+the browser-local comparison above, any new live-field run, remote resource,
+provider change, spending, production/Beta claim, or native-ECH implementation
+requires a new owner decision.

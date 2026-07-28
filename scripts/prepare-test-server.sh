@@ -87,8 +87,8 @@ case "$action" in
 esac
 
 for critical_command in \
-  apt-get apt-mark apt-cache dpkg-query md5sum modinfo modprobe \
-  sysctl ip tc uname stat; do
+  apt-get apt-mark apt-cache awk cat chmod dpkg-query grep md5sum mktemp \
+  modinfo modprobe mv rm stat sysctl ip tc uname; do
   unset -f "$critical_command" 2>/dev/null || true
 done
 
@@ -476,12 +476,41 @@ check_stock_kernel_provenance() {
   printf 'OK: Ubuntu default-kernel package provenance verified\n'
 }
 
-managed_modules_content=$'tcp_bbr\nsch_fq'
-managed_sysctl_content=$'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr'
+selected_qdisc=""
+selected_scheduler_module=""
+managed_modules_content=""
+managed_sysctl_content=""
 modules_file="$(host_path /etc/modules-load.d/99-maverick-test-network.conf)"
 sysctl_file="$(host_path /etc/sysctl.d/99-maverick-test-network.conf)"
+managed_sysctl_basename="${sysctl_file##*/}"
 created_modules_file=false
 created_sysctl_file=false
+
+is_supported_qdisc() {
+  case "$(trim "$1")" in
+    fq|fq_codel) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+configure_network_policy() {
+  selected_qdisc="$(
+    sysctl -n net.core.default_qdisc 2>/dev/null || true
+  )"
+  selected_qdisc="$(trim "$selected_qdisc")"
+  is_supported_qdisc "$selected_qdisc" ||
+    fail "$EXIT_SAFETY_GATE" "the configured default qdisc must be fq or fq_codel"
+
+  case "$selected_qdisc" in
+    fq) selected_scheduler_module="sch_fq" ;;
+    fq_codel) selected_scheduler_module="sch_fq_codel" ;;
+  esac
+  managed_modules_content=$'tcp_bbr\n'"$selected_scheduler_module"
+  managed_sysctl_content="$(
+    printf 'net.core.default_qdisc = %s\n' "$selected_qdisc"
+    printf 'net.ipv4.tcp_congestion_control = bbr'
+  )"
+}
 
 check_managed_target() {
   local file="$1"
@@ -524,8 +553,10 @@ check_sysctl_conflicts() {
       value="$(trim "${line#*=}")"
       case "$key" in
         net.core.default_qdisc)
-          [[ "$value" == "fq" ]] ||
-            fail "$EXIT_SAFETY_GATE" "a conflicting default qdisc setting already exists"
+          is_supported_qdisc "$value" ||
+            fail "$EXIT_SAFETY_GATE" "an unsupported default qdisc setting already exists"
+          [[ "$value" == "$selected_qdisc" ]] ||
+            fail "$EXIT_SAFETY_GATE" "sysctl.conf would replace the selected qdisc after reboot"
           ;;
         net.ipv4.tcp_congestion_control)
           [[ "$value" == "bbr" ]] ||
@@ -547,8 +578,12 @@ check_sysctl_conflicts() {
         value="$(trim "${line#*=}")"
         case "$key" in
           net.core.default_qdisc)
-            [[ "$value" == "fq" ]] ||
-              fail "$EXIT_SAFETY_GATE" "an effective sysctl directory contains a conflicting qdisc"
+            is_supported_qdisc "$value" ||
+              fail "$EXIT_SAFETY_GATE" "an effective sysctl directory contains an unsupported qdisc"
+            if [[ "$value" != "$selected_qdisc" &&
+              "${file##*/}" > "$managed_sysctl_basename" ]]; then
+              fail "$EXIT_SAFETY_GATE" "a later sysctl file would replace the selected qdisc after reboot"
+            fi
             ;;
           net.ipv4.tcp_congestion_control)
             [[ "$value" == "bbr" ]] ||
@@ -578,8 +613,9 @@ check_module_conflicts() {
         read -r directive module_name _ <<<"$line"
         module_name="${module_name//-/_}"
         if [[ "$directive" == "blacklist" || "$directive" == "install" ]]; then
-          if [[ "$module_name" == "tcp_bbr" || "$module_name" == "sch_fq" ]]; then
-            fail "$EXIT_SAFETY_GATE" "an effective modprobe directory conflicts with BBR or fq"
+          if [[ "$module_name" == "tcp_bbr" ||
+            "$module_name" == "$selected_scheduler_module" ]]; then
+            fail "$EXIT_SAFETY_GATE" "an effective modprobe directory conflicts with BBR or the selected qdisc"
           fi
         fi
       done <"$file"
@@ -671,7 +707,8 @@ check_runtime_congestion_control() {
   available="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
   default_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
   [[ "$(trim "$selected")" == "bbr" ]] || return 1
-  [[ "$(trim "$default_qdisc")" == "fq" ]] || return 1
+  is_supported_qdisc "$default_qdisc" || return 1
+  [[ "$(trim "$default_qdisc")" == "$selected_qdisc" ]] || return 1
   case " $available " in
     *" bbr "*) return 0 ;;
     *) return 1 ;;
@@ -695,30 +732,68 @@ check_default_route_qdisc() {
   local qdisc_state
 
   interface_name="$(default_route_interface)"
-  [[ -n "$interface_name" ]] || return 1
+  [[ -n "$interface_name" ]] || return 2
   case "$interface_name" in
-    *[!A-Za-z0-9_.:@-]*) return 1 ;;
+    *[!A-Za-z0-9_.:@-]*) return 2 ;;
   esac
 
-  qdisc_state="$(tc qdisc show dev "$interface_name" 2>/dev/null || true)"
-  [[ -n "$qdisc_state" ]] || return 1
-
-  if printf '%s\n' "$qdisc_state" |
-    awk '$1 == "qdisc" && $2 == "fq" && $4 == "root" { found = 1 }
-         END { exit(found ? 0 : 1) }'; then
-    return 0
-  fi
+  qdisc_state=""
+  qdisc_state="$(tc qdisc show dev "$interface_name" 2>/dev/null)" || return 2
+  [[ -n "$qdisc_state" ]] || return 2
 
   printf '%s\n' "$qdisc_state" |
     awk '
-      $1 == "qdisc" && $2 == "mq" && $4 == "root" { mq = 1 }
-      $1 == "qdisc" && $4 == "parent" && $5 ~ /^:[0-9]+$/ {
-        leaf = 1
-        if ($2 != "fq") {
-          bad = 1
+      $1 == "qdisc" {
+        is_root = 0
+        parent = ""
+        for (i = 3; i <= NF; i++) {
+          if ($i == "root") {
+            is_root = 1
+          } else if ($i == "parent" && i < NF) {
+            parent = $(i + 1)
+          }
+        }
+
+        if (is_root) {
+          root_count += 1
+          root_kind = $2
+          next
+        }
+
+        if ($2 == "ingress" || $2 == "clsact") {
+          next
+        }
+
+        egress_child_count += 1
+        if (parent !~ /^:[[:xdigit:]]+$/) {
+          structure_bad = 1
+          next
+        }
+
+        leaf_count += 1
+        if ($2 != "fq" && $2 != "fq_codel") {
+          policy_bad = 1
+        } else if (leaf_kind == "") {
+          leaf_kind = $2
+        } else if ($2 != leaf_kind) {
+          policy_bad = 1
         }
       }
-      END { exit(mq && leaf && !bad ? 0 : 1) }
+      END {
+        if (root_count != 1 || structure_bad) {
+          exit 2
+        }
+        if (root_kind == "fq" || root_kind == "fq_codel") {
+          exit(egress_child_count == 0 ? 0 : 2)
+        }
+        if (root_kind == "mq") {
+          if (leaf_count == 0 || egress_child_count != leaf_count) {
+            exit 2
+          }
+          exit(policy_bad ? 1 : 0)
+        }
+        exit 1
+      }
     '
 }
 
@@ -739,6 +814,7 @@ run_preflight() {
   check_reboot_gate
   check_stock_kernel_provenance
   check_stock_bbrv1_evidence false
+  configure_network_policy
   check_configuration_conflicts
   printf 'OK: test-server preflight passed\n'
 }
@@ -747,6 +823,7 @@ run_prepare() {
   local held_packages
   local previous_default_qdisc
   local previous_congestion_control
+  local qdisc_status
 
   if [[ "$test_mode" == "0" && "$EUID" -ne 0 ]]; then
     fail "$EXIT_ROOT_REQUIRED" "prepare must run as root"
@@ -792,12 +869,13 @@ run_prepare() {
   check_managed_path_safety
   check_stock_kernel_provenance
   check_stock_bbrv1_evidence false
+  configure_network_policy
   check_configuration_conflicts
 
   modprobe tcp_bbr >/dev/null 2>&1 ||
     fail "$EXIT_BBR_UNAVAILABLE" "the stock Ubuntu BBR module could not be loaded"
-  modprobe sch_fq >/dev/null 2>&1 ||
-    fail "$EXIT_VERIFY_FAILED" "the fq scheduler module could not be loaded"
+  modprobe "$selected_scheduler_module" >/dev/null 2>&1 ||
+    fail "$EXIT_VERIFY_FAILED" "the selected qdisc module could not be loaded"
   check_stock_bbrv1_evidence true
 
   previous_default_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
@@ -810,7 +888,7 @@ run_prepare() {
   fi
 
   persist_network_policy
-  if ! sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 ||
+  if ! sysctl -w "net.core.default_qdisc=$selected_qdisc" >/dev/null 2>&1 ||
     ! sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1; then
     restore_runtime_policy "$previous_default_qdisc" "$previous_congestion_control"
     rollback_created_policy
@@ -822,11 +900,21 @@ run_prepare() {
     rollback_created_policy
     fail "$EXIT_VERIFY_FAILED" "runtime BBR and default-qdisc verification failed; rollback completed"
   fi
-  if ! check_default_route_qdisc; then
-    fail "$EXIT_REBOOT_REQUIRED" "persistent fq is ready, but a manual reboot is required before Maverick starts"
-  fi
+  qdisc_status=0
+  check_default_route_qdisc || qdisc_status=$?
+  case "$qdisc_status" in
+    0) ;;
+    1)
+      fail "$EXIT_REBOOT_REQUIRED" "the persistent qdisc is ready, but a manual reboot is required before Maverick starts"
+      ;;
+    *)
+      restore_runtime_policy "$previous_default_qdisc" "$previous_congestion_control"
+      rollback_created_policy
+      fail "$EXIT_VERIFY_FAILED" "the active qdisc could not be inspected safely; persistent changes were rolled back"
+      ;;
+  esac
 
-  printf 'OK: packages, stock BBRv1, fq, persistence, and runtime checks passed\n'
+  printf 'OK: packages, stock BBRv1, approved qdisc, persistence, and runtime checks passed\n'
 }
 
 run_verify() {
@@ -836,11 +924,12 @@ run_verify() {
   check_reboot_gate
   check_stock_kernel_provenance
   check_stock_bbrv1_evidence true
+  configure_network_policy
   verify_persistence
   check_runtime_congestion_control ||
     fail "$EXIT_VERIFY_FAILED" "runtime BBR or default-qdisc state is invalid"
   check_default_route_qdisc ||
-    fail "$EXIT_VERIFY_FAILED" "the first IPv4 default-route qdisc is not fq"
+    fail "$EXIT_VERIFY_FAILED" "the first IPv4 default-route qdisc is not fq or fq_codel"
   printf 'OK: test server is ready for a separately authorized Maverick deployment\n'
 }
 

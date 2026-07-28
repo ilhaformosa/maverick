@@ -88,7 +88,7 @@ esac
 
 for critical_command in \
   apt-get apt-mark apt-cache awk cat chmod dpkg-query grep md5sum mktemp \
-  modinfo modprobe mv rm stat sysctl ip tc uname; do
+  modinfo modprobe mkdir mv networkctl rm rmdir stat sysctl ip tc uname; do
   unset -f "$critical_command" 2>/dev/null || true
 done
 
@@ -150,7 +150,7 @@ check_test_command_isolation() {
   [[ "$test_mode" == "isolated-fixture-v1" ]] || return 0
   for command_name in \
     apt-get apt-mark apt-cache dpkg-query md5sum modinfo modprobe \
-    sysctl ip tc uname; do
+    networkctl sysctl ip tc uname; do
     resolved="$(command -v "$command_name" 2>/dev/null || true)"
     case "$resolved" in
       "$test_bin/"*)
@@ -250,6 +250,8 @@ check_managed_path_safety() {
   check_root_owned_safe_path /etc
   check_root_owned_safe_path /etc/modules-load.d
   check_root_owned_safe_path /etc/sysctl.d
+  check_root_owned_safe_path /etc/systemd
+  check_root_owned_safe_path /etc/systemd/network
   [[ ! -e /etc/modules-load.d/99-maverick-test-network.conf ]] ||
     check_root_owned_safe_path /etc/modules-load.d/99-maverick-test-network.conf
   [[ ! -e /etc/sysctl.d/99-maverick-test-network.conf ]] ||
@@ -483,8 +485,14 @@ managed_sysctl_content=""
 modules_file="$(host_path /etc/modules-load.d/99-maverick-test-network.conf)"
 sysctl_file="$(host_path /etc/sysctl.d/99-maverick-test-network.conf)"
 managed_sysctl_basename="${sysctl_file##*/}"
+network_file_basename=""
+network_dropin_dir=""
+network_dropin_file=""
+managed_networkd_content=""
 created_modules_file=false
 created_sysctl_file=false
+created_network_dropin_file=false
+created_network_dropin_dir=false
 
 is_supported_qdisc() {
   case "$(trim "$1")" in
@@ -494,12 +502,26 @@ is_supported_qdisc() {
 }
 
 configure_network_policy() {
+  local active_qdisc
+  local active_qdisc_status
+
   selected_qdisc="$(
     sysctl -n net.core.default_qdisc 2>/dev/null || true
   )"
   selected_qdisc="$(trim "$selected_qdisc")"
   is_supported_qdisc "$selected_qdisc" ||
     fail "$EXIT_SAFETY_GATE" "the configured default qdisc must be fq or fq_codel"
+
+  active_qdisc=""
+  active_qdisc_status=0
+  active_qdisc="$(default_route_qdisc_kind)" || active_qdisc_status=$?
+  case "$active_qdisc_status" in
+    0) selected_qdisc="$active_qdisc" ;;
+    1) ;;
+    *)
+      fail "$EXIT_VERIFY_FAILED" "the active qdisc could not be inspected safely"
+      ;;
+  esac
 
   case "$selected_qdisc" in
     fq) selected_scheduler_module="sch_fq" ;;
@@ -510,6 +532,57 @@ configure_network_policy() {
     printf 'net.core.default_qdisc = %s\n' "$selected_qdisc"
     printf 'net.ipv4.tcp_congestion_control = bbr'
   )"
+}
+
+configure_networkd_policy() {
+  local interface_name
+  local network_file
+
+  interface_name="$(default_route_interface)"
+  case "$interface_name" in
+    ""|*[!A-Za-z0-9_.:@-]*)
+      fail "$EXIT_VERIFY_FAILED" "the first IPv4 default-route interface is invalid"
+      ;;
+  esac
+  network_file="$(
+    SYSTEMD_COLORS=0 networkctl --no-pager --full status "$interface_name" 2>/dev/null |
+      awk '$1 == "Network" && $2 == "File:" { print $3 }'
+  )" ||
+    fail "$EXIT_SAFETY_GATE" "systemd-networkd could not identify the effective network file"
+  [[ -n "$network_file" && "$network_file" != *$'\n'* ]] ||
+    fail "$EXIT_SAFETY_GATE" "systemd-networkd did not report one effective network file"
+  network_file_basename="${network_file##*/}"
+  [[ "$network_file_basename" =~ ^[A-Za-z0-9_.@-]+\.network$ ]] ||
+    fail "$EXIT_SAFETY_GATE" "the effective network filename is unsafe"
+  case "$network_file" in
+    "/etc/systemd/network/$network_file_basename"|\
+    "/run/systemd/network/$network_file_basename"|\
+    "/usr/local/lib/systemd/network/$network_file_basename"|\
+    "/usr/lib/systemd/network/$network_file_basename")
+      ;;
+    *)
+      fail "$EXIT_SAFETY_GATE" "the effective network file is outside the managed path policy"
+      ;;
+  esac
+  network_file="$(host_path "$network_file")"
+  [[ -f "$network_file" && ! -L "$network_file" ]] ||
+    fail "$EXIT_SAFETY_GATE" "the effective network file is missing, symbolic, or not regular"
+  check_root_owned_safe_path "${network_file%/*}"
+  check_root_owned_safe_path "$network_file"
+
+  network_dropin_dir="$(host_path "/etc/systemd/network/$network_file_basename.d")"
+  network_dropin_file="$network_dropin_dir/99-maverick-test-qdisc.conf"
+  if [[ "$selected_qdisc" == "fq" ]]; then
+    managed_networkd_content=$'[FairQueueing]\nParent=root'
+  else
+    managed_networkd_content=$'[FairQueueingControlledDelay]\nParent=root'
+  fi
+
+  if [[ -e "$network_dropin_dir" || -L "$network_dropin_dir" ]]; then
+    [[ -d "$network_dropin_dir" && ! -L "$network_dropin_dir" ]] ||
+      fail "$EXIT_SAFETY_GATE" "the native qdisc drop-in path is unsafe"
+    check_root_owned_safe_path "$network_dropin_dir"
+  fi
 }
 
 check_managed_target() {
@@ -626,6 +699,7 @@ check_module_conflicts() {
 check_configuration_conflicts() {
   check_managed_target "$modules_file" "$managed_modules_content"
   check_managed_target "$sysctl_file" "$managed_sysctl_content"
+  check_managed_target "$network_dropin_file" "$managed_networkd_content"
   check_sysctl_conflicts
   check_module_conflicts
 }
@@ -650,6 +724,10 @@ stage_managed_file() {
 }
 
 rollback_created_policy() {
+  if [[ "$created_network_dropin_file" == "true" ]]; then
+    rm -f -- "$network_dropin_file"
+    created_network_dropin_file=false
+  fi
   if [[ "$created_sysctl_file" == "true" ]]; then
     rm -f -- "$sysctl_file"
     created_sysctl_file=false
@@ -658,16 +736,46 @@ rollback_created_policy() {
     rm -f -- "$modules_file"
     created_modules_file=false
   fi
+  if [[ "$created_network_dropin_dir" == "true" ]]; then
+    rmdir -- "$network_dropin_dir" >/dev/null 2>&1 || true
+    created_network_dropin_dir=false
+  fi
+}
+
+persist_networkd_policy() {
+  local stage=""
+
+  if [[ ! -d "$network_dropin_dir" ]]; then
+    mkdir -m 0755 -- "$network_dropin_dir" ||
+      fail "$EXIT_SAFETY_GATE" "could not create the native qdisc drop-in directory"
+    created_network_dropin_dir=true
+  fi
+  if [[ -L "$network_dropin_dir" ]] ||
+    ! stage_managed_file "$network_dropin_file" "$managed_networkd_content" stage; then
+    rollback_created_policy
+    fail "$EXIT_SAFETY_GATE" "could not stage the native qdisc policy"
+  fi
+  if [[ -n "$stage" ]] && ! mv -f -- "$stage" "$network_dropin_file"; then
+    rm -f -- "$stage"
+    rollback_created_policy
+    fail "$EXIT_SAFETY_GATE" "could not atomically install the native qdisc policy"
+  elif [[ -n "$stage" ]]; then
+    created_network_dropin_file=true
+  fi
 }
 
 persist_network_policy() {
   local modules_stage=""
   local sysctl_stage=""
 
-  stage_managed_file "$modules_file" "$managed_modules_content" modules_stage ||
+  persist_networkd_policy
+  if ! stage_managed_file "$modules_file" "$managed_modules_content" modules_stage; then
+    rollback_created_policy
     fail "$EXIT_SAFETY_GATE" "could not stage the module policy"
+  fi
   if ! stage_managed_file "$sysctl_file" "$managed_sysctl_content" sysctl_stage; then
     [[ -z "$modules_stage" ]] || rm -f -- "$modules_stage"
+    rollback_created_policy
     fail "$EXIT_SAFETY_GATE" "could not stage the sysctl policy"
   fi
 
@@ -675,6 +783,7 @@ persist_network_policy() {
     if ! mv -f -- "$modules_stage" "$modules_file"; then
       rm -f -- "$modules_stage"
       [[ -z "$sysctl_stage" ]] || rm -f -- "$sysctl_stage"
+      rollback_created_policy
       fail "$EXIT_SAFETY_GATE" "could not atomically install the module policy"
     fi
     created_modules_file=true
@@ -727,7 +836,7 @@ default_route_interface() {
     }'
 }
 
-check_default_route_qdisc() {
+default_route_qdisc_kind() {
   local interface_name
   local qdisc_state
 
@@ -784,17 +893,29 @@ check_default_route_qdisc() {
           exit 2
         }
         if (root_kind == "fq" || root_kind == "fq_codel") {
-          exit(egress_child_count == 0 ? 0 : 2)
+          if (egress_child_count != 0) {
+            exit 2
+          }
+          print root_kind
+          exit 0
         }
         if (root_kind == "mq") {
           if (leaf_count == 0 || egress_child_count != leaf_count) {
             exit 2
           }
-          exit(policy_bad ? 1 : 0)
+          if (policy_bad) {
+            exit 1
+          }
+          print leaf_kind
+          exit 0
         }
         exit 1
       }
     '
+}
+
+check_default_route_qdisc() {
+  default_route_qdisc_kind >/dev/null
 }
 
 verify_persistence() {
@@ -802,6 +923,9 @@ verify_persistence() {
     fail "$EXIT_VERIFY_FAILED" "module persistence does not match the managed policy"
   [[ -f "$sysctl_file" && "$(<"$sysctl_file")" == "$managed_sysctl_content" ]] ||
     fail "$EXIT_VERIFY_FAILED" "sysctl persistence does not match the managed policy"
+  [[ -f "$network_dropin_file" &&
+    "$(<"$network_dropin_file")" == "$managed_networkd_content" ]] ||
+    fail "$EXIT_VERIFY_FAILED" "native qdisc persistence does not match the managed policy"
   check_configuration_conflicts
 }
 
@@ -809,12 +933,13 @@ run_preflight() {
   check_os_policy
   require_commands \
     apt-get apt-mark apt-cache dpkg-query md5sum modinfo modprobe \
-    sysctl ip tc awk uname stat
+    networkctl sysctl ip tc awk uname stat
   check_managed_path_safety
   check_reboot_gate
   check_stock_kernel_provenance
   check_stock_bbrv1_evidence false
   configure_network_policy
+  configure_networkd_policy
   check_configuration_conflicts
   printf 'OK: test-server preflight passed\n'
 }
@@ -832,7 +957,7 @@ run_prepare() {
   check_os_policy
   require_commands \
     apt-get apt-mark apt-cache dpkg-query md5sum modinfo modprobe \
-    sysctl ip tc awk uname mktemp grep stat
+    networkctl sysctl ip tc awk uname mktemp grep mkdir rmdir stat
   check_managed_path_safety
 
   temporary_apt_log="$(mktemp "${TMPDIR:-/tmp}/maverick-apt.XXXXXX")"
@@ -846,7 +971,8 @@ run_prepare() {
   [[ -z "$(trim "$held_packages")" ]] ||
     fail "$EXIT_SAFETY_GATE" "held packages block a fully updated test server"
 
-  apt-get -s full-upgrade >"$temporary_apt_log" 2>&1 ||
+  apt-get -o APT::Get::Always-Include-Phased-Updates=true \
+    -s full-upgrade >"$temporary_apt_log" 2>&1 ||
     fail "$EXIT_SAFETY_GATE" "package upgrade simulation failed"
   if grep -Eq '^Remv[[:space:]]|(^|, )[1-9][0-9]* to remove' "$temporary_apt_log"; then
     fail "$EXIT_SAFETY_GATE" "the package upgrade would remove packages"
@@ -854,10 +980,12 @@ run_prepare() {
 
   printf 'Preparing: applying full package upgrade without removals\n'
   DEBIAN_FRONTEND=noninteractive \
-    apt-get --no-remove -y full-upgrade >"$temporary_apt_log" 2>&1 ||
+    apt-get -o APT::Get::Always-Include-Phased-Updates=true \
+      --no-remove -y full-upgrade >"$temporary_apt_log" 2>&1 ||
     fail "$EXIT_SAFETY_GATE" "package upgrade failed or requested a removal"
 
-  apt-get -s full-upgrade >"$temporary_apt_log" 2>&1 ||
+  apt-get -o APT::Get::Always-Include-Phased-Updates=true \
+    -s full-upgrade >"$temporary_apt_log" 2>&1 ||
     fail "$EXIT_SAFETY_GATE" "post-upgrade package verification failed"
   if grep -Eq \
     '^Inst[[:space:]]|^Remv[[:space:]]|kept back|(^|[ ,])[1-9][0-9]* not upgraded' \
@@ -870,6 +998,7 @@ run_prepare() {
   check_stock_kernel_provenance
   check_stock_bbrv1_evidence false
   configure_network_policy
+  configure_networkd_policy
   check_configuration_conflicts
 
   modprobe tcp_bbr >/dev/null 2>&1 ||
@@ -919,12 +1048,15 @@ run_prepare() {
 
 run_verify() {
   check_os_policy
-  require_commands apt-cache dpkg-query md5sum modinfo sysctl ip tc awk uname stat
+  require_commands \
+    apt-cache dpkg-query md5sum modinfo networkctl sysctl ip tc awk \
+    uname stat
   check_managed_path_safety
   check_reboot_gate
   check_stock_kernel_provenance
   check_stock_bbrv1_evidence true
   configure_network_policy
+  configure_networkd_policy
   verify_persistence
   check_runtime_congestion_control ||
     fail "$EXIT_VERIFY_FAILED" "runtime BBR or default-qdisc state is invalid"

@@ -592,8 +592,21 @@ failure is therefore inconclusive, not an Alpha.6 product failure.
 Destination-free host measurements found no sustained resource exhaustion or
 interface errors. After the diagnostic summaries were retained, that exact
 origin was deleted with owner approval. One manually selected replacement
-origin is pending; its qdisc may be either `fq` or `fq_codel` under the current
-policy.
+origin has now passed the ordinary host verifier: all offered package and
+default-kernel updates were applied, required reboots were completed, stock
+Ubuntu BBRv1 is active, and the host's approved `fq_codel` choice is both
+active and persistent. This records the observed choice without making
+`fq_codel` preferable to `fq`.
+
+The independently downloaded Alpha.6 release assets and their published and
+inner checksums passed before deployment. The installed server passed
+configuration validation, service, listener, direct TLS, static fallback,
+fronting-provider edge, end-to-end SOCKS, client-stop fail-closed, and
+post-test health checks. A new owner-only macOS handoff package was generated
+outside the repository from the independently verified release asset and
+passed its own checksum, configuration, version, and smoke checks. These
+results establish deployment plumbing, not the ordinary-browsing baseline or
+the browser and major-video diagnosis.
 
 The owner has separately authorized that exact manually selected replacement,
 after it passes the ordinary-browsing baseline and host verifier, to serve as a
@@ -612,13 +625,20 @@ replacement. It does not rewrite the completed first pilot's seven-day
 boundary, authorize Codex to create the manually selected server, authorize a
 second concurrent origin, a different provider or specification, paid add-ons,
 unrelated users or networks, automatic renewal, production use, or a Beta or
-Stable claim. The last exact total-spend ceiling remains `US$5`; stop before
+Stable claim. The last exact total-spend ceiling remains `US$6`; stop before
 retention could exceed it and obtain a new owner decision instead. Evidence
 from the reference origin cannot by itself justify Beta or Stable. Before Beta,
 one separately authorized freshly provisioned clean temporary origin must
 repeat the from-scratch installation, basic browsing, and applicable diagnostic
 checks. Before Stable, fresh-origin validation must be repeated for the Stable
 candidate. Neither requirement grants authority to create a server.
+
+The replacement's current origin certificate is deliberately short-lived and
+does not authorize automatic renewal. If its validity cannot cover a later
+authorized session, stop and obtain a separate owner decision before renewing
+or replacing it. The replacement remains provisional rather than an accepted
+fixed reference until the authorized spare macOS client's ordinary-browsing
+baseline passes.
 
 For the Alpha.6 reference trial, the owner has also authorized an
 application-local comparison between a clean Firefox profile and one temporary

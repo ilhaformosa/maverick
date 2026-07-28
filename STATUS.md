@@ -407,12 +407,11 @@ important major-video failure is still reproducible and is neither fixed nor
 understood with an acceptable documented boundary. Maverick therefore remains
 Alpha.
 
-## Alpha.6 Reliability Candidate
+## Alpha.6 Reliability Prerelease
 
-The owner authorized continued repository-local reliability work after the
-Alpha.5 retest. The resulting `v1.2.0-alpha.6` candidate has passed the local
-repository gate described below. It is not yet a published prerelease and has
-not been field-tested.
+The published GitHub prerelease is `v1.2.0-alpha.6`. It remains Alpha and is
+not Beta, Stable, mature, production-ready, or provider-independent. It has not
+yet been field-tested.
 
 The H2 connection pool now handles one confirmed stale-cache shape
 conservatively. If a tunnel handshake or ClientHello send stalls, the client
@@ -486,9 +485,23 @@ persistence, rollback, and reboot-required states. No real server, route,
 qdisc, system proxy, DNS, VPN, or other host-network setting was changed by
 this verification.
 
-These changes do not resolve the major-video result, prove that BBR improves
-the field experience, justify a custom kernel, or justify Beta. Maverick
-remains Alpha.
+The final independent read-only review reported no P0, P1, or P2 finding; its
+one P3 documentation precision finding was corrected before commit. The
+required pull-request product gate and CodeQL checks, retained main-branch
+product gate and CodeQL checks, and the single release workflow all passed
+without a retry.
+
+Both public archives and their checksum files were downloaded again. Their
+outer checksums, inner `SHA256SUMS`, exact contents, source/version/target
+metadata, executable modes, and privacy path scans passed. The remote tag
+resolves to the reviewed merge commit, and the downloaded Apple Silicon binary
+passed `version` and `user-smoke` locally.
+
+These results prove only release integrity, the reviewed implementation, and
+local regression behavior. They do not resolve the major-video result, show
+that stale-connection recovery works after a real sleep/resume event, prove that
+BBR improves field experience, justify a custom kernel, or justify Beta.
+Maverick remains Alpha.
 
 ## Authorization Boundary
 
@@ -548,7 +561,7 @@ identities, unrelated DNS records observed immediately around cleanup, and
 zone-wide SSL mode were unchanged by cleanup. The short-lived origin
 certificate may expire naturally.
 
-The separately authorized Alpha.5 repository publication is complete. The owner
+The separately authorized Alpha.6 repository publication is complete. The owner
 has authorized continued privacy-safe repository-local development.
 
 The separately authorized Alpha.5 owner retest has also ended. Its one temporary

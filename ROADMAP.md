@@ -9,19 +9,36 @@ only orders work; it does not restate current completion or audit status.
 
 ## Execution Order
 
-1. **Request one short, bounded Alpha.5 owner retest.** Re-time a clean install,
-   collect only the documented aggregate diagnostics, and check video playback,
-   slow images, and lingering page-load completion. A new live run, provider
-   change, origin, or spend requires new explicit authorization.
-2. **Choose only the next evidence-supported reliability fix.** Use the retest
-   and aggregate counters to decide whether another bounded change is justified.
-   Do not bundle a multi-connection H2 pool or every remaining hypothesis
-   without evidence.
-3. **Decide whether Beta is justified.** Enter Beta only if a clean default
+1. **Publish the verified Alpha.6 reliability candidate.** Complete the final
+   privacy gate, pull-request review, required public CI, exact merge-tag
+   release, and downloaded-asset verification for stale H2 generation recovery,
+   `TCP_NODELAY`, fixed aggregate reset, stall, and latency metrics, plus the
+   resolved test-host baseline. Do not add a second outer H2 pool or periodic
+   heartbeat without field evidence.
+2. **Use the resolved test-host baseline before another live run.** Ubuntu
+   26.04 LTS is the first choice and Ubuntu 24.04 LTS is an explicitly justified
+   fallback. Every test host must finish all offered package and default-kernel
+   updates, reboot when Ubuntu requires it, and pass the host verifier before
+   Maverick starts. The baseline is the stock Ubuntu kernel's native BBR
+   implementation (commonly called BBRv1) plus `fq`; do not install or maintain
+   a custom BBRv3 kernel and do not run a congestion-control A/B.
+3. **Isolate the remaining major-video failure with one-variable tests.** First
+   compare the current Firefox profile, Troubleshoot Mode, and a clean profile;
+   then record only privacy-safe player/media response categories. If needed,
+   compare a separately authorized SSH SOCKS path on the same exit, followed
+   by a separately authorized direct carrier. A different exit is later, not
+   the first diagnosis. Do not retain signed media URLs, cookies, request
+   headers, addresses, or browsing content. Any live run, origin, direct path,
+   provider change, or spend requires explicit authorization.
+4. **Validate recovery with measurements, not guesses.** In the next authorized
+   field run, check ordinary use plus one sleep/resume cycle and collect only
+   the fixed destination-free summaries. Use those numbers to decide whether
+   any additional connection-health mechanism is justified.
+5. **Decide whether Beta is justified.** Enter Beta only if a clean default
    install beats five minutes and the important browsing failures are either
    gone or understood with an acceptable documented boundary. Otherwise remain
    Alpha and fix only the next reproduced cause.
-4. **Track native server-side ECH upstream.** Keep the current provider-fronted
+6. **Track native server-side ECH upstream.** Keep the current provider-fronted
    path labeled as a workaround, not ECH. Do not fork rustls or vendor an
    unmerged ECH patch in the current plan.
 

@@ -180,8 +180,17 @@ The prototype does not support a non-redacted operational logging mode.
 ## Modes
 
 - `auto`: default v1 behavior.
-- `stable`: TCP-only stable policy label.
+- `stable`: stable policy label whose outer carrier is H2/TCP.
 - `private`: stricter privacy posture and future reserved fields.
+
+On a separately prepared Linux server, the server-sent half of all three
+modes' normal H2/TCP carrier uses the host's configured `fq` plus stock BBR
+(commonly called BBRv1). This is an operating-system policy, not a YAML mode
+setting. `stable` always keeps its outer carrier on H2/TCP. If experimental
+H3/QUIC is explicitly enabled in `auto` or `private`, that UDP carrier uses its
+userspace congestion controller rather than Linux TCP BBR; H2 fallback and the
+server-sent half of server-to-target TCP connections still use the host TCP
+policy.
 
 Maverick does not expose transport internals as ordinary user choices. Supported
 default builds and generated client configs use

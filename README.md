@@ -64,6 +64,17 @@ Generated configs contain fresh credentials and are ignored by git. Protect
 real config files with owner-only permissions and never commit real endpoints,
 credentials, account details, or infrastructure identifiers.
 
+Separately authorized Ubuntu test origins use the fail-closed host gate in
+[docs/TEST_SERVER_PREPARATION.md](docs/TEST_SERVER_PREPARATION.md). Ubuntu
+26.04 LTS is the default; Ubuntu 24.04 LTS requires an explicit fallback reason.
+The gate updates packages, stops for a required manual reboot, and persistently
+configures stock Ubuntu BBR (commonly called BBRv1) plus `fq` after its package
+and configuration safety gates pass. It then verifies runtime state, rolling
+back an apply failure or requesting a reboot when the active qdisc is still
+old. It does not install a custom kernel, reboot, start Maverick, or change a
+live qdisc. The package upgrade may install an Ubuntu-provided default-kernel
+update.
+
 ## Active Documents
 
 - [STATUS.md](STATUS.md): the single current-truth and pilot decision record.
@@ -73,6 +84,10 @@ credentials, account details, or infrastructure identifiers.
 - [SECURITY.md](SECURITY.md): reporting, secret handling, and security limits.
 - [docs/TRANSPORT_ARCHITECTURE.md](docs/TRANSPORT_ARCHITECTURE.md): compact
   product architecture.
+- [docs/TEST_SERVER_PREPARATION.md](docs/TEST_SERVER_PREPARATION.md):
+  fail-closed Ubuntu test-origin package, reboot, BBRv1, and fq gate.
+- [docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md](docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md):
+  privacy-safe, one-change-at-a-time field diagnosis.
 - [docs/archive/README.md](docs/archive/README.md): historical-material boundary.
 
 ## Safety

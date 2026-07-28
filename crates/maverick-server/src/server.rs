@@ -531,6 +531,8 @@ async fn handle_tcp(
     state: ServerState,
     pre_auth_permit: PreAuthPermit,
 ) -> Result<()> {
+    tcp.set_nodelay(true)
+        .context("enable TCP_NODELAY on accepted client connection")?;
     let handshake_timeout = Duration::from_millis(state.config.advanced.handshake_timeout_ms);
     let tls = timeout(handshake_timeout, acceptor.accept(tcp))
         .await
@@ -623,6 +625,7 @@ async fn handle_tcp(
         let stream_guard = active_streams.enter();
         stream_tasks.spawn(async move {
             let _stream_guard = stream_guard;
+            let metrics = Arc::clone(&state.metrics);
             if let Err(err) = handle_request(
                 request,
                 respond,
@@ -633,6 +636,7 @@ async fn handle_tcp(
             )
             .await
             {
+                metrics.record_h2_request_error(&err);
                 debug!(error = %err, "h2 request ended");
             }
         });

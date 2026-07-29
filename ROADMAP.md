@@ -17,39 +17,41 @@ adopted nor automatically rejected.
 
 ## Next Repository-Local Slice
 
-### T001 — SDK stored-profile channel binding
+### T002 — Explicit stored-profile migration
 
 Queued on 2026-07-30 under the continued privacy-safe repository-local
 development authorization recorded in `STATUS.md`. This roadmap sets execution
-order only; it does not record or expand authorization. T001 is a narrow
-exception for the channel-binding persistence failure reproduced in the current
-SDK source and executes before the general failure-driven order below. It does
-not define the Beta.2 release scope.
+order only; it does not record or expand authorization. T002 is the next narrow
+SDK compatibility slice and executes before the general failure-driven order
+below. It does not define the Beta.2 release scope.
 
-- **Scope:** add an independent stored-profile schema version in
-  `crates/maverick-sdk/src/lib.rs`; write new stored profiles in a versioned
-  envelope that the Beta.1 flat-profile reader rejects; preserve every
-  `auth.channel_binding` field; and make legacy profiles without those fields,
-  malformed current profiles, and unknown stored-profile schemas fail
-  explicitly instead of restoring a security default.
-- **Acceptance:** focused unit tests prove complete round-trip behavior,
-  Beta.1-reader downgrade rejection, explicit legacy/malformed/unknown-schema
-  rejection, and continued secret-store separation. `cargo test -p maverick-sdk`,
+- **Scope:** in `crates/maverick-sdk/src/lib.rs`, expose a typed compatibility
+  status and a transactional legacy migration API that requires the caller to
+  provide every channel-binding value explicitly. Preserve every other field
+  represented by the current `StoredClientProfile` schema, keep secret references
+  opaque, and serialize successful migrations with the existing versioned
+  envelope.
+- **Acceptance:** focused unit tests prove typed current/legacy/unsupported/
+  malformed states, all three valid channel-binding combinations, preservation
+  of every field represented by the current stored-profile schema, typed
+  rejection of transport-incompatible explicit choices without partial
+  mutation, no secret-store access, and both directions of the Beta.1-reader
+  compatibility fixture. `cargo test -p maverick-sdk`,
   `./scripts/user-smoke.sh`, and `./scripts/local-harness.sh` pass locally, and
   the reviewed diff contains only this entry plus the bounded SDK implementation
   and tests.
 - **Out of scope:** config, auth, frame, or wire-version changes; H2, H3, Auto,
   padding, server, packaging, deployment, host-network, infrastructure, release,
-  tag, push, publication, or legacy-profile migration API work; and conversion
-  of historical design documents into a second current-truth ledger.
+  tag, push, publication, automatic/default migration, or conversion of
+  historical design documents into a second current-truth ledger.
 - **Stop conditions:** stop before changing any additional product file,
-  widening the public behavior beyond stored-profile compatibility, changing
-  any existing protocol/config/auth/frame version, performing a real
-  secret-store write, or requiring any remote, paid, privileged, or real-network
-  action.
+  inferring a missing legacy security value, widening the public behavior beyond
+  stored-profile compatibility, changing any existing protocol/config/auth/frame
+  version, accessing a secret store, or requiring any remote, paid, privileged,
+  or real-network action.
 
-After T001 completes or reaches a stop condition, resume the failure-driven
-execution order below. Completion of T001 alone does not create a new product
+After T002 completes or reaches a stop condition, resume the failure-driven
+execution order below. Completion of T002 alone does not create a new product
 result or change the milestone truth in `STATUS.md`.
 
 ## Execution Order

@@ -427,6 +427,61 @@ impl ProfileSecretStore for NativeProfileSecretStore {
 
 pub const STORED_CLIENT_PROFILE_SCHEMA_VERSION: u16 = 1;
 
+/// Compatibility state for stored client-profile metadata.
+///
+/// Checking this state never reads from or writes to a [`ProfileSecretStore`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoredClientProfileCompatibility {
+    /// The current stored schema's migration-required security fields are present
+    /// and internally compatible.
+    Current,
+    /// A legacy flat profile needs a caller-selected channel-binding policy.
+    LegacyNeedsExplicitChannelBindingMigration,
+    /// The stored schema is not supported by this SDK.
+    UnsupportedSchema { schema_version: u16 },
+    /// The profile shape and its declared stored schema are inconsistent.
+    Malformed,
+}
+
+/// Typed, privacy-safe reasons why an explicit legacy migration was rejected.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoredClientProfileMigrationError {
+    /// The profile is already current and must not be migrated again.
+    AlreadyCurrent,
+    /// The profile schema is not supported for legacy migration.
+    UnsupportedSchema { schema_version: u16 },
+    /// The profile is not a valid legacy or current stored-profile shape.
+    MalformedProfile,
+    /// `require = true` cannot be combined with `enabled = false`.
+    InvalidChannelBinding,
+    /// Required channel binding is incompatible with the stored transport metadata.
+    RequiredChannelBindingUnsupportedByStoredTransport,
+}
+
+impl std::fmt::Display for StoredClientProfileMigrationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyCurrent => formatter.write_str("stored client profile is already current"),
+            Self::UnsupportedSchema { schema_version } => write!(
+                formatter,
+                "stored client profile schema {schema_version} is unsupported for migration"
+            ),
+            Self::MalformedProfile => {
+                formatter.write_str("stored client profile metadata is malformed")
+            }
+            Self::InvalidChannelBinding => formatter
+                .write_str("channel binding cannot be required when channel binding is disabled"),
+            Self::RequiredChannelBindingUnsupportedByStoredTransport => formatter.write_str(
+                "required channel binding is unsupported by the stored transport metadata",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StoredClientProfileMigrationError {}
+
 #[derive(Clone, Debug)]
 pub struct StoredClientProfile {
     pub stored_profile_schema_version: u16,
@@ -499,6 +554,11 @@ impl<'de> Deserialize<'de> for StoredClientProfile {
         let representation = StoredClientProfileRepresentation::deserialize(deserializer)?;
         let (stored_profile_schema_version, profile) = match representation {
             StoredClientProfileRepresentation::Envelope(envelope) => {
+                if envelope.stored_profile_schema_version == 0 {
+                    return Err(serde::de::Error::custom(
+                        "stored client profile envelope cannot use legacy schema version 0",
+                    ));
+                }
                 (envelope.stored_profile_schema_version, envelope.profile)
             }
             StoredClientProfileRepresentation::Legacy(profile) => (0, profile),
@@ -539,6 +599,86 @@ impl StoredClientProfilePayload {
 }
 
 impl StoredClientProfile {
+    /// Reports this profile's stored-schema and migration compatibility.
+    ///
+    /// This method examines stored metadata only. It never accesses a secret
+    /// store and never changes the profile. A [`StoredClientProfileCompatibility::Current`]
+    /// result does not prove that the complete client configuration or referenced
+    /// secrets are valid, or that a runtime connection will succeed.
+    #[must_use]
+    pub fn compatibility_status(&self) -> StoredClientProfileCompatibility {
+        match self.stored_profile_schema_version {
+            0 if self.auth.channel_binding.is_none() => {
+                StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration
+            }
+            0 => StoredClientProfileCompatibility::Malformed,
+            STORED_CLIENT_PROFILE_SCHEMA_VERSION => match self.auth.channel_binding {
+                Some(binding)
+                    if (!binding.require || binding.enabled)
+                        && !self
+                            .required_channel_binding_unsupported_by_stored_transport(binding) =>
+                {
+                    StoredClientProfileCompatibility::Current
+                }
+                _ => StoredClientProfileCompatibility::Malformed,
+            },
+            schema_version => {
+                StoredClientProfileCompatibility::UnsupportedSchema { schema_version }
+            }
+        }
+    }
+
+    /// Explicitly migrates a legacy flat profile represented by the published
+    /// Beta.1 stored-profile schema to the current stored schema.
+    ///
+    /// The legacy channel-binding value cannot be inferred. Callers must:
+    ///
+    /// 1. Deserialize the stored profile.
+    /// 2. Call [`Self::compatibility_status`].
+    /// 3. Ask the user or caller to choose the complete channel-binding policy.
+    /// 4. Pass that policy to this method.
+    /// 5. Serialize the returned profile, which uses the versioned envelope.
+    ///
+    /// This method is transactional: it returns a migrated clone on success and
+    /// leaves the input profile unchanged on failure. It never accesses a
+    /// [`ProfileSecretStore`] and never supplies default security values. Every
+    /// field represented by the current [`StoredClientProfile`] schema is
+    /// preserved unchanged except for the caller-supplied channel binding and
+    /// the stored schema version.
+    pub fn migrate_legacy_with_channel_binding(
+        &self,
+        channel_binding: AuthChannelBindingConfig,
+    ) -> std::result::Result<Self, StoredClientProfileMigrationError> {
+        match self.compatibility_status() {
+            StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration => {}
+            StoredClientProfileCompatibility::Current => {
+                return Err(StoredClientProfileMigrationError::AlreadyCurrent);
+            }
+            StoredClientProfileCompatibility::UnsupportedSchema { schema_version } => {
+                return Err(StoredClientProfileMigrationError::UnsupportedSchema {
+                    schema_version,
+                });
+            }
+            StoredClientProfileCompatibility::Malformed => {
+                return Err(StoredClientProfileMigrationError::MalformedProfile);
+            }
+        }
+
+        if channel_binding.require && !channel_binding.enabled {
+            return Err(StoredClientProfileMigrationError::InvalidChannelBinding);
+        }
+        if self.required_channel_binding_unsupported_by_stored_transport(channel_binding) {
+            return Err(
+                StoredClientProfileMigrationError::RequiredChannelBindingUnsupportedByStoredTransport,
+            );
+        }
+
+        let mut migrated = self.clone();
+        migrated.auth.channel_binding = Some(channel_binding);
+        migrated.stored_profile_schema_version = STORED_CLIENT_PROFILE_SCHEMA_VERSION;
+        Ok(migrated)
+    }
+
     pub fn store_from_config(
         profile_name: impl Into<String>,
         config: &ClientConfig,
@@ -581,21 +721,46 @@ impl StoredClientProfile {
     }
 
     pub fn to_client_config(&self, store: &impl ProfileSecretStore) -> Result<ClientConfig> {
-        let channel_binding = match self.stored_profile_schema_version {
-            0 => anyhow::bail!(
-                "stored client profile uses the legacy schema and requires explicit \
+        let channel_binding = match self.compatibility_status() {
+            StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration => {
+                anyhow::bail!(
+                    "stored client profile uses the legacy schema and requires explicit \
                  channel-binding migration before materialization"
-            ),
-            STORED_CLIENT_PROFILE_SCHEMA_VERSION => self.auth.channel_binding.ok_or_else(|| {
-                anyhow::anyhow!(
+                )
+            }
+            StoredClientProfileCompatibility::Current => self
+                .auth
+                .channel_binding
+                .expect("current compatibility requires channel-binding metadata"),
+            StoredClientProfileCompatibility::UnsupportedSchema { schema_version } => {
+                anyhow::bail!(
+                "unsupported stored client profile schema version {schema_version}; supported version is \
+                 {STORED_CLIENT_PROFILE_SCHEMA_VERSION}"
+                )
+            }
+            StoredClientProfileCompatibility::Malformed => match self.auth.channel_binding {
+                None if self.stored_profile_schema_version
+                    == STORED_CLIENT_PROFILE_SCHEMA_VERSION =>
+                {
+                    anyhow::bail!(
                     "stored client profile schema {} is missing required auth.channel_binding data",
                     STORED_CLIENT_PROFILE_SCHEMA_VERSION
-                )
-            })?,
-            version => anyhow::bail!(
-                "unsupported stored client profile schema version {version}; supported version is \
-                 {STORED_CLIENT_PROFILE_SCHEMA_VERSION}"
-            ),
+                    )
+                }
+                Some(binding) if binding.require && !binding.enabled => anyhow::bail!(
+                    "stored client profile contains invalid auth.channel_binding data: \
+                     channel binding cannot be required when channel binding is disabled"
+                ),
+                Some(binding)
+                    if self.required_channel_binding_unsupported_by_stored_transport(binding) =>
+                {
+                    anyhow::bail!(
+                        "stored client profile contains required channel binding that is \
+                         unsupported by the stored transport metadata"
+                    )
+                }
+                _ => anyhow::bail!("stored client profile metadata is malformed"),
+            },
         };
 
         let secret = store.get_secret(&self.server.secret_ref)?;
@@ -623,6 +788,14 @@ impl StoredClientProfile {
         };
         config.validate().map_err(anyhow::Error::from)?;
         Ok(config)
+    }
+
+    fn required_channel_binding_unsupported_by_stored_transport(
+        &self,
+        channel_binding: AuthChannelBindingConfig,
+    ) -> bool {
+        channel_binding.require
+            && (self.advanced.tls_terminating_fronting_enabled() || self.advanced.experimental_h3)
     }
 }
 
@@ -1032,6 +1205,58 @@ mod tests {
         fn delete_secret(&mut self, _reference: &ProfileSecretRef) -> Result<()> {
             panic!("test secret store must not be changed")
         }
+    }
+
+    fn legacy_stored_client_profile_flat_value() -> Result<serde_json::Value> {
+        let config = client_config_builder()
+            .local_socks5("127.0.0.1:0".parse()?)
+            .server_address("127.0.0.1:443")
+            .server_name("localhost")
+            .credential("u_legacy", SecretString::generate())
+            .build()?;
+        let profile_name = "legacy-profile";
+        let profile = StoredClientProfile {
+            stored_profile_schema_version: 0,
+            profile_name: profile_name.into(),
+            version: config.version,
+            mode: config.mode,
+            local: config.local,
+            server: StoredClientServerProfile {
+                address: config.server.address,
+                server_name: config.server.server_name,
+                tunnel_path: config.server.tunnel_path,
+                credential_id: config.server.credential_id,
+                secret_ref: ProfileSecretRef::client_profile(profile_name, "active")?,
+                ca_cert: config.server.ca_cert,
+                cert_pin: config.server.cert_pin,
+            },
+            auth: StoredClientAuthProfile {
+                channel_binding: None,
+                v2: AuthV2Config {
+                    enabled: true,
+                    require: false,
+                    accepted_epochs: vec![2_026_073_001],
+                },
+                rotation: StoredClientCredentialRotationProfile {
+                    active_epoch: Some("2026073001".into()),
+                    next_credential_id: Some("u_legacy_next".into()),
+                    auto_switch: true,
+                    next: Some(StoredClientNextCredentialProfile {
+                        id: "u_legacy_next".into(),
+                        secret_ref: ProfileSecretRef::client_profile(profile_name, "next")?,
+                        not_before: "2026-08-01T00:00:00Z".into(),
+                    }),
+                },
+            },
+            log: config.log,
+            advanced: config.advanced,
+        };
+        let mut flat = serde_json::to_value(StoredClientProfilePayload::from(&profile))?;
+        flat["auth"]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_binding");
+        Ok(flat)
     }
 
     #[tokio::test]
@@ -1451,6 +1676,35 @@ mod tests {
     }
 
     #[test]
+    fn stored_client_profile_rejects_schema_zero_envelope_but_migrates_flat_legacy() -> Result<()> {
+        let legacy_flat = legacy_stored_client_profile_flat_value()?;
+        let schema_zero_envelope = serde_json::json!({
+            "stored_profile_schema_version": 0,
+            "profile": legacy_flat.clone(),
+        });
+
+        let err = serde_json::from_value::<StoredClientProfile>(schema_zero_envelope).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("cannot use legacy schema version 0"));
+
+        let legacy: StoredClientProfile = serde_json::from_value(legacy_flat)?;
+        assert_eq!(
+            legacy.compatibility_status(),
+            StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration
+        );
+        let migrated = legacy.migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+            enabled: true,
+            require: true,
+        })?;
+        assert_eq!(
+            migrated.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+        Ok(())
+    }
+
+    #[test]
     fn stored_client_profile_rejects_malformed_current_channel_binding_json_strictly() -> Result<()>
     {
         let config = client_config_builder()
@@ -1542,6 +1796,337 @@ mod tests {
             .to_string()
             .contains("unsupported stored client profile schema version"));
         assert!(!err.to_string().contains("missing profile secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_reports_typed_compatibility_without_secret_store() -> Result<()> {
+        let legacy: StoredClientProfile =
+            serde_json::from_value(legacy_stored_client_profile_flat_value()?)?;
+        assert_eq!(
+            legacy.compatibility_status(),
+            StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration
+        );
+
+        let current = legacy.migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+            enabled: false,
+            require: false,
+        })?;
+        assert_eq!(
+            current.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+
+        let mut unsupported = current.clone();
+        unsupported.stored_profile_schema_version = STORED_CLIENT_PROFILE_SCHEMA_VERSION + 1;
+        assert_eq!(
+            unsupported.compatibility_status(),
+            StoredClientProfileCompatibility::UnsupportedSchema {
+                schema_version: STORED_CLIENT_PROFILE_SCHEMA_VERSION + 1
+            }
+        );
+
+        let mut malformed = current;
+        malformed.auth.channel_binding = None;
+        assert_eq!(
+            malformed.compatibility_status(),
+            StoredClientProfileCompatibility::Malformed
+        );
+
+        let mut malformed_binding = unsupported;
+        malformed_binding.stored_profile_schema_version = STORED_CLIENT_PROFILE_SCHEMA_VERSION;
+        malformed_binding.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: false,
+            require: true,
+        });
+        assert_eq!(
+            malformed_binding.compatibility_status(),
+            StoredClientProfileCompatibility::Malformed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn current_stored_profile_rejects_invalid_binding_before_secret_read() -> Result<()> {
+        let legacy: StoredClientProfile =
+            serde_json::from_value(legacy_stored_client_profile_flat_value()?)?;
+        let mut current = legacy.migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+            enabled: false,
+            require: false,
+        })?;
+        current.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: false,
+            require: true,
+        });
+
+        assert_eq!(
+            current.compatibility_status(),
+            StoredClientProfileCompatibility::Malformed
+        );
+        let err = current
+            .to_client_config(&PanicOnSecretReadStore)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("channel binding cannot be required when channel binding is disabled"));
+        assert!(!err.to_string().contains("missing profile secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_migrates_all_bindings_and_preserves_represented_fields() -> Result<()>
+    {
+        let legacy_flat = legacy_stored_client_profile_flat_value()?;
+        let bindings = [
+            AuthChannelBindingConfig {
+                enabled: true,
+                require: true,
+            },
+            AuthChannelBindingConfig {
+                enabled: true,
+                require: false,
+            },
+            AuthChannelBindingConfig {
+                enabled: false,
+                require: false,
+            },
+        ];
+
+        for binding in bindings {
+            let legacy: StoredClientProfile = serde_json::from_value(legacy_flat.clone())?;
+            let migrated = legacy.migrate_legacy_with_channel_binding(binding)?;
+            let envelope = serde_json::to_value(&migrated)?;
+
+            let mut expected_payload = legacy_flat.clone();
+            expected_payload["auth"]["channel_binding"] = serde_json::json!({
+                "enabled": binding.enabled,
+                "require": binding.require,
+            });
+            assert_eq!(
+                envelope["stored_profile_schema_version"],
+                serde_json::json!(STORED_CLIENT_PROFILE_SCHEMA_VERSION)
+            );
+            assert_eq!(envelope["profile"], expected_payload);
+
+            let round_trip: StoredClientProfile = serde_json::from_value(envelope)?;
+            assert_eq!(
+                round_trip.compatibility_status(),
+                StoredClientProfileCompatibility::Current
+            );
+            let round_trip_binding = round_trip.auth.channel_binding.unwrap();
+            assert_eq!(round_trip_binding.enabled, binding.enabled);
+            assert_eq!(round_trip_binding.require, binding.require);
+
+            assert_eq!(
+                legacy.compatibility_status(),
+                StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration
+            );
+            assert!(legacy.auth.channel_binding.is_none());
+            assert_eq!(legacy.stored_profile_schema_version, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_rejects_nonlegacy_migration_with_typed_errors() -> Result<()> {
+        let legacy: StoredClientProfile =
+            serde_json::from_value(legacy_stored_client_profile_flat_value()?)?;
+        let binding = AuthChannelBindingConfig {
+            enabled: true,
+            require: true,
+        };
+        let current = legacy.migrate_legacy_with_channel_binding(binding)?;
+        assert_eq!(
+            current
+                .migrate_legacy_with_channel_binding(binding)
+                .unwrap_err(),
+            StoredClientProfileMigrationError::AlreadyCurrent
+        );
+
+        let mut unsupported = current.clone();
+        unsupported.stored_profile_schema_version = STORED_CLIENT_PROFILE_SCHEMA_VERSION + 1;
+        assert_eq!(
+            unsupported
+                .migrate_legacy_with_channel_binding(binding)
+                .unwrap_err(),
+            StoredClientProfileMigrationError::UnsupportedSchema {
+                schema_version: STORED_CLIENT_PROFILE_SCHEMA_VERSION + 1
+            }
+        );
+
+        let mut malformed = current;
+        malformed.auth.channel_binding = None;
+        assert_eq!(
+            malformed
+                .migrate_legacy_with_channel_binding(binding)
+                .unwrap_err(),
+            StoredClientProfileMigrationError::MalformedProfile
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_rejects_invalid_migration_without_partial_change() -> Result<()> {
+        let legacy_flat = legacy_stored_client_profile_flat_value()?;
+        let legacy: StoredClientProfile = serde_json::from_value(legacy_flat.clone())?;
+
+        assert_eq!(
+            legacy
+                .migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+                    enabled: false,
+                    require: true,
+                })
+                .unwrap_err(),
+            StoredClientProfileMigrationError::InvalidChannelBinding
+        );
+        assert_eq!(
+            legacy.compatibility_status(),
+            StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration
+        );
+        assert_eq!(legacy.stored_profile_schema_version, 0);
+        assert!(legacy.auth.channel_binding.is_none());
+
+        let mut unchanged = serde_json::to_value(StoredClientProfilePayload::from(&legacy))?;
+        unchanged["auth"]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_binding");
+        assert_eq!(unchanged, legacy_flat);
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_rejects_required_binding_with_cdn_fronting() -> Result<()> {
+        let mut legacy: StoredClientProfile =
+            serde_json::from_value(legacy_stored_client_profile_flat_value()?)?;
+        legacy.advanced.stealth.cdn_fronting.enabled = true;
+        legacy
+            .advanced
+            .stealth
+            .cdn_fronting
+            .trusted_tls_terminating_provider = true;
+        let before = serde_json::to_value(StoredClientProfilePayload::from(&legacy))?;
+
+        assert_eq!(
+            legacy
+                .migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+                    enabled: true,
+                    require: true,
+                })
+                .unwrap_err(),
+            StoredClientProfileMigrationError::RequiredChannelBindingUnsupportedByStoredTransport
+        );
+        assert_eq!(
+            legacy.compatibility_status(),
+            StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration
+        );
+        assert_eq!(
+            serde_json::to_value(StoredClientProfilePayload::from(&legacy))?,
+            before
+        );
+
+        let mut incompatible_current = legacy.clone();
+        incompatible_current.stored_profile_schema_version = STORED_CLIENT_PROFILE_SCHEMA_VERSION;
+        incompatible_current.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: true,
+            require: true,
+        });
+        assert_eq!(
+            incompatible_current.compatibility_status(),
+            StoredClientProfileCompatibility::Malformed
+        );
+        let err = incompatible_current
+            .to_client_config(&PanicOnSecretReadStore)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported by the stored transport metadata"));
+        assert!(!err.to_string().contains("missing profile secret"));
+
+        let migrated = legacy.migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+            enabled: false,
+            require: false,
+        })?;
+        assert_eq!(
+            migrated.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_rejects_required_binding_with_experimental_h3() -> Result<()> {
+        let mut legacy: StoredClientProfile =
+            serde_json::from_value(legacy_stored_client_profile_flat_value()?)?;
+        legacy.advanced.experimental_h3 = true;
+        let before = serde_json::to_value(StoredClientProfilePayload::from(&legacy))?;
+
+        assert_eq!(
+            legacy
+                .migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+                    enabled: true,
+                    require: true,
+                })
+                .unwrap_err(),
+            StoredClientProfileMigrationError::RequiredChannelBindingUnsupportedByStoredTransport
+        );
+        assert_eq!(
+            legacy.compatibility_status(),
+            StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration
+        );
+        assert_eq!(
+            serde_json::to_value(StoredClientProfilePayload::from(&legacy))?,
+            before
+        );
+
+        let mut incompatible_current = legacy.clone();
+        incompatible_current.stored_profile_schema_version = STORED_CLIENT_PROFILE_SCHEMA_VERSION;
+        incompatible_current.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: true,
+            require: true,
+        });
+        assert_eq!(
+            incompatible_current.compatibility_status(),
+            StoredClientProfileCompatibility::Malformed
+        );
+        let err = incompatible_current
+            .to_client_config(&PanicOnSecretReadStore)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported by the stored transport metadata"));
+        assert!(!err.to_string().contains("missing profile secret"));
+
+        let migrated = legacy.migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+            enabled: false,
+            require: false,
+        })?;
+        assert_eq!(
+            migrated.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_beta1_fixture_accepts_legacy_and_rejects_envelope() -> Result<()> {
+        let legacy_flat = legacy_stored_client_profile_flat_value()?;
+        assert!(
+            serde_json::from_value::<Beta1StoredClientProfileReaderFixture>(legacy_flat.clone())
+                .is_ok(),
+            "the Beta.1 fixture must accept a real legacy flat profile"
+        );
+
+        let legacy: StoredClientProfile = serde_json::from_value(legacy_flat)?;
+        let migrated = legacy.migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+            enabled: true,
+            require: true,
+        })?;
+        let envelope = serde_json::to_value(migrated)?;
+        assert!(
+            serde_json::from_value::<Beta1StoredClientProfileReaderFixture>(envelope).is_err(),
+            "the Beta.1 fixture must reject the current versioned envelope"
+        );
         Ok(())
     }
 

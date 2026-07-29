@@ -12,7 +12,7 @@ use apple_native_keyring_store::keychain::{Cred, MacKeychainDomain};
 #[cfg(target_os = "macos")]
 use keyring_core::Entry;
 pub use maverick_core::config::{
-    AuthV2Config, ClientAdvancedConfig, ClientAuthConfig, ClientConfig,
+    AuthChannelBindingConfig, AuthV2Config, ClientAdvancedConfig, ClientAuthConfig, ClientConfig,
     ClientCredentialRotationConfig, ClientNextCredentialConfig, ClientServerConfig, FallbackConfig,
     LocalConfig, LogConfig, MaverickServerConfig, MetricsConfig, Mode, SecretString,
     ServerAdvancedConfig, ServerConfig, Socks5Config, TlsConfig, UserConfig,
@@ -26,7 +26,7 @@ pub use maverick_tun::{
     PacketIo, PacketRead, PacketReader, PacketRuntimeConfig, PacketRuntimeSnapshot,
     PacketRuntimeState, PacketWriter, ShutdownReport as TunShutdownReport,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 mod platform_helper_ipc;
 pub use platform_helper_ipc::{
@@ -425,8 +425,11 @@ impl ProfileSecretStore for NativeProfileSecretStore {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+pub const STORED_CLIENT_PROFILE_SCHEMA_VERSION: u16 = 1;
+
+#[derive(Clone, Debug)]
 pub struct StoredClientProfile {
+    pub stored_profile_schema_version: u16,
     pub profile_name: String,
     pub version: u16,
     pub mode: Mode,
@@ -435,6 +438,104 @@ pub struct StoredClientProfile {
     pub auth: StoredClientAuthProfile,
     pub log: LogConfig,
     pub advanced: ClientAdvancedConfig,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredClientProfileEnvelope {
+    stored_profile_schema_version: u16,
+    profile: StoredClientProfilePayload,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredClientProfilePayload {
+    profile_name: String,
+    version: u16,
+    mode: Mode,
+    local: LocalConfig,
+    server: StoredClientServerProfile,
+    auth: StoredClientAuthProfile,
+    log: LogConfig,
+    advanced: ClientAdvancedConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredClientProfileRepresentation {
+    Envelope(StoredClientProfileEnvelope),
+    Legacy(StoredClientProfilePayload),
+}
+
+impl Serialize for StoredClientProfile {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if self.stored_profile_schema_version != STORED_CLIENT_PROFILE_SCHEMA_VERSION {
+            return Err(serde::ser::Error::custom(
+                "only the current stored client profile schema can be serialized",
+            ));
+        }
+        if self.auth.channel_binding.is_none() {
+            return Err(serde::ser::Error::custom(
+                "current stored client profile schema requires auth.channel_binding data",
+            ));
+        }
+
+        StoredClientProfileEnvelope {
+            stored_profile_schema_version: self.stored_profile_schema_version,
+            profile: StoredClientProfilePayload::from(self),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for StoredClientProfile {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let representation = StoredClientProfileRepresentation::deserialize(deserializer)?;
+        let (stored_profile_schema_version, profile) = match representation {
+            StoredClientProfileRepresentation::Envelope(envelope) => {
+                (envelope.stored_profile_schema_version, envelope.profile)
+            }
+            StoredClientProfileRepresentation::Legacy(profile) => (0, profile),
+        };
+        Ok(profile.into_stored_profile(stored_profile_schema_version))
+    }
+}
+
+impl From<&StoredClientProfile> for StoredClientProfilePayload {
+    fn from(profile: &StoredClientProfile) -> Self {
+        Self {
+            profile_name: profile.profile_name.clone(),
+            version: profile.version,
+            mode: profile.mode,
+            local: profile.local.clone(),
+            server: profile.server.clone(),
+            auth: profile.auth.clone(),
+            log: profile.log.clone(),
+            advanced: profile.advanced.clone(),
+        }
+    }
+}
+
+impl StoredClientProfilePayload {
+    fn into_stored_profile(self, stored_profile_schema_version: u16) -> StoredClientProfile {
+        StoredClientProfile {
+            stored_profile_schema_version,
+            profile_name: self.profile_name,
+            version: self.version,
+            mode: self.mode,
+            local: self.local,
+            server: self.server,
+            auth: self.auth,
+            log: self.log,
+            advanced: self.advanced,
+        }
+    }
 }
 
 impl StoredClientProfile {
@@ -455,6 +556,7 @@ impl StoredClientProfile {
         )?;
 
         Ok(Self {
+            stored_profile_schema_version: STORED_CLIENT_PROFILE_SCHEMA_VERSION,
             profile_name,
             version: config.version,
             mode: config.mode,
@@ -469,6 +571,7 @@ impl StoredClientProfile {
                 cert_pin: config.server.cert_pin.clone(),
             },
             auth: StoredClientAuthProfile {
+                channel_binding: Some(config.auth.channel_binding),
                 v2: config.auth.v2.clone(),
                 rotation,
             },
@@ -478,6 +581,23 @@ impl StoredClientProfile {
     }
 
     pub fn to_client_config(&self, store: &impl ProfileSecretStore) -> Result<ClientConfig> {
+        let channel_binding = match self.stored_profile_schema_version {
+            0 => anyhow::bail!(
+                "stored client profile uses the legacy schema and requires explicit \
+                 channel-binding migration before materialization"
+            ),
+            STORED_CLIENT_PROFILE_SCHEMA_VERSION => self.auth.channel_binding.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "stored client profile schema {} is missing required auth.channel_binding data",
+                    STORED_CLIENT_PROFILE_SCHEMA_VERSION
+                )
+            })?,
+            version => anyhow::bail!(
+                "unsupported stored client profile schema version {version}; supported version is \
+                 {STORED_CLIENT_PROFILE_SCHEMA_VERSION}"
+            ),
+        };
+
         let secret = store.get_secret(&self.server.secret_ref)?;
         let rotation = self.auth.rotation.to_config(store)?;
         let config = ClientConfig {
@@ -494,7 +614,7 @@ impl StoredClientProfile {
                 cert_pin: self.server.cert_pin.clone(),
             },
             auth: ClientAuthConfig {
-                channel_binding: Default::default(),
+                channel_binding,
                 v2: self.auth.v2.clone(),
                 rotation,
             },
@@ -519,8 +639,34 @@ pub struct StoredClientServerProfile {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredClientAuthProfile {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_stored_channel_binding"
+    )]
+    pub channel_binding: Option<AuthChannelBindingConfig>,
     pub v2: AuthV2Config,
     pub rotation: StoredClientCredentialRotationProfile,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictStoredChannelBindingConfig {
+    enabled: bool,
+    require: bool,
+}
+
+fn deserialize_optional_stored_channel_binding<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<AuthChannelBindingConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<StrictStoredChannelBindingConfig>::deserialize(deserializer).map(|binding| {
+        binding.map(|binding| AuthChannelBindingConfig {
+            enabled: binding.enabled,
+            require: binding.require,
+        })
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -848,6 +994,46 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    struct Beta1StoredClientProfileReaderFixture {
+        profile_name: String,
+        version: u16,
+        mode: Mode,
+        local: LocalConfig,
+        server: StoredClientServerProfile,
+        auth: Beta1StoredClientAuthProfileReaderFixture,
+        log: LogConfig,
+        advanced: ClientAdvancedConfig,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    struct Beta1StoredClientAuthProfileReaderFixture {
+        v2: AuthV2Config,
+        rotation: StoredClientCredentialRotationProfile,
+    }
+
+    struct PanicOnSecretReadStore;
+
+    impl ProfileSecretStore for PanicOnSecretReadStore {
+        fn put_secret(
+            &mut self,
+            _reference: &ProfileSecretRef,
+            _secret: &SecretString,
+        ) -> Result<()> {
+            panic!("test secret store must not be written")
+        }
+
+        fn get_secret(&self, _reference: &ProfileSecretRef) -> Result<SecretString> {
+            panic!("profile secret must not be read before stored schema validation")
+        }
+
+        fn delete_secret(&mut self, _reference: &ProfileSecretRef) -> Result<()> {
+            panic!("test secret store must not be changed")
+        }
+    }
+
     #[tokio::test]
     async fn client_runtime_starts_and_stops_loopback_listener() -> Result<()> {
         let runtime = MaverickClient::start(ClientConfig {
@@ -1165,6 +1351,10 @@ mod tests {
                 not_before: "2026-07-01T00:00:00Z".into(),
             }),
         };
+        config.auth.channel_binding = AuthChannelBindingConfig {
+            enabled: true,
+            require: true,
+        };
         config.validate().map_err(anyhow::Error::from)?;
 
         let mut store = InMemoryProfileSecretStore::new();
@@ -1173,10 +1363,20 @@ mod tests {
         let rendered = format!("{profile:?} {serialized} {store:?}");
         assert!(!rendered.contains(&active_rendered));
         assert!(!rendered.contains(&next_rendered));
+        assert!(serialized.contains("\"stored_profile_schema_version\":1"));
+        assert!(serialized.contains("\"profile\":{\"profile_name\":\"primary\""));
+        assert!(serialized.contains("\"channel_binding\":{\"enabled\":true,\"require\":true}"));
         assert!(serialized.contains("secret_ref"));
         assert!(!serialized.contains("\"secret\""));
+        assert!(
+            serde_json::from_str::<Beta1StoredClientProfileReaderFixture>(&serialized).is_err(),
+            "the Beta.1 flat-profile reader must reject the versioned envelope"
+        );
 
-        let materialized = profile.to_client_config(&store)?;
+        let decoded: StoredClientProfile = serde_json::from_str(&serialized)?;
+        let materialized = decoded.to_client_config(&store)?;
+        assert!(materialized.auth.channel_binding.enabled);
+        assert!(materialized.auth.channel_binding.require);
         assert_eq!(
             materialized.server.secret.expose_secret(),
             active_rendered.as_str()
@@ -1192,6 +1392,156 @@ mod tests {
                 .expose_secret(),
             next_rendered.as_str()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_preserves_disabled_channel_binding() -> Result<()> {
+        let mut config = client_config_builder()
+            .local_socks5("127.0.0.1:0".parse()?)
+            .server_address("127.0.0.1:443")
+            .server_name("localhost")
+            .credential("u_active", SecretString::generate())
+            .build()?;
+        config.auth.channel_binding = AuthChannelBindingConfig {
+            enabled: false,
+            require: false,
+        };
+        config.validate().map_err(anyhow::Error::from)?;
+
+        let mut store = InMemoryProfileSecretStore::new();
+        let profile = StoredClientProfile::store_from_config("primary", &config, &mut store)?;
+        let serialized = serde_json::to_string(&profile)?;
+        let decoded: StoredClientProfile = serde_json::from_str(&serialized)?;
+        let materialized = decoded.to_client_config(&store)?;
+
+        assert!(!materialized.auth.channel_binding.enabled);
+        assert!(!materialized.auth.channel_binding.require);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_stored_client_profile_requires_explicit_channel_binding_migration() -> Result<()> {
+        let config = client_config_builder()
+            .local_socks5("127.0.0.1:0".parse()?)
+            .server_address("127.0.0.1:443")
+            .server_name("localhost")
+            .credential("u_active", SecretString::generate())
+            .build()?;
+        let mut store = InMemoryProfileSecretStore::new();
+        let profile = StoredClientProfile::store_from_config("primary", &config, &mut store)?;
+        let envelope = serde_json::to_value(profile)?;
+        let mut legacy = envelope["profile"].clone();
+        legacy["auth"]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_binding");
+
+        let legacy: StoredClientProfile = serde_json::from_value(legacy)?;
+        assert_eq!(legacy.stored_profile_schema_version, 0);
+        assert!(legacy.auth.channel_binding.is_none());
+
+        let err = legacy
+            .to_client_config(&PanicOnSecretReadStore)
+            .unwrap_err();
+        assert!(err.to_string().contains("legacy schema"));
+        assert!(err.to_string().contains("explicit"));
+        assert!(!err.to_string().contains("missing profile secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_rejects_malformed_current_channel_binding_json_strictly() -> Result<()>
+    {
+        let config = client_config_builder()
+            .local_socks5("127.0.0.1:0".parse()?)
+            .server_address("127.0.0.1:443")
+            .server_name("localhost")
+            .credential("u_active", SecretString::generate())
+            .build()?;
+        let mut store = InMemoryProfileSecretStore::new();
+        let profile = StoredClientProfile::store_from_config("primary", &config, &mut store)?;
+        let envelope = serde_json::to_value(profile)?;
+        let malformed_bindings = [
+            ("missing enabled", serde_json::json!({"require": false})),
+            ("missing require", serde_json::json!({"enabled": true})),
+            (
+                "misspelled require",
+                serde_json::json!({"enabled": true, "requre": false}),
+            ),
+            (
+                "unknown field",
+                serde_json::json!({"enabled": true, "require": false, "extra": false}),
+            ),
+            ("empty object", serde_json::json!({})),
+        ];
+
+        for (case_name, malformed_binding) in malformed_bindings {
+            let mut candidate = envelope.clone();
+            candidate["profile"]["auth"]["channel_binding"] = malformed_binding;
+            let json = serde_json::to_string(&candidate)?;
+            assert!(
+                serde_json::from_str::<StoredClientProfile>(&json).is_err(),
+                "{case_name} unexpectedly passed strict stored-schema deserialization"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn current_stored_client_profile_rejects_missing_channel_binding() -> Result<()> {
+        let config = client_config_builder()
+            .local_socks5("127.0.0.1:0".parse()?)
+            .server_address("127.0.0.1:443")
+            .server_name("localhost")
+            .credential("u_active", SecretString::generate())
+            .build()?;
+        let mut store = InMemoryProfileSecretStore::new();
+        let profile = StoredClientProfile::store_from_config("primary", &config, &mut store)?;
+        let mut current = serde_json::to_value(profile)?;
+        current["profile"]["auth"]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_binding");
+        let current: StoredClientProfile = serde_json::from_value(current)?;
+        assert_eq!(
+            current.stored_profile_schema_version,
+            STORED_CLIENT_PROFILE_SCHEMA_VERSION
+        );
+        assert!(current.auth.channel_binding.is_none());
+
+        let err = current
+            .to_client_config(&PanicOnSecretReadStore)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("missing required auth.channel_binding data"));
+        assert!(!err.to_string().contains("missing profile secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn stored_client_profile_rejects_unknown_schema() -> Result<()> {
+        let config = client_config_builder()
+            .local_socks5("127.0.0.1:0".parse()?)
+            .server_address("127.0.0.1:443")
+            .server_name("localhost")
+            .credential("u_active", SecretString::generate())
+            .build()?;
+        let mut store = InMemoryProfileSecretStore::new();
+        let profile = StoredClientProfile::store_from_config("primary", &config, &mut store)?;
+        let mut unknown = serde_json::to_value(profile)?;
+        unknown["stored_profile_schema_version"] =
+            serde_json::json!(STORED_CLIENT_PROFILE_SCHEMA_VERSION + 1);
+        let unknown: StoredClientProfile = serde_json::from_value(unknown)?;
+
+        let err = unknown
+            .to_client_config(&PanicOnSecretReadStore)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported stored client profile schema version"));
+        assert!(!err.to_string().contains("missing profile secret"));
         Ok(())
     }
 

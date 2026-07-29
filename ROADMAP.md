@@ -7,6 +7,51 @@ Status: user-first reset.
 The sole milestone and its pass conditions live in `STATUS.md`. This document
 only orders work; it does not restate current completion or audit status.
 
+## Planning Input Rule
+
+Design drafts and reconciliation notes are non-authoritative planning inputs.
+When they conflict, `STATUS.md` alone controls current truth and authorization,
+while `ROADMAP.md` controls execution order. Only a minimal slice placed here
+enters execution; every other proposal remains deferred, neither automatically
+adopted nor automatically rejected.
+
+## Next Repository-Local Slice
+
+### T001 — SDK stored-profile channel binding
+
+Queued on 2026-07-30 under the continued privacy-safe repository-local
+development authorization recorded in `STATUS.md`. This roadmap sets execution
+order only; it does not record or expand authorization. T001 is a narrow
+exception for the channel-binding persistence failure reproduced in the current
+SDK source and executes before the general failure-driven order below. It does
+not define the Beta.2 release scope.
+
+- **Scope:** add an independent stored-profile schema version in
+  `crates/maverick-sdk/src/lib.rs`; write new stored profiles in a versioned
+  envelope that the Beta.1 flat-profile reader rejects; preserve every
+  `auth.channel_binding` field; and make legacy profiles without those fields,
+  malformed current profiles, and unknown stored-profile schemas fail
+  explicitly instead of restoring a security default.
+- **Acceptance:** focused unit tests prove complete round-trip behavior,
+  Beta.1-reader downgrade rejection, explicit legacy/malformed/unknown-schema
+  rejection, and continued secret-store separation. `cargo test -p maverick-sdk`,
+  `./scripts/user-smoke.sh`, and `./scripts/local-harness.sh` pass locally, and
+  the reviewed diff contains only this entry plus the bounded SDK implementation
+  and tests.
+- **Out of scope:** config, auth, frame, or wire-version changes; H2, H3, Auto,
+  padding, server, packaging, deployment, host-network, infrastructure, release,
+  tag, push, publication, or legacy-profile migration API work; and conversion
+  of historical design documents into a second current-truth ledger.
+- **Stop conditions:** stop before changing any additional product file,
+  widening the public behavior beyond stored-profile compatibility, changing
+  any existing protocol/config/auth/frame version, performing a real
+  secret-store write, or requiring any remote, paid, privileged, or real-network
+  action.
+
+After T001 completes or reaches a stop condition, resume the failure-driven
+execution order below. Completion of T001 alone does not create a new product
+result or change the milestone truth in `STATUS.md`.
+
 ## Execution Order
 
 1. **Fix only reproduced Beta failures.** After Beta.1, use the smallest local

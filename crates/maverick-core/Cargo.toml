@@ -21,6 +21,7 @@ hkdf.workspace = true
 hmac.workspace = true
 rand.workspace = true
 serde.workspace = true
+serde_ignored.workspace = true
 serde_yaml_ng.workspace = true
 sha2.workspace = true
 snow = { workspace = true, optional = true }

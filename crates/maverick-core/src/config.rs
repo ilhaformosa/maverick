@@ -149,7 +149,7 @@ pub struct ClientConfig {
 
 impl ClientConfig {
     pub fn from_yaml_str(input: &str) -> Result<Self> {
-        let cfg: Self = serde_yaml_ng::from_str(input)?;
+        let cfg: Self = from_yaml_str_rejecting_unknown_fields(input)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -576,7 +576,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     pub fn from_yaml_str(input: &str) -> Result<Self> {
-        let cfg: Self = serde_yaml_ng::from_str(input)?;
+        let cfg: Self = from_yaml_str_rejecting_unknown_fields(input)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -706,6 +706,109 @@ impl ServerConfig {
     }
 }
 
+fn from_yaml_str_rejecting_unknown_fields<'de, T>(input: &'de str) -> Result<T>
+where
+    T: Deserialize<'de>,
+{
+    let mut first_unknown_parent = None;
+    let value = serde_ignored::deserialize(serde_yaml_ng::Deserializer::from_str(input), |path| {
+        if first_unknown_parent.is_none() {
+            first_unknown_parent = Some(safe_unknown_parent_location(&path));
+        }
+    })?;
+    if let Some(location) = first_unknown_parent {
+        return Err(Error::Config(format!(
+            "unknown configuration key under {location}"
+        )));
+    }
+    Ok(value)
+}
+
+fn safe_unknown_parent_location(path: &serde_ignored::Path<'_>) -> String {
+    const MAX_SEGMENTS: usize = 16;
+    let mut location = String::new();
+    let mut remaining_segments = MAX_SEGMENTS;
+
+    if let serde_ignored::Path::Map { parent, .. } = path {
+        append_safe_config_location(parent, &mut location, &mut remaining_segments);
+    }
+    if location.is_empty() {
+        "<root>".into()
+    } else {
+        location
+    }
+}
+
+fn append_safe_config_location(
+    path: &serde_ignored::Path<'_>,
+    location: &mut String,
+    remaining_segments: &mut usize,
+) -> bool {
+    use serde_ignored::Path;
+
+    let segment = match path {
+        Path::Root => return true,
+        Path::Map { parent, key } => {
+            if !append_safe_config_location(parent, location, remaining_segments) {
+                return false;
+            }
+            key.as_str()
+        }
+        Path::Seq { parent, index } => {
+            if !append_safe_config_location(parent, location, remaining_segments) {
+                return false;
+            }
+            return append_safe_config_segment(location, &index.to_string(), remaining_segments);
+        }
+        Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => {
+            return append_safe_config_location(parent, location, remaining_segments);
+        }
+    };
+    append_safe_config_segment(location, segment, remaining_segments)
+}
+
+fn append_safe_config_segment(
+    location: &mut String,
+    segment: &str,
+    remaining_segments: &mut usize,
+) -> bool {
+    const MAX_SEGMENT_LEN: usize = 48;
+    const MAX_LOCATION_LEN: usize = 160;
+    const INVALID_SEGMENT: &str = "<segment>";
+    const TRUNCATED_LOCATION: &str = "<truncated>";
+
+    if *remaining_segments == 0 {
+        location.clear();
+        location.push_str(TRUNCATED_LOCATION);
+        return false;
+    }
+    *remaining_segments -= 1;
+
+    let safe_segment = if !segment.is_empty()
+        && segment.len() <= MAX_SEGMENT_LEN
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        segment
+    } else {
+        INVALID_SEGMENT
+    };
+    let separator_len = usize::from(!location.is_empty());
+    if location.len() + separator_len + safe_segment.len() > MAX_LOCATION_LEN {
+        location.clear();
+        location.push_str(TRUNCATED_LOCATION);
+        return false;
+    }
+    if separator_len == 1 {
+        location.push('.');
+    }
+    location.push_str(safe_segment);
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TlsConfig {
     pub cert_path: PathBuf,
@@ -832,7 +935,7 @@ pub struct RateLimitConfig {
     pub bytes_per_second: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FallbackConfig {
     Static {
@@ -843,6 +946,39 @@ pub enum FallbackConfig {
     ReverseProxy {
         upstream: String,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum FallbackConfigWire {
+    Static {
+        static_dir: PathBuf,
+        #[serde(default = "default_index")]
+        index: String,
+    },
+    ReverseProxy {
+        upstream: String,
+    },
+}
+
+impl From<FallbackConfigWire> for FallbackConfig {
+    fn from(wire: FallbackConfigWire) -> Self {
+        match wire {
+            FallbackConfigWire::Static { static_dir, index } => Self::Static { static_dir, index },
+            FallbackConfigWire::ReverseProxy { upstream } => Self::ReverseProxy { upstream },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FallbackConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        FallbackConfigWire::deserialize(deserializer)
+            .map(Self::from)
+            .map_err(|_| <D::Error as serde::de::Error>::custom("invalid fallback configuration"))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1791,6 +1927,61 @@ mod tests {
         }
     }
 
+    fn canonical_client_yaml(secret: &SecretString) -> String {
+        format!(
+            r#"
+version: 1
+mode: auto
+local:
+  socks5:
+    listen: "127.0.0.1:1080"
+server:
+  address: "example.invalid:443"
+  server_name: "example.invalid"
+  tunnel_path: "/assets/upload"
+  credential_id: "u_example"
+  secret: "{}"
+auth:
+  channel_binding:
+    enabled: true
+    require: false
+advanced:
+  crypto:
+    offered_suites:
+      - "tls13"
+    allow_experimental: false
+"#,
+            secret.expose_secret()
+        )
+    }
+
+    fn canonical_server_yaml(secret: &SecretString) -> String {
+        format!(
+            r#"
+version: 1
+listen: "127.0.0.1:8443"
+tls:
+  cert_path: "./cert.pem"
+  key_path: "./key.pem"
+maverick:
+  tunnel_path: "/assets/upload"
+  mode_default: auto
+users:
+  - id: "u_example"
+    secret: "{}"
+    enabled: true
+fallback:
+  type: "static"
+  static_dir: "./public"
+  index: "index.html"
+advanced:
+  egress:
+    allow_private: false
+"#,
+            secret.expose_secret()
+        )
+    }
+
     #[test]
     fn secret_debug_redacts() {
         let secret = SecretString::generate();
@@ -1834,6 +2025,318 @@ server:
             secret.expose_secret()
         );
         ClientConfig::from_yaml_str(&input).unwrap();
+    }
+
+    #[test]
+    fn canonical_client_yaml_rejects_unknown_channel_binding_key() {
+        let secret = SecretString::generate();
+        let input = canonical_client_yaml(&secret)
+            .replace("    require: false", "    require: false\n    requre: true");
+
+        let err = ClientConfig::from_yaml_str(&input).unwrap_err();
+        let rendered = err.to_string();
+        assert!(rendered.contains("under auth.channel_binding"));
+        assert!(!rendered.contains("requre"));
+    }
+
+    #[test]
+    fn canonical_client_yaml_rejects_root_and_deep_unknown_keys() {
+        let secret = SecretString::generate();
+        let base = canonical_client_yaml(&secret);
+        let cases = [
+            (
+                "root",
+                format!("{base}\nunexpected_root: true\n"),
+                "<root>",
+                "unexpected_root",
+            ),
+            (
+                "crypto",
+                base.replace(
+                    "    allow_experimental: false",
+                    "    allow_experimental: false\n    allow_experimntal: true",
+                ),
+                "advanced.crypto",
+                "allow_experimntal",
+            ),
+        ];
+
+        for (case_name, input, expected_location, unknown_key) in cases {
+            let err = ClientConfig::from_yaml_str(&input).unwrap_err();
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains(expected_location),
+                "{case_name} error did not identify {expected_location}: {err}"
+            );
+            assert!(!rendered.contains(unknown_key));
+        }
+    }
+
+    #[test]
+    fn canonical_server_yaml_rejects_list_egress_and_fallback_unknown_keys() {
+        let secret = SecretString::generate();
+        let base = canonical_server_yaml(&secret);
+        let cases = [
+            (
+                "user list element",
+                base.replace("    enabled: true", "    enabled: true\n    enabeld: false"),
+                "users.0",
+                "enabeld",
+            ),
+            (
+                "egress",
+                base.replace(
+                    "    allow_private: false",
+                    "    allow_private: false\n    allow_prviate: true",
+                ),
+                "advanced.egress",
+                "allow_prviate",
+            ),
+        ];
+
+        for (case_name, input, expected_location, unknown_key) in cases {
+            let err = ServerConfig::from_yaml_str(&input).unwrap_err();
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains(expected_location),
+                "{case_name} error did not identify {expected_location}: {err}"
+            );
+            assert!(!rendered.contains(unknown_key));
+        }
+
+        let fallback = base.replace(
+            "  index: \"index.html\"",
+            "  index: \"index.html\"\n  indx: \"private-value\"",
+        );
+        let rendered = ServerConfig::from_yaml_str(&fallback)
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.contains("invalid fallback configuration"));
+        assert!(!rendered.contains("indx"));
+        assert!(!rendered.contains("private-value"));
+    }
+
+    #[test]
+    fn canonical_unknown_key_error_is_bounded_and_control_character_free() {
+        let secret = SecretString::generate();
+        let private_marker = "PRIVATE_MARKER_DO_NOT_ECHO";
+        let long_suffix = "L".repeat(2_048);
+        let malicious_key = format!("{private_marker}\n\u{1b}[31m{long_suffix}");
+        let mut document: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&canonical_client_yaml(&secret)).unwrap();
+        document["auth"]["channel_binding"]
+            .as_mapping_mut()
+            .unwrap()
+            .insert(
+                serde_yaml_ng::Value::String(malicious_key),
+                serde_yaml_ng::Value::String("private-field-value".into()),
+            );
+        let input = serde_yaml_ng::to_string(&document).unwrap();
+
+        let err = ClientConfig::from_yaml_str(&input).unwrap_err();
+        let rendered = err.to_string();
+        assert!(rendered.contains("under auth.channel_binding"));
+        assert!(!rendered.contains("private-field-value"));
+        assert!(!rendered.contains(private_marker));
+        assert!(!rendered.contains(&long_suffix));
+        assert!(!rendered.contains(secret.expose_secret()));
+        assert!(rendered.chars().all(|character| !character.is_control()));
+        assert!(rendered.len() <= 256);
+    }
+
+    #[test]
+    fn canonical_unknown_key_tracking_is_single_and_bounded() {
+        let secret = SecretString::generate();
+        let mut input = canonical_client_yaml(&secret);
+        for index in 0..512 {
+            input.push_str(&format!("PRIVATE_UNKNOWN_{index}: true\n"));
+        }
+
+        let rendered = ClientConfig::from_yaml_str(&input).unwrap_err().to_string();
+        assert_eq!(
+            rendered,
+            "configuration error: unknown configuration key under <root>"
+        );
+        assert!(!rendered.contains("PRIVATE_UNKNOWN"));
+    }
+
+    #[test]
+    fn unknown_key_location_sanitizes_anomalous_parent_segments() {
+        let root = serde_ignored::Path::Root;
+        let private_parent = serde_ignored::Path::Map {
+            parent: &root,
+            key: "PRIVATE_PARENT\n\u{1b}[31m".into(),
+        };
+        let unknown = serde_ignored::Path::Map {
+            parent: &private_parent,
+            key: "ignored-leaf".into(),
+        };
+        assert_eq!(safe_unknown_parent_location(&unknown), "<segment>");
+
+        let long_segment = "a".repeat(48);
+        let level_one = serde_ignored::Path::Map {
+            parent: &root,
+            key: long_segment.clone(),
+        };
+        let level_two = serde_ignored::Path::Map {
+            parent: &level_one,
+            key: long_segment.clone(),
+        };
+        let level_three = serde_ignored::Path::Map {
+            parent: &level_two,
+            key: long_segment.clone(),
+        };
+        let level_four = serde_ignored::Path::Map {
+            parent: &level_three,
+            key: long_segment,
+        };
+        let unknown = serde_ignored::Path::Map {
+            parent: &level_four,
+            key: "ignored-leaf".into(),
+        };
+        assert_eq!(safe_unknown_parent_location(&unknown), "<truncated>");
+    }
+
+    #[test]
+    fn canonical_yaml_keeps_multi_document_rejection() {
+        let secret = SecretString::generate();
+        let client = canonical_client_yaml(&secret);
+        let client_multi_document = format!("{client}\n---\n{client}");
+        assert!(ClientConfig::from_yaml_str(&client_multi_document).is_err());
+
+        let server = canonical_server_yaml(&secret);
+        let server_multi_document = format!("{server}\n---\n{server}");
+        assert!(ServerConfig::from_yaml_str(&server_multi_document).is_err());
+    }
+
+    #[test]
+    fn canonical_yaml_keeps_known_duplicate_key_rejection() {
+        let secret = SecretString::generate();
+        let input =
+            canonical_client_yaml(&secret).replace("mode: auto", "mode: auto\nmode: private");
+
+        assert!(ClientConfig::from_yaml_str(&input).is_err());
+    }
+
+    #[test]
+    fn direct_generic_serde_remains_permissive_for_unknown_config_keys() {
+        let secret = SecretString::generate();
+        let input = canonical_client_yaml(&secret)
+            .replace("    require: false", "    require: false\n    requre: true");
+
+        let config: ClientConfig = serde_yaml_ng::from_str(&input).unwrap();
+        assert!(!config.auth.channel_binding.require);
+    }
+
+    #[test]
+    fn direct_generic_serde_rejects_unknown_fallback_variant_keys() {
+        let private_marker = "PRIVATE_FALLBACK_MARKER_DO_NOT_ECHO";
+        let long_suffix = "L".repeat(2_048);
+        let malicious_key = format!("{private_marker}\n\u{1b}[31m{long_suffix}");
+        let mut document = serde_yaml_ng::Mapping::new();
+        document.insert("type".into(), "static".into());
+        document.insert("static_dir".into(), "./public".into());
+        document.insert("index".into(), "index.html".into());
+        document.insert(
+            serde_yaml_ng::Value::String(malicious_key.clone()),
+            serde_yaml_ng::Value::String("private-value".into()),
+        );
+        let input = serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(document)).unwrap();
+
+        let yaml_error = serde_yaml_ng::from_str::<FallbackConfig>(&input)
+            .unwrap_err()
+            .to_string();
+        assert!(yaml_error.contains("invalid fallback configuration"));
+        assert!(!yaml_error.contains(private_marker));
+        assert!(!yaml_error.contains(&long_suffix));
+        assert!(!yaml_error.contains("private-value"));
+        assert!(yaml_error.chars().all(|character| !character.is_control()));
+        assert!(yaml_error.len() <= 256);
+
+        let json = serde_json::json!({
+            "type": "static",
+            "static_dir": "./public",
+            "index": "index.html",
+            malicious_key: "private-value",
+        });
+        let json_error = serde_json::from_value::<FallbackConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(json_error, "invalid fallback configuration");
+    }
+
+    #[test]
+    fn direct_generic_serde_rejects_unknown_reverse_proxy_fallback_keys_without_echo() {
+        let private_marker = "PRIVATE_REVERSE_PROXY_MARKER_DO_NOT_ECHO";
+        let malicious_key = format!("{private_marker}\n\u{1b}[31m");
+        let mut document = serde_yaml_ng::Mapping::new();
+        document.insert("type".into(), "reverse_proxy".into());
+        document.insert("upstream".into(), "http://127.0.0.1:8080".into());
+        document.insert(
+            serde_yaml_ng::Value::String(malicious_key.clone()),
+            serde_yaml_ng::Value::String("private-value".into()),
+        );
+        let input = serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(document)).unwrap();
+
+        let yaml_error = serde_yaml_ng::from_str::<FallbackConfig>(&input)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(yaml_error, "invalid fallback configuration");
+        assert!(!yaml_error.contains(private_marker));
+        assert!(!yaml_error.contains("private-value"));
+        assert!(yaml_error.chars().all(|character| !character.is_control()));
+
+        let json = serde_json::json!({
+            "type": "reverse_proxy",
+            "upstream": "http://127.0.0.1:8080",
+            malicious_key: "private-value",
+        });
+        let json_error = serde_json::from_value::<FallbackConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(json_error, "invalid fallback configuration");
+    }
+
+    #[test]
+    fn direct_generic_serde_accepts_both_legal_fallback_variants() {
+        let static_fallback: FallbackConfig = serde_yaml_ng::from_str(
+            r#"
+type: "static"
+static_dir: "./public"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &static_fallback,
+            FallbackConfig::Static { index, .. } if index == "index.html"
+        ));
+        assert_eq!(
+            serde_json::to_value(&static_fallback).unwrap(),
+            serde_json::json!({
+                "type": "static",
+                "static_dir": "./public",
+                "index": "index.html",
+            })
+        );
+
+        let reverse_proxy_fallback: FallbackConfig = serde_yaml_ng::from_str(
+            r#"
+type: "reverse_proxy"
+upstream: "http://127.0.0.1:8080"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &reverse_proxy_fallback,
+            FallbackConfig::ReverseProxy { .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(&reverse_proxy_fallback).unwrap(),
+            serde_json::json!({
+                "type": "reverse_proxy",
+                "upstream": "http://127.0.0.1:8080",
+            })
+        );
     }
 
     #[test]

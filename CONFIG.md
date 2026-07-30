@@ -2,6 +2,19 @@
 
 All config files use YAML and `version: 1`.
 
+## Canonical v1 YAML readers
+
+`ClientConfig::from_yaml_str` and `ServerConfig::from_yaml_str` are the
+canonical core readers. The CLI and SDK YAML entry points use these readers.
+They recursively reject unknown mapping keys before validation or startup;
+unknown keys are not an extension mechanism and are never corrected or allowed
+to select a default silently.
+
+Every documented v1 field and its existing default keeps the same meaning.
+Adding a future field requires an explicit, versioned compatibility decision.
+Stored-profile serialization is a separate boundary; this contract makes no
+claim about stored-profile JSON.
+
 ## Client
 
 ```yaml

@@ -17,41 +17,47 @@ adopted nor automatically rejected.
 
 ## Next Repository-Local Slice
 
-### T002 — Explicit stored-profile migration
+### T003 — Reject unknown keys in canonical v1 config loading
 
 Queued on 2026-07-30 under the continued privacy-safe repository-local
 development authorization recorded in `STATUS.md`. This roadmap sets execution
-order only; it does not record or expand authorization. T002 is the next narrow
-SDK compatibility slice and executes before the general failure-driven order
-below. It does not define the Beta.2 release scope.
+order only; it does not record or expand authorization. T003 is the first small
+P0-E slice and executes before the general failure-driven order below. It does
+not define the Beta.2 release scope or complete a config-v2 design.
 
-- **Scope:** in `crates/maverick-sdk/src/lib.rs`, expose a typed compatibility
-  status and a transactional legacy migration API that requires the caller to
-  provide every channel-binding value explicitly. Preserve every other field
-  represented by the current `StoredClientProfile` schema, keep secret references
-  opaque, and serialize successful migrations with the existing versioned
-  envelope.
-- **Acceptance:** focused unit tests prove typed current/legacy/unsupported/
-  malformed states, all three valid channel-binding combinations, preservation
-  of every field represented by the current stored-profile schema, typed
-  rejection of transport-incompatible explicit choices without partial
-  mutation, no secret-store access, and both directions of the Beta.1-reader
-  compatibility fixture. `cargo test -p maverick-sdk`,
-  `./scripts/user-smoke.sh`, and `./scripts/local-harness.sh` pass locally, and
-  the reviewed diff contains only this entry plus the bounded SDK implementation
-  and tests.
-- **Out of scope:** config, auth, frame, or wire-version changes; H2, H3, Auto,
-  padding, server, packaging, deployment, host-network, infrastructure, release,
-  tag, push, publication, automatic/default migration, or conversion of
-  historical design documents into a second current-truth ledger.
-- **Stop conditions:** stop before changing any additional product file,
-  inferring a missing legacy security value, widening the public behavior beyond
-  stored-profile compatibility, changing any existing protocol/config/auth/frame
-  version, accessing a secret store, or requiring any remote, paid, privileged,
-  or real-network action.
+- **User result:** a misspelled or otherwise unknown mapping key in client or
+  server YAML loaded through the canonical v1 API is rejected with a safe
+  structural parent location, or a fixed fallback error, instead of silently
+  selecting a default or echoing the untrusted key.
+- **Scope:** wrap only `ClientConfig::from_yaml_str` and
+  `ServerConfig::from_yaml_str` with one private recursive ignored-field helper;
+  give only `FallbackConfig`, the single internally tagged config enum, a
+  private strict wire type and custom deserializer that maps invalid input to a
+  fixed error; and add the narrowly required `serde_ignored` dependency,
+  manifest and lockfile changes, documentation, and focused tests.
+- **Acceptance:** root, nested, sequence-element, internally tagged fallback,
+  advanced, and crypto unknown keys fail before validation or startup; errors
+  report only a bounded safe structural parent location or a fixed fallback
+  error, without the unknown key, its value, or other private configuration
+  data; known duplicate-key rejection and all documented valid v1 defaults and
+  fixtures remain intact. Direct generic Serde remains compatible except that
+  invalid `FallbackConfig` input, including unknown variant keys, is rejected
+  with the fixed error; stored-profile behavior remains compatible. Core, SDK,
+  smoke, and complete local-harness checks pass.
+- **Out of scope:** bulk `deny_unknown_fields` changes to shared public structs;
+  any other direct generic Serde tightening; stored-profile JSON or migration;
+  config v2; config, protocol, auth, frame, or wire-version changes; runtime
+  transport, deployment, release, push, tag, publication, or infrastructure
+  work.
+- **Stop conditions:** stop if the hybrid boundary cannot reject every required
+  recursive YAML key, if any second shared struct or enum would need tightening,
+  if the private strict wire/custom deserializer exception would need to extend
+  beyond `FallbackConfig`, if any version boundary must change, or if completion
+  requires privileged, paid, system-network, real-network, or
+  private-infrastructure access.
 
-After T002 completes or reaches a stop condition, resume the failure-driven
-execution order below. Completion of T002 alone does not create a new product
+After T003 completes or reaches a stop condition, resume the failure-driven
+execution order below. Completion of T003 alone does not create a new product
 result or change the milestone truth in `STATUS.md`.
 
 ## Execution Order

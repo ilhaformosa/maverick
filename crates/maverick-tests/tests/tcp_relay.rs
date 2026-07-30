@@ -19,7 +19,7 @@ use maverick_core::config::{
 };
 use maverick_core::frame::{Frame, FrameType, OpenUdpPayload};
 use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
-use maverick_core::SecretString;
+use maverick_core::{Mode, SecretString};
 use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
 use rustls::RootCertStore;
 use time::format_description::well_known::Rfc3339;
@@ -627,6 +627,51 @@ async fn auth_v2_tcp_relay_roundtrip() -> Result<()> {
     let mut echoed = [0u8; 16];
     socks.read_exact(&mut echoed).await?;
     assert_eq!(&echoed, b"maverick-v2-echo");
+
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_v1_stable_client_private_server_legacy_unconfirmed_policy_echo() -> Result<()> {
+    // Auth v1 does not confirm a shared mode. This records legacy compatibility,
+    // not agreement on a security policy.
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        client_mode: Mode::Stable,
+        server_mode: Mode::Private,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let echo_addr = start_echo_server().await?;
+    run_single_socks_roundtrip(
+        fixture.client.local_addr,
+        echo_addr,
+        b"maverick-v1-legacy-mode-mismatch",
+    )
+    .await?;
+
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo() -> Result<()> {
+    // Auth v2 authenticates the client's mode but does not confirm it matches the
+    // server default. This records legacy compatibility, not policy agreement.
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        auth_v2_epoch: Some(202607),
+        client_mode: Mode::Private,
+        server_mode: Mode::Stable,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let echo_addr = start_echo_server().await?;
+    run_single_socks_roundtrip(
+        fixture.client.local_addr,
+        echo_addr,
+        b"maverick-v2-legacy-mode-mismatch",
+    )
+    .await?;
 
     fixture.shutdown().await?;
     Ok(())

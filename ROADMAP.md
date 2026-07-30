@@ -17,19 +17,10 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No new product-code or release slice is queued. The `v1.2.0-beta.2` release
-slice is complete: its reviewed candidate was merged, its annotated tag was
-published through the fail-closed release workflow, and the immutable
-prerelease assets were independently rechecked. That closure is current truth,
+No product-code, test/CI, or release slice is currently queued. The
+`v1.2.0-beta.2` release slice remains closed; its completion is current truth,
 not continuing authority for another tag, release, deployment, live test, or
 remote or system-network change.
-
-The next repository-local slice must come from the failure-driven order below.
-A small verifier-maintenance candidate may improve the macOS diagnostic for a
-missing GNU `readelf` and recognize the common `greadelf` command name, with
-focused regression tests. It is maintenance only, is not required to validate
-the published Beta.2 Linux artifact, and must not grow into a container,
-cross-platform parser, new release matrix, or verification framework.
 
 ## Execution Order
 

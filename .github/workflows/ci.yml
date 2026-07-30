@@ -133,6 +133,17 @@ jobs:
         if: steps.scope.outputs.docs_only != 'true'
         with:
           components: rustfmt, clippy
+      - name: Check the independent H3 feature build
+        if: steps.scope.outputs.docs_only != 'true'
+        run: >-
+          cargo check --locked
+          -p maverick-cli -p maverick-sdk -p maverick-tests
+          --all-targets --no-default-features --features h3
+      - name: Test focused H3 loopback compatibility
+        if: steps.scope.outputs.docs_only != 'true'
+        run: >-
+          cargo test --locked -p maverick-tests --features h3
+          --test h3_loopback --test tcp_relay h3_
       - name: Install Linux build and verification tools
         if: steps.scope.outputs.docs_only != 'true'
         run: |

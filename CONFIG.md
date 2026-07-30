@@ -6,7 +6,16 @@ All config files use YAML and `version: 1`.
 
 `ClientConfig::from_yaml_str` and `ServerConfig::from_yaml_str` are the
 canonical core readers. The CLI and SDK YAML entry points use these readers.
-They recursively reject unknown mapping keys before validation or startup;
+Each canonical reader first inspects the root `version` with one private,
+duplicate-safe discriminator, then dispatches version `1` to the existing
+strict v1 reader. Any other integer version returns a fixed
+unsupported-version error before v1 deserialization. Missing, duplicate, or
+non-integer version metadata and a non-mapping root fail closed without echoing
+the untrusted version value. This routing foundation does not define or accept
+config v2.
+
+After version dispatch, the v1 reader still parses the original YAML. It
+recursively rejects unknown mapping keys before validation or startup;
 unknown keys are not an extension mechanism and are never corrected or allowed
 to select a default silently.
 

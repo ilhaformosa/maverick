@@ -1733,8 +1733,17 @@ mod tests {
 
     #[test]
     fn sdk_config_parsing_matches_core_validation() {
-        let err = client_config_from_yaml("version: 2").unwrap_err();
-        assert!(err.to_string().contains("missing field"));
+        let client = "version: 2\nprofile:\n  endpoints: []\n";
+        let server = "version: 2\nservice:\n  listeners: []\n";
+
+        assert_eq!(
+            client_config_from_yaml(client).unwrap_err().to_string(),
+            "configuration error: unsupported configuration version"
+        );
+        assert_eq!(
+            server_config_from_yaml(server).unwrap_err().to_string(),
+            "configuration error: unsupported configuration version"
+        );
     }
 
     #[test]

@@ -3983,6 +3983,21 @@ server:
     }
 
     #[test]
+    fn cli_canonical_yaml_entrypoints_reject_v2_before_v1_deserialization() {
+        let client = "version: 2\nprofile:\n  endpoints: []\n";
+        let server = "version: 2\nservice:\n  listeners: []\n";
+
+        assert_eq!(
+            migration_report("client", client).unwrap_err().to_string(),
+            "configuration error: unsupported configuration version"
+        );
+        assert_eq!(
+            migration_report("server", server).unwrap_err().to_string(),
+            "configuration error: unsupported configuration version"
+        );
+    }
+
+    #[test]
     fn server_migration_report_lists_auth_limit_defaults() {
         let secret = SecretString::generate();
         let input = format!(

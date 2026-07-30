@@ -17,10 +17,37 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No product-code, test/CI, or release slice is currently queued. The
-`v1.2.0-beta.2` release slice remains closed; its completion is current truth,
-not continuing authority for another tag, release, deployment, live test, or
-remote or system-network change.
+### T008 — Version-first config parser foundation
+
+This repository-local slice is not bound to a release version.
+
+- **User result:** A config declaring a future version is rejected as
+  unsupported before Maverick tries to interpret it as v1 and reports a
+  misleading missing or unknown v1 field.
+- **Scope:** Add one private, duplicate-safe root-version discriminator shared
+  by the canonical client and server YAML readers; dispatch only version `1` to
+  the existing strict v1 reader; cover the inherited CLI and SDK paths with
+  focused regression tests; document only the resulting reader contract.
+- **Acceptance:** Legal v1 files and defaults remain unchanged. Every other
+  integer version is rejected with a stable privacy-safe unsupported-version
+  result. Missing, duplicate, non-integer, malformed-root, multi-document,
+  malicious, and overlong version metadata fails closed without echoing
+  untrusted content. Existing v1 unknown-key, duplicate-key, `FallbackConfig`,
+  and direct generic Serde behavior remains compatible. Focused red-to-green,
+  core, SDK, CLI, formatting, lint, user-smoke, and local-harness checks pass.
+- **Out of scope:** Config v2 fields or semantics, v1-to-v2 migration, Profile
+  URI v2, runtime-consumer migration, auth or wire changes, broad compatibility
+  matrices, publication, deployment, and any subsequent slice not separately
+  placed in this queue.
+- **Stop conditions:** Stop before adding a public version model, dependency,
+  product module, config/protocol/auth/frame/wire/stored-profile version change,
+  remote or system-network action, or release work. Any such need returns to
+  owner review.
+
+T008 only creates a future version-routing foundation. It does not define
+config v2 and does not change the published Beta.2 product facts in `STATUS.md`.
+A later `ROADMAP.md` update closes or replaces this queue item. Completing T008
+does not authorize any subsequent unqueued slice.
 
 ## Execution Order
 

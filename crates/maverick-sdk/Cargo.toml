@@ -19,6 +19,7 @@ maverick-core = { path = "../maverick-core", default-features = false }
 maverick-server = { path = "../maverick-server" }
 maverick-tun = { path = "../maverick-tun", optional = true }
 serde.workspace = true
+serde_ignored.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

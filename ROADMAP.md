@@ -7,6 +7,49 @@ Status: user-first reset.
 The sole milestone and its pass conditions live in `STATUS.md`. This document
 only orders work; it does not restate current completion or audit status.
 
+## Planning Input Rule
+
+Design drafts and reconciliation notes are non-authoritative planning inputs.
+When they conflict, `STATUS.md` alone controls current truth and authorization,
+while `ROADMAP.md` controls execution order. Only a minimal slice placed here
+enters execution; every other proposal remains deferred, neither automatically
+adopted nor automatically rejected.
+
+## Current Repository-Local Queue
+
+No new product-code slice is queued. The current release-only slice is limited
+to making the unmerged `1.2.0-beta.2` publication path fail closed:
+
+- one shared offline verifier checks the exact seven-entry pilot archive,
+  checksums, bound public content, USTAR metadata, architecture, source
+  revision, version, and privacy rules;
+- each repository-contents-read-only build job performs native verification,
+  copies only the approved archive and checksum into private staging, performs
+  a final static reverification, and uploads only those two staged paths;
+- the publish job executes neither downloaded binary. It accepts exactly two
+  archives plus two checksums, copies them into separate private staging,
+  statically reverifies the exact bytes selected for publication, and gives
+  only those four named paths to the final release command;
+- a release tag must be annotated, directly target the exact event commit, and
+  that commit must already be an ancestor of the freshly read current `main`;
+  and
+- ordinary public PR/main CI builds the Linux archive with GNU tar on
+  `ubuntu-24.04`, performs native verification before any write-capable release
+  context exists, and runs the same local negative gate tests.
+
+Native verification means the binary ran successfully on a matching host; it is
+not a sandbox or proof that an untrusted binary is safe to execute. Linux CI is
+repository quality evidence only, not a product, user, live-network, release,
+or publication result. Local verification and safe rejection do not change the
+product facts in `STATUS.md`.
+
+The implementation stage stops after local validation and a bounded commit for
+independent review. Only after that review may the commit be pushed and the
+existing Draft PR receive updated notes; it remains Draft. This queue does not
+authorize marking the PR ready, merging, creating or moving a tag, running the
+release workflow, uploading an Actions or public release asset, releasing,
+deploying, or changing any live, remote, or system-network state.
+
 ## Execution Order
 
 1. **Fix only reproduced Beta failures.** After Beta.1, use the smallest local
@@ -56,6 +99,8 @@ Use the shortest failure-driven next step:
   another user or widen platform, protocol, packaging, or governance scope
   without a separate owner decision.
 
-`protocol_version` and config `version` remain `1` for Beta.1. Any future
-wire or config change requires an explicit compatibility decision based on
-observed user need.
+The Maverick protocol version, config version, and stored-profile schema
+version remain `1` for both the published Beta.1 release and the unmerged
+Beta.2 candidate; existing authentication and frame wire formats are unchanged.
+Any future version or wire-format change requires an explicit compatibility
+decision based on observed user need.

@@ -943,7 +943,7 @@ pass_count=$((pass_count + 1))
 fixture="$(make_fixture inherited-awk-function 26.04)"
 root="${fixture%%$'\n'*}"
 bin="${fixture#*$'\n'}"
-# shellcheck disable=SC2329 # Exported to the child shell as the test payload.
+# shellcheck disable=SC2317,SC2329 # Exported to the child shell as the test payload.
 awk() {
   return 0
 }

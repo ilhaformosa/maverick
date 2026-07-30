@@ -2,6 +2,65 @@
 
 All config files use YAML and `version: 1`.
 
+## Canonical v1 YAML readers
+
+`ClientConfig::from_yaml_str` and `ServerConfig::from_yaml_str` are the
+canonical core readers. The CLI and SDK YAML entry points use these readers.
+They recursively reject unknown mapping keys before validation or startup;
+unknown keys are not an extension mechanism and are never corrected or allowed
+to select a default silently.
+
+Every documented v1 field and its existing default keeps the same meaning.
+Adding a future field requires an explicit, versioned compatibility decision.
+Stored-profile serialization is a separate boundary; this contract makes no
+claim about stored-profile JSON.
+
+## Stored client-profile JSON
+
+The SDK fully understands and supports two usable stored-profile
+representations: published Beta.1 flat JSON containing exactly its known fields
+for explicit migration, and the current schema-1 envelope. This is an
+intentional, observable compatibility tightening from the published Beta.1
+reader. Exact known-field Beta.1 flat profiles remain readable and explicitly
+migratable. A profile carrying extra mapping keys that the old reader accepted
+and ignored is now intentionally rejected. Those extras were never preserved
+by migration or rewriting and were never a supported extension mechanism.
+
+At the `StoredClientProfile` deserialization boundary, every mapping node in
+both supported representations recursively rejects unknown keys. Rejection uses
+the fixed error `invalid stored client profile metadata`; an unknown key or
+value is never treated as an extension, corrected, or echoed. When returned by
+`serde_json::from_str`, this fixed text may be followed only by numeric line and
+column coordinates added by `serde_json`.
+
+Only a `StoredClientProfile` whose `compatibility_status()` is `Current` can be
+serialized by that top-level type into a schema-1 envelope. A schema-1 profile
+is rejected with `invalid stored client profile metadata` when channel binding
+is disabled but required, or when required channel binding is combined with
+H3, the legacy CDN-fronting flag, or first-class TLS-terminating CDN fronting.
+Legacy and unsupported schemas retain the existing current-schema-only
+serialization error, and schema-1 metadata missing channel binding retains its
+existing missing-data error. Legal `Current` envelope content and ordering are
+unchanged.
+
+`Current` describes stored-metadata compatibility only. It does not prove that
+the complete client configuration or referenced secrets are valid, or that a
+runtime connection will succeed. This top-level guard also cannot prevent a
+caller from hand-writing equivalent JSON outside `StoredClientProfile`, and it
+is not an atomic file-persistence guarantee. Direct top-level serialization of
+contradictory metadata rejects before calling its writer, but an enclosing
+serializer, a caller that truncates a file first, or a downstream writer failure
+while serializing a legal profile can still leave partial or empty output.
+Maverick does not currently provide an atomic stored-profile file API.
+
+The direct generic Serde behavior of the public nested SDK and core types is a
+separate compatibility surface and is not the stored-profile reader. A future
+stored-profile field requires an explicit stored-schema and reader
+compatibility decision. An envelope declaring a newer schema can report typed
+`UnsupportedSchema` only when its payload otherwise has the shape understood
+by the current reader; a payload containing future-only fields can be rejected
+during deserialization before that status is available.
+
 ## Client
 
 ```yaml

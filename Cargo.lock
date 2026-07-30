@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-cli"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1336,7 +1336,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-client"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1365,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-core"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "base64",
  "bytes",
@@ -1375,6 +1375,7 @@ dependencies = [
  "proptest",
  "rand",
  "serde",
+ "serde_ignored",
  "serde_json",
  "serde_yaml_ng",
  "sha2",
@@ -1388,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-sdk"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -1399,6 +1400,7 @@ dependencies = [
  "maverick-tun",
  "rcgen",
  "serde",
+ "serde_ignored",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1406,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-server"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1432,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-tests"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1464,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-tun"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "bytes",
  "etherparse",
@@ -2040,6 +2042,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

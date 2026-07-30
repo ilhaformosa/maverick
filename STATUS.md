@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-07-29
+Date: 2026-07-30
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -92,10 +92,12 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace and current published Beta prerelease version: `1.2.0-beta.1`.
-- Last independently reverified public artifact: `v1.2.0-beta.1`. The
-  historical `v1.2.0-alpha.6` release remains Alpha and was not moved,
-  replaced, or retroactively renamed.
+- Workspace candidate source prepared for Draft PR #17: `1.2.0-beta.2`. It is
+  unmerged, untagged, unpublished, and is neither a release nor a public
+  artifact.
+- Current published Beta prerelease and last independently reverified public
+  artifact: `v1.2.0-beta.1`. The historical `v1.2.0-alpha.6` release remains
+  Alpha and was not moved, replaced, or retroactively renamed.
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
 - Rust product core and loopback relay path: implemented.
@@ -577,6 +579,37 @@ result does not prove that BBR or the selected qdisc caused the improvement and
 does not justify Stable, mature, production-ready, anonymity, broad
 censorship-resistance, exact browser-equivalence, or provider-independent
 claims.
+
+## Beta.2 Release Candidate
+
+The candidate source prepared for Draft PR #17 uses `1.2.0-beta.2`. It remains
+unmerged, untagged, and unpublished and is not a release or public artifact.
+Repository-local tests, safe rejections, dependency checks, and
+candidate-archive checks are quality controls; they are not a product result, a
+user result, or a release result.
+
+The candidate adds `StoredClientProfile::stored_profile_schema_version` and
+`StoredClientAuthProfile::channel_binding`. Downstream code using complete
+struct literals or exhaustive field patterns for those public structs must be
+updated. No public function signature or Serde trait implementation was
+removed.
+
+Stored profiles containing exactly the known Beta.1 flat JSON fields remain
+readable, but migration requires the caller to choose a complete
+channel-binding policy explicitly; the candidate does not infer the missing
+legacy value. New writes use a schema-1 envelope that the Beta.1 reader rejects
+instead of silently accepting with downgraded channel-binding metadata.
+Canonical client and server YAML loading and top-level stored-profile JSON
+loading now reject unknown mapping keys instead of ignoring them.
+`FallbackConfig` is the explicit direct-generic-Serde exception: invalid or
+unknown fields inside a fallback variant are now rejected, while the two legal
+fallback shapes and their defaults are unchanged. A current stored profile
+whose metadata is internally contradictory is reported as malformed and cannot
+be serialized as a normal current envelope.
+
+The Rust packages use candidate version `1.2.0-beta.2`. The Maverick protocol
+version, config version, and stored-profile schema version remain `1`; existing
+authentication and frame wire formats are unchanged.
 
 ## Beta.1 Release
 

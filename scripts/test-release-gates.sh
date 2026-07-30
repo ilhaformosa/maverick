@@ -815,6 +815,54 @@ new_artifact_case private-binary "$private_binary"
 expect_artifact_fail private-binary "$current_archive" "$current_target" static \
   "$TEST_MARKER"
 
+file_uri_noise_binary="$test_root/file-uri-noise-binary"
+compile_fixture_binary "$file_uri_noise_binary" 0 ""
+printf '%s' "fi""le:///H" >>"$file_uri_noise_binary"
+chmod 0755 "$file_uri_noise_binary"
+new_artifact_case file-uri-noise "$file_uri_noise_binary"
+expect_artifact_pass file-uri-noise "$current_archive" "$current_target" static
+
+private_user_path_binary="$test_root/private-user-path-binary"
+compile_fixture_binary "$private_user_path_binary" 0 ""
+printf '%s' "/U""sers/$TEST_MARKER" >>"$private_user_path_binary"
+chmod 0755 "$private_user_path_binary"
+new_artifact_case private-user-path-binary "$private_user_path_binary"
+expect_artifact_fail private-user-path-binary "$current_archive" "$current_target" static \
+  "$TEST_MARKER"
+
+private_home_path_binary="$test_root/private-home-path-binary"
+compile_fixture_binary "$private_home_path_binary" 0 ""
+printf '%s' "/ho""me/$TEST_MARKER" >>"$private_home_path_binary"
+chmod 0755 "$private_home_path_binary"
+new_artifact_case private-home-path-binary "$private_home_path_binary"
+expect_artifact_fail private-home-path-binary "$current_archive" "$current_target" static \
+  "$TEST_MARKER"
+
+private_file_uri_binary="$test_root/private-file-uri-binary"
+compile_fixture_binary "$private_file_uri_binary" 0 ""
+printf '%s' "fi""le:///private/build/$TEST_MARKER" >>"$private_file_uri_binary"
+chmod 0755 "$private_file_uri_binary"
+new_artifact_case private-file-uri-binary "$private_file_uri_binary"
+expect_artifact_fail private-file-uri-binary "$current_archive" "$current_target" static \
+  "$TEST_MARKER"
+
+private_authority_uri_binary="$test_root/private-authority-uri-binary"
+compile_fixture_binary "$private_authority_uri_binary" 0 ""
+printf '%s' "fi""le://private-host.invalid/share/$TEST_MARKER" \
+  >>"$private_authority_uri_binary"
+chmod 0755 "$private_authority_uri_binary"
+new_artifact_case private-authority-uri-binary "$private_authority_uri_binary"
+expect_artifact_fail private-authority-uri-binary "$current_archive" \
+  "$current_target" static "$TEST_MARKER"
+
+maverick_secret_binary="$test_root/maverick-secret-binary"
+compile_fixture_binary "$maverick_secret_binary" 0 ""
+printf '%s' "mv""1_${TEST_MARKER}AAAAAAAAAAAAAAAAAAAA" >>"$maverick_secret_binary"
+chmod 0755 "$maverick_secret_binary"
+new_artifact_case maverick-secret-binary "$maverick_secret_binary"
+expect_artifact_fail maverick-secret-binary "$current_archive" "$current_target" static \
+  "$TEST_MARKER"
+
 execution_marker="$test_root/static-executed"
 probe_binary="$test_root/probe-binary"
 compile_fixture_binary "$probe_binary" 0 "$execution_marker"

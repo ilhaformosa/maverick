@@ -503,7 +503,7 @@ case "$expected_target" in
 esac
 
 command -v strings >/dev/null 2>&1 || fail
-privacy_pattern='/U''sers/[^/[:space:]]+/|/ho''me/[^/[:space:]]+/|fi''le://|ssh''-rsa|BE''GIN (RSA |EC |OPENSSH )?PRI''VATE KEY|gh[pousr]_[A-Za-z0-9_]{20,}|sk-(proj-|svcacct-)?[A-Za-z0-9_-]{40,}|dop_v1_[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,}|OPENAI_''API_KEY|DIGITALOCEAN_''API_TOKEN|AWS_SECRET_''ACCESS_KEY'
+privacy_pattern='/U''sers/[^/[:space:]]+|/ho''me/[^/[:space:]]+|fi''le://([^/[:space:]]+|/+[^/[:space:]]+/[^[:space:]]+)|ssh''-rsa|BE''GIN (RSA |EC |OPENSSH )?PRI''VATE KEY|mv''1_[A-Za-z0-9_-]{43,}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-(proj-|svcacct-)?[A-Za-z0-9_-]{40,}|dop_v1_[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,}|OPENAI_''API_KEY|DIGITALOCEAN_''API_TOKEN|AWS_SECRET_''ACCESS_KEY'
 archive_strings="$private_tmp/archive-strings"
 binary_strings="$private_tmp/binary-strings"
 strings "$archive_copy" >"$archive_strings" 2>/dev/null || fail

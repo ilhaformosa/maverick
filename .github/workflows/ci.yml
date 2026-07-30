@@ -17,10 +17,13 @@ jobs:
   public-pr-gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      MAVERICK_PILOT_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
@@ -29,16 +32,40 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binutils clang cmake file ripgrep shellcheck
-      - name: Build and natively verify the GNU/Linux pilot archive
-        env:
-          MAVERICK_PILOT_TARGET: x86_64-unknown-linux-gnu
+      - name: Build the exact-head GNU/Linux pilot archive
+        id: pilot
         run: |
-          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          set -euo pipefail
+          actual_revision="$(git rev-parse HEAD)"
+          if [[ "$actual_revision" != "$MAVERICK_EXPECTED_REVISION" ]]; then
+            echo "checked-out revision does not match the selected event revision" >&2
+            exit 1
+          fi
+          printf 'revision=%s\n' "$actual_revision" >>"$GITHUB_OUTPUT"
           ./scripts/build-pilot.sh
+      - name: Statically verify the GNU/Linux pilot archive
+        env:
+          MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
           ./scripts/verify-pilot-artifact.sh \
             --archive "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
             --expected-version "$version" \
-            --expected-revision "$GITHUB_SHA" \
+            --expected-revision "$MAVERICK_PILOT_REVISION" \
+            --expected-target "$MAVERICK_PILOT_TARGET" \
+            --verification-level static
+      - name: Natively verify the GNU/Linux pilot archive
+        env:
+          MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          ./scripts/verify-pilot-artifact.sh \
+            --archive "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
+            --expected-version "$version" \
+            --expected-revision "$MAVERICK_PILOT_REVISION" \
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level native
-      - run: ./scripts/local-harness.sh
+      - name: Run the local product harness
+        run: ./scripts/local-harness.sh

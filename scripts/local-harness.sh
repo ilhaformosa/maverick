@@ -59,6 +59,9 @@ CARGO_BIN="$cargo_bin" ./scripts/user-smoke.sh
 echo "==> isolated test-server preparation checks"
 ./scripts/test-prepare-test-server.sh
 
+echo "==> release publication gate checks"
+./scripts/test-release-gates.sh
+
 echo "==> active-surface checks"
 active_python="$(
   find . \
@@ -92,16 +95,27 @@ for doc_path in "${active_docs[@]}"; do
   }
 done
 
-if rg -l '/Users/|file://|ssh-rsa|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY' \
+active_privacy_pattern='/U''sers/|fi''le://|ssh''-rsa|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+active_privacy_status=0
+rg -q "$active_privacy_pattern" \
   AGENTS.md README.md STATUS.md ROADMAP.md CONFIG.md THREAT_MODEL.md SECURITY.md \
   docs/TRANSPORT_ARCHITECTURE.md docs/TEST_SERVER_PREPARATION.md \
   docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md scripts/user-smoke.sh \
   scripts/build-pilot.sh scripts/prepare-test-server.sh \
-  scripts/test-prepare-test-server.sh crates config .github/workflows
-then
-  echo "active source contains a private path or key marker" >&2
-  exit 1
-fi
+  scripts/test-prepare-test-server.sh scripts/verify-pilot-artifact.sh \
+  scripts/verify-release-tag.sh scripts/test-release-gates.sh \
+  crates config .github/workflows 2>/dev/null || active_privacy_status=$?
+case "$active_privacy_status" in
+  0)
+    echo "active source contains a private path or key marker" >&2
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "unable to complete the active-source privacy scan" >&2
+    exit 1
+    ;;
+esac
 
 pilot_guide="$(
   sed -n "/^cat >.*START_HERE\\.txt.*<<'GUIDE'$/,/^GUIDE$/p" \
@@ -122,6 +136,10 @@ done
 git diff --check
 bash -n scripts/local-harness.sh scripts/user-smoke.sh scripts/build-pilot.sh \
   scripts/security-dependency-inventory.sh scripts/prepare-test-server.sh \
-  scripts/test-prepare-test-server.sh
+  scripts/test-prepare-test-server.sh scripts/verify-pilot-artifact.sh \
+  scripts/verify-release-tag.sh scripts/test-release-gates.sh
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck -s bash scripts/*.sh
+fi
 
 echo "local harness OK"

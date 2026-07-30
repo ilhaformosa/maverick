@@ -17,24 +17,38 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No new product-code slice is queued. The current release-administration queue is
-limited to preparing the unmerged `1.2.0-beta.2` candidate source: update the
-workspace candidate version, current status wording, and both lockfiles; run
-the complete repository-local gates; build and inspect one local candidate
-artifact; and create exactly two bounded local commits, one for packaging and
-one for candidate preparation.
+No new product-code slice is queued. The current release-only slice is limited
+to making the unmerged `1.2.0-beta.2` publication path fail closed:
 
-The local stage stops after those results for independent review. Only after
-that review may the same commits be pushed and Draft PR #17 receive
-release-facing notes in its body; the pull request remains Draft. This queue
-does not authorize marking it ready, merging, tagging, releasing, uploading an
-asset, deploying, or running a live or remote test.
+- one shared offline verifier checks the exact seven-entry pilot archive,
+  checksums, bound public content, USTAR metadata, architecture, source
+  revision, version, and privacy rules;
+- each repository-contents-read-only build job performs native verification,
+  copies only the approved archive and checksum into private staging, performs
+  a final static reverification, and uploads only those two staged paths;
+- the publish job executes neither downloaded binary. It accepts exactly two
+  archives plus two checksums, copies them into separate private staging,
+  statically reverifies the exact bytes selected for publication, and gives
+  only those four named paths to the final release command;
+- a release tag must be annotated, directly target the exact event commit, and
+  that commit must already be an ancestor of the freshly read current `main`;
+  and
+- ordinary public PR/main CI builds the Linux archive with GNU tar on
+  `ubuntu-24.04`, performs native verification before any write-capable release
+  context exists, and runs the same local negative gate tests.
 
-Before any formal tag or release, a separately reviewed slice must add a shared
-artifact verifier, use it to reverify each archive before the release workflow
-publishes it, require an annotated tag, and prove that the tag commit descends
-from `main`. Those release-only gates are not implemented by this
-candidate-prep slice.
+Native verification means the binary ran successfully on a matching host; it is
+not a sandbox or proof that an untrusted binary is safe to execute. Linux CI is
+repository quality evidence only, not a product, user, live-network, release,
+or publication result. Local verification and safe rejection do not change the
+product facts in `STATUS.md`.
+
+The implementation stage stops after local validation and a bounded commit for
+independent review. Only after that review may the commit be pushed and the
+existing Draft PR receive updated notes; it remains Draft. This queue does not
+authorize marking the PR ready, merging, creating or moving a tag, running the
+release workflow, uploading an Actions or public release asset, releasing,
+deploying, or changing any live, remote, or system-network state.
 
 ## Execution Order
 

@@ -722,15 +722,25 @@ done
 
 new_artifact_case privacy-tool-error
 fake_grep_path="$test_root/fake-grep-path"
+real_grep="$(command -v grep)" || fail_test
 mkdir "$fake_grep_path"
 cat >"$fake_grep_path/grep" <<'FAKE_GREP'
 #!/usr/bin/env bash
-printf '%s\n' "$MAVERICK_TEST_PRIVATE_MARKER" >&2
-exit 2
+for argument in "$@"; do
+  if [[ "$argument" == "-i" ]]; then
+    printf '%s\n' "$MAVERICK_TEST_PRIVATE_MARKER" >&2
+    exit 2
+  fi
+done
+exec "$MAVERICK_TEST_REAL_GREP" "$@"
 FAKE_GREP
 chmod 0755 "$fake_grep_path/grep"
+printf '%s\n' "ELF64" |
+  MAVERICK_TEST_REAL_GREP="$real_grep" \
+    PATH="$fake_grep_path:$PATH" grep -Eq 'ELF64' || fail_test
 trace_test privacy-tool-error
 if MAVERICK_TEST_PRIVATE_MARKER="$TEST_MARKER" \
+  MAVERICK_TEST_REAL_GREP="$real_grep" \
   PATH="$fake_grep_path:$PATH" \
   run_artifact "$current_archive" "$current_target" static \
   >"$test_root/logs/privacy-tool-error" 2>&1; then

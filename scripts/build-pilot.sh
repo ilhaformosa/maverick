@@ -28,8 +28,37 @@ if [[ -z "$rustc_bin" ]]; then
   fi
 fi
 
+require_clean_checkout() {
+  local source_status
+  if ! source_status="$(git status --porcelain=v1 --untracked-files=normal 2>/dev/null)"; then
+    echo "unable to verify clean source checkout" >&2
+    exit 1
+  fi
+  if [[ -n "$source_status" ]]; then
+    echo "refusing to build a pilot artifact from a dirty checkout" >&2
+    exit 1
+  fi
+}
+
+require_unchanged_source() {
+  local current_revision
+  if ! current_revision="$(git rev-parse HEAD 2>/dev/null)"; then
+    echo "unable to verify source revision" >&2
+    exit 1
+  fi
+  if [[ "$current_revision" != "$source_revision" ]]; then
+    echo "refusing to package a changed source revision" >&2
+    exit 1
+  fi
+  require_clean_checkout
+}
+
 version="$(awk -F'"' '/^version =/ {print $2; exit}' "$repo_root/Cargo.toml")"
 target="${MAVERICK_PILOT_TARGET:-$("$rustc_bin" -vV | awk '/^host:/ {print $2}')}"
+if [[ ! "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$target" == *..* ]]; then
+  echo "invalid pilot target name" >&2
+  exit 1
+fi
 archive_name="maverick-${version}-pilot-${target}.tar.gz"
 archive_path="$repo_root/dist/$archive_name"
 build_dir="${MAVERICK_PILOT_BUILD_DIR:-$repo_root/target/pilot-artifact}"
@@ -40,6 +69,12 @@ if [[ -e "$output_dir" || -e "$archive_path" || -e "$archive_path.sha256" ]]; th
 fi
 
 cd "$repo_root"
+
+if ! source_revision="$(git rev-parse HEAD 2>/dev/null)"; then
+  echo "unable to determine source revision" >&2
+  exit 1
+fi
+require_clean_checkout
 
 encoded_rustflags="${CARGO_ENCODED_RUSTFLAGS:-}"
 for flag in \
@@ -143,15 +178,12 @@ This artifact is experimental prerelease software, provided without warranty. It
 not production-ready, anonymous, censorship-resistant, or browser-identical.
 GUIDE
 
+require_unchanged_source
+
 {
-  if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-    source_state="dirty"
-  else
-    source_state="clean"
-  fi
   echo "repository: https://github.com/ilhaformosa/maverick"
-  echo "git_revision: $(git rev-parse HEAD)"
-  echo "source_state: $source_state"
+  echo "git_revision: $source_revision"
+  echo "source_state: clean"
   echo "version: $version"
   echo "target: $target"
 } >"$output_dir/SOURCE.txt"
@@ -165,7 +197,40 @@ GUIDE
   fi
 )
 
-tar -czf "$archive_path" -C "$repo_root/dist" "$(basename "$output_dir")"
+chmod 0755 "$output_dir" "$output_dir/maverick"
+chmod 0644 \
+  "$output_dir/LICENSE" \
+  "$output_dir/SHA256SUMS" \
+  "$output_dir/SOURCE.txt" \
+  "$output_dir/START_HERE.txt" \
+  "$output_dir/VERSION.txt"
+
+if tar --version 2>/dev/null | grep -qi 'bsdtar'; then
+  COPYFILE_DISABLE=1 tar \
+    --format ustar \
+    --uid 0 \
+    --gid 0 \
+    --numeric-owner \
+    --no-acls \
+    --no-fflags \
+    --no-xattrs \
+    -czf "$archive_path" \
+    -C "$repo_root/dist" \
+    "$(basename "$output_dir")"
+elif tar --version 2>/dev/null | grep -qi 'GNU tar'; then
+  tar \
+    --format=ustar \
+    --owner=0 \
+    --group=0 \
+    --numeric-owner \
+    -czf "$archive_path" \
+    -C "$repo_root/dist" \
+    "$(basename "$output_dir")"
+else
+  echo "unsupported tar implementation; expected bsdtar or GNU tar" >&2
+  exit 1
+fi
+
 (
   cd "$repo_root/dist"
   if command -v shasum >/dev/null 2>&1; then
@@ -174,6 +239,7 @@ tar -czf "$archive_path" -C "$repo_root/dist" "$(basename "$output_dir")"
     sha256sum "$archive_name" >"$archive_name.sha256"
   fi
 )
+chmod 0644 "$archive_path.sha256"
 
 echo "pilot folder: dist/maverick-pilot"
 echo "shareable pilot archive: dist/$archive_name"

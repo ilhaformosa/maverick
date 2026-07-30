@@ -17,41 +17,49 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T012a — Freeze config v2 semantic contract
+### T010a — Freeze v1 effective behavior as an executable oracle
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** The future config v2 has one small, explicit semantic
-  contract that separates requested security, carrier selection, trust route,
-  minimum name privacy, and traffic shaping without claiming unobserved runtime
-  capabilities.
-- **Scope:** Document the five independent axes, requested-versus-observed
-  boundary, initial accepted and reserved values, Auto and fail-closed rules,
-  minimum pure-validation conflicts, v1 compatibility boundary, and the exact
-  T010a evaluator handoff. Keep the current v1-only parser and runtime
-  unchanged.
-- **Acceptance:** `CONFIG.md` explicitly says config v2 is not implemented and
-  remains rejected. All five requests are mandatory in a canonical future v2
-  config. Reserved H3, native-ECH, and inner-end-to-end routes remain
-  unavailable. Auto cannot cross a trust or policy boundary or replay user
-  data. Requested policy stays separate from read-only selected or observed
-  results. v1 Mode, auth bytes, Profile URI v1, stored-profile schema 1, and
-  config/protocol/frame/authentication wire facts remain unchanged. The diff is
-  documentation-only and the local product gates pass.
-- **Out of scope:** A config v2 DTO or parser, v1-to-v2 migration, runtime
-  consumer changes, auth v3, actual TLS or name-privacy diagnostics, PQ/KEX
-  policy, Profile URI v2, H3/UDP implementation, schema or wire changes,
-  publication, deployment, and release-gate work. T017 is not reopened.
-- **Stop conditions:** Stop before changing any file other than `CONFIG.md` and
-  `ROADMAP.md`, adding a public API type or dependency, accepting config v2 in
-  code, freezing an enabled traffic-shaping policy without lossless mapping
-  evidence, changing a current product fact, or starting remote, system-network,
-  or release work.
+- **User result:** Maintainers can give an already validated v1 client or server
+  config to one deterministic oracle and see the behavior that current code can
+  derive from it, plus a small ordered set of privacy-safe mapping blockers.
+- **Scope:** Add a publish-false `maverick-tests` support module with separate
+  client and server evaluators. Freeze local legacy Mode and wire ID, carrier
+  policy, H3 setup-only fallback and cooldown policy, configured trust-route
+  assumption per eligible carrier, including server H2 fronting only when its
+  H2 front is selected, server WebSocket fronting, and direct server H3.
+  Derive mixed-route blockers from the actual enabled carrier facts, then freeze
+  per-carrier TLS/name-privacy/channel-binding facts, role-specific auth
+  selection, and the padding, header-aware single-send delay/flush eligibility,
+  cover eligibility, and budget behavior currently consumed by each role.
+  Inputs are already validated v1 values plus H3 build availability; the oracle
+  is pure and does not change or diagnose the runtime.
+- **Acceptance:** Default-feature and no-default-feature oracle tests cover all
+  three Modes across the applicable client and server cases, omitted versus
+  explicit defaults, H2/fronted-H2/WebSocket/H3 policy, setup versus post-setup
+  H3 failure, direct H2 beside a fronted WebSocket, direct H3 beside either
+  front carrier, single-route H2 fronting, auth and channel-binding differences,
+  zero and payload-conditional cover budgets, frame-header batch boundaries,
+  role-specific shaping, fixed blocker ordering, and exclusion of private input
+  strings. Existing pure scheduler, padding, or batching helpers are used as
+  conformance controls where available. Formatting, owning-crate tests and
+  Clippy, and both local product gates pass without a product-source,
+  dependency, schema, protocol, frame, authentication-byte, or wire-version
+  change.
+- **Out of scope:** A config v2 DTO or parser, v1-to-v2 serialization,
+  source-field presence, T010b migration, runtime-consumer changes, public
+  product diagnostics, Profile URI v2, auth v3, PQ/KEX policy, H3 or UDP product
+  work, publication, deployment, and release work. T017 is not reopened.
+- **Stop conditions:** Stop before expanding beyond the publish-false test
+  oracle, its library export, and this roadmap entry; adding a dependency or
+  product public API; reading network, secrets, clocks, cooldown state, or the
+  environment; changing current validation, defaults, runtime behavior, product
+  facts, schemas, or wire bytes; or starting system-network or remote work.
 
-The next config task is T010a: implement a pure v1 effective-behavior evaluator
-and prove field-by-field mapping or return a review blocker. T009 follows only
-after that evidence is sufficient to freeze a strict v2 DTO and parser. Neither
-follow-up is authorized by this docs-only slice.
+T009 follows only after this oracle passes independent review and provides
+sufficient evidence to freeze a strict v2 DTO and parser. T010b remains later
+source-level deterministic migration work and is not authorized by this slice.
 
 ## Execution Order
 

@@ -17,25 +17,10 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-The current repository-local queue is one combined test/CI-only slice:
-
-- T006 adds an independent H3 compile and focused loopback test gate to the
-  existing required public PR/main job while preserving the documentation-only
-  fast path.
-- T007 adds auth v1/v2 mode-tamper fixtures and loopback compatibility
-  regressions for the legacy, unconfirmed client/server mode-mismatch behavior.
-
-This slice must not change authentication, mode, scheduler, wire, schema, or
-runtime behavior, and it does not authorize a push, pull request, release,
-deployment, live test, or system-network change. The `v1.2.0-beta.2` release
-slice remains closed; its closure is not authority for another publication.
-
-The next repository-local slice must come from the failure-driven order below.
-A small verifier-maintenance candidate may improve the macOS diagnostic for a
-missing GNU `readelf` and recognize the common `greadelf` command name, with
-focused regression tests. It is maintenance only, is not required to validate
-the published Beta.2 Linux artifact, and must not grow into a container,
-cross-platform parser, new release matrix, or verification framework.
+No product-code, test/CI, or release slice is currently queued. The
+`v1.2.0-beta.2` release slice remains closed; its completion is current truth,
+not continuing authority for another tag, release, deployment, live test, or
+remote or system-network change.
 
 ## Execution Order
 

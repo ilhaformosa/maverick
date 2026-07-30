@@ -17,47 +17,52 @@ adopted nor automatically rejected.
 
 ## Next Repository-Local Slice
 
-### T003 — Reject unknown keys in canonical v1 config loading
+### T004 — Reject unknown keys in stored client-profile JSON
 
 Queued on 2026-07-30 under the continued privacy-safe repository-local
 development authorization recorded in `STATUS.md`. This roadmap sets execution
-order only; it does not record or expand authorization. T003 is the first small
+order only; it does not record or expand authorization. T004 is the next small
 P0-E slice and executes before the general failure-driven order below. It does
-not define the Beta.2 release scope or complete a config-v2 design.
+not define the Beta.2 release scope or a schema-2 design.
 
-- **User result:** a misspelled or otherwise unknown mapping key in client or
-  server YAML loaded through the canonical v1 API is rejected with a safe
-  structural parent location, or a fixed fallback error, instead of silently
-  selecting a default or echoing the untrusted key.
-- **Scope:** wrap only `ClientConfig::from_yaml_str` and
-  `ServerConfig::from_yaml_str` with one private recursive ignored-field helper;
-  give only `FallbackConfig`, the single internally tagged config enum, a
-  private strict wire type and custom deserializer that maps invalid input to a
-  fixed error; and add the narrowly required `serde_ignored` dependency,
-  manifest and lockfile changes, documentation, and focused tests.
-- **Acceptance:** root, nested, sequence-element, internally tagged fallback,
-  advanced, and crypto unknown keys fail before validation or startup; errors
-  report only a bounded safe structural parent location or a fixed fallback
-  error, without the unknown key, its value, or other private configuration
-  data; known duplicate-key rejection and all documented valid v1 defaults and
-  fixtures remain intact. Direct generic Serde remains compatible except that
-  invalid `FallbackConfig` input, including unknown variant keys, is rejected
-  with the fixed error; stored-profile behavior remains compatible. Core, SDK,
-  smoke, and complete local-harness checks pass.
-- **Out of scope:** bulk `deny_unknown_fields` changes to shared public structs;
-  any other direct generic Serde tightening; stored-profile JSON or migration;
-  config v2; config, protocol, auth, frame, or wire-version changes; runtime
-  transport, deployment, release, push, tag, publication, or infrastructure
-  work.
-- **Stop conditions:** stop if the hybrid boundary cannot reject every required
-  recursive YAML key, if any second shared struct or enum would need tightening,
-  if the private strict wire/custom deserializer exception would need to extend
-  beyond `FallbackConfig`, if any version boundary must change, or if completion
-  requires privileged, paid, system-network, real-network, or
-  private-infrastructure access.
+- **User result:** the current reader intentionally tightens observable
+  compatibility: exact known-field published Beta.1 flat profiles remain
+  readable for explicit migration, while extra-bearing flat profiles previously
+  accepted and ignored by the Beta.1 reader, and schema-1 envelopes with extra
+  keys, are rejected before migration, secret-store access, or silent fallback
+  to default values. The ignored extras were never preserved by migration or
+  rewriting and were never a supported extension mechanism.
+- **Scope:** tighten only the hand-written `StoredClientProfile` deserialization
+  boundary with a private strict payload reader using the existing workspace
+  `serde_ignored` dependency; add the SDK manifest and lockfile edge, a fixed
+  anonymous Beta.1 fixture, focused tests, and the related configuration
+  contract. Public nested SDK and shared core structs retain their direct
+  generic Serde behavior.
+- **Acceptance:** exact known-field Beta.1 flat profiles remain readable and
+  explicitly migratable. Current and legacy representations reject unknown keys
+  at every represented mapping node, including extra-bearing profiles accepted
+  and ignored by the old Beta.1 reader and the two reproduced typos; malicious
+  and numerous keys produce only the fixed bounded metadata error without key,
+  value, or private-data echo; known duplicate keys remain rejected; rejection
+  precedes secret-store access. Legal current round-trip, exact legacy migration,
+  all three channel-binding choices, schema-0-envelope rejection, malformed
+  current handling, secret redaction, and same-shape unsupported-schema behavior
+  remain intact. SDK, core, smoke, complete local-harness, formatting, lint, and
+  privacy checks pass.
+- **Out of scope:** schema-2 design; generic core Serde tightening; CLI or
+  runtime changes; config, protocol, auth, frame, wire, or stored-schema version
+  changes; deployment, release, push, tag, publication, or infrastructure work.
+  Rejection when callers manually construct and serialize a contradictory
+  `StoredClientProfile` remains a separate future candidate rather than part of
+  T004.
+- **Stop conditions:** stop if closure requires changing any public nested or
+  shared core DTO, parsing through `serde_json::Value`, matching error strings,
+  changing a version boundary, expanding beyond stored-profile metadata, or
+  using privileged, paid, system-network, real-network, or private
+  infrastructure access.
 
-After T003 completes or reaches a stop condition, resume the failure-driven
-execution order below. Completion of T003 alone does not create a new product
+After T004 completes or reaches a stop condition, resume the failure-driven
+execution order below. Completion of T004 alone does not create a new product
 result or change the milestone truth in `STATUS.md`.
 
 ## Execution Order

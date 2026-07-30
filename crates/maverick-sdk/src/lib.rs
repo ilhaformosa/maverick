@@ -426,6 +426,7 @@ impl ProfileSecretStore for NativeProfileSecretStore {
 }
 
 pub const STORED_CLIENT_PROFILE_SCHEMA_VERSION: u16 = 1;
+const INVALID_STORED_CLIENT_PROFILE_METADATA: &str = "invalid stored client profile metadata";
 
 /// Compatibility state for stored client-profile metadata.
 ///
@@ -438,7 +439,11 @@ pub enum StoredClientProfileCompatibility {
     Current,
     /// A legacy flat profile needs a caller-selected channel-binding policy.
     LegacyNeedsExplicitChannelBindingMigration,
-    /// The stored schema is not supported by this SDK.
+    /// A nonzero stored schema using the currently understood payload shape is
+    /// not supported by this SDK.
+    ///
+    /// A future payload containing fields this SDK does not understand may be
+    /// rejected during deserialization before this status can be reported.
     UnsupportedSchema { schema_version: u16 },
     /// The profile shape and its declared stored schema are inconsistent.
     Malformed,
@@ -499,12 +504,24 @@ pub struct StoredClientProfile {
 #[serde(deny_unknown_fields)]
 struct StoredClientProfileEnvelope {
     stored_profile_schema_version: u16,
+    #[serde(deserialize_with = "deserialize_strict_stored_client_profile_payload")]
     profile: StoredClientProfilePayload,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize)]
 struct StoredClientProfilePayload {
+    profile_name: String,
+    version: u16,
+    mode: Mode,
+    local: LocalConfig,
+    server: StoredClientServerProfile,
+    auth: StoredClientAuthProfile,
+    log: LogConfig,
+    advanced: ClientAdvancedConfig,
+}
+
+#[derive(Deserialize)]
+struct StoredClientProfilePayloadWire {
     profile_name: String,
     version: u16,
     mode: Mode,
@@ -519,7 +536,10 @@ struct StoredClientProfilePayload {
 #[serde(untagged)]
 enum StoredClientProfileRepresentation {
     Envelope(StoredClientProfileEnvelope),
-    Legacy(StoredClientProfilePayload),
+    Legacy(
+        #[serde(deserialize_with = "deserialize_strict_stored_client_profile_payload")]
+        StoredClientProfilePayload,
+    ),
 }
 
 impl Serialize for StoredClientProfile {
@@ -551,7 +571,10 @@ impl<'de> Deserialize<'de> for StoredClientProfile {
     where
         D: Deserializer<'de>,
     {
-        let representation = StoredClientProfileRepresentation::deserialize(deserializer)?;
+        let representation =
+            StoredClientProfileRepresentation::deserialize(deserializer).map_err(|_| {
+                <D::Error as serde::de::Error>::custom(INVALID_STORED_CLIENT_PROFILE_METADATA)
+            })?;
         let (stored_profile_schema_version, profile) = match representation {
             StoredClientProfileRepresentation::Envelope(envelope) => {
                 if envelope.stored_profile_schema_version == 0 {
@@ -564,6 +587,40 @@ impl<'de> Deserialize<'de> for StoredClientProfile {
             StoredClientProfileRepresentation::Legacy(profile) => (0, profile),
         };
         Ok(profile.into_stored_profile(stored_profile_schema_version))
+    }
+}
+
+fn deserialize_strict_stored_client_profile_payload<'de, D>(
+    deserializer: D,
+) -> std::result::Result<StoredClientProfilePayload, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut found_unknown_key = false;
+    let payload: StoredClientProfilePayloadWire = serde_ignored::deserialize(deserializer, |_| {
+        found_unknown_key = true
+    })
+    .map_err(|_| <D::Error as serde::de::Error>::custom(INVALID_STORED_CLIENT_PROFILE_METADATA))?;
+    if found_unknown_key {
+        return Err(<D::Error as serde::de::Error>::custom(
+            INVALID_STORED_CLIENT_PROFILE_METADATA,
+        ));
+    }
+    Ok(payload.into())
+}
+
+impl From<StoredClientProfilePayloadWire> for StoredClientProfilePayload {
+    fn from(payload: StoredClientProfilePayloadWire) -> Self {
+        Self {
+            profile_name: payload.profile_name,
+            version: payload.version,
+            mode: payload.mode,
+            local: payload.local,
+            server: payload.server,
+            auth: payload.auth,
+            log: payload.log,
+            advanced: payload.advanced,
+        }
     }
 }
 
@@ -604,7 +661,10 @@ impl StoredClientProfile {
     /// This method examines stored metadata only. It never accesses a secret
     /// store and never changes the profile. A [`StoredClientProfileCompatibility::Current`]
     /// result does not prove that the complete client configuration or referenced
-    /// secrets are valid, or that a runtime connection will succeed.
+    /// secrets are valid, or that a runtime connection will succeed. An
+    /// [`StoredClientProfileCompatibility::UnsupportedSchema`] result is available
+    /// only when the stored payload otherwise uses the fields understood by this
+    /// SDK; future-only fields can be rejected during deserialization first.
     #[must_use]
     pub fn compatibility_status(&self) -> StoredClientProfileCompatibility {
         match self.stored_profile_schema_version {
@@ -1187,6 +1247,41 @@ mod tests {
         rotation: StoredClientCredentialRotationProfile,
     }
 
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct T003StoredClientProfileEnvelopeReaderFixture {
+        stored_profile_schema_version: u16,
+        profile: T003StoredClientProfilePayloadReaderFixture,
+    }
+
+    #[derive(Deserialize)]
+    struct T003StoredClientProfilePayloadReaderFixture {
+        profile_name: String,
+        version: u16,
+        mode: Mode,
+        local: LocalConfig,
+        server: StoredClientServerProfile,
+        auth: StoredClientAuthProfile,
+        log: LogConfig,
+        advanced: ClientAdvancedConfig,
+    }
+
+    impl T003StoredClientProfilePayloadReaderFixture {
+        fn into_stored_profile(self, stored_profile_schema_version: u16) -> StoredClientProfile {
+            StoredClientProfile {
+                stored_profile_schema_version,
+                profile_name: self.profile_name,
+                version: self.version,
+                mode: self.mode,
+                local: self.local,
+                server: self.server,
+                auth: self.auth,
+                log: self.log,
+                advanced: self.advanced,
+            }
+        }
+    }
+
     struct PanicOnSecretReadStore;
 
     impl ProfileSecretStore for PanicOnSecretReadStore {
@@ -1207,56 +1302,155 @@ mod tests {
         }
     }
 
+    const BETA1_STORED_CLIENT_PROFILE_FLAT_JSON: &str = r#"
+{
+  "profile_name": "example-profile",
+  "version": 1,
+  "mode": "auto",
+  "local": {
+    "socks5": {
+      "listen": "127.0.0.1:1080"
+    },
+    "dns": {
+      "enabled": false,
+      "listen": "127.0.0.1:15353"
+    },
+    "http_connect": {
+      "enabled": false,
+      "listen": "127.0.0.1:18080"
+    }
+  },
+  "server": {
+    "address": "example.invalid:443",
+    "server_name": "example.invalid",
+    "tunnel_path": "/assets/upload",
+    "credential_id": "u_example",
+    "secret_ref": {
+      "service": "maverick.client-profile",
+      "account": "profile:example-profile:active"
+    },
+    "ca_cert": null,
+    "cert_pin": null
+  },
+  "auth": {
+    "v2": {
+      "enabled": false,
+      "require": false,
+      "accepted_epochs": [2026073001]
+    },
+    "rotation": {
+      "active_epoch": "2026073001",
+      "next_credential_id": "u_example_next",
+      "auto_switch": true,
+      "next": {
+        "id": "u_example_next",
+        "secret_ref": {
+          "service": "maverick.client-profile",
+          "account": "profile:example-profile:next"
+        },
+        "not_before": "2026-08-01T00:00:00Z"
+      }
+    }
+  },
+  "log": {
+    "level": "info",
+    "redact": true
+  },
+  "advanced": {
+    "connect_timeout_ms": 10000,
+    "idle_timeout_secs": 300,
+    "max_concurrent_flows": 256,
+    "padding": "auto",
+    "udp_idle_timeout_ms": 30000,
+    "shaping": {
+      "enabled": false,
+      "max_padding_bytes_per_frame": 256,
+      "max_overhead_ratio": 0.25,
+      "max_delay_ms": 20,
+      "max_batch_bytes": 65536,
+      "cover_traffic": false,
+      "cover_traffic_operator_approved": false,
+      "cover_traffic_window_ms": 1000
+    },
+    "stealth": {
+      "tls_fingerprint": "rustls_default",
+      "active_probe_resistance": true,
+      "cdn_fronting": {
+        "enabled": false,
+        "provider": "cloudflare",
+        "carrier": "h2",
+        "trusted_tls_terminating_provider": false
+      }
+    },
+    "allow_non_loopback_listeners": false,
+    "experimental_h3": false,
+    "experimental_cloudflare_ws": false,
+    "experimental_ech": false,
+    "experimental_tun": false,
+    "ech_fallback_policy": "fail_closed",
+    "crypto": {
+      "offered_suites": ["tls13"],
+      "allow_experimental": false,
+      "require_experimental": false
+    }
+  }
+}
+"#;
+
     fn legacy_stored_client_profile_flat_value() -> Result<serde_json::Value> {
-        let config = client_config_builder()
-            .local_socks5("127.0.0.1:0".parse()?)
-            .server_address("127.0.0.1:443")
-            .server_name("localhost")
-            .credential("u_legacy", SecretString::generate())
-            .build()?;
-        let profile_name = "legacy-profile";
-        let profile = StoredClientProfile {
-            stored_profile_schema_version: 0,
-            profile_name: profile_name.into(),
-            version: config.version,
-            mode: config.mode,
-            local: config.local,
-            server: StoredClientServerProfile {
-                address: config.server.address,
-                server_name: config.server.server_name,
-                tunnel_path: config.server.tunnel_path,
-                credential_id: config.server.credential_id,
-                secret_ref: ProfileSecretRef::client_profile(profile_name, "active")?,
-                ca_cert: config.server.ca_cert,
-                cert_pin: config.server.cert_pin,
-            },
-            auth: StoredClientAuthProfile {
-                channel_binding: None,
-                v2: AuthV2Config {
-                    enabled: true,
-                    require: false,
-                    accepted_epochs: vec![2_026_073_001],
-                },
-                rotation: StoredClientCredentialRotationProfile {
-                    active_epoch: Some("2026073001".into()),
-                    next_credential_id: Some("u_legacy_next".into()),
-                    auto_switch: true,
-                    next: Some(StoredClientNextCredentialProfile {
-                        id: "u_legacy_next".into(),
-                        secret_ref: ProfileSecretRef::client_profile(profile_name, "next")?,
-                        not_before: "2026-08-01T00:00:00Z".into(),
-                    }),
-                },
-            },
-            log: config.log,
-            advanced: config.advanced,
-        };
-        let mut flat = serde_json::to_value(StoredClientProfilePayload::from(&profile))?;
-        flat["auth"]
-            .as_object_mut()
-            .unwrap()
-            .remove("channel_binding");
-        Ok(flat)
+        Ok(serde_json::from_str(BETA1_STORED_CLIENT_PROFILE_FLAT_JSON)?)
+    }
+
+    fn current_stored_client_profile_envelope_value() -> Result<serde_json::Value> {
+        Ok(serde_json::from_str(
+            &current_stored_client_profile_envelope_json(),
+        )?)
+    }
+
+    fn current_stored_client_profile_envelope_json() -> String {
+        let profile = BETA1_STORED_CLIENT_PROFILE_FLAT_JSON.replacen(
+            "\"auth\": {",
+            "\"auth\": {\n    \"channel_binding\": {\n      \"enabled\": true,\n      \"require\": false\n    },",
+            1,
+        );
+        format!("{{\"stored_profile_schema_version\":1,\"profile\":{profile}}}")
+    }
+
+    fn secret_store_for_stored_profile(
+        profile: &StoredClientProfile,
+    ) -> Result<InMemoryProfileSecretStore> {
+        let mut store = InMemoryProfileSecretStore::new();
+        store.put_secret(&profile.server.secret_ref, &SecretString::generate())?;
+        if let Some(next) = &profile.auth.rotation.next {
+            store.put_secret(&next.secret_ref, &SecretString::generate())?;
+        }
+        Ok(store)
+    }
+
+    fn assert_fixed_stored_profile_metadata_error(error: serde_json::Error) {
+        let rendered = error.to_string();
+        let suffix = rendered
+            .strip_prefix(INVALID_STORED_CLIENT_PROFILE_METADATA)
+            .unwrap_or_else(|| panic!("unexpected stored-profile error: {rendered}"));
+        if !suffix.is_empty() {
+            let location = suffix
+                .strip_prefix(" at line ")
+                .unwrap_or_else(|| panic!("unexpected stored-profile error suffix: {suffix}"));
+            let (line, column) = location
+                .split_once(" column ")
+                .unwrap_or_else(|| panic!("unexpected stored-profile error location: {location}"));
+            assert!(line.parse::<usize>().is_ok());
+            assert!(column.parse::<usize>().is_ok());
+        }
+        assert!(rendered.chars().all(|character| !character.is_control()));
+        assert!(rendered.len() <= 128);
+    }
+
+    fn assert_stored_profile_value_rejected(value: serde_json::Value) -> Result<()> {
+        let json = serde_json::to_string(&value)?;
+        let error = serde_json::from_str::<StoredClientProfile>(&json).unwrap_err();
+        assert_fixed_stored_profile_metadata_error(error);
+        Ok(())
     }
 
     #[tokio::test]
@@ -1743,6 +1937,286 @@ mod tests {
     }
 
     #[test]
+    fn current_stored_profile_rejects_unknown_auth_v2_typo() -> Result<()> {
+        let mut current = current_stored_client_profile_envelope_value()?;
+        current["profile"]["auth"]["v2"]
+            .as_object_mut()
+            .unwrap()
+            .remove("enabled");
+        current["profile"]["auth"]["v2"]["enabeld"] = serde_json::json!(true);
+        let parent: T003StoredClientProfileEnvelopeReaderFixture =
+            serde_json::from_value(current.clone())?;
+        let parent_profile = parent
+            .profile
+            .into_stored_profile(parent.stored_profile_schema_version);
+        assert_eq!(
+            parent_profile.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+        assert!(!parent_profile.auth.v2.enabled);
+        let parent_config =
+            parent_profile.to_client_config(&secret_store_for_stored_profile(&parent_profile)?)?;
+        assert!(!parent_config.auth.v2.enabled);
+
+        let json = serde_json::to_string(&current)?;
+
+        match serde_json::from_str::<StoredClientProfile>(&json) {
+            Err(error) => assert_fixed_stored_profile_metadata_error(error),
+            Ok(profile) => {
+                let _ = profile.to_client_config(&PanicOnSecretReadStore);
+                panic!("current stored profile silently accepted auth.v2.enabeld");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_stored_profile_rejects_unknown_server_cert_pin_typo() -> Result<()> {
+        let mut legacy = legacy_stored_client_profile_flat_value()?;
+        legacy["server"].as_object_mut().unwrap().remove("cert_pin");
+        legacy["server"]["cert_pni"] = serde_json::json!("sha256:synthetic");
+        let parent: T003StoredClientProfilePayloadReaderFixture =
+            serde_json::from_value(legacy.clone())?;
+        let parent_profile = parent.into_stored_profile(0);
+        assert!(parent_profile.server.cert_pin.is_none());
+        let migrated =
+            parent_profile.migrate_legacy_with_channel_binding(AuthChannelBindingConfig {
+                enabled: false,
+                require: false,
+            })?;
+        let parent_config =
+            migrated.to_client_config(&secret_store_for_stored_profile(&migrated)?)?;
+        assert!(parent_config.server.cert_pin.is_none());
+
+        assert_stored_profile_value_rejected(legacy)?;
+        Ok(())
+    }
+
+    #[test]
+    fn stored_profiles_reject_unknown_keys_at_every_payload_mapping_node() -> Result<()> {
+        let payload_mapping_nodes = [
+            ("payload root", ""),
+            ("local", "/local"),
+            ("socks5", "/local/socks5"),
+            ("dns", "/local/dns"),
+            ("http connect", "/local/http_connect"),
+            ("server", "/server"),
+            ("secret ref", "/server/secret_ref"),
+            ("auth", "/auth"),
+            ("auth v2", "/auth/v2"),
+            ("rotation", "/auth/rotation"),
+            ("rotation next", "/auth/rotation/next"),
+            ("rotation next secret ref", "/auth/rotation/next/secret_ref"),
+            ("log", "/log"),
+            ("advanced", "/advanced"),
+            ("shaping", "/advanced/shaping"),
+            ("stealth", "/advanced/stealth"),
+            ("CDN fronting", "/advanced/stealth/cdn_fronting"),
+            ("crypto", "/advanced/crypto"),
+        ];
+        let representations = [
+            (
+                "legacy",
+                legacy_stored_client_profile_flat_value()?,
+                String::new(),
+            ),
+            (
+                "current",
+                current_stored_client_profile_envelope_value()?,
+                "/profile".to_owned(),
+            ),
+        ];
+
+        for (representation, base, prefix) in representations {
+            for (node_name, relative_pointer) in payload_mapping_nodes {
+                let mut candidate = base.clone();
+                let pointer = format!("{prefix}{relative_pointer}");
+                candidate
+                    .pointer_mut(&pointer)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{representation} fixture is missing mapping node {node_name} at {pointer}"
+                        )
+                    })
+                    .as_object_mut()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{representation} fixture node {node_name} at {pointer} is not a mapping"
+                        )
+                    })
+                    .insert("unknown_field".into(), serde_json::json!(true));
+                assert_stored_profile_value_rejected(candidate)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn current_envelope_rejects_unknown_root_and_channel_binding_keys() -> Result<()> {
+        let current = current_stored_client_profile_envelope_value()?;
+        for pointer in ["", "/profile/auth/channel_binding"] {
+            let mut candidate = current.clone();
+            candidate
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("unknown_field".into(), serde_json::json!(true));
+            assert_stored_profile_value_rejected(candidate)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stored_profile_unknown_key_errors_are_fixed_bounded_and_private() -> Result<()> {
+        let private_marker = "SYNTHETIC_PRIVATE_MARKER_DO_NOT_ECHO";
+        let private_value = "SYNTHETIC_PRIVATE_VALUE_DO_NOT_ECHO";
+        let long_suffix = "L".repeat(4_096);
+        let malicious_key = format!("{private_marker}\n\u{1b}[31m{long_suffix}");
+        let representations = [
+            (legacy_stored_client_profile_flat_value()?, "/auth/v2"),
+            (
+                current_stored_client_profile_envelope_value()?,
+                "/profile/auth/v2",
+            ),
+        ];
+
+        for (mut candidate, pointer) in representations {
+            let mapping = candidate
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            mapping.insert(
+                malicious_key.clone(),
+                serde_json::Value::String(private_value.into()),
+            );
+            for index in 0..512 {
+                mapping.insert(
+                    format!("SYNTHETIC_UNKNOWN_{index}"),
+                    serde_json::json!(true),
+                );
+            }
+            let json = serde_json::to_string(&candidate)?;
+            let rendered = serde_json::from_str::<StoredClientProfile>(&json)
+                .unwrap_err()
+                .to_string();
+
+            assert!(rendered.starts_with(INVALID_STORED_CLIENT_PROFILE_METADATA));
+            assert!(!rendered.contains(private_marker));
+            assert!(!rendered.contains(private_value));
+            assert!(!rendered.contains(&long_suffix));
+            assert!(!rendered.contains("SYNTHETIC_UNKNOWN"));
+            assert!(rendered.chars().all(|character| !character.is_control()));
+            assert!(rendered.len() <= 128);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stored_profile_parse_failures_use_fixed_private_error() -> Result<()> {
+        let private_marker = "SYNTHETIC_INVALID_VALUE_DO_NOT_ECHO";
+        let malicious_value = format!("{private_marker}\n\u{1b}[31m");
+        let mut legacy = legacy_stored_client_profile_flat_value()?;
+        legacy["mode"] = serde_json::Value::String(malicious_value.clone());
+        let mut current = current_stored_client_profile_envelope_value()?;
+        current["profile"]["mode"] = serde_json::Value::String(malicious_value.clone());
+
+        for candidate in [legacy, current, serde_json::Value::String(malicious_value)] {
+            let json = serde_json::to_string(&candidate)?;
+            let rendered = serde_json::from_str::<StoredClientProfile>(&json)
+                .unwrap_err()
+                .to_string();
+            assert!(rendered.starts_with(INVALID_STORED_CLIENT_PROFILE_METADATA));
+            assert!(!rendered.contains(private_marker));
+            assert!(rendered.chars().all(|character| !character.is_control()));
+            assert!(rendered.len() <= 128);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stored_profiles_keep_known_duplicate_key_rejection() -> Result<()> {
+        let legacy_root_duplicate = BETA1_STORED_CLIENT_PROFILE_FLAT_JSON.replacen(
+            "\"profile_name\": \"example-profile\",",
+            "\"profile_name\": \"example-profile\",\n  \"profile_name\": \"example-profile\",",
+            1,
+        );
+        let current = current_stored_client_profile_envelope_json();
+        let current_root_duplicate = current.replacen(
+            "\"stored_profile_schema_version\":1",
+            "\"stored_profile_schema_version\":1,\"stored_profile_schema_version\":1",
+            1,
+        );
+        let legacy_deep_duplicate = BETA1_STORED_CLIENT_PROFILE_FLAT_JSON.replacen(
+            "\"v2\": {\n      \"enabled\": false,",
+            "\"v2\": {\n      \"enabled\": false,\n      \"enabled\": true,",
+            1,
+        );
+        let current_deep_duplicate = current.replacen(
+            "\"v2\": {\n      \"enabled\": false,",
+            "\"v2\": {\n      \"enabled\": false,\n      \"enabled\": true,",
+            1,
+        );
+
+        assert_ne!(legacy_root_duplicate, BETA1_STORED_CLIENT_PROFILE_FLAT_JSON);
+        assert_ne!(current_root_duplicate, current);
+        assert_ne!(legacy_deep_duplicate, BETA1_STORED_CLIENT_PROFILE_FLAT_JSON);
+        assert_ne!(current_deep_duplicate, current);
+
+        for candidate in [
+            legacy_root_duplicate,
+            current_root_duplicate,
+            legacy_deep_duplicate,
+            current_deep_duplicate,
+        ] {
+            assert_fixed_stored_profile_metadata_error(
+                serde_json::from_str::<StoredClientProfile>(&candidate).unwrap_err(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_public_nested_stored_profile_serde_remains_permissive() -> Result<()> {
+        let auth: StoredClientAuthProfile = serde_json::from_value(serde_json::json!({
+            "channel_binding": {
+                "enabled": true,
+                "require": false
+            },
+            "v2": {
+                "enabled": false,
+                "require": false,
+                "accepted_epochs": [],
+                "enabeld": true
+            },
+            "rotation": {
+                "active_epoch": null,
+                "next_credential_id": null,
+                "auto_switch": false,
+                "next": null
+            }
+        }))?;
+        assert!(!auth.v2.enabled);
+
+        let server: StoredClientServerProfile = serde_json::from_value(serde_json::json!({
+            "address": "example.invalid:443",
+            "server_name": "example.invalid",
+            "tunnel_path": "/assets/upload",
+            "credential_id": "u_example",
+            "secret_ref": {
+                "service": "maverick.client-profile",
+                "account": "profile:example-profile:active"
+            },
+            "ca_cert": null,
+            "cert_pin": null,
+            "cert_pni": "sha256:synthetic"
+        }))?;
+        assert!(server.cert_pin.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn current_stored_client_profile_rejects_missing_channel_binding() -> Result<()> {
         let config = client_config_builder()
             .local_socks5("127.0.0.1:0".parse()?)
@@ -1776,18 +2250,16 @@ mod tests {
 
     #[test]
     fn stored_client_profile_rejects_unknown_schema() -> Result<()> {
-        let config = client_config_builder()
-            .local_socks5("127.0.0.1:0".parse()?)
-            .server_address("127.0.0.1:443")
-            .server_name("localhost")
-            .credential("u_active", SecretString::generate())
-            .build()?;
-        let mut store = InMemoryProfileSecretStore::new();
-        let profile = StoredClientProfile::store_from_config("primary", &config, &mut store)?;
-        let mut unknown = serde_json::to_value(profile)?;
+        let mut unknown = current_stored_client_profile_envelope_value()?;
         unknown["stored_profile_schema_version"] =
             serde_json::json!(STORED_CLIENT_PROFILE_SCHEMA_VERSION + 1);
         let unknown: StoredClientProfile = serde_json::from_value(unknown)?;
+        assert_eq!(
+            unknown.compatibility_status(),
+            StoredClientProfileCompatibility::UnsupportedSchema {
+                schema_version: STORED_CLIENT_PROFILE_SCHEMA_VERSION + 1
+            }
+        );
 
         let err = unknown
             .to_client_config(&PanicOnSecretReadStore)

@@ -15,6 +15,32 @@ Adding a future field requires an explicit, versioned compatibility decision.
 Stored-profile serialization is a separate boundary; this contract makes no
 claim about stored-profile JSON.
 
+## Stored client-profile JSON
+
+The SDK fully understands and supports two usable stored-profile
+representations: published Beta.1 flat JSON containing exactly its known fields
+for explicit migration, and the current schema-1 envelope. This is an
+intentional, observable compatibility tightening from the published Beta.1
+reader. Exact known-field Beta.1 flat profiles remain readable and explicitly
+migratable. A profile carrying extra mapping keys that the old reader accepted
+and ignored is now intentionally rejected. Those extras were never preserved
+by migration or rewriting and were never a supported extension mechanism.
+
+At the `StoredClientProfile` deserialization boundary, every mapping node in
+both supported representations recursively rejects unknown keys. Rejection uses
+the fixed error `invalid stored client profile metadata`; an unknown key or
+value is never treated as an extension, corrected, or echoed. When returned by
+`serde_json::from_str`, this fixed text may be followed only by numeric line and
+column coordinates added by `serde_json`.
+
+The direct generic Serde behavior of the public nested SDK and core types is a
+separate compatibility surface and is not the stored-profile reader. A future
+stored-profile field requires an explicit stored-schema and reader
+compatibility decision. An envelope declaring a newer schema can report typed
+`UnsupportedSchema` only when its payload otherwise has the shape understood
+by the current reader; a payload containing future-only fields can be rejected
+during deserialization before that status is available.
+
 ## Client
 
 ```yaml

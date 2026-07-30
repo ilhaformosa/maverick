@@ -1400,6 +1400,7 @@ dependencies = [
  "maverick-tun",
  "rcgen",
  "serde",
+ "serde_ignored",
  "serde_json",
  "tempfile",
  "tokio",

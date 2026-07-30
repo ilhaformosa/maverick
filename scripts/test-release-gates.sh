@@ -403,6 +403,37 @@ first_zero_block() {
   fail_test
 }
 
+zero_device_fields() {
+  local raw_tar="$1"
+  local tar_bytes
+  local blocks
+  local block=0
+  local header="$test_root/device-field-header"
+  local name
+  local size
+  local data_blocks
+  tar_bytes="$(wc -c <"$raw_tar" | tr -d '[:space:]')"
+  blocks=$((tar_bytes / 512))
+  while [[ "$block" -lt "$blocks" ]]; do
+    dd if="$raw_tar" of="$header" bs=512 skip="$block" count=1 \
+      2>/dev/null || fail_test
+    if od -An -tu1 -v "$header" |
+      awk '{ for (i = 1; i <= NF; i++) if ($i != 0) bad = 1 }
+           END { exit bad }'; then
+      return
+    fi
+    name="$(dd if="$header" bs=1 count=100 2>/dev/null | tr -d '\000')" ||
+      fail_test
+    [[ -n "$name" ]] || fail_test
+    size="$(raw_octal_value "$raw_tar" $((block * 512 + 124)) 12)"
+    zero_region "$raw_tar" $((block * 512 + 329)) 16
+    rewrite_header_checksum "$raw_tar" "$block"
+    data_blocks=$(((size + 511) / 512))
+    block=$((block + 1 + data_blocks))
+  done
+  fail_test
+}
+
 git_commit_fixture() {
   local repo="$1"
   local text="$2"
@@ -472,6 +503,14 @@ compile_fixture_binary "$native_binary" 0 ""
 new_artifact_case positive
 expect_artifact_pass positive-static "$current_archive" "$current_target" static
 expect_artifact_pass positive-native "$current_archive" "$current_target" native
+
+new_artifact_case gnu-zero-device-fields
+raw_tar="$current_case/archive.tar"
+unpack_raw_tar "$current_archive" "$raw_tar"
+zero_device_fields "$raw_tar"
+repack_raw_tar "$raw_tar" "$current_archive"
+expect_artifact_pass gnu-zero-device-fields "$current_archive" "$current_target" \
+  static
 
 new_artifact_case outer-hash
 printf '%064d  %s\n' 0 "${current_archive##*/}" >"$current_archive.sha256"

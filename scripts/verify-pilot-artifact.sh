@@ -129,6 +129,17 @@ parse_octal_field() {
   parsed_octal=$((8#$digits))
 }
 
+verify_zero_device_field() {
+  local header="$1"
+  local offset="$2"
+  local width="$3"
+  if field_is_zero "$header" "$offset" "$width"; then
+    return
+  fi
+  parse_octal_field "$header" "$offset" "$width"
+  [[ "$parsed_octal" -eq 0 ]] || fail
+}
+
 archive_path=""
 expected_version=""
 expected_revision=""
@@ -275,10 +286,8 @@ while [[ "$block" -lt "$total_blocks" ]]; do
   field_is_zero "$header_file" 265 32 || fail
   field_is_zero "$header_file" 297 32 || fail
   field_is_zero "$header_file" 500 12 || fail
-  parse_octal_field "$header_file" 329 8
-  [[ "$parsed_octal" -eq 0 ]] || fail
-  parse_octal_field "$header_file" 337 8
-  [[ "$parsed_octal" -eq 0 ]] || fail
+  verify_zero_device_field "$header_file" 329 8
+  verify_zero_device_field "$header_file" 337 8
   parse_octal_field "$header_file" 136 12
 
   name="$(dd if="$header_file" bs=1 count=100 2>/dev/null | tr -d '\000')"

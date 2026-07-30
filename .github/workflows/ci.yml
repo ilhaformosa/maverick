@@ -25,15 +25,122 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          fetch-depth: 0
+      - name: Classify change scope
+        id: scope
+        env:
+          MAVERICK_EVENT_NAME: ${{ github.event_name }}
+          MAVERICK_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          head_revision="$(git rev-parse HEAD)"
+          if [[ "$head_revision" != "$MAVERICK_EXPECTED_REVISION" ]]; then
+            echo "checked-out revision does not match the selected event revision" >&2
+            exit 1
+          fi
+
+          docs_only=false
+          scope_base=""
+          candidate_base="$MAVERICK_BASE_REVISION"
+          if [[ "$candidate_base" =~ ^[0-9a-f]{40}$ ]] &&
+            [[ "$candidate_base" != "0000000000000000000000000000000000000000" ]] &&
+            git cat-file -e "$candidate_base^{commit}" 2>/dev/null; then
+            if [[ "$MAVERICK_EVENT_NAME" == "pull_request" ]]; then
+              scope_base="$(git merge-base "$candidate_base" "$head_revision" 2>/dev/null || true)"
+            elif [[ "$MAVERICK_EVENT_NAME" == "push" ]]; then
+              scope_base="$candidate_base"
+            fi
+          fi
+
+          if [[ "$scope_base" =~ ^[0-9a-f]{40}$ ]]; then
+            docs_only=true
+            changed_files=0
+            while IFS= read -r -d '' change_status &&
+              IFS= read -r -d '' change_path; do
+              changed_files=$((changed_files + 1))
+              case "$change_status" in
+                A | M) ;;
+                *) docs_only=false ;;
+              esac
+              case "$change_path" in
+                AGENTS.md | README.md | STATUS.md | ROADMAP.md | CONFIG.md | \
+                  THREAT_MODEL.md | SECURITY.md | \
+                  docs/TRANSPORT_ARCHITECTURE.md | \
+                  docs/TEST_SERVER_PREPARATION.md | \
+                  docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md | docs/archive/README.md) ;;
+                *) docs_only=false ;;
+              esac
+              head_mode="$(git ls-tree "$head_revision" -- "$change_path" |
+                awk 'NR == 1 { print $1 }')"
+              [[ "$head_mode" == "100644" ]] || docs_only=false
+              if [[ "$change_status" == "M" ]]; then
+                base_mode="$(git ls-tree "$scope_base" -- "$change_path" |
+                  awk 'NR == 1 { print $1 }')"
+                [[ "$base_mode" == "100644" ]] || docs_only=false
+              fi
+            done < <(
+              git diff --name-status --no-renames -z "$scope_base" "$head_revision"
+            )
+            [[ "$changed_files" -gt 0 ]] || docs_only=false
+          fi
+
+          printf 'docs_only=%s\n' "$docs_only" >>"$GITHUB_OUTPUT"
+          printf 'base_revision=%s\n' "$scope_base" >>"$GITHUB_OUTPUT"
+      - name: Check documentation-only change
+        if: steps.scope.outputs.docs_only == 'true'
+        env:
+          MAVERICK_SCOPE_BASE: ${{ steps.scope.outputs.base_revision }}
+        run: |
+          set -euo pipefail
+          head_revision="$(git rev-parse HEAD)"
+          git diff --check "$MAVERICK_SCOPE_BASE" "$head_revision"
+          active_docs=(
+            AGENTS.md
+            README.md
+            STATUS.md
+            ROADMAP.md
+            CONFIG.md
+            THREAT_MODEL.md
+            SECURITY.md
+            docs/TRANSPORT_ARCHITECTURE.md
+            docs/TEST_SERVER_PREPARATION.md
+            docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md
+            docs/archive/README.md
+          )
+          for doc_path in "${active_docs[@]}"; do
+            [[ -f "$doc_path" && ! -L "$doc_path" ]] || {
+              echo "missing or invalid active document" >&2
+              exit 1
+            }
+          done
+          privacy_pattern='/U''sers/|fi''le://|ssh''-rsa|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+          privacy_status=0
+          grep -E -q "$privacy_pattern" "${active_docs[@]}" 2>/dev/null ||
+            privacy_status=$?
+          case "$privacy_status" in
+            0)
+              echo "active document contains a private path or key marker" >&2
+              exit 1
+              ;;
+            1) ;;
+            *)
+              echo "unable to complete the active-document privacy scan" >&2
+              exit 1
+              ;;
+          esac
+          echo "documentation-only gate OK"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        if: steps.scope.outputs.docs_only != 'true'
         with:
           components: rustfmt, clippy
       - name: Install Linux build and verification tools
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y binutils clang cmake file ripgrep shellcheck
       - name: Build the exact-head GNU/Linux pilot archive
         id: pilot
+        if: steps.scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           actual_revision="$(git rev-parse HEAD)"
@@ -44,6 +151,7 @@ jobs:
           printf 'revision=%s\n' "$actual_revision" >>"$GITHUB_OUTPUT"
           ./scripts/build-pilot.sh
       - name: Statically verify the GNU/Linux pilot archive
+        if: steps.scope.outputs.docs_only != 'true'
         env:
           MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
         run: |
@@ -56,6 +164,7 @@ jobs:
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level static
       - name: Natively verify the GNU/Linux pilot archive
+        if: steps.scope.outputs.docs_only != 'true'
         env:
           MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
         run: |
@@ -68,4 +177,5 @@ jobs:
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level native
       - name: Run the local product harness
+        if: steps.scope.outputs.docs_only != 'true'
         run: ./scripts/local-harness.sh

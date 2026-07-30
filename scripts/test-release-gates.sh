@@ -38,6 +38,27 @@ trace_test() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
+make_isolated_elf_tool_path() {
+  local destination="$1"
+  local tool
+  local tool_path
+  mkdir "$destination"
+  for tool in awk bash chmod cmp cp dd dirname find gzip grep head mkdir mktemp \
+    od strings tar tr wc; do
+    tool_path="$(command -v "$tool")" || fail_test
+    ln -s "$tool_path" "$destination/$tool" || fail_test
+  done
+  if command -v shasum >/dev/null 2>&1; then
+    tool_path="$(command -v shasum)" || fail_test
+    ln -s "$tool_path" "$destination/shasum" || fail_test
+  elif command -v sha256sum >/dev/null 2>&1; then
+    tool_path="$(command -v sha256sum)" || fail_test
+    ln -s "$tool_path" "$destination/sha256sum" || fail_test
+  else
+    fail_test
+  fi
+}
+
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
@@ -816,6 +837,63 @@ fi
 grep -Fx "pilot artifact verification failed" \
   "$test_root/logs/synthetic-shared-object" \
   >/dev/null || fail_test
+
+greadelf_tool_path="$test_root/greadelf-tool-path"
+make_isolated_elf_tool_path "$greadelf_tool_path"
+cat >"$greadelf_tool_path/file" <<'FAKE_FILE'
+#!/usr/bin/env bash
+: >"$MAVERICK_TEST_FILE_MARKER"
+printf '%s\n' \
+  "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked"
+FAKE_FILE
+cat >"$greadelf_tool_path/greadelf" <<'FAKE_GREADELF'
+#!/usr/bin/env bash
+: >"$MAVERICK_TEST_READELF_MARKER"
+printf '%s\n' \
+  "  Class:                             ELF64" \
+  "  Data:                              2's complement, little endian" \
+  "  Type:                              DYN (Position-Independent Executable file)" \
+  "  Machine:                           Advanced Micro Devices X86-64"
+FAKE_GREADELF
+chmod 0755 "$greadelf_tool_path/file" "$greadelf_tool_path/greadelf"
+new_artifact_case elf-tool-greadelf-fallback "$synthetic_shared" \
+  x86_64-unknown-linux-gnu
+greadelf_file_marker="$test_root/greadelf-file-called"
+greadelf_marker="$test_root/greadelf-called"
+trace_test elf-tool-greadelf-fallback
+MAVERICK_TEST_FILE_MARKER="$greadelf_file_marker" \
+  MAVERICK_TEST_READELF_MARKER="$greadelf_marker" \
+  PATH="$greadelf_tool_path" \
+  run_artifact "$current_archive" "$current_target" static \
+  >"$test_root/logs/elf-tool-greadelf-fallback" 2>&1 || fail_test
+grep -Fx "pilot artifact static verification OK" \
+  "$test_root/logs/elf-tool-greadelf-fallback" >/dev/null || fail_test
+[[ -f "$greadelf_file_marker" && -f "$greadelf_marker" ]] || fail_test
+
+missing_elf_tool_path="$test_root/missing-elf-tool-path"
+make_isolated_elf_tool_path "$missing_elf_tool_path"
+cat >"$missing_elf_tool_path/file" <<'FAKE_FILE'
+#!/usr/bin/env bash
+: >"$MAVERICK_TEST_FILE_MARKER"
+printf '%s\n' \
+  "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked"
+FAKE_FILE
+chmod 0755 "$missing_elf_tool_path/file"
+new_artifact_case elf-tool-missing "$synthetic_shared" x86_64-unknown-linux-gnu
+missing_elf_file_marker="$test_root/missing-elf-file-called"
+trace_test elf-tool-missing
+if MAVERICK_TEST_FILE_MARKER="$missing_elf_file_marker" \
+  PATH="$missing_elf_tool_path" \
+  run_artifact "$current_archive" "$current_target" static \
+  >"$test_root/logs/elf-tool-missing" 2>&1; then
+  fail_test
+fi
+[[ -f "$missing_elf_file_marker" ]] || fail_test
+[[ "$(wc -l <"$test_root/logs/elf-tool-missing" | tr -d '[:space:]')" == "1" ]] ||
+  fail_test
+grep -Fx \
+  "pilot artifact verification failed: required tool not found (readelf or greadelf)" \
+  "$test_root/logs/elf-tool-missing" >/dev/null || fail_test
 
 private_binary="$test_root/private-binary"
 compile_fixture_binary "$private_binary" 0 ""

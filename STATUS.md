@@ -92,12 +92,20 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace candidate source prepared for Draft PR #17: `1.2.0-beta.2`. It is
-  unmerged, untagged, unpublished, and is neither a release nor a public
-  artifact.
 - Current published Beta prerelease and last independently reverified public
-  artifact: `v1.2.0-beta.1`. The historical `v1.2.0-alpha.6` release remains
-  Alpha and was not moved, replaced, or retroactively renamed.
+  artifact: `v1.2.0-beta.2`. Its annotated tag directly targets main commit
+  `6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, and GitHub marks the prerelease
+  immutable. The release contains exactly the two supported pilot archives and
+  their checksum files. Post-publication checks reconfirmed the release and
+  asset attestations, exact asset names and digests, both checksum files, and
+  native execution of the Apple Silicon artifact. The Linux artifact passed
+  static and native verification on the matching Ubuntu release runner; a
+  separate macOS recheck confirmed its archive, source, version, checksum, and
+  raw ELF identity before stopping fail-closed because GNU `readelf` is not
+  installed on that workstation. These are publication quality controls, not
+  a new product result.
+- The historical `v1.2.0-beta.1` and `v1.2.0-alpha.6` releases were not moved,
+  replaced, or retroactively renamed.
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
 - Rust product core and loopback relay path: implemented.

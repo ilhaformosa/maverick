@@ -482,8 +482,17 @@ case "$expected_target" in
     [[ "$elf_type" == "0200" || "$elf_type" == "0300" ]] || fail
     [[ "$(field_hex "$binary_file" 18 2)" == "3e00" ]] || fail
     [[ "$file_description" == *"ELF"* && "$file_description" == *"x86-64"* ]] || fail
-    command -v readelf >/dev/null 2>&1 || fail
-    readelf_header="$(readelf -h "$binary_file" 2>/dev/null)" || fail
+    if command -v readelf >/dev/null 2>&1; then
+      readelf_tool="$(command -v readelf 2>/dev/null)" || fail
+    elif command -v greadelf >/dev/null 2>&1; then
+      readelf_tool="$(command -v greadelf 2>/dev/null)" || fail
+    else
+      echo \
+        "pilot artifact verification failed: required tool not found (readelf or greadelf)" \
+        >&2
+      exit 1
+    fi
+    readelf_header="$("$readelf_tool" -h "$binary_file" 2>/dev/null)" || fail
     printf '%s\n' "$readelf_header" | grep -Eq 'Class:[[:space:]]+ELF64' || fail
     printf '%s\n' "$readelf_header" | grep -Eq 'Data:[[:space:]]+2.s complement, little endian' || fail
     printf '%s\n' "$readelf_header" | grep -Eq 'Machine:[[:space:]]+Advanced Micro Devices X86-64' || fail

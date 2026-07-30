@@ -17,12 +17,18 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No new product-code or release slice is queued. The `v1.2.0-beta.2` release
-slice is complete: its reviewed candidate was merged, its annotated tag was
-published through the fail-closed release workflow, and the immutable
-prerelease assets were independently rechecked. That closure is current truth,
-not continuing authority for another tag, release, deployment, live test, or
-remote or system-network change.
+The current repository-local queue is one combined test/CI-only slice:
+
+- T006 adds an independent H3 compile and focused loopback test gate to the
+  existing required public PR/main job while preserving the documentation-only
+  fast path.
+- T007 adds auth v1/v2 mode-tamper fixtures and loopback compatibility
+  regressions for the legacy, unconfirmed client/server mode-mismatch behavior.
+
+This slice must not change authentication, mode, scheduler, wire, schema, or
+runtime behavior, and it does not authorize a push, pull request, release,
+deployment, live test, or system-network change. The `v1.2.0-beta.2` release
+slice remains closed; its closure is not authority for another publication.
 
 The next repository-local slice must come from the failure-driven order below.
 A small verifier-maintenance candidate may improve the macOS diagnostic for a

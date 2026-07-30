@@ -60,6 +60,8 @@ pub struct HarnessOptions {
     pub cdn_fronting_h2: bool,
     pub fallback: Option<FallbackConfig>,
     pub auth_channel_binding_require: bool,
+    pub client_mode: Mode,
+    pub server_mode: Mode,
 }
 
 impl Default for HarnessOptions {
@@ -95,6 +97,8 @@ impl Default for HarnessOptions {
             cdn_fronting_h2: false,
             fallback: None,
             auth_channel_binding_require: false,
+            client_mode: Mode::Auto,
+            server_mode: Mode::Auto,
         }
     }
 }
@@ -264,7 +268,7 @@ impl MaverickHarness {
             },
             maverick: MaverickServerConfig {
                 tunnel_path: "/assets/upload".into(),
-                mode_default: Mode::Auto,
+                mode_default: options.server_mode,
                 replay_window_secs: 120,
                 replay_cache_entries_per_credential: 16_384,
                 replay_cache_max_credentials_per_shard: 1_024,
@@ -344,7 +348,7 @@ impl MaverickHarness {
 
         let client_config = ClientConfig {
             version: 1,
-            mode: Mode::Auto,
+            mode: options.client_mode,
             local: LocalConfig {
                 socks5: Socks5Config {
                     listen: "127.0.0.1:0".parse()?,

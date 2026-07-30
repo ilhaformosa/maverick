@@ -12,7 +12,7 @@ use maverick_core::frame::ErrorCode;
 use maverick_core::frame::FRAME_HEADER_LEN;
 use maverick_core::replay::ReplayCache;
 use maverick_core::{
-    ClientHello, ClientHelloV2, Frame, FrameType, Mode, OpenTcpPayload, OpenUdpPayload,
+    ClientHello, ClientHelloV2, Error, Frame, FrameType, Mode, OpenTcpPayload, OpenUdpPayload,
     SecretString, ServerHello, ServerHelloV2, TargetAddr, UdpPacketPayload,
 };
 use serde::Deserialize;
@@ -433,6 +433,91 @@ fn conformance_vectors_roundtrip() {
 }
 
 #[test]
+fn auth_v1_mode_tamper_reaches_tag_and_unknown_mode_gates() {
+    let vector = read_vector("auth_v1_client_hello.json");
+    let Vector::ClientHelloV1 {
+        id,
+        secret_test_only,
+        tunnel_path,
+        credential_id,
+        mode,
+        encoded_hex,
+        ..
+    } = vector
+    else {
+        panic!("expected auth v1 client hello vector");
+    };
+    let secret = SecretString::new(secret_test_only).unwrap();
+    let encoded = hex_decode(&encoded_hex);
+    let mode_offset = 2 + 32 + 8 + 2 + credential_id.len();
+    assert_eq!(encoded[mode_offset], mode.wire_id(), "{id}");
+
+    let original = ClientHello::decode(&encoded).unwrap();
+    assert!(original.verify(&secret, &tunnel_path), "{id}");
+
+    let known_mode = different_known_mode(mode);
+    let mut known_mode_tamper = encoded.clone();
+    known_mode_tamper[mode_offset] = known_mode.wire_id();
+    let decoded = ClientHello::decode(&known_mode_tamper).unwrap();
+    assert_eq!(decoded.mode, known_mode, "{id}");
+    assert_eq!(decoded.auth_tag, original.auth_tag, "{id}");
+    assert!(!decoded.verify(&secret, &tunnel_path), "{id}");
+
+    let mut unknown_mode_tamper = encoded;
+    unknown_mode_tamper[mode_offset] = 0xff;
+    assert!(
+        matches!(
+            ClientHello::decode(&unknown_mode_tamper),
+            Err(Error::MalformedFrame("unknown mode"))
+        ),
+        "{id}"
+    );
+}
+
+#[test]
+fn auth_v2_mode_tamper_reaches_tag_and_unknown_mode_gates() {
+    let vector = read_vector("auth_v2_client_hello.json");
+    let Vector::ClientHelloV2 {
+        id,
+        secret_test_only,
+        tunnel_path,
+        credential_hint_hex,
+        mode,
+        encoded_hex,
+        ..
+    } = vector
+    else {
+        panic!("expected auth v2 client hello vector");
+    };
+    let secret = SecretString::new(secret_test_only).unwrap();
+    let encoded = hex_decode(&encoded_hex);
+    let credential_hint_len = hex_decode(&credential_hint_hex).len();
+    let mode_offset = 2 + 8 + 32 + 8 + 2 + credential_hint_len;
+    assert_eq!(encoded[mode_offset], mode.wire_id(), "{id}");
+
+    let original = ClientHelloV2::decode(&encoded).unwrap();
+    assert!(original.verify(&secret, &tunnel_path), "{id}");
+
+    let known_mode = different_known_mode(mode);
+    let mut known_mode_tamper = encoded.clone();
+    known_mode_tamper[mode_offset] = known_mode.wire_id();
+    let decoded = ClientHelloV2::decode(&known_mode_tamper).unwrap();
+    assert_eq!(decoded.mode, known_mode, "{id}");
+    assert_eq!(decoded.auth_tag, original.auth_tag, "{id}");
+    assert!(!decoded.verify(&secret, &tunnel_path), "{id}");
+
+    let mut unknown_mode_tamper = encoded;
+    unknown_mode_tamper[mode_offset] = 0xff;
+    assert!(
+        matches!(
+            ClientHelloV2::decode(&unknown_mode_tamper),
+            Err(Error::MalformedFrame("unknown mode"))
+        ),
+        "{id}"
+    );
+}
+
+#[test]
 fn conformance_vectors_match_generated_wire_values() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let vector_dir = repo_root.join("conformance/vectors");
@@ -440,6 +525,20 @@ fn conformance_vectors_match_generated_wire_values() {
     for (file_name, generated) in generated_vectors() {
         let checked_in = std::fs::read_to_string(vector_dir.join(file_name)).unwrap();
         assert_eq!(checked_in, generated, "{file_name}");
+    }
+}
+
+fn read_vector(file_name: &str) -> Vector {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let input =
+        std::fs::read_to_string(repo_root.join("conformance/vectors").join(file_name)).unwrap();
+    serde_json::from_str(&input).unwrap()
+}
+
+fn different_known_mode(mode: Mode) -> Mode {
+    match mode {
+        Mode::Auto => Mode::Stable,
+        Mode::Stable | Mode::Private => Mode::Auto,
     }
 }
 

@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-cli"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1336,7 +1336,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-client"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1365,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-core"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "base64",
  "bytes",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-sdk"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-server"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-tests"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-tun"
-version = "1.2.0-beta.1"
+version = "1.2.0-beta.2"
 dependencies = [
  "bytes",
  "etherparse",

@@ -17,10 +17,24 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No repository-local slice is currently queued. The failure-driven order below
-resumes only after a reproduced Beta failure or an owner-defined new minimal
-slice. Local validation and safe rejection do not change the product facts
-recorded in `STATUS.md`.
+No new product-code slice is queued. The current release-administration queue is
+limited to preparing the unmerged `1.2.0-beta.2` candidate source: update the
+workspace candidate version, current status wording, and both lockfiles; run
+the complete repository-local gates; build and inspect one local candidate
+artifact; and create exactly two bounded local commits, one for packaging and
+one for candidate preparation.
+
+The local stage stops after those results for independent review. Only after
+that review may the same commits be pushed and Draft PR #17 receive
+release-facing notes in its body; the pull request remains Draft. This queue
+does not authorize marking it ready, merging, tagging, releasing, uploading an
+asset, deploying, or running a live or remote test.
+
+Before any formal tag or release, a separately reviewed slice must add a shared
+artifact verifier, use it to reverify each archive before the release workflow
+publishes it, require an annotated tag, and prove that the tag commit descends
+from `main`. Those release-only gates are not implemented by this
+candidate-prep slice.
 
 ## Execution Order
 
@@ -71,6 +85,8 @@ Use the shortest failure-driven next step:
   another user or widen platform, protocol, packaging, or governance scope
   without a separate owner decision.
 
-`protocol_version` and config `version` remain `1` for Beta.1. Any future
-wire or config change requires an explicit compatibility decision based on
-observed user need.
+The Maverick protocol version, config version, and stored-profile schema
+version remain `1` for both the published Beta.1 release and the unmerged
+Beta.2 candidate; existing authentication and frame wire formats are unchanged.
+Any future version or wire-format change requires an explicit compatibility
+decision based on observed user need.

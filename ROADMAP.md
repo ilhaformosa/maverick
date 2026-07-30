@@ -15,55 +15,12 @@ while `ROADMAP.md` controls execution order. Only a minimal slice placed here
 enters execution; every other proposal remains deferred, neither automatically
 adopted nor automatically rejected.
 
-## Next Repository-Local Slice
+## Current Repository-Local Queue
 
-### T005 — Reject contradictory stored profiles before serialization
-
-Queued on 2026-07-30 under the continued privacy-safe repository-local
-development authorization recorded in `STATUS.md`. This roadmap sets execution
-order only; it does not record or expand authorization. T005 is the next small
-stored-profile output-integrity slice and executes before the general
-failure-driven order below. It does not define the Beta.2 release scope or a
-schema-2 design.
-
-- **User result:** a public `StoredClientProfile` with contradictory current
-  metadata can no longer produce a schema-1 envelope through its top-level
-  serializer. Rejection happens before a direct writer is called and uses a
-  fixed, bounded error that cannot echo profile or endpoint metadata.
-- **Scope:** after the existing schema and missing-channel-binding checks, gate
-  only `StoredClientProfile::serialize` on the canonical
-  `compatibility_status() == Current` predicate; add focused SDK tests and the
-  related configuration contract. No public field, DTO, API signature, schema,
-  version, or dependency changes.
-- **Acceptance:** disabled-but-required channel binding, required binding with
-  H3, and required binding with either the legacy or first-class
-  TLS-terminating CDN path all report `Malformed` and are rejected by
-  `to_string`, `to_value`, and direct `to_writer`. A direct writer receives no
-  calls or bytes. Structurally complete malformed current JSON cannot be
-  reserialized. The new error is exactly
-  `invalid stored client profile metadata`, remains bounded and source-free,
-  and never echoes synthetic private or control-character data. Existing schema
-  and missing-binding error text and priority remain exact, including schema-2
-  metadata that is also missing or contradictory. Legal current envelope shape
-  and order, all three channel-binding choices, `require = false` with H3 or CDN
-  metadata, normal store/migration/round-trip behavior, secret separation, and
-  direct nested Serde compatibility remain intact.
-- **Out of scope:** full `ClientConfig`, secret-store, or runtime validation;
-  preventing callers from hand-writing equivalent JSON; atomic file persistence
-  or a new stored-profile file API; nested/enclosing serializer write
-  guarantees; changing downstream writer errors for legal profiles; generic
-  Serde tightening; config, protocol, auth, frame, wire, or stored-schema
-  version changes; dependencies; deployment, release, push, tag, publication,
-  or infrastructure work.
-- **Stop conditions:** stop if closure requires duplicating compatibility rules,
-  calling full config validation, accessing a secret store, changing existing
-  error priority or text, changing a public DTO/API/version/dependency, touching
-  another product file, or using privileged, paid, system-network, real-network,
-  or private infrastructure access.
-
-After T005 completes or reaches a stop condition, resume the failure-driven
-execution order below. Completion of T005 alone does not create a new product
-result or change the milestone truth in `STATUS.md`.
+No repository-local slice is currently queued. The failure-driven order below
+resumes only after a reproduced Beta failure or an owner-defined new minimal
+slice. Local validation and safe rejection do not change the product facts
+recorded in `STATUS.md`.
 
 ## Execution Order
 

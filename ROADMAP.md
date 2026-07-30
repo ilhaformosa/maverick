@@ -17,42 +17,23 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No new product-code slice is queued. The current release-only slice is limited
-to making the unmerged `1.2.0-beta.2` publication path fail closed:
+No new product-code or release slice is queued. The `v1.2.0-beta.2` release
+slice is complete: its reviewed candidate was merged, its annotated tag was
+published through the fail-closed release workflow, and the immutable
+prerelease assets were independently rechecked. That closure is current truth,
+not continuing authority for another tag, release, deployment, live test, or
+remote or system-network change.
 
-- one shared offline verifier checks the exact seven-entry pilot archive,
-  checksums, bound public content, USTAR metadata, architecture, source
-  revision, version, and privacy rules;
-- each repository-contents-read-only build job performs native verification,
-  copies only the approved archive and checksum into private staging, performs
-  a final static reverification, and uploads only those two staged paths;
-- the publish job executes neither downloaded binary. It accepts exactly two
-  archives plus two checksums, copies them into separate private staging,
-  statically reverifies the exact bytes selected for publication, and gives
-  only those four named paths to the final release command;
-- a release tag must be annotated, directly target the exact event commit, and
-  that commit must already be an ancestor of the freshly read current `main`;
-  and
-- ordinary public PR/main CI builds the Linux archive with GNU tar on
-  `ubuntu-24.04`, performs native verification before any write-capable release
-  context exists, and runs the same local negative gate tests.
-
-Native verification means the binary ran successfully on a matching host; it is
-not a sandbox or proof that an untrusted binary is safe to execute. Linux CI is
-repository quality evidence only, not a product, user, live-network, release,
-or publication result. Local verification and safe rejection do not change the
-product facts in `STATUS.md`.
-
-The implementation stage stops after local validation and a bounded commit for
-independent review. Only after that review may the commit be pushed and the
-existing Draft PR receive updated notes; it remains Draft. This queue does not
-authorize marking the PR ready, merging, creating or moving a tag, running the
-release workflow, uploading an Actions or public release asset, releasing,
-deploying, or changing any live, remote, or system-network state.
+The next repository-local slice must come from the failure-driven order below.
+A small verifier-maintenance candidate may improve the macOS diagnostic for a
+missing GNU `readelf` and recognize the common `greadelf` command name, with
+focused regression tests. It is maintenance only, is not required to validate
+the published Beta.2 Linux artifact, and must not grow into a container,
+cross-platform parser, new release matrix, or verification framework.
 
 ## Execution Order
 
-1. **Fix only reproduced Beta failures.** After Beta.1, use the smallest local
+1. **Fix only reproduced Beta failures.** After Beta.2, use the smallest local
    reproduction and repair for a failure that a Beta user or an authorized
    field run actually observes. Preserve destination-free diagnostics and the
    existing privacy boundaries. Do not add speculative transports, tuning,
@@ -100,7 +81,6 @@ Use the shortest failure-driven next step:
   without a separate owner decision.
 
 The Maverick protocol version, config version, and stored-profile schema
-version remain `1` for both the published Beta.1 release and the unmerged
-Beta.2 candidate; existing authentication and frame wire formats are unchanged.
-Any future version or wire-format change requires an explicit compatibility
-decision based on observed user need.
+version remain `1` for the published Beta.2 release; existing authentication
+and frame wire formats are unchanged. Any future version or wire-format change
+requires an explicit compatibility decision based on observed user need.

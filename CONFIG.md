@@ -1,13 +1,15 @@
 # Maverick Configuration
 
-All currently accepted config files use YAML and `version: 1`.
+All currently runnable client and server config files use YAML and `version: 1`.
 
-## Future config v2 semantic contract
+## Config v2 policy semantic contract
 
-> **Not implemented:** this section freezes semantics for a future config v2.
-> The current parser and runtime still support only config v1 and continue to
-> reject `version: 2`. T012a changes no current product, protocol, stored-profile,
-> authentication, frame, or wire fact.
+> **Policy parser only:** `maverick_core::config::v2::Policy::from_yaml_str`
+> now validates the strict five-axis policy schema below. It does not define a
+> complete client or server config, perform migration, read secrets, start a
+> runtime, or make config v2 runnable. The canonical `ClientConfig` and
+> `ServerConfig` readers still accept only config v1 and reject `version: 2`.
+> T009 changes no protocol, stored-profile, authentication, frame, or wire fact.
 
 Config v2 separates five concerns that v1 `mode` currently mixes. A persisted
 config expresses requested policy or a minimum requirement. It does not prove
@@ -27,6 +29,55 @@ A canonical v2 config must explicitly carry all five requests. The parser must
 not infer a missing axis from legacy `mode`, fill in a missing security intent,
 or silently correct a conflict. Generator recommendations are not parser
 defaults.
+
+### Implemented policy-only schema
+
+The smallest accepted direct policy is:
+
+```yaml
+version: 2
+security:
+  posture: standard
+transport:
+  strategy: auto
+trust:
+  route: direct_to_maverick
+name_privacy:
+  minimum: plain_sni
+traffic_shaping:
+  policy: disabled
+```
+
+The smallest accepted TLS-terminating-front policy is:
+
+```yaml
+version: 2
+security:
+  posture: standard
+transport:
+  strategy: h2
+trust:
+  route: tls_terminating_front
+  front:
+    provider: cloudflare
+    trusted_tls_terminating_provider: true
+name_privacy:
+  minimum: plain_sni
+traffic_shaping:
+  policy: disabled
+```
+
+Both `transport.strategy: auto` and `transport.strategy: h2` are valid with
+either accepted TrustRoute. The front shape carries only the provider selection
+and the explicit acknowledgment that the provider terminates client-facing TLS.
+It does not carry an endpoint, hostname, credential, path, or runtime proof.
+
+The policy parser reads the original YAML directly into private strict wire
+types. Every mapping node rejects unknown keys, and duplicate keys, multiple
+documents, invalid version metadata, missing policy axes, conflicts, unavailable
+reserved capabilities, and malformed values fail closed through fixed,
+privacy-safe configuration errors. The public policy types do not implement
+Serde, Default, a builder, a generator, or v1 conversion.
 
 ### Requested policy and observed results
 
@@ -134,11 +185,13 @@ TrafficShapingPolicy is independent and initially accepts only
 explicit generated value, not through omission. Transport Auto must never
 enable or change it.
 
-Any future enabled policy must carry explicit, bounded padding, timing,
-batching, and cover-traffic budgets. It must not claim to hide traffic
-analysis. No permanent enabled-policy ID or shape is frozen here. Names shown
-in design discussion are non-normative placeholders until T010a proves whether
-the complete v1 Auto and Private behavior can be mapped without loss.
+Any future enabled policy would require separately frozen, explicit, bounded
+padding, timing, batching, and cover-traffic budgets. It must not claim to hide
+traffic analysis. The current schema names no enabled-policy ID, budget field,
+or future sentinel: any extra mapping entry under `traffic_shaping` is an
+invalid policy. Names shown in design discussion are non-normative placeholders
+until T010a proves whether the complete v1 Auto and Private behavior can be
+mapped without loss.
 
 The v1 evaluator must account for every padding, timing, batching,
 cover-traffic, and budget field before an enabled v2 policy is accepted.
@@ -171,7 +224,7 @@ At minimum, the following configurations are invalid or unavailable:
 | reserved `h3` is requested before its capability opens | unavailable capability |
 | reserved `native_ech` is requested before observed proof exists | unavailable capability |
 | reserved `front_with_inner_e2e` is requested before its protocol exists | unavailable capability |
-| disabled shaping carries enabled-policy budgets | policy conflict |
+| any extra field appears under `traffic_shaping.policy: disabled` | invalid policy |
 
 These are semantic categories, not frozen public Rust enums, API signatures, or
 Display strings. Errors may identify a bounded canonical schema location, but
@@ -240,10 +293,9 @@ A later v1-to-v2 round trip must preserve the information expressible at each
 core YAML, SDK stored-profile, CLI/Profile URI, and public-API boundary, plus
 effective behavior. If a boundary lacks information required for a lossless
 migration, it returns a migration or review blocker. It does not promise to
-recover unsaved data or original text. T012a implements no migration. The
-required order remains T012a, then T010a, then T009; T009 freezes the strict v2
-DTO and parser only after evaluator and mapping evidence is sufficient. T010b
-remains later deterministic migration work.
+recover unsaved data or original text. T012a and T009 implement no migration.
+T009 freezes only the strict five-axis policy DTO and parser. T010b remains
+later deterministic migration work.
 
 ## Canonical v1 YAML readers
 
@@ -254,8 +306,8 @@ duplicate-safe discriminator, then dispatches version `1` to the existing
 strict v1 reader. Any other integer version returns a fixed
 unsupported-version error before v1 deserialization. Missing, duplicate, or
 non-integer version metadata and a non-mapping root fail closed without echoing
-the untrusted version value. This routing foundation does not define or accept
-config v2.
+the untrusted version value. These canonical v1 readers do not accept config v2;
+the independent `config::v2::Policy` parser validates policy only.
 
 After version dispatch, the v1 reader still parses the original YAML. It
 recursively rejects unknown mapping keys before validation or startup;

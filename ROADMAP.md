@@ -17,49 +17,36 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T010a — Freeze v1 effective behavior as an executable oracle
+### T009 — Freeze the strict config-v2 five-axis policy schema
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** Maintainers can give an already validated v1 client or server
-  config to one deterministic oracle and see the behavior that current code can
-  derive from it, plus a small ordered set of privacy-safe mapping blockers.
-- **Scope:** Add a publish-false `maverick-tests` support module with separate
-  client and server evaluators. Freeze local legacy Mode and wire ID, carrier
-  policy, H3 setup-only fallback and cooldown policy, configured trust-route
-  assumption per eligible carrier, including server H2 fronting only when its
-  H2 front is selected, server WebSocket fronting, and direct server H3.
-  Derive mixed-route blockers from the actual enabled carrier facts, then freeze
-  per-carrier TLS/name-privacy/channel-binding facts, role-specific auth
-  selection, and the padding, header-aware single-send delay/flush eligibility,
-  cover eligibility, and budget behavior currently consumed by each role.
-  Inputs are already validated v1 values plus H3 build availability; the oracle
-  is pure and does not change or diagnose the runtime.
-- **Acceptance:** Default-feature and no-default-feature oracle tests cover all
-  three Modes across the applicable client and server cases, omitted versus
-  explicit defaults, H2/fronted-H2/WebSocket/H3 policy, setup versus post-setup
-  H3 failure, direct H2 beside a fronted WebSocket, direct H3 beside either
-  front carrier, single-route H2 fronting, auth and channel-binding differences,
-  zero and payload-conditional cover budgets, frame-header batch boundaries,
-  role-specific shaping, fixed blocker ordering, and exclusion of private input
-  strings. Existing pure scheduler, padding, or batching helpers are used as
-  conformance controls where available. Formatting, owning-crate tests and
-  Clippy, and both local product gates pass without a product-source,
-  dependency, schema, protocol, frame, authentication-byte, or wire-version
-  change.
-- **Out of scope:** A config v2 DTO or parser, v1-to-v2 serialization,
-  source-field presence, T010b migration, runtime-consumer changes, public
-  product diagnostics, Profile URI v2, auth v3, PQ/KEX policy, H3 or UDP product
-  work, publication, deployment, and release work. T017 is not reopened.
-- **Stop conditions:** Stop before expanding beyond the publish-false test
-  oracle, its library export, and this roadmap entry; adding a dependency or
-  product public API; reading network, secrets, clocks, cooldown state, or the
-  environment; changing current validation, defaults, runtime behavior, product
-  facts, schemas, or wire bytes; or starting system-network or remote work.
+- **User result:** Maintainers can validate one small, strict five-axis v2
+  policy document without pretending it is a runnable client or server config.
+- **Scope:** Add `maverick_core::config::v2::Policy::from_yaml_str` for the
+  explicit SecurityPosture, TransportStrategy, TrustRoute,
+  NamePrivacyMinimum, and TrafficShapingPolicy requests. Accept only standard,
+  Auto or H2, direct-to-Maverick or explicitly acknowledged Cloudflare TLS
+  termination, plain SNI, and disabled shaping. Keep public fields private,
+  public enums non-exhaustive, and all Serde wire types private.
+- **Acceptance:** Direct and TLS-terminating-front policies both accept Auto and
+  H2. Every mapping rejects unknown and duplicate keys. Missing axes, malformed
+  version metadata, multiple documents, legacy Mode, route conflicts, and
+  private input strings fail closed. Reserved H3, native ECH, and front with
+  inner end-to-end protection are recognized but unavailable. Existing
+  canonical v1 readers keep their current behavior and error text.
+- **Out of scope:** Complete ClientConfigV2 or ServerConfigV2, serialization,
+  generation, v1 conversion, T010b migration, Profile URI v2, runtime consumers,
+  diagnostics, auth v3, PQ/KEX policy, WebSocket or H3 v2 transport, enabled
+  shaping, UDP, publication, deployment, and release work. T017 is not reopened.
+- **Stop conditions:** Stop before adding a dependency, Cargo or lockfile
+  change, public Serde or Default surface, secret or network access, a runtime
+  consumer, a new wire fact, or any file outside the four-file T009 slice.
 
-T009 follows only after this oracle passes independent review and provides
-sufficient evidence to freeze a strict v2 DTO and parser. T010b remains later
-source-level deterministic migration work and is not authorized by this slice.
+T010b remains later source-level deterministic migration work. It must stop
+rather than guess when the v1 oracle reports WebSocket or H3, mixed TrustRoute,
+H3 fallback across a security boundary, enabled shaping, or unresolved legacy
+Mode compatibility.
 
 ## Execution Order
 

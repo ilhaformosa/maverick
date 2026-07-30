@@ -17,6 +17,8 @@ use crate::auth::AUTH_V2_MAX_CREDENTIAL_HINT_LEN;
 use crate::crypto::CryptoPolicyConfig;
 use crate::error::{Error, Result};
 
+pub mod v2;
+
 /// User-facing product mode. This is a policy label, not a transport selector.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -136,6 +138,7 @@ impl Drop for SecretString {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConfigVersion {
     V1,
+    V2,
     Unsupported,
 }
 
@@ -211,34 +214,34 @@ impl<'de> Visitor<'de> for ConfigVersionValueVisitor {
     }
 
     fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E> {
-        Ok(if value == 1 {
-            ConfigVersion::V1
-        } else {
-            ConfigVersion::Unsupported
+        Ok(match value {
+            1 => ConfigVersion::V1,
+            2 => ConfigVersion::V2,
+            _ => ConfigVersion::Unsupported,
         })
     }
 
     fn visit_i128<E>(self, value: i128) -> std::result::Result<Self::Value, E> {
-        Ok(if value == 1 {
-            ConfigVersion::V1
-        } else {
-            ConfigVersion::Unsupported
+        Ok(match value {
+            1 => ConfigVersion::V1,
+            2 => ConfigVersion::V2,
+            _ => ConfigVersion::Unsupported,
         })
     }
 
     fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E> {
-        Ok(if value == 1 {
-            ConfigVersion::V1
-        } else {
-            ConfigVersion::Unsupported
+        Ok(match value {
+            1 => ConfigVersion::V1,
+            2 => ConfigVersion::V2,
+            _ => ConfigVersion::Unsupported,
         })
     }
 
     fn visit_u128<E>(self, value: u128) -> std::result::Result<Self::Value, E> {
-        Ok(if value == 1 {
-            ConfigVersion::V1
-        } else {
-            ConfigVersion::Unsupported
+        Ok(match value {
+            1 => ConfigVersion::V1,
+            2 => ConfigVersion::V2,
+            _ => ConfigVersion::Unsupported,
         })
     }
 }
@@ -829,7 +832,7 @@ where
 {
     match config_version(input)? {
         ConfigVersion::V1 => from_yaml_str_rejecting_unknown_fields(input),
-        ConfigVersion::Unsupported => {
+        ConfigVersion::V2 | ConfigVersion::Unsupported => {
             Err(Error::Config("unsupported configuration version".into()))
         }
     }

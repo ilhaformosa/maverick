@@ -557,6 +557,11 @@ impl Serialize for StoredClientProfile {
                 "current stored client profile schema requires auth.channel_binding data",
             ));
         }
+        if self.compatibility_status() != StoredClientProfileCompatibility::Current {
+            return Err(serde::ser::Error::custom(
+                INVALID_STORED_CLIENT_PROFILE_METADATA,
+            ));
+        }
 
         StoredClientProfileEnvelope {
             stored_profile_schema_version: self.stored_profile_schema_version,
@@ -1302,6 +1307,41 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CountingWriter {
+        calls: usize,
+        bytes: usize,
+    }
+
+    impl std::io::Write for CountingWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            self.bytes += buffer.len();
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.calls += 1;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FailingWriter {
+        calls: usize,
+    }
+
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            Err(std::io::Error::other("synthetic downstream writer failure"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     const BETA1_STORED_CLIENT_PROFILE_FLAT_JSON: &str = r#"
 {
   "profile_name": "example-profile",
@@ -1414,6 +1454,69 @@ mod tests {
             1,
         );
         format!("{{\"stored_profile_schema_version\":1,\"profile\":{profile}}}")
+    }
+
+    fn current_stored_client_profile() -> Result<StoredClientProfile> {
+        Ok(serde_json::from_str(
+            &current_stored_client_profile_envelope_json(),
+        )?)
+    }
+
+    fn required_channel_binding_profile() -> Result<StoredClientProfile> {
+        let mut profile = current_stored_client_profile()?;
+        profile.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: true,
+            require: true,
+        });
+        Ok(profile)
+    }
+
+    fn assert_fixed_stored_profile_serialization_error(error: &serde_json::Error) {
+        let rendered = error.to_string();
+        assert_eq!(rendered, INVALID_STORED_CLIENT_PROFILE_METADATA);
+        assert!(std::error::Error::source(error).is_none());
+        assert!(rendered.chars().all(|character| !character.is_control()));
+        assert!(rendered.len() <= 128);
+    }
+
+    fn assert_contradictory_stored_profile_serialization_rejected(
+        case_name: &str,
+        profile: &StoredClientProfile,
+    ) {
+        assert_eq!(
+            profile.compatibility_status(),
+            StoredClientProfileCompatibility::Malformed,
+            "{case_name} fixture must exercise malformed stored metadata"
+        );
+
+        let string_result = serde_json::to_string(profile);
+        let value_result = serde_json::to_value(profile);
+        let mut writer = CountingWriter::default();
+        assert_eq!(writer.calls, 0);
+        assert_eq!(writer.bytes, 0);
+        let writer_result = serde_json::to_writer(&mut writer, profile);
+
+        assert!(
+            string_result.is_err() && value_result.is_err() && writer_result.is_err(),
+            "{case_name} serialized before the T005 gate: to_string_ok={}, \
+             to_value_ok={}, to_writer_ok={}, writer_calls={}, writer_bytes={}",
+            string_result.is_ok(),
+            value_result.is_ok(),
+            writer_result.is_ok(),
+            writer.calls,
+            writer.bytes
+        );
+        assert_eq!(
+            writer.calls, 0,
+            "{case_name} called the writer before rejecting malformed metadata"
+        );
+        assert_eq!(
+            writer.bytes, 0,
+            "{case_name} wrote bytes before rejecting malformed metadata"
+        );
+        assert_fixed_stored_profile_serialization_error(&string_result.unwrap_err());
+        assert_fixed_stored_profile_serialization_error(&value_result.unwrap_err());
+        assert_fixed_stored_profile_serialization_error(&writer_result.unwrap_err());
     }
 
     fn secret_store_for_stored_profile(
@@ -2342,6 +2445,252 @@ mod tests {
             .to_string()
             .contains("channel binding cannot be required when channel binding is disabled"));
         assert!(!err.to_string().contains("missing profile secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn contradictory_stored_profile_serialization_rejects_invalid_binding() -> Result<()> {
+        let mut profile = current_stored_client_profile()?;
+        profile.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: false,
+            require: true,
+        });
+
+        assert_contradictory_stored_profile_serialization_rejected(
+            "disabled required channel binding",
+            &profile,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn contradictory_stored_profile_serialization_rejects_required_binding_with_h3() -> Result<()> {
+        let mut profile = required_channel_binding_profile()?;
+        profile.advanced.experimental_h3 = true;
+
+        assert_contradictory_stored_profile_serialization_rejected(
+            "required channel binding with H3",
+            &profile,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn contradictory_stored_profile_serialization_rejects_required_binding_with_legacy_cdn_flag(
+    ) -> Result<()> {
+        let mut profile = required_channel_binding_profile()?;
+        profile.advanced.experimental_cloudflare_ws = true;
+
+        assert_contradictory_stored_profile_serialization_rejected(
+            "required channel binding with the legacy CDN flag",
+            &profile,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn contradictory_stored_profile_serialization_rejects_required_binding_with_cdn_fronting(
+    ) -> Result<()> {
+        let mut profile = required_channel_binding_profile()?;
+        profile.advanced.stealth.cdn_fronting.enabled = true;
+        profile
+            .advanced
+            .stealth
+            .cdn_fronting
+            .trusted_tls_terminating_provider = true;
+
+        assert_contradictory_stored_profile_serialization_rejected(
+            "required channel binding with first-class CDN fronting",
+            &profile,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_current_json_cannot_be_reserialized_as_a_current_envelope() -> Result<()> {
+        let mut json = current_stored_client_profile_envelope_value()?;
+        json["profile"]["auth"]["channel_binding"] = serde_json::json!({
+            "enabled": false,
+            "require": true,
+        });
+        let profile: StoredClientProfile = serde_json::from_value(json)?;
+
+        assert_contradictory_stored_profile_serialization_rejected(
+            "structurally complete malformed current JSON",
+            &profile,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn contradictory_stored_profile_serialization_error_is_fixed_private_and_bounded() -> Result<()>
+    {
+        let private_marker = "SYNTHETIC_PRIVATE_SERIALIZATION_MARKER_DO_NOT_ECHO";
+        let private_value = format!("{private_marker}\n\u{1b}[31m{}", "L".repeat(4_096));
+        let mut profile = current_stored_client_profile()?;
+        profile.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: false,
+            require: true,
+        });
+        profile.profile_name = private_value.clone();
+        profile.server.address = format!("{private_value}:443");
+        profile.server.server_name = private_value.clone();
+        profile.server.secret_ref.service = private_value.clone();
+        profile.server.secret_ref.account = private_value;
+
+        let error = serde_json::to_string(&profile).unwrap_err();
+        let rendered = error.to_string();
+        assert_fixed_stored_profile_serialization_error(&error);
+        assert!(!rendered.contains(private_marker));
+        assert_contradictory_stored_profile_serialization_rejected(
+            "malformed metadata containing private strings",
+            &profile,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stored_profile_serialization_preserves_error_priority_and_text() -> Result<()> {
+        let legacy: StoredClientProfile =
+            serde_json::from_value(legacy_stored_client_profile_flat_value()?)?;
+        let mut schema_two_missing = current_stored_client_profile()?;
+        schema_two_missing.stored_profile_schema_version = STORED_CLIENT_PROFILE_SCHEMA_VERSION + 1;
+        schema_two_missing.auth.channel_binding = None;
+        let mut schema_two_contradictory = schema_two_missing.clone();
+        schema_two_contradictory.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: false,
+            require: true,
+        });
+        let mut current_missing = current_stored_client_profile()?;
+        current_missing.auth.channel_binding = None;
+        let mut current_contradictory = current_stored_client_profile()?;
+        current_contradictory.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: false,
+            require: true,
+        });
+
+        let cases = [
+            (
+                "legacy",
+                legacy,
+                "only the current stored client profile schema can be serialized",
+            ),
+            (
+                "unsupported schema with missing binding",
+                schema_two_missing,
+                "only the current stored client profile schema can be serialized",
+            ),
+            (
+                "unsupported schema with contradictory binding",
+                schema_two_contradictory,
+                "only the current stored client profile schema can be serialized",
+            ),
+            (
+                "current schema with missing binding",
+                current_missing,
+                "current stored client profile schema requires auth.channel_binding data",
+            ),
+            (
+                "current schema with contradictory binding",
+                current_contradictory,
+                INVALID_STORED_CLIENT_PROFILE_METADATA,
+            ),
+        ];
+
+        for (case_name, profile, expected) in cases {
+            assert_eq!(
+                serde_json::to_string(&profile).unwrap_err().to_string(),
+                expected,
+                "{case_name} changed stored-profile serialization error priority"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn current_stored_profile_serialization_preserves_fixture_shape_and_order() -> Result<()> {
+        let expected = current_stored_client_profile_envelope_value()?;
+        let profile: StoredClientProfile = serde_json::from_value(expected.clone())?;
+        assert_eq!(
+            profile.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+
+        let rendered = serde_json::to_string(&profile)?;
+        assert!(
+            rendered
+                .starts_with("{\"stored_profile_schema_version\":1,\"profile\":{\"profile_name\":"),
+            "stored-profile envelope and payload field order changed"
+        );
+        let actual: serde_json::Value = serde_json::from_str(&rendered)?;
+        assert_eq!(actual, expected);
+        let round_trip: StoredClientProfile = serde_json::from_value(actual)?;
+        assert_eq!(
+            round_trip.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn current_stored_profile_preserves_downstream_writer_errors() -> Result<()> {
+        let profile = current_stored_client_profile()?;
+        assert_eq!(
+            profile.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+        let mut writer = FailingWriter::default();
+        let error = serde_json::to_writer(&mut writer, &profile).unwrap_err();
+
+        assert_eq!(writer.calls, 1);
+        assert!(error.is_io());
+        assert_eq!(error.to_string(), "synthetic downstream writer failure");
+        assert_ne!(error.to_string(), INVALID_STORED_CLIENT_PROFILE_METADATA);
+        Ok(())
+    }
+
+    #[test]
+    fn optional_binding_allows_h3_and_cdn_metadata_serialization() -> Result<()> {
+        let mut profile = current_stored_client_profile()?;
+        profile.auth.channel_binding = Some(AuthChannelBindingConfig {
+            enabled: true,
+            require: false,
+        });
+        profile.advanced.experimental_h3 = true;
+        profile.advanced.experimental_cloudflare_ws = true;
+        profile.advanced.stealth.cdn_fronting.enabled = true;
+        profile
+            .advanced
+            .stealth
+            .cdn_fronting
+            .trusted_tls_terminating_provider = true;
+
+        assert_eq!(
+            profile.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
+        let envelope = serde_json::to_value(&profile)?;
+        assert_eq!(
+            envelope["profile"]["auth"]["channel_binding"]["require"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            envelope["profile"]["advanced"]["experimental_h3"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            envelope["profile"]["advanced"]["experimental_cloudflare_ws"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            envelope["profile"]["advanced"]["stealth"]["cdn_fronting"]["enabled"],
+            serde_json::json!(true)
+        );
+        let round_trip: StoredClientProfile = serde_json::from_value(envelope)?;
+        assert_eq!(
+            round_trip.compatibility_status(),
+            StoredClientProfileCompatibility::Current
+        );
         Ok(())
     }
 

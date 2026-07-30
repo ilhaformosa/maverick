@@ -33,6 +33,26 @@ value is never treated as an extension, corrected, or echoed. When returned by
 `serde_json::from_str`, this fixed text may be followed only by numeric line and
 column coordinates added by `serde_json`.
 
+Only a `StoredClientProfile` whose `compatibility_status()` is `Current` can be
+serialized by that top-level type into a schema-1 envelope. A schema-1 profile
+is rejected with `invalid stored client profile metadata` when channel binding
+is disabled but required, or when required channel binding is combined with
+H3, the legacy CDN-fronting flag, or first-class TLS-terminating CDN fronting.
+Legacy and unsupported schemas retain the existing current-schema-only
+serialization error, and schema-1 metadata missing channel binding retains its
+existing missing-data error. Legal `Current` envelope content and ordering are
+unchanged.
+
+`Current` describes stored-metadata compatibility only. It does not prove that
+the complete client configuration or referenced secrets are valid, or that a
+runtime connection will succeed. This top-level guard also cannot prevent a
+caller from hand-writing equivalent JSON outside `StoredClientProfile`, and it
+is not an atomic file-persistence guarantee. Direct top-level serialization of
+contradictory metadata rejects before calling its writer, but an enclosing
+serializer, a caller that truncates a file first, or a downstream writer failure
+while serializing a legal profile can still leave partial or empty output.
+Maverick does not currently provide an atomic stored-profile file API.
+
 The direct generic Serde behavior of the public nested SDK and core types is a
 separate compatibility surface and is not the stored-profile reader. A future
 stored-profile field requires an explicit stored-schema and reader

@@ -17,52 +17,52 @@ adopted nor automatically rejected.
 
 ## Next Repository-Local Slice
 
-### T004 — Reject unknown keys in stored client-profile JSON
+### T005 — Reject contradictory stored profiles before serialization
 
 Queued on 2026-07-30 under the continued privacy-safe repository-local
 development authorization recorded in `STATUS.md`. This roadmap sets execution
-order only; it does not record or expand authorization. T004 is the next small
-P0-E slice and executes before the general failure-driven order below. It does
-not define the Beta.2 release scope or a schema-2 design.
+order only; it does not record or expand authorization. T005 is the next small
+stored-profile output-integrity slice and executes before the general
+failure-driven order below. It does not define the Beta.2 release scope or a
+schema-2 design.
 
-- **User result:** the current reader intentionally tightens observable
-  compatibility: exact known-field published Beta.1 flat profiles remain
-  readable for explicit migration, while extra-bearing flat profiles previously
-  accepted and ignored by the Beta.1 reader, and schema-1 envelopes with extra
-  keys, are rejected before migration, secret-store access, or silent fallback
-  to default values. The ignored extras were never preserved by migration or
-  rewriting and were never a supported extension mechanism.
-- **Scope:** tighten only the hand-written `StoredClientProfile` deserialization
-  boundary with a private strict payload reader using the existing workspace
-  `serde_ignored` dependency; add the SDK manifest and lockfile edge, a fixed
-  anonymous Beta.1 fixture, focused tests, and the related configuration
-  contract. Public nested SDK and shared core structs retain their direct
-  generic Serde behavior.
-- **Acceptance:** exact known-field Beta.1 flat profiles remain readable and
-  explicitly migratable. Current and legacy representations reject unknown keys
-  at every represented mapping node, including extra-bearing profiles accepted
-  and ignored by the old Beta.1 reader and the two reproduced typos; malicious
-  and numerous keys produce only the fixed bounded metadata error without key,
-  value, or private-data echo; known duplicate keys remain rejected; rejection
-  precedes secret-store access. Legal current round-trip, exact legacy migration,
-  all three channel-binding choices, schema-0-envelope rejection, malformed
-  current handling, secret redaction, and same-shape unsupported-schema behavior
-  remain intact. SDK, core, smoke, complete local-harness, formatting, lint, and
-  privacy checks pass.
-- **Out of scope:** schema-2 design; generic core Serde tightening; CLI or
-  runtime changes; config, protocol, auth, frame, wire, or stored-schema version
-  changes; deployment, release, push, tag, publication, or infrastructure work.
-  Rejection when callers manually construct and serialize a contradictory
-  `StoredClientProfile` remains a separate future candidate rather than part of
-  T004.
-- **Stop conditions:** stop if closure requires changing any public nested or
-  shared core DTO, parsing through `serde_json::Value`, matching error strings,
-  changing a version boundary, expanding beyond stored-profile metadata, or
-  using privileged, paid, system-network, real-network, or private
-  infrastructure access.
+- **User result:** a public `StoredClientProfile` with contradictory current
+  metadata can no longer produce a schema-1 envelope through its top-level
+  serializer. Rejection happens before a direct writer is called and uses a
+  fixed, bounded error that cannot echo profile or endpoint metadata.
+- **Scope:** after the existing schema and missing-channel-binding checks, gate
+  only `StoredClientProfile::serialize` on the canonical
+  `compatibility_status() == Current` predicate; add focused SDK tests and the
+  related configuration contract. No public field, DTO, API signature, schema,
+  version, or dependency changes.
+- **Acceptance:** disabled-but-required channel binding, required binding with
+  H3, and required binding with either the legacy or first-class
+  TLS-terminating CDN path all report `Malformed` and are rejected by
+  `to_string`, `to_value`, and direct `to_writer`. A direct writer receives no
+  calls or bytes. Structurally complete malformed current JSON cannot be
+  reserialized. The new error is exactly
+  `invalid stored client profile metadata`, remains bounded and source-free,
+  and never echoes synthetic private or control-character data. Existing schema
+  and missing-binding error text and priority remain exact, including schema-2
+  metadata that is also missing or contradictory. Legal current envelope shape
+  and order, all three channel-binding choices, `require = false` with H3 or CDN
+  metadata, normal store/migration/round-trip behavior, secret separation, and
+  direct nested Serde compatibility remain intact.
+- **Out of scope:** full `ClientConfig`, secret-store, or runtime validation;
+  preventing callers from hand-writing equivalent JSON; atomic file persistence
+  or a new stored-profile file API; nested/enclosing serializer write
+  guarantees; changing downstream writer errors for legal profiles; generic
+  Serde tightening; config, protocol, auth, frame, wire, or stored-schema
+  version changes; dependencies; deployment, release, push, tag, publication,
+  or infrastructure work.
+- **Stop conditions:** stop if closure requires duplicating compatibility rules,
+  calling full config validation, accessing a secret store, changing existing
+  error priority or text, changing a public DTO/API/version/dependency, touching
+  another product file, or using privileged, paid, system-network, real-network,
+  or private infrastructure access.
 
-After T004 completes or reaches a stop condition, resume the failure-driven
-execution order below. Completion of T004 alone does not create a new product
+After T005 completes or reaches a stop condition, resume the failure-driven
+execution order below. Completion of T005 alone does not create a new product
 result or change the milestone truth in `STATUS.md`.
 
 ## Execution Order

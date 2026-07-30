@@ -17,36 +17,40 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T009 — Freeze the strict config-v2 five-axis policy schema
+### T013a — Freeze legacy-auth policy-projection compatibility
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** Maintainers can validate one small, strict five-axis v2
-  policy document without pretending it is a runnable client or server config.
-- **Scope:** Add `maverick_core::config::v2::Policy::from_yaml_str` for the
-  explicit SecurityPosture, TransportStrategy, TrustRoute,
-  NamePrivacyMinimum, and TrafficShapingPolicy requests. Accept only standard,
-  Auto or H2, direct-to-Maverick or explicitly acknowledged Cloudflare TLS
-  termination, plain SNI, and disabled shaping. Keep public fields private,
-  public enums non-exhaustive, and all Serde wire types private.
-- **Acceptance:** Direct and TLS-terminating-front policies both accept Auto and
-  H2. Every mapping rejects unknown and duplicate keys. Missing axes, malformed
-  version metadata, multiple documents, legacy Mode, route conflicts, and
-  private input strings fail closed. Reserved H3, native ECH, and front with
-  inner end-to-end protection are recognized but unavailable. Existing
-  canonical v1 readers keep their current behavior and error text.
-- **Out of scope:** Complete ClientConfigV2 or ServerConfigV2, serialization,
-  generation, v1 conversion, T010b migration, Profile URI v2, runtime consumers,
-  diagnostics, auth v3, PQ/KEX policy, WebSocket or H3 v2 transport, enabled
-  shaping, UDP, publication, deployment, and release work. T017 is not reopened.
-- **Stop conditions:** Stop before adding a dependency, Cargo or lockfile
-  change, public Serde or Default surface, secret or network access, a runtime
-  consumer, a new wire fact, or any file outside the four-file T009 slice.
+- **User result:** Maintainers can identify the first honest v1-to-v2 client
+  policy projection without calling local requested policy a peer-confirmed or
+  runtime-observed result.
+- **Scope:** In `CONFIG.md` and this roadmap only, freeze that auth v1/v2
+  MAC-protect the client's legacy Mode but do not confirm it as a shared session
+  policy. Keep legacy Mode separate from the five v2 axes, and define the first
+  positive T010b input as a config-v1 `Mode::Auto` client with H2-only,
+  direct-to-Maverick, plain-SNI, shaping-disabled behavior and no other blocker.
+- **Acceptance:** The positive projection uses `transport.strategy: h2`, keeps
+  source Mode Auto/wire byte 0 only as internal legacy compatibility metadata,
+  and writes no Mode into v2 Policy YAML. Stable, Private, server migration,
+  H3, WebSocket, mixed TrustRoute, enabled shaping, cross-boundary fallback,
+  and peer confirmation remain distinct typed blockers. Ready means only
+  **client policy projection ready**, not a complete or runnable v2 config.
+  Existing protocol, config, auth, frame, stored-profile, version, and wire
+  behavior remain unchanged.
+- **Out of scope:** T010b implementation, product code, tests, auth v3 or any
+  equivalent new wire contract, authenticated policy echo or selection,
+  downgrade negotiation, RFC 9266 policy confirmation, fronted inner
+  application-session or per-flow MAC, expiry, revocation, POST-to-CONNECT, H3,
+  PQ/KEX, Profile URI v2, runtime consumers, publication, deployment, and
+  release work.
+- **Stop conditions:** Stop before changing `STATUS.md`, any source or test,
+  Cargo or a lockfile, any schema or version, any protocol/auth/frame/wire fact,
+  any secret or network state, or any file outside `CONFIG.md` and `ROADMAP.md`.
 
-T010b remains later source-level deterministic migration work. It must stop
-rather than guess when the v1 oracle reports WebSocket or H3, mixed TrustRoute,
-H3 fallback across a security boundary, enabled shaping, or unresolved legacy
-Mode compatibility.
+After this contract is reviewed, the next repository-local slice is T010b's
+first config-v1 Auto/H2 client policy projection. It must produce only the
+strict five-axis policy result and separate internal legacy compatibility
+metadata; complete client or server migration remains later work.
 
 ## Execution Order
 

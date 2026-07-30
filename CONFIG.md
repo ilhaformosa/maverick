@@ -200,9 +200,10 @@ cover-traffic, and budget field before an enabled v2 policy is accepted.
 
 This semantic contract does not imply that deferred capabilities exist:
 
-- T013 is the boundary for auth v3 policy confirmation, direct exporter and
-  fronted application-session designs, per-flow MAC, downgrade protection,
-  expiry, and revocation.
+- T013a freezes only the legacy-auth and policy-only projection boundary below.
+- Later T013 work remains the boundary for authenticated policy confirmation,
+  direct exporter and fronted application-session designs, per-flow MAC,
+  downgrade protection, expiry, and revocation.
 - T014 is the boundary for read-only observed diagnostics for the actual TLS
   version and group, actual carrier, binding status, and observed name privacy.
 - T015 is the boundary for PQ and KEX policy plus downgrade tests.
@@ -246,6 +247,86 @@ Existing v1 behavior remains unchanged:
   channel-binding migration contract; and
 - config, protocol, frame, and authentication wire versions remain independent
   compatibility boundaries.
+
+### Legacy auth and policy-only projection contract
+
+Auth v1 and auth v2 both carry the client's legacy Mode wire byte inside the
+MAC-protected ClientHello transcript. The server authenticates the byte supplied
+by the client, but it does not compare or retain that Mode as the session policy,
+and ServerHello does not echo or select it. A client/server Mode mismatch can
+therefore authenticate and relay successfully. After authentication, the client
+continues to use its local `mode`, while the server continues to use its local
+`maverick.mode_default`. This is legacy compatibility behavior, not proof that
+the peers agreed on one policy.
+
+The five config-v2 axes remain requested, local policy. A parsed or projected
+policy does not prove a peer-confirmed selection or a runtime-observed result.
+A config-v2 policy-only projection does not require auth v3. Any capability that
+claims both peers authenticated the same policy, that the server echoed or
+selected it, or that policy and auth-version downgrade was prevented must wait
+for auth v3 or an equivalent separately reviewed wire contract. N/N-1
+negotiation is also outside this policy-only boundary.
+
+Legacy Mode is compatibility metadata, not a sixth v2 policy axis:
+
+- a v2 policy must not contain legacy `mode`;
+- migration must not infer Mode from the five axes or reinterpret its wire byte;
+- the first positive T010b projection preserves the source `Mode::Auto` and wire
+  byte `0` only as separate internal legacy compatibility metadata; and
+- that metadata does not claim that the server confirmed the Mode.
+
+The first positive T010b result is limited to one strictly valid config-v1
+client input whose effective behavior is all of the following:
+
+- legacy `Mode::Auto`;
+- H2 only, with no H3 attempt or fallback;
+- `direct_to_maverick`;
+- plain SNI;
+- traffic shaping disabled; and
+- no WebSocket, mixed TrustRoute, cross-boundary fallback, or other mapping
+  blocker.
+
+Its policy-only output is exactly:
+
+```yaml
+version: 2
+security:
+  posture: standard
+transport:
+  strategy: h2
+trust:
+  route: direct_to_maverick
+name_privacy:
+  minimum: plain_sni
+traffic_shaping:
+  policy: disabled
+```
+
+The projection must write `transport.strategy: h2`, not `auto`, so a future
+expansion of Auto to H3 cannot change the preserved v1 behavior. It must not
+write the legacy Mode into this policy document. Existing auth v1 or v2
+selection remains a separate compatibility fact and is not changed by the
+projection.
+
+Stable and Private Mode, complete server migration, H3, WebSocket, mixed
+TrustRoute, enabled shaping, and peer policy confirmation remain distinct typed
+migration blockers. T010b must not collapse them into one generic readiness
+result; this docs-only contract does not freeze their public Rust names.
+
+The only positive readiness label allowed by this contract is **client policy
+projection ready**. It does not mean that a complete or runnable config-v2
+client exists, that secrets or runtime settings migrated, that a server agreed
+with the policy, that auth v3 exists, or that downgrade protection exists.
+
+Existing auth v1/v2 wire bytes, MAC labels and field order, and configured auth
+version selection remain unchanged. This contract authorizes no automatic auth
+v2-to-v1 fallback and no automatic strict-to-legacy fallback.
+
+The current direct-route exporter binding is an existing authentication input;
+it is not a claim of complete RFC 9266 policy confirmation. A TLS-terminating
+front cannot share one exporter across its two TLS connections. Inner
+application-session authentication and per-flow MAC for that route remain later
+work.
 
 ### T010a effective-behavior handoff
 

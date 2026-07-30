@@ -17,37 +17,41 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T008 — Version-first config parser foundation
+### T012a — Freeze config v2 semantic contract
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** A config declaring a future version is rejected as
-  unsupported before Maverick tries to interpret it as v1 and reports a
-  misleading missing or unknown v1 field.
-- **Scope:** Add one private, duplicate-safe root-version discriminator shared
-  by the canonical client and server YAML readers; dispatch only version `1` to
-  the existing strict v1 reader; cover the inherited CLI and SDK paths with
-  focused regression tests; document only the resulting reader contract.
-- **Acceptance:** Legal v1 files and defaults remain unchanged. Every other
-  integer version is rejected with a stable privacy-safe unsupported-version
-  result. Missing, duplicate, non-integer, malformed-root, multi-document,
-  malicious, and overlong version metadata fails closed without echoing
-  untrusted content. Existing v1 unknown-key, duplicate-key, `FallbackConfig`,
-  and direct generic Serde behavior remains compatible. Focused red-to-green,
-  core, SDK, CLI, formatting, lint, user-smoke, and local-harness checks pass.
-- **Out of scope:** Config v2 fields or semantics, v1-to-v2 migration, Profile
-  URI v2, runtime-consumer migration, auth or wire changes, broad compatibility
-  matrices, publication, deployment, and any subsequent slice not separately
-  placed in this queue.
-- **Stop conditions:** Stop before adding a public version model, dependency,
-  product module, config/protocol/auth/frame/wire/stored-profile version change,
-  remote or system-network action, or release work. Any such need returns to
-  owner review.
+- **User result:** The future config v2 has one small, explicit semantic
+  contract that separates requested security, carrier selection, trust route,
+  minimum name privacy, and traffic shaping without claiming unobserved runtime
+  capabilities.
+- **Scope:** Document the five independent axes, requested-versus-observed
+  boundary, initial accepted and reserved values, Auto and fail-closed rules,
+  minimum pure-validation conflicts, v1 compatibility boundary, and the exact
+  T010a evaluator handoff. Keep the current v1-only parser and runtime
+  unchanged.
+- **Acceptance:** `CONFIG.md` explicitly says config v2 is not implemented and
+  remains rejected. All five requests are mandatory in a canonical future v2
+  config. Reserved H3, native-ECH, and inner-end-to-end routes remain
+  unavailable. Auto cannot cross a trust or policy boundary or replay user
+  data. Requested policy stays separate from read-only selected or observed
+  results. v1 Mode, auth bytes, Profile URI v1, stored-profile schema 1, and
+  config/protocol/frame/authentication wire facts remain unchanged. The diff is
+  documentation-only and the local product gates pass.
+- **Out of scope:** A config v2 DTO or parser, v1-to-v2 migration, runtime
+  consumer changes, auth v3, actual TLS or name-privacy diagnostics, PQ/KEX
+  policy, Profile URI v2, H3/UDP implementation, schema or wire changes,
+  publication, deployment, and release-gate work. T017 is not reopened.
+- **Stop conditions:** Stop before changing any file other than `CONFIG.md` and
+  `ROADMAP.md`, adding a public API type or dependency, accepting config v2 in
+  code, freezing an enabled traffic-shaping policy without lossless mapping
+  evidence, changing a current product fact, or starting remote, system-network,
+  or release work.
 
-T008 only creates a future version-routing foundation. It does not define
-config v2 and does not change the published Beta.2 product facts in `STATUS.md`.
-A later `ROADMAP.md` update closes or replaces this queue item. Completing T008
-does not authorize any subsequent unqueued slice.
+The next config task is T010a: implement a pure v1 effective-behavior evaluator
+and prove field-by-field mapping or return a review blocker. T009 follows only
+after that evidence is sufficient to freeze a strict v2 DTO and parser. Neither
+follow-up is authorized by this docs-only slice.
 
 ## Execution Order
 

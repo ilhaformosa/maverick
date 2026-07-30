@@ -1,6 +1,249 @@
 # Maverick Configuration
 
-All config files use YAML and `version: 1`.
+All currently accepted config files use YAML and `version: 1`.
+
+## Future config v2 semantic contract
+
+> **Not implemented:** this section freezes semantics for a future config v2.
+> The current parser and runtime still support only config v1 and continue to
+> reject `version: 2`. T012a changes no current product, protocol, stored-profile,
+> authentication, frame, or wire fact.
+
+Config v2 separates five concerns that v1 `mode` currently mixes. A persisted
+config expresses requested policy or a minimum requirement. It does not prove
+what a connection selected or observed at runtime.
+
+The five canonical axes are:
+
+| Axis | Persisted request | First accepted ID or IDs | Recommended generated value |
+|---|---|---|---|
+| `SecurityPosture` | `security.posture` | `standard` | `standard` |
+| `TransportStrategy` | `transport.strategy` | `auto`, `h2` | `auto` |
+| `TrustRoute` | `trust.route` | `direct_to_maverick`, `tls_terminating_front` | `direct_to_maverick` |
+| `NamePrivacyCapability` | `name_privacy.minimum` | `plain_sni` | `plain_sni` |
+| `TrafficShapingPolicy` | `traffic_shaping.policy` | `disabled` | `disabled` |
+
+A canonical v2 config must explicitly carry all five requests. The parser must
+not infer a missing axis from legacy `mode`, fill in a missing security intent,
+or silently correct a conflict. Generator recommendations are not parser
+defaults.
+
+### Requested policy and observed results
+
+Persisted configuration is an input:
+
+- `security.posture` requests a local product security floor;
+- `transport.strategy` requests carrier-selection behavior;
+- `trust.route` requests where client-facing TLS terminates;
+- `name_privacy.minimum` requests the lowest acceptable name-privacy result;
+- `traffic_shaping.policy` requests whether traffic shaping is used.
+
+Runtime facts are read-only outputs. The actual carrier, negotiated TLS version
+and group, ECH acceptance, channel-binding status, selected authentication or
+PQ policy, and other observed results must not be written back into config as
+proof. A config cannot manufacture those facts. Later diagnostics must report
+the request and the resolved or observed result separately.
+
+### SecurityPosture
+
+The first v2 contract accepts only `security.posture: standard`. It has no
+`auto` value and no weaker user-selectable mode. `standard` represents the
+locally enforceable product safety floor, including strict identity and
+certificate checks, privacy-safe logging, authentication and replay gates
+before target work, and bounded resource use.
+
+`standard` does not claim that auth v3 is in use, that a PQ or hybrid KEX was
+selected, that native ECH succeeded, or that an actual TLS version or group was
+observed. Those facts require their separately owned protocol, policy, and
+diagnostic work.
+
+SecurityPosture does not select a carrier, change a TrustRoute, enable name
+privacy, or enable traffic shaping.
+
+### TransportStrategy
+
+The first v2 contract recognizes `transport.strategy: auto` and
+`transport.strategy: h2`. The stable ID `h3` is reserved, but it must be
+rejected until the H3 capability is explicitly opened. Generated ordinary-user
+configs use `auto`. Explicit `h2`, and future explicit `h3`, are developer-mode
+choices and fail closed if unavailable.
+
+Initially, H2 is the only eligible Auto candidate, so `auto` resolves to H2.
+Auto may select a carrier only:
+
+- within one DeploymentProfile;
+- without changing server identity, credential namespace, TrustRoute, or any
+  of the other four axes; and
+- for a new session or flow that has not sent user data.
+
+Auto must not fall back because of a certificate, server-name, pin,
+authentication, replay, policy, KEX, TrustRoute, or name-privacy failure. It
+must not replay or duplicate user data already sent on another carrier.
+
+TransportStrategy selects an outer carrier. It does not select whether the
+inner application carries TCP or UDP, choose a provider, change where TLS
+terminates, or claim ECH.
+
+### TrustRoute
+
+TrustRoute has no `auto` value. The first v2 contract accepts two explicit
+routes and reserves a third:
+
+| ID | TLS termination and visibility | Current v2 status |
+|---|---|---|
+| `direct_to_maverick` | Client-facing TLS terminates at the Maverick server. A supported direct route can use exporter material shared by those endpoints. | accepted request |
+| `tls_terminating_front` | Client-facing TLS terminates at a trusted front, followed by a separate front-to-origin connection. The front can observe Maverick authentication information and tunnel bytes. | accepted request with explicit route details and trust acknowledgment |
+| `front_with_inner_e2e` | A front terminates outer TLS, while a separately designed inner Maverick session would provide origin end-to-end protection. | reserved and rejected |
+
+A front must have explicit route details and an explicit trust acknowledgment.
+Provider or fronting selection is route detail, not a transport strategy and
+not proof of name privacy. DNS-resolution privacy is also outside TrustRoute.
+
+A TLS-terminating front cannot claim direct exporter binding across the two TLS
+connections. Future inner end-to-end protection requires its own protocol and
+review; it must not be inferred from fronting.
+
+### NamePrivacyCapability
+
+NamePrivacyCapability is an independent conceptual axis, but persisted config
+expresses only a minimum requirement. The first v2 contract accepts only:
+
+```yaml
+name_privacy:
+  minimum: plain_sni
+```
+
+The stable ID `native_ech` is reserved and rejected until Maverick has a real
+ECHConfig path, proof that ECH was accepted, and a diagnostic loop that reports
+the observed result. ECH GREASE, using a provider hostname, hiding an origin IP,
+and protecting DNS resolution are different properties; none proves
+`native_ech`.
+
+Observed name privacy belongs in read-only diagnostics and must not be written
+back as configuration proof. If the requested minimum cannot be met, startup
+or connection establishment must fail closed before DNS queries or user
+traffic are sent on the nonconforming path.
+
+NamePrivacyCapability does not choose a provider, carrier, TrustRoute, or DNS
+policy.
+
+### TrafficShapingPolicy
+
+TrafficShapingPolicy is independent and initially accepts only
+`traffic_shaping.policy: disabled`. It defaults to no behavior through an
+explicit generated value, not through omission. Transport Auto must never
+enable or change it.
+
+Any future enabled policy must carry explicit, bounded padding, timing,
+batching, and cover-traffic budgets. It must not claim to hide traffic
+analysis. No permanent enabled-policy ID or shape is frozen here. Names shown
+in design discussion are non-normative placeholders until T010a proves whether
+the complete v1 Auto and Private behavior can be mapped without loss.
+
+The v1 evaluator must account for every padding, timing, batching,
+cover-traffic, and budget field before an enabled v2 policy is accepted.
+
+### Deferred capability boundaries
+
+This semantic contract does not imply that deferred capabilities exist:
+
+- T013 is the boundary for auth v3 policy confirmation, direct exporter and
+  fronted application-session designs, per-flow MAC, downgrade protection,
+  expiry, and revocation.
+- T014 is the boundary for read-only observed diagnostics for the actual TLS
+  version and group, actual carrier, binding status, and observed name privacy.
+- T015 is the boundary for PQ and KEX policy plus downgrade tests.
+- T011 is the boundary for Profile URI v2.
+- Future H3 and UDP work is the boundary for making `h3` an executable carrier
+  choice and defining its data-plane behavior.
+
+### Pure v2 validation boundary
+
+At minimum, the following configurations are invalid or unavailable:
+
+| Input | Privacy-safe semantic category |
+|---|---|
+| legacy `mode` appears with the five v2 axes | policy conflict |
+| any required axis is missing | missing required policy |
+| `direct_to_maverick` carries front route details | policy conflict |
+| `tls_terminating_front` lacks explicit trust acknowledgment | policy conflict |
+| `tls_terminating_front` requires direct exporter binding | unavailable capability |
+| reserved `h3` is requested before its capability opens | unavailable capability |
+| reserved `native_ech` is requested before observed proof exists | unavailable capability |
+| reserved `front_with_inner_e2e` is requested before its protocol exists | unavailable capability |
+| disabled shaping carries enabled-policy budgets | policy conflict |
+
+These are semantic categories, not frozen public Rust enums, API signatures, or
+Display strings. Errors may identify a bounded canonical schema location, but
+must not echo an endpoint, credential, secret, private path, user-provided
+value, or raw input fragment.
+
+### Config v1 compatibility boundary
+
+Config v2 never mixes with legacy `mode`. T012a does not design a config,
+stored-profile, protocol, frame, or authentication schema bump.
+
+Existing v1 behavior remains unchanged:
+
+- `Mode` keeps its Serde meanings and wire IDs: `auto` is `0`, `stable` is `1`,
+  and `private` is `2`;
+- auth v1 and v2 keep their existing transcript labels, fields, and bytes;
+- Profile URI v1 remains Profile URI v1;
+- stored-profile schema 1 remains schema 1 and preserves its current explicit
+  channel-binding migration contract; and
+- config, protocol, frame, and authentication wire versions remain independent
+  compatibility boundaries.
+
+### T010a effective-behavior handoff
+
+T010a must evaluate strictly valid v1 configuration before T009 freezes a
+strict v2 DTO or parser. The evaluator is a pure function whose inputs are:
+
+- a valid v1 `ClientConfig` or `ServerConfig`;
+- the client or server role; and
+- only the necessary compile-time capability facts.
+
+It performs no network access, secret access, cooldown lookup, clock read, or
+environment mutation. Because its configuration inputs are already parsed,
+T010a freezes only effective behavior that can be derived objectively from the
+current in-memory values and Mode. It does not recover field-presence
+information or original syntax that v1 parsing and defaults have already
+erased. Its output must report effective v1 behavior field by field, including:
+
+- legacy Mode and its wire byte;
+- carrier candidates and exact fallback conditions;
+- TrustRoute and the current name-privacy fact;
+- route-effective channel binding and auth selection;
+- all shaping, padding, timing, batching, cover-traffic, and budget behavior;
+  and
+- a blocker for every behavior that cannot be proven to map without loss.
+
+When the current v1 in-memory model still distinguishes two inputs, T010a must
+preserve that distinction. When omission and an explicit default have already
+collapsed to the same value, T010a reports the same effective behavior and
+marks source provenance unavailable; it must not guess which syntax the user
+wrote. A future v2 output may normalize that behavior into explicit five-axis
+values, but it promises effective-behavior preservation rather than
+byte-for-byte text or original source-intent preservation. If equivalence
+cannot be proven field by field, T010a returns a review or migration blocker.
+
+Source-level deterministic migration belongs to later T010b. YAML migration can
+distinguish field presence only when it receives the original, strictly
+validated representation or an equivalent duplicate-safe field-presence map.
+SDK stored profiles, Profile URI, and values constructed through the public API
+must each migrate only the information that boundary can actually express. An
+API-created value without source provenance can guarantee effective-behavior
+equivalence, but it must not invent an original intent. This contract does not
+choose a data structure, parser, or migration algorithm for T010b.
+
+A later v1-to-v2 round trip must preserve the information expressible at each
+core YAML, SDK stored-profile, CLI/Profile URI, and public-API boundary, plus
+effective behavior. If a boundary lacks information required for a lossless
+migration, it returns a migration or review blocker. It does not promise to
+recover unsaved data or original text. T012a implements no migration. The
+required order remains T012a, then T010a, then T009; T009 freezes the strict v2
+DTO and parser only after evaluator and mapping evidence is sufficient. T010b
+remains later deterministic migration work.
 
 ## Canonical v1 YAML readers
 

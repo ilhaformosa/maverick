@@ -17,34 +17,47 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T018b-1 — Pin the ordinary Rust toolchain
+### T019c — Drill the published macOS Beta upgrade and rollback
 
-- **User result:** Ordinary local development, product CI, pilot release, and
-  supply-chain jobs select Rust `1.97.1` exactly instead of following a moving
-  `stable` toolchain. The scheduled parser-fuzz job remains an explicit,
-  isolated exception on `nightly-2026-07-21` with `cargo-fuzz 0.13.2`.
-- **Scope:** Add one minimal root toolchain file with Rust `1.97.1`, `rustfmt`,
-  and Clippy; select that exact toolchain in every ordinary Rust installation
-  step; make toolchain changes trigger the supply-chain pull-request job; and
-  make every fuzz Rust and Cargo command explicitly select its pinned nightly.
-  This repository-local slice is not tied to a release version.
-- **Acceptance:** The repository root resolves `rustc` and Cargo to `1.97.1`;
-  all existing root and fuzz locks remain unchanged under locked offline
-  metadata; formatting, builds, tests, Clippy, rustdoc, product smoke, the
-  complete Beta.2 ↔ Beta.1 compatibility matrix, and both bounded fuzz targets
-  pass on their selected toolchains. Static workflow checks prove the existing
-  action SHAs and permissions are preserved, ordinary jobs do not float on
-  `stable`, supply-chain paths cover the toolchain file, and fuzz commands
-  cannot inherit the root pin.
-- **Out of scope:** An MSRV declaration, `rust-version`, dependency or lock
-  changes, source formatting fixes, product/API/schema/version changes,
-  release assets, SBOM, provenance, signatures, CI dispatch, publication,
-  deployment, and any claim that all of T018 is complete.
-- **Stop conditions:** Stop if Rust `1.97.1` or its required components are
-  unavailable, the selected toolchain requires a source or lock change, the
-  fuzz nightly or `cargo-fuzz` pin is unavailable, a gate can pass only through
-  a scope expansion, or completion requires release, secret, permission,
-  product, network, or host changes.
+- **User result:** A local Apple Silicon Mac can exercise the exact published
+  Beta.1 → Beta.2 → Beta.1 artifact lifecycle before a later release decision.
+  An incompatible config blocks the upgrade while Beta.1 remains selected; a
+  compatible config permits the switch and an explicit rollback restores
+  Beta.1. This is a local quality drill, not a product, user, release,
+  deployment, or Stable result.
+- **Scope:** Add one Bash 3.2-compatible, network-free script that accepts only
+  four local Apple Silicon release inputs, pins both published identities,
+  verifies Beta.2 through the current native artifact verifier, narrowly
+  adapts the exact fixed Beta.1 packaging, and runs the bounded private
+  config/preflight/upgrade/rollback lifecycle through an isolated-directory
+  selector. This selector drill is not an installer, updater, or system
+  installation. The execution-only validation may download only these four
+  public GitHub release assets into a private directory outside the repository;
+  the script itself never downloads:
+  - `https://github.com/ilhaformosa/maverick/releases/download/v1.2.0-beta.1/maverick-1.2.0-beta.1-pilot-aarch64-apple-darwin.tar.gz`
+  - `https://github.com/ilhaformosa/maverick/releases/download/v1.2.0-beta.1/maverick-1.2.0-beta.1-pilot-aarch64-apple-darwin.tar.gz.sha256`
+  - `https://github.com/ilhaformosa/maverick/releases/download/v1.2.0-beta.2/maverick-1.2.0-beta.2-pilot-aarch64-apple-darwin.tar.gz`
+  - `https://github.com/ilhaformosa/maverick/releases/download/v1.2.0-beta.2/maverick-1.2.0-beta.2-pilot-aarch64-apple-darwin.tar.gz.sha256`
+- **Acceptance:** The script verifies the fixed outer and inner release
+  identities, native `version` and `user-smoke`, known-field config
+  compatibility, Beta.2's fail-closed unknown-key upgrade preflight, both
+  versions' rejection of config version 2, selection preservation after one
+  predictable preflight failure, the successful Beta.2 selection, explicit
+  Beta.1 rollback, immutable fixture and backup hashes, bounded process
+  cleanup, and no retained selector or temporary directory. Linux parity stays
+  deferred until a native Linux host or authorized CI can run it.
+- **Out of scope:** Stored-profile migration work already covered by Rust
+  tests; a stored-profile result, migration API, framework, or downgrade
+  writer; installer, updater, service manager, or atomic-switch claim; system
+  installation or services; Linux success inferred from macOS; real users,
+  live networks, publication, tag, release, upload, deployment, Stable
+  decision, receipt, ledger, watchdog, evidence schema, Python coordination,
+  and changes to current product truth.
+- **Stop conditions:** Stop if either input differs from its exact published
+  identity, the host is not native Apple Silicon macOS, Beta.2 cannot pass the
+  unchanged native verifier, Beta.1 requires an adapter broader than its fixed
+  digest, the lifecycle needs a product or third-file change, or any gate needs
+  network, credential, system-network, service, release, CI, or host changes.
 
 ## Execution Order
 

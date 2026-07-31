@@ -475,6 +475,30 @@ compatibility decision. An envelope declaring a newer schema can report typed
 by the current reader; a payload containing future-only fields can be rejected
 during deserialization before that status is available.
 
+## Profile URI v1 query boundary
+
+The CLI Profile URI v1 reader accepts exactly these ten decoded query keys:
+`server`, `name`, `path`, `mode`, `credential_id`, `secret`, `cert_pin`,
+`experimental_h3`, `experimental_ech`, and `experimental_tun`. Their order is
+arbitrary, but each key may appear at most once. Before reading any individual
+field, the reader checks all decoded query pairs once. An unknown or duplicate
+key fails with the fixed error `invalid profile URI query`; the error does not
+echo the key, value, URI, endpoint, credential, secret, control characters, or
+other untrusted content.
+
+This is an intentional compatibility tightening. The older reader silently
+ignored unknown query keys and used the first value of a repeated recognized
+key. It now rejects both shapes. Unknown and duplicate keys were never a
+supported extension mechanism, and the old reader did not preserve ignored
+data. Legal v1 fields and field order, canonical serialization order,
+materialization defaults, the secret-omission default, QR and clipboard safety
+rules, the file-permission rule, and the overwrite rule remain unchanged.
+
+Profile URI v2 is still unimplemented and `/v2` remains rejected. A future v2
+codec should be unified in core while remaining a separate compatibility
+boundary from the stored-profile schema; this v1 tightening does not implement
+migration, a complete config v2, or a runtime consumer.
+
 ## Client
 
 ```yaml

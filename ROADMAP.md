@@ -17,32 +17,31 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T012b-1 — Consume v2 Policy for the first Auto/H2 transport decision
+### T011a-1 — Enforce the strict Profile URI v1 query boundary
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** The first real client runtime decision uses the already
-  validated v2 Policy transport axis for the narrow Auto/direct-H2 subset,
-  without changing any other working v1 transport path.
-- **Scope:** In the existing private default-transport decision path, consume
-  `project_v1_client_policy` only when it succeeds with explicit H2. Keep the
-  public selector signature and explicit H2, WebSocket, and H3 connection
-  primitives unchanged. Add private provenance tests and short contract notes.
-- **Acceptance:** Omitted or explicit Auto in the supported T010b subset selects
-  H2 with proof that the decision came from projected Policy. Every projection
-  blocker, invalid source, and unsupported future success falls back to the
-  unchanged legacy selector. Stable, valid Private where supported, configured
-  H3, explicit or provider-fronted WebSocket, provider-fronted H2, and enabled
-  shaping keep their current behavior across applicable feature builds.
-- **Out of scope:** A complete client-role assembly or config v2; public API,
-  schema, dependency, auth, frame, Mode wire byte, trust, name privacy, shaping
-  runtime, H3 fallback, endpoint, secret, listener, Profile URI, SDK or CLI
-  consumer, server, peer confirmation, connection-success claim, real network,
-  release, deployment, and publication.
+- **User result:** A mistyped or ambiguous Profile URI v1 query fails safely
+  instead of silently dropping a field or choosing one of two conflicting
+  values.
+- **Scope:** Before reading individual fields, inspect every decoded v1 query
+  pair once. Accept only the ten existing v1 keys and reject any unknown or
+  repeated key with one fixed privacy-safe error. Preserve legal field order,
+  serialization order, defaults, secret handling, and materialization behavior.
+- **Acceptance:** Unknown and percent-encoded unknown keys fail closed; every
+  recognized required, optional, secret, pin, and boolean key fails when
+  repeated, including percent-encoded duplicates. Rejection occurs before
+  secret parsing or file creation and never echoes untrusted query content.
+  Legal v1 round trips, imports, QR and clipboard safety, overwrite protection,
+  and explicit v2 rejection remain unchanged.
+- **Out of scope:** Profile URI v2, a core codec, stored-profile migration,
+  complete config v2, a client-role envelope or readiness API, runtime consumer,
+  public API or schema changes, dependencies, server behavior, and real network
+  work.
 - **Stop conditions:** Stop if implementation requires a fourth file,
-  `STATUS.md`, Cargo or lockfile changes, a dependency, public API expansion,
-  duplicated projection rules, a protocol/auth/frame/wire change, a real
-  network, or any system-network mutation.
+  `STATUS.md`, Cargo or lockfile changes, a dependency, public API or schema
+  expansion, a core, SDK, client, or server change, a real network, or any
+  system-network mutation.
 
 ## Execution Order
 

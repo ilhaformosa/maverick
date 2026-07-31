@@ -32,9 +32,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           toolchain: nightly-2026-07-21
-      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo +nightly-2026-07-21 install cargo-fuzz --version 0.13.2 --locked
       - name: Check fuzz targets
-        run: cargo check --manifest-path fuzz/Cargo.toml --bins
+        run: cargo +nightly-2026-07-21 check --manifest-path fuzz/Cargo.toml --bins
       - name: Run bounded parser fuzzing
         working-directory: fuzz
         run: |

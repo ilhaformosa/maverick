@@ -910,6 +910,15 @@ chmod 0755 "$file_uri_noise_binary"
 new_artifact_case file-uri-noise "$file_uri_noise_binary"
 expect_artifact_pass file-uri-noise "$current_archive" "$current_target" static
 
+linker_file_uri_noise_binary="$test_root/linker-file-uri-noise-binary"
+compile_fixture_binary "$linker_file_uri_noise_binary" 0 ""
+printf '\0%s\0' "regular fi""le://Failed building..." \
+  >>"$linker_file_uri_noise_binary"
+chmod 0755 "$linker_file_uri_noise_binary"
+new_artifact_case linker-file-uri-noise "$linker_file_uri_noise_binary"
+expect_artifact_pass linker-file-uri-noise "$current_archive" "$current_target" \
+  static
+
 private_user_path_binary="$test_root/private-user-path-binary"
 compile_fixture_binary "$private_user_path_binary" 0 ""
 printf '%s' "/U""sers/$TEST_MARKER" >>"$private_user_path_binary"
@@ -942,6 +951,26 @@ chmod 0755 "$private_authority_uri_binary"
 new_artifact_case private-authority-uri-binary "$private_authority_uri_binary"
 expect_artifact_fail private-authority-uri-binary "$current_archive" \
   "$current_target" static "$TEST_MARKER"
+
+private_authority_root_uri_binary="$test_root/private-authority-root-uri-binary"
+compile_fixture_binary "$private_authority_root_uri_binary" 0 ""
+printf '%s' "fi""le://private-build-host/" \
+  >>"$private_authority_root_uri_binary"
+chmod 0755 "$private_authority_root_uri_binary"
+new_artifact_case private-authority-root-uri-binary \
+  "$private_authority_root_uri_binary"
+expect_artifact_fail private-authority-root-uri-binary "$current_archive" \
+  "$current_target" static "private-build-host"
+
+private_bare_authority_uri_binary="$test_root/private-bare-authority-uri-binary"
+compile_fixture_binary "$private_bare_authority_uri_binary" 0 ""
+printf '\0%s\0' "fi""le://private-build-host" \
+  >>"$private_bare_authority_uri_binary"
+chmod 0755 "$private_bare_authority_uri_binary"
+new_artifact_case private-bare-authority-uri-binary \
+  "$private_bare_authority_uri_binary"
+expect_artifact_fail private-bare-authority-uri-binary "$current_archive" \
+  "$current_target" static "private-build-host"
 
 maverick_secret_binary="$test_root/maverick-secret-binary"
 compile_fixture_binary "$maverick_secret_binary" 0 ""

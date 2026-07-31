@@ -29,15 +29,24 @@ use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use connection_manager::{ClientTunnelPool, H2ConnectionPoolSnapshot};
+use connection_manager::{ClientTunnelPool, H2ConnectionPoolSnapshot, H2PoolShutdownSnapshot};
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
-fn h2_pool_shutdown_summary(snapshot: H2ConnectionPoolSnapshot) -> String {
+fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {
+    let pool = snapshot.pool;
     format!(
         concat!(
             "Maverick H2 pool shutdown summary: ",
             "connections_created={} ",
+            "pooled_h2_client_observed_outer_tls12_connections={} ",
+            "pooled_h2_client_observed_outer_tls13_connections={} ",
+            "pooled_h2_client_observed_outer_tls_unknown_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_x25519_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_secp256r1_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_secp384r1_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections={} ",
             "streams_opened={} ",
             "streams_reused={} ",
             "reconnects={} ",
@@ -80,48 +89,56 @@ fn h2_pool_shutdown_summary(snapshot: H2ConnectionPoolSnapshot) -> String {
             "cached_connection={} ",
             "shutdown={}"
         ),
-        snapshot.connections_created,
-        snapshot.streams_opened,
-        snapshot.streams_reused,
-        snapshot.reconnects,
-        snapshot.readiness_failures,
-        snapshot.stream_open_failures,
-        snapshot.handshake_timeouts,
-        snapshot.timeout_retirements,
-        snapshot.timeout_recoveries,
-        snapshot.idle_retirements,
-        snapshot.closed_retirements,
-        snapshot.runtime_stream_resets,
-        snapshot.runtime_send_stalls,
-        snapshot.connection_setup_duration_ms.count,
-        snapshot.connection_setup_duration_ms.sum_ms,
-        snapshot.connection_setup_duration_ms.buckets[0],
-        snapshot.connection_setup_duration_ms.buckets[1],
-        snapshot.connection_setup_duration_ms.buckets[2],
-        snapshot.connection_setup_duration_ms.buckets[3],
-        snapshot.connection_setup_duration_ms.buckets[4],
-        snapshot.connection_setup_duration_ms.buckets[5],
-        snapshot.connection_setup_duration_ms.buckets[6],
-        snapshot.connection_setup_duration_ms.buckets[7],
-        snapshot.connection_setup_duration_ms.buckets[8],
-        snapshot.connection_setup_duration_ms.buckets[9],
-        snapshot.connection_setup_duration_ms.buckets[10],
-        snapshot.tunnel_open_duration_ms.count,
-        snapshot.tunnel_open_duration_ms.sum_ms,
-        snapshot.tunnel_open_duration_ms.buckets[0],
-        snapshot.tunnel_open_duration_ms.buckets[1],
-        snapshot.tunnel_open_duration_ms.buckets[2],
-        snapshot.tunnel_open_duration_ms.buckets[3],
-        snapshot.tunnel_open_duration_ms.buckets[4],
-        snapshot.tunnel_open_duration_ms.buckets[5],
-        snapshot.tunnel_open_duration_ms.buckets[6],
-        snapshot.tunnel_open_duration_ms.buckets[7],
-        snapshot.tunnel_open_duration_ms.buckets[8],
-        snapshot.tunnel_open_duration_ms.buckets[9],
-        snapshot.tunnel_open_duration_ms.buckets[10],
-        snapshot.active_streams,
-        snapshot.cached_connection,
-        snapshot.shutdown
+        pool.connections_created,
+        snapshot.pooled_h2_client_observed_outer_tls12_connections,
+        snapshot.pooled_h2_client_observed_outer_tls13_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_unknown_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
+        pool.streams_opened,
+        pool.streams_reused,
+        pool.reconnects,
+        pool.readiness_failures,
+        pool.stream_open_failures,
+        pool.handshake_timeouts,
+        pool.timeout_retirements,
+        pool.timeout_recoveries,
+        pool.idle_retirements,
+        pool.closed_retirements,
+        pool.runtime_stream_resets,
+        pool.runtime_send_stalls,
+        pool.connection_setup_duration_ms.count,
+        pool.connection_setup_duration_ms.sum_ms,
+        pool.connection_setup_duration_ms.buckets[0],
+        pool.connection_setup_duration_ms.buckets[1],
+        pool.connection_setup_duration_ms.buckets[2],
+        pool.connection_setup_duration_ms.buckets[3],
+        pool.connection_setup_duration_ms.buckets[4],
+        pool.connection_setup_duration_ms.buckets[5],
+        pool.connection_setup_duration_ms.buckets[6],
+        pool.connection_setup_duration_ms.buckets[7],
+        pool.connection_setup_duration_ms.buckets[8],
+        pool.connection_setup_duration_ms.buckets[9],
+        pool.connection_setup_duration_ms.buckets[10],
+        pool.tunnel_open_duration_ms.count,
+        pool.tunnel_open_duration_ms.sum_ms,
+        pool.tunnel_open_duration_ms.buckets[0],
+        pool.tunnel_open_duration_ms.buckets[1],
+        pool.tunnel_open_duration_ms.buckets[2],
+        pool.tunnel_open_duration_ms.buckets[3],
+        pool.tunnel_open_duration_ms.buckets[4],
+        pool.tunnel_open_duration_ms.buckets[5],
+        pool.tunnel_open_duration_ms.buckets[6],
+        pool.tunnel_open_duration_ms.buckets[7],
+        pool.tunnel_open_duration_ms.buckets[8],
+        pool.tunnel_open_duration_ms.buckets[9],
+        pool.tunnel_open_duration_ms.buckets[10],
+        pool.active_streams,
+        pool.cached_connection,
+        pool.shutdown
     )
 }
 
@@ -218,7 +235,7 @@ impl ClientHandle {
         }
         info!(
             "{}",
-            h2_pool_shutdown_summary(self.tunnel_pool.h2_snapshot())
+            h2_pool_shutdown_summary(self.tunnel_pool.h2_shutdown_snapshot())
         );
         #[cfg(feature = "tun-runtime")]
         tun_result?;
@@ -464,40 +481,58 @@ mod build_gate_tests {
 
     #[test]
     fn h2_shutdown_summary_has_a_fixed_privacy_safe_schema() {
-        let summary = h2_pool_shutdown_summary(H2ConnectionPoolSnapshot {
-            connections_created: 1,
-            streams_opened: 2,
-            streams_reused: 3,
-            reconnects: 4,
-            readiness_failures: 5,
-            stream_open_failures: 6,
-            handshake_timeouts: 7,
-            timeout_retirements: 8,
-            timeout_recoveries: 9,
-            idle_retirements: 10,
-            closed_retirements: 11,
-            runtime_stream_resets: 12,
-            runtime_send_stalls: 13,
-            connection_setup_duration_ms: connection_manager::H2DurationHistogramSnapshot {
-                count: 14,
-                sum_ms: 15,
-                buckets: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26],
+        let summary = h2_pool_shutdown_summary(H2PoolShutdownSnapshot {
+            pool: H2ConnectionPoolSnapshot {
+                connections_created: 126,
+                streams_opened: 2,
+                streams_reused: 3,
+                reconnects: 4,
+                readiness_failures: 5,
+                stream_open_failures: 6,
+                handshake_timeouts: 7,
+                timeout_retirements: 8,
+                timeout_recoveries: 9,
+                idle_retirements: 10,
+                closed_retirements: 11,
+                runtime_stream_resets: 12,
+                runtime_send_stalls: 13,
+                connection_setup_duration_ms: connection_manager::H2DurationHistogramSnapshot {
+                    count: 14,
+                    sum_ms: 15,
+                    buckets: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26],
+                },
+                tunnel_open_duration_ms: connection_manager::H2DurationHistogramSnapshot {
+                    count: 27,
+                    sum_ms: 28,
+                    buckets: [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
+                },
+                active_streams: 40,
+                cached_connection: false,
+                shutdown: true,
             },
-            tunnel_open_duration_ms: connection_manager::H2DurationHistogramSnapshot {
-                count: 27,
-                sum_ms: 28,
-                buckets: [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
-            },
-            active_streams: 40,
-            cached_connection: false,
-            shutdown: true,
+            pooled_h2_client_observed_outer_tls12_connections: 41,
+            pooled_h2_client_observed_outer_tls13_connections: 42,
+            pooled_h2_client_observed_outer_tls_unknown_connections: 43,
+            pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections: 20,
+            pooled_h2_client_observed_outer_tls_group_x25519_connections: 21,
+            pooled_h2_client_observed_outer_tls_group_secp256r1_connections: 22,
+            pooled_h2_client_observed_outer_tls_group_secp384r1_connections: 23,
+            pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections: 40,
         });
 
         assert_eq!(
             summary,
             concat!(
                 "Maverick H2 pool shutdown summary: ",
-                "connections_created=1 ",
+                "connections_created=126 ",
+                "pooled_h2_client_observed_outer_tls12_connections=41 ",
+                "pooled_h2_client_observed_outer_tls13_connections=42 ",
+                "pooled_h2_client_observed_outer_tls_unknown_connections=43 ",
+                "pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections=20 ",
+                "pooled_h2_client_observed_outer_tls_group_x25519_connections=21 ",
+                "pooled_h2_client_observed_outer_tls_group_secp256r1_connections=22 ",
+                "pooled_h2_client_observed_outer_tls_group_secp384r1_connections=23 ",
+                "pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections=40 ",
                 "streams_opened=2 ",
                 "streams_reused=3 ",
                 "reconnects=4 ",
@@ -547,6 +582,11 @@ mod build_gate_tests {
             "u_private",
             "secret-value",
             "https://private.example/path",
+            "provider-account",
+            "/private/cert.pem",
+            "TLS handshake failed",
+            "selected_group=X25519MLKEM768",
+            "selected_curve=P-256",
         ] {
             assert!(!summary.contains(private_value));
         }

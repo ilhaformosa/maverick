@@ -588,15 +588,16 @@ does not justify Stable, mature, production-ready, anonymity, broad
 censorship-resistance, exact browser-equivalence, or provider-independent
 claims.
 
-## Beta.2 Release Candidate
+## Historical Beta.2 Release Candidate Preparation
 
-The candidate source prepared for Draft PR #17 uses `1.2.0-beta.2`. It remains
-unmerged, untagged, and unpublished and is not a release or public artifact.
-Repository-local tests, safe rejections, dependency checks, and
-candidate-archive checks are quality controls; they are not a product result, a
-user result, or a release result.
+The source prepared for Draft PR #17 used `1.2.0-beta.2`. At that candidate
+stage it was unmerged, untagged, and unpublished. This paragraph records that
+past preparation only; the `Current Product Truth` above controls the present
+fact that `v1.2.0-beta.2` is now the published and independently reverified Beta
+prerelease. Repository-local tests, safe rejections, dependency checks, and
+candidate-archive checks were quality controls, not a product or user result.
 
-The candidate adds `StoredClientProfile::stored_profile_schema_version` and
+That candidate added `StoredClientProfile::stored_profile_schema_version` and
 `StoredClientAuthProfile::channel_binding`. Downstream code using complete
 struct literals or exhaustive field patterns for those public structs must be
 updated. No public function signature or Serde trait implementation was
@@ -604,7 +605,7 @@ removed.
 
 Stored profiles containing exactly the known Beta.1 flat JSON fields remain
 readable, but migration requires the caller to choose a complete
-channel-binding policy explicitly; the candidate does not infer the missing
+channel-binding policy explicitly; the candidate did not infer the missing
 legacy value. New writes use a schema-1 envelope that the Beta.1 reader rejects
 instead of silently accepting with downgraded channel-binding metadata.
 Canonical client and server YAML loading and top-level stored-profile JSON
@@ -615,9 +616,9 @@ fallback shapes and their defaults are unchanged. A current stored profile
 whose metadata is internally contradictory is reported as malformed and cannot
 be serialized as a normal current envelope.
 
-The Rust packages use candidate version `1.2.0-beta.2`. The Maverick protocol
-version, config version, and stored-profile schema version remain `1`; existing
-authentication and frame wire formats are unchanged.
+The candidate Rust packages used version `1.2.0-beta.2`. The Maverick protocol
+version, config version, and stored-profile schema version remained `1`;
+existing authentication and frame wire formats were unchanged.
 
 ## Beta.1 Release
 

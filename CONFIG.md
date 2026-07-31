@@ -1,12 +1,473 @@
 # Maverick Configuration
 
-All config files use YAML and `version: 1`.
+All currently runnable client and server config files use YAML and `version: 1`.
+
+## Config v2 policy semantic contract
+
+> **Policy parser only:** `maverick_core::config::v2::Policy::from_yaml_str`
+> now validates the strict five-axis policy schema below. It does not define a
+> complete client or server config, perform migration, read secrets, start a
+> runtime, or make config v2 runnable. The canonical `ClientConfig` and
+> `ServerConfig` readers still accept only config v1 and reject `version: 2`.
+> T009 changes no protocol, stored-profile, authentication, frame, or wire fact.
+
+Config v2 separates five concerns that v1 `mode` currently mixes. A persisted
+config expresses requested policy or a minimum requirement. It does not prove
+what a connection selected or observed at runtime.
+
+The five canonical axes are:
+
+| Axis | Persisted request | First accepted ID or IDs | Recommended generated value |
+|---|---|---|---|
+| `SecurityPosture` | `security.posture` | `standard` | `standard` |
+| `TransportStrategy` | `transport.strategy` | `auto`, `h2` | `auto` |
+| `TrustRoute` | `trust.route` | `direct_to_maverick`, `tls_terminating_front` | `direct_to_maverick` |
+| `NamePrivacyCapability` | `name_privacy.minimum` | `plain_sni` | `plain_sni` |
+| `TrafficShapingPolicy` | `traffic_shaping.policy` | `disabled` | `disabled` |
+
+A canonical v2 config must explicitly carry all five requests. The parser must
+not infer a missing axis from legacy `mode`, fill in a missing security intent,
+or silently correct a conflict. Generator recommendations are not parser
+defaults.
+
+### Implemented policy-only schema
+
+The smallest accepted direct policy is:
+
+```yaml
+version: 2
+security:
+  posture: standard
+transport:
+  strategy: auto
+trust:
+  route: direct_to_maverick
+name_privacy:
+  minimum: plain_sni
+traffic_shaping:
+  policy: disabled
+```
+
+The smallest accepted TLS-terminating-front policy is:
+
+```yaml
+version: 2
+security:
+  posture: standard
+transport:
+  strategy: h2
+trust:
+  route: tls_terminating_front
+  front:
+    provider: cloudflare
+    trusted_tls_terminating_provider: true
+name_privacy:
+  minimum: plain_sni
+traffic_shaping:
+  policy: disabled
+```
+
+Both `transport.strategy: auto` and `transport.strategy: h2` are valid with
+either accepted TrustRoute. The front shape carries only the provider selection
+and the explicit acknowledgment that the provider terminates client-facing TLS.
+It does not carry an endpoint, hostname, credential, path, or runtime proof.
+
+The policy parser reads the original YAML directly into private strict wire
+types. Every mapping node rejects unknown keys, and duplicate keys, multiple
+documents, invalid version metadata, missing policy axes, conflicts, unavailable
+reserved capabilities, and malformed values fail closed through fixed,
+privacy-safe configuration errors. The public policy types do not implement
+Serde, Default, a builder, a generator, or v1 conversion.
+
+### Requested policy and observed results
+
+Persisted configuration is an input:
+
+- `security.posture` requests a local product security floor;
+- `transport.strategy` requests carrier-selection behavior;
+- `trust.route` requests where client-facing TLS terminates;
+- `name_privacy.minimum` requests the lowest acceptable name-privacy result;
+- `traffic_shaping.policy` requests whether traffic shaping is used.
+
+Runtime facts are read-only outputs. The actual carrier, negotiated TLS version
+and group, ECH acceptance, channel-binding status, selected authentication or
+PQ policy, and other observed results must not be written back into config as
+proof. A config cannot manufacture those facts. Later diagnostics must report
+the request and the resolved or observed result separately.
+
+### SecurityPosture
+
+The first v2 contract accepts only `security.posture: standard`. It has no
+`auto` value and no weaker user-selectable mode. `standard` represents the
+locally enforceable product safety floor, including strict identity and
+certificate checks, privacy-safe logging, authentication and replay gates
+before target work, and bounded resource use.
+
+`standard` does not claim that auth v3 is in use, that a PQ or hybrid KEX was
+selected, that native ECH succeeded, or that an actual TLS version or group was
+observed. Those facts require their separately owned protocol, policy, and
+diagnostic work.
+
+SecurityPosture does not select a carrier, change a TrustRoute, enable name
+privacy, or enable traffic shaping.
+
+### TransportStrategy
+
+The first v2 contract recognizes `transport.strategy: auto` and
+`transport.strategy: h2`. The stable ID `h3` is reserved, but it must be
+rejected until the H3 capability is explicitly opened. Generated ordinary-user
+configs use `auto`. Explicit `h2`, and future explicit `h3`, are developer-mode
+choices and fail closed if unavailable.
+
+Initially, H2 is the only eligible Auto candidate, so `auto` resolves to H2.
+Auto may select a carrier only:
+
+- within one DeploymentProfile;
+- without changing server identity, credential namespace, TrustRoute, or any
+  of the other four axes; and
+- for a new session or flow that has not sent user data.
+
+Auto must not fall back because of a certificate, server-name, pin,
+authentication, replay, policy, KEX, TrustRoute, or name-privacy failure. It
+must not replay or duplicate user data already sent on another carrier.
+
+TransportStrategy selects an outer carrier. It does not select whether the
+inner application carries TCP or UDP, choose a provider, change where TLS
+terminates, or claim ECH.
+
+### TrustRoute
+
+TrustRoute has no `auto` value. The first v2 contract accepts two explicit
+routes and reserves a third:
+
+| ID | TLS termination and visibility | Current v2 status |
+|---|---|---|
+| `direct_to_maverick` | Client-facing TLS terminates at the Maverick server. A supported direct route can use exporter material shared by those endpoints. | accepted request |
+| `tls_terminating_front` | Client-facing TLS terminates at a trusted front, followed by a separate front-to-origin connection. The front can observe Maverick authentication information and tunnel bytes. | accepted request with explicit route details and trust acknowledgment |
+| `front_with_inner_e2e` | A front terminates outer TLS, while a separately designed inner Maverick session would provide origin end-to-end protection. | reserved and rejected |
+
+A front must have explicit route details and an explicit trust acknowledgment.
+Provider or fronting selection is route detail, not a transport strategy and
+not proof of name privacy. DNS-resolution privacy is also outside TrustRoute.
+
+A TLS-terminating front cannot claim direct exporter binding across the two TLS
+connections. Future inner end-to-end protection requires its own protocol and
+review; it must not be inferred from fronting.
+
+### NamePrivacyCapability
+
+NamePrivacyCapability is an independent conceptual axis, but persisted config
+expresses only a minimum requirement. The first v2 contract accepts only:
+
+```yaml
+name_privacy:
+  minimum: plain_sni
+```
+
+The stable ID `native_ech` is reserved and rejected until Maverick has a real
+ECHConfig path, proof that ECH was accepted, and a diagnostic loop that reports
+the observed result. ECH GREASE, using a provider hostname, hiding an origin IP,
+and protecting DNS resolution are different properties; none proves
+`native_ech`.
+
+Observed name privacy belongs in read-only diagnostics and must not be written
+back as configuration proof. If the requested minimum cannot be met, startup
+or connection establishment must fail closed before DNS queries or user
+traffic are sent on the nonconforming path.
+
+NamePrivacyCapability does not choose a provider, carrier, TrustRoute, or DNS
+policy.
+
+### TrafficShapingPolicy
+
+TrafficShapingPolicy is independent and initially accepts only
+`traffic_shaping.policy: disabled`. It defaults to no behavior through an
+explicit generated value, not through omission. Transport Auto must never
+enable or change it.
+
+Any future enabled policy would require separately frozen, explicit, bounded
+padding, timing, batching, and cover-traffic budgets. It must not claim to hide
+traffic analysis. The current schema names no enabled-policy ID, budget field,
+or future sentinel: any extra mapping entry under `traffic_shaping` is an
+invalid policy. Names shown in design discussion are non-normative placeholders
+until T010a proves whether the complete v1 Auto and Private behavior can be
+mapped without loss.
+
+The v1 evaluator must account for every padding, timing, batching,
+cover-traffic, and budget field before an enabled v2 policy is accepted.
+
+### Deferred capability boundaries
+
+This semantic contract does not imply that deferred capabilities exist:
+
+- T013a freezes only the legacy-auth and policy-only projection boundary below.
+- Later T013 work remains the boundary for authenticated policy confirmation,
+  direct exporter and fronted application-session designs, per-flow MAC,
+  downgrade protection, expiry, and revocation.
+- T014 is the boundary for read-only observed diagnostics for the actual TLS
+  version and group, actual carrier, binding status, and observed name privacy.
+- T015 is the boundary for PQ and KEX policy plus downgrade tests.
+- T011 is the boundary for Profile URI v2.
+- Future H3 and UDP work is the boundary for making `h3` an executable carrier
+  choice and defining its data-plane behavior.
+
+### Pure v2 validation boundary
+
+At minimum, the following configurations are invalid or unavailable:
+
+| Input | Privacy-safe semantic category |
+|---|---|
+| legacy `mode` appears with the five v2 axes | policy conflict |
+| any required axis is missing | missing required policy |
+| `direct_to_maverick` carries front route details | policy conflict |
+| `tls_terminating_front` lacks explicit trust acknowledgment | policy conflict |
+| `tls_terminating_front` requires direct exporter binding | unavailable capability |
+| reserved `h3` is requested before its capability opens | unavailable capability |
+| reserved `native_ech` is requested before observed proof exists | unavailable capability |
+| reserved `front_with_inner_e2e` is requested before its protocol exists | unavailable capability |
+| any extra field appears under `traffic_shaping.policy: disabled` | invalid policy |
+
+These are semantic categories, not frozen public Rust enums, API signatures, or
+Display strings. Errors may identify a bounded canonical schema location, but
+must not echo an endpoint, credential, secret, private path, user-provided
+value, or raw input fragment.
+
+### Config v1 compatibility boundary
+
+Config v2 never mixes with legacy `mode`. T012a does not design a config,
+stored-profile, protocol, frame, or authentication schema bump.
+
+Existing v1 behavior remains unchanged:
+
+- `Mode` keeps its Serde meanings and wire IDs: `auto` is `0`, `stable` is `1`,
+  and `private` is `2`;
+- auth v1 and v2 keep their existing transcript labels, fields, and bytes;
+- Profile URI v1 remains Profile URI v1;
+- stored-profile schema 1 remains schema 1 and preserves its current explicit
+  channel-binding migration contract; and
+- config, protocol, frame, and authentication wire versions remain independent
+  compatibility boundaries.
+
+### Legacy auth and policy-only projection contract
+
+Auth v1 and auth v2 both carry the client's legacy Mode wire byte inside the
+MAC-protected ClientHello transcript. The server authenticates the byte supplied
+by the client, but it does not compare or retain that Mode as the session policy,
+and ServerHello does not echo or select it. A client/server Mode mismatch can
+therefore authenticate and relay successfully. After authentication, the client
+continues to use its local `mode`, while the server continues to use its local
+`maverick.mode_default`. This is legacy compatibility behavior, not proof that
+the peers agreed on one policy.
+
+The five config-v2 axes remain requested, local policy. A parsed or projected
+policy does not prove a peer-confirmed selection or a runtime-observed result.
+A config-v2 policy-only projection does not require auth v3. Any capability that
+claims both peers authenticated the same policy, that the server echoed or
+selected it, or that policy and auth-version downgrade was prevented must wait
+for auth v3 or an equivalent separately reviewed wire contract. N/N-1
+negotiation is also outside this policy-only boundary.
+
+Legacy Mode is compatibility metadata, not a sixth v2 policy axis:
+
+- a v2 policy must not contain legacy `mode`;
+- migration must not infer Mode from the five axes or reinterpret its wire byte;
+- the first positive T010b projection preserves the source `Mode::Auto` and wire
+  byte `0` only as separate internal legacy compatibility metadata; and
+- that metadata does not claim that the server confirmed the Mode.
+
+The first positive T010b result is limited to one strictly valid config-v1
+client input whose effective behavior is all of the following:
+
+- legacy `Mode::Auto`;
+- H2 only, with no H3 attempt or fallback;
+- `direct_to_maverick`;
+- plain SNI;
+- traffic shaping disabled; and
+- no WebSocket, mixed TrustRoute, cross-boundary fallback, or other mapping
+  blocker.
+
+Its policy-only output is exactly:
+
+```yaml
+version: 2
+security:
+  posture: standard
+transport:
+  strategy: h2
+trust:
+  route: direct_to_maverick
+name_privacy:
+  minimum: plain_sni
+traffic_shaping:
+  policy: disabled
+```
+
+The projection must write `transport.strategy: h2`, not `auto`, so a future
+expansion of Auto to H3 cannot change the preserved v1 behavior. It must not
+write the legacy Mode into this policy document. Existing auth v1 or v2
+selection remains a separate compatibility fact and is not changed by the
+projection.
+
+Stable and Private Mode, complete server migration, H3, WebSocket, mixed
+TrustRoute, enabled shaping, and peer policy confirmation remain distinct typed
+migration blockers. T010b must not collapse them into one generic readiness
+result; this docs-only contract does not freeze their public Rust names.
+
+The only positive readiness label allowed by this contract is **client policy
+projection ready**. It does not mean that a complete or runnable config-v2
+client exists, that secrets or runtime settings migrated, that a server agreed
+with the policy, that auth v3 exists, or that downgrade protection exists.
+
+Existing auth v1/v2 wire bytes, MAC labels and field order, and configured auth
+version selection remain unchanged. This contract authorizes no automatic auth
+v2-to-v1 fallback and no automatic strict-to-legacy fallback.
+
+The current direct-route exporter binding is an existing authentication input;
+it is not a claim of complete RFC 9266 policy confirmation. A TLS-terminating
+front cannot share one exporter across its two TLS connections. Inner
+application-session authentication and per-flow MAC for that route remain later
+work.
+
+## Published N/N-1 direct-H2 compatibility contract
+
+For this repository-local contract, N is the annotated local tag
+`v1.2.0-beta.2`, tag object
+`3a2f7409c3193d03349219b1f8c144d76db74d67`, direct commit
+`6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, package
+`1.2.0-beta.2`. N-1 is the annotated local tag `v1.2.0-beta.1`, tag object
+`71c1a5fdf0cf74aa1c9ee7dc3a578647fba8a720`, direct commit
+`75b2a666f236043c3f3c611a9f2c3de8526c3171`, package
+`1.2.0-beta.1`. An unpublished development tip is not N.
+
+Run the complete local contract with:
+
+```sh
+./scripts/test-n-minus-one-compat.sh
+```
+
+The command disables Git replace objects for every source-identity operation.
+It verifies each exact tag object, tag name, direct commit target, package
+version, and lock, then archives the pinned commit rather than rereading a tag
+ref. Private fixture tests prove that replace objects, a rebuilt tag, or a
+nested tag cannot substitute the archived source. The command then builds four
+historical CLI binaries offline: Beta.2 and Beta.1 with the default
+browser-TLS/H2 feature set, and both again with `--no-default-features` for
+rustls/H2. Build, version, and common-config preflights run before eight
+same-version process controls. Only after those controls pass does the command
+run eight cross-version cells: both client/server directions, auth v1 and auth
+v2, on both TLS backends. Every cell starts real historical client and server
+processes and requires exact TCP bytes to traverse SOCKS5 and direct H2 on
+loopback.
+
+This contract changes no protocol, config, authentication, frame,
+stored-profile, or Profile URI version. It does not relax intentional
+compatibility tightening: strict YAML and stored-profile rejection remain,
+published Beta.1 flat profiles still require explicit migration, and a Beta.1
+reader still rejects the new stored-profile envelope. It authorizes no
+auth-version fallback.
+
+A passing result proves only direct-H2 interoperability between processes built
+offline from those exact local tag sources with the current local toolchain. It
+does not verify historical published archives, H3 or H3 fallback, WebSocket,
+provider-fronted behavior, a real provider or network, every platform, or a
+product or Live result. A nonzero process case says only that the matrix did not
+complete and compatibility was not established. It is not called an
+incompatibility unless separate typed protocol evidence supports that narrower
+conclusion.
+
+### T010b Auto/H2 client policy projection foundation
+
+`maverick_core::config::v2::project_v1_client_policy(&ClientConfig)` is the
+only public T010b entry point. It returns a typed policy-only projection or a
+typed, value-free blocker. It first applies canonical config-v1 client
+validation, then checks blockers in this fixed order: legacy Mode, configured
+H3, configured WebSocket, any TLS-terminating front, and enabled traffic
+shaping.
+
+The successful result exposes only the five-axis `Policy`, the retained legacy
+Mode, and whether a peer confirmed that Mode. For this first subset the retained
+Mode is Auto, its existing `wire_id()` remains `0`, and peer confirmation is
+always false. The wire byte has no separate stored or serialized copy, and
+legacy Mode never enters Policy.
+
+Valid direct-H2 channel-binding choices and valid configuration fields outside
+the five policy axes do not block projection. Those fields are not migrated.
+This API has no raw-YAML adapter or serializer and does not produce a complete
+or runnable config-v2 client, server agreement, or runtime result.
+
+### T012b-1 first transport-axis runtime consumer
+
+The client default-transport selector consumes only the successful T010b
+projection's explicit H2 transport axis. A projection blocker, invalid v1
+source, or unsupported future transport axis uses the unchanged legacy v1
+selector, preserving existing non-projected paths. This is not a complete
+config-v2, trust, name-privacy, shaping, authentication, or runtime migration,
+and it does not claim peer confirmation or connection success.
+
+### T010a effective-behavior handoff
+
+T010a must evaluate strictly valid v1 configuration before T009 freezes a
+strict v2 DTO or parser. The evaluator is a pure function whose inputs are:
+
+- a valid v1 `ClientConfig` or `ServerConfig`;
+- the client or server role; and
+- only the necessary compile-time capability facts.
+
+It performs no network access, secret access, cooldown lookup, clock read, or
+environment mutation. Because its configuration inputs are already parsed,
+T010a freezes only effective behavior that can be derived objectively from the
+current in-memory values and Mode. It does not recover field-presence
+information or original syntax that v1 parsing and defaults have already
+erased. Its output must report effective v1 behavior field by field, including:
+
+- legacy Mode and its wire byte;
+- carrier candidates and exact fallback conditions;
+- TrustRoute and the current name-privacy fact;
+- route-effective channel binding and auth selection;
+- all shaping, padding, timing, batching, cover-traffic, and budget behavior;
+  and
+- a blocker for every behavior that cannot be proven to map without loss.
+
+When the current v1 in-memory model still distinguishes two inputs, T010a must
+preserve that distinction. When omission and an explicit default have already
+collapsed to the same value, T010a reports the same effective behavior and
+marks source provenance unavailable; it must not guess which syntax the user
+wrote. A future v2 output may normalize that behavior into explicit five-axis
+values, but it promises effective-behavior preservation rather than
+byte-for-byte text or original source-intent preservation. If equivalence
+cannot be proven field by field, T010a returns a review or migration blocker.
+
+Source-level deterministic migration belongs to later T010b. YAML migration can
+distinguish field presence only when it receives the original, strictly
+validated representation or an equivalent duplicate-safe field-presence map.
+SDK stored profiles, Profile URI, and values constructed through the public API
+must each migrate only the information that boundary can actually express. An
+API-created value without source provenance can guarantee effective-behavior
+equivalence, but it must not invent an original intent. This contract does not
+choose a data structure, parser, or migration algorithm for T010b.
+
+A later v1-to-v2 round trip must preserve the information expressible at each
+core YAML, SDK stored-profile, CLI/Profile URI, and public-API boundary, plus
+effective behavior. If a boundary lacks information required for a lossless
+migration, it returns a migration or review blocker. It does not promise to
+recover unsaved data or original text. T012a and T009 implement no migration.
+T009 freezes only the strict five-axis policy DTO and parser. T010b remains
+later deterministic migration work.
 
 ## Canonical v1 YAML readers
 
 `ClientConfig::from_yaml_str` and `ServerConfig::from_yaml_str` are the
 canonical core readers. The CLI and SDK YAML entry points use these readers.
-They recursively reject unknown mapping keys before validation or startup;
+Each canonical reader first inspects the root `version` with one private,
+duplicate-safe discriminator, then dispatches version `1` to the existing
+strict v1 reader. Any other integer version returns a fixed
+unsupported-version error before v1 deserialization. Missing, duplicate, or
+non-integer version metadata and a non-mapping root fail closed without echoing
+the untrusted version value. These canonical v1 readers do not accept config v2;
+the independent `config::v2::Policy` parser validates policy only.
+
+After version dispatch, the v1 reader still parses the original YAML. It
+recursively rejects unknown mapping keys before validation or startup;
 unknown keys are not an extension mechanism and are never corrected or allowed
 to select a default silently.
 
@@ -60,6 +521,59 @@ compatibility decision. An envelope declaring a newer schema can report typed
 `UnsupportedSchema` only when its payload otherwise has the shape understood
 by the current reader; a payload containing future-only fields can be rejected
 during deserialization before that status is available.
+
+## Profile URI v1 parser boundary
+
+The CLI Profile URI v1 reader accepts exactly these ten decoded query keys:
+`server`, `name`, `path`, `mode`, `credential_id`, `secret`, `cert_pin`,
+`experimental_h3`, `experimental_ech`, and `experimental_tun`. Their order is
+arbitrary, but each key may appear at most once. Before reading any individual
+field, the reader checks all decoded query pairs once. An unknown or duplicate
+key fails with the fixed error `invalid profile URI query`; the error does not
+echo the key, value, URI, endpoint, credential, secret, control characters, or
+other untrusted content.
+
+This is an intentional compatibility tightening. The older reader silently
+ignored unknown query keys and used the first value of a repeated recognized
+key. It now rejects both shapes. Unknown and duplicate keys were never a
+supported extension mechanism, and the old reader did not preserve ignored
+data. Legal v1 fields and field order, canonical serialization order,
+materialization defaults, the secret-omission default, QR and clipboard safety
+rules, the file-permission rule, and the overwrite rule remain unchanged.
+
+The outer envelope is exactly the existing `maverick://profile/v1?...` shape.
+A v1 URI carrying a username, password, authority port, or fragment is rejected;
+this includes an empty fragment and any user-information or port delimiter whose
+value is empty. Before URL parsing or field reads, every `%` in each raw query
+key or value must have exactly two hexadecimal digits, and the decoded bytes in
+that component must be valid UTF-8. Lowercase and uppercase hex digits are both
+legal. URL form `+` behavior, encoded `&` and `=` characters, valid Unicode,
+and the existing absence of Unicode normalization remain unchanged.
+
+The normalized single URI accepted by the parser is limited to 16 KiB. The
+exact limit is legal; one additional byte is rejected. This is a parser input
+contract, not a claim that every upstream allocation is bounded: the stdin and
+clipboard commands may already have read their payload into memory before this
+check. This slice does not add field-specific or credential-specific limits and
+does not rewrite clipboard process handling or stdin as a streaming reader.
+
+These envelope, lossless-decoding, and length failures use the fixed error
+`invalid profile URI`; they do not echo the URI, user information, password,
+fragment, endpoint, query key or value, raw decoded bytes, or a lower-level
+untrusted error. A parseable URL password also triggers the existing fixed argv
+secret warning. Raw and decoded query-secret detection remains in place,
+including the malformed-input raw fallback.
+
+This is also an intentional compatibility tightening. The older reader
+accepted and ignored user information, authority ports, and fragments, and its
+query decoder could accept malformed percent text or replace invalid UTF-8
+lossily. Those ambiguous shapes are now rejected. Legal v1 URIs retain their
+existing meaning and form semantics.
+
+Profile URI v2 is still unimplemented and `/v2` remains rejected. A future v2
+codec should be unified in core while remaining a separate compatibility
+boundary from the stored-profile schema; this v1 tightening does not implement
+migration, a complete config v2, or a runtime consumer.
 
 ## Client
 
@@ -514,11 +1028,67 @@ browsing content, error strings, or per-event timestamps. The metrics listener
 is disabled unless configured and must remain loopback-only; Maverick does not
 upload or persist these counters.
 
-On a controlled client shutdown, Maverick also logs one fixed aggregate H2 pool
-summary containing only the existing integer and boolean connection-pool
-snapshot fields. It never includes the server address, a destination, a
-credential, an error string, browsing content, or any user-provided string.
-The process-lifetime connection and stream counts are still activity-volume
+On an owner- or operator-controlled client shutdown, Maverick also emits one
+info-level, fixed aggregate H2 pool summary containing only fixed,
+destination-free numeric and boolean fields. If the active filter excludes
+`info`, or an SDK embedding has no tracing subscriber, this event may not be
+visible. In addition to the existing public connection-pool snapshot fields,
+its crate-private shutdown-only data has exactly these observed outer-TLS
+version counters:
+
+- `pooled_h2_client_observed_outer_tls12_connections`;
+- `pooled_h2_client_observed_outer_tls13_connections`; and
+- `pooled_h2_client_observed_outer_tls_unknown_connections`.
+
+The same snapshot has exactly these observed outer-TLS key-exchange-group
+counters:
+
+- `pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections`;
+- `pooled_h2_client_observed_outer_tls_group_x25519_connections`;
+- `pooled_h2_client_observed_outer_tls_group_secp256r1_connections`;
+- `pooled_h2_client_observed_outer_tls_group_secp384r1_connections`; and
+- `pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections`.
+
+These counters classify only physical H2 connection generations managed by
+`ClientTunnelPool` after actual TLS and H2 setup both succeeded and the
+generation was installed in the pool. Each installed generation is classified
+once; cached checkout and stream reuse do not increment the counters. The
+counters saturate without breaking either stored invariant: TLS 1.2 plus TLS
+1.3 plus unknown equals `connections_created`, and the five group classes also
+sum to `connections_created`. `unknown` means the TLS backend returned no
+negotiated version or a version other than TLS 1.2 or TLS 1.3.
+`other_or_unknown` means its formal negotiated-group API returned no group or a
+group outside the four fixed classes. Neither result is inferred from configured
+or offered values, and a connection that never installs in the pool is not
+counted.
+
+The client reads rustls's actual `negotiated_key_exchange_group()` result or
+BoringSSL's actual selected group ID after the TLS handshake and reduces it
+immediately to the fixed class. It does not retain or emit a raw library group
+name or ID. The `x25519_mlkem768` class reports only which group the TLS backend
+said was negotiated. It does not enable that group, define require/prefer
+policy, or establish a post-quantum security claim. Those remain a separate,
+later T015 policy decision.
+
+The observation is the client-facing outer TLS leg. For direct H2 that leg is
+client to Maverick server. With a TLS-terminating provider front it is client to
+provider edge, not provider to origin. It is not an authenticated-tunnel count:
+a physical connection remains counted if later Maverick credential or
+authentication work fails. It does not describe end-to-end Maverick TLS,
+origin TLS, destination HTTPS, ECH, post-quantum properties, channel binding, or
+any other security proof.
+
+H3, H3-to-H2 non-pooled fallback, WebSocket, direct non-pooled
+`tunnel::open` H2, and any H2 connection not installed by this pool are outside
+these counters. All-zero version and group partitions mean only that this
+process installed no pool-managed H2 physical connection; they do not prove
+that the process used no TLS or H2. The summary never includes the server
+address or name, a provider, port, destination, credential, secret, certificate
+path, connection ID, raw group name or ID, error string, browsing content, or
+any user-provided string. Its counter payload contains no per-connection,
+per-version, or per-group timestamp, although the surrounding tracing logger
+may attach one event time to the controlled-shutdown info event. The
+process-lifetime connection and stream counts are still activity-volume
 metadata and should be handled accordingly.
 
 ## Certificate Pinning

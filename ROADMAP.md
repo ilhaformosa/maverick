@@ -17,32 +17,21 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No product-code, test/CI, or release slice is currently queued. The
-`v1.2.0-beta.2` release slice remains closed; its completion is current truth,
-not continuing authority for another tag, release, deployment, live test, or
-remote or system-network change.
+There is currently no queued repository-local slice. Resume the failure-driven
+order only when a Beta failure is reproduced or the owner explicitly selects a
+new minimal slice. Local and GitHub Actions quality evidence do not change the
+product truth in `STATUS.md`.
 
 ## Execution Order
 
-1. **Fix only reproduced Beta failures.** After Beta.2, use the smallest local
-   reproduction and repair for a failure that a Beta user or an authorized
-   field run actually observes. Preserve destination-free diagnostics and the
-   existing privacy boundaries. Do not add speculative transports, tuning,
-   orchestration, or connection-health machinery merely because Beta has
-   started. A product-binary change requires a new reviewed Beta artifact; a
-   documentation-only clarification must not pretend to be a product fix.
-2. **Validate the Stable candidate on a fresh origin.** Before any Stable
-   decision, obtain separate authorization for one freshly provisioned clean
-   temporary origin and repeat artifact verification, from-scratch installation,
-   ordinary browsing, and the applicable reliability and compatibility checks
-   using the exact Stable-candidate artifact. The origin must pass the current
-   host policy and every recorded stop rule. A retained reference origin or
-   Beta result cannot replace this clean-origin gate, and this roadmap item does
-   not itself authorize a server, provider change, spending, network change, or
-   Stable claim.
-3. **Track native server-side ECH upstream.** Keep the current provider-fronted
-   path labeled as a workaround, not ECH. Do not fork rustls or vendor an
-   unmerged ECH patch in the current plan.
+1. **Wait for a concrete input.** A reproduced Beta failure or an explicit
+   owner instruction must name the next minimal slice before repository-local
+   work resumes. Use the failure-driven order below rather than creating a
+   standing queue.
+2. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+   need an explicit identity and remote-permission design; signatures need a
+   trust-root and key-custody decision; reproducible builds need a separate
+   byte-for-byte build experiment. An SBOM is not any of those things.
 
 ## Work Explicitly Stopped
 

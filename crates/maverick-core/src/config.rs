@@ -6,6 +6,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::rngs::OsRng;
 use rand::TryRngCore;
+use serde::de::{Error as _, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 use subtle::ConstantTimeEq;
 use time::format_description::well_known::Rfc3339;
@@ -15,6 +16,8 @@ use zeroize::Zeroize;
 use crate::auth::AUTH_V2_MAX_CREDENTIAL_HINT_LEN;
 use crate::crypto::CryptoPolicyConfig;
 use crate::error::{Error, Result};
+
+pub mod v2;
 
 /// User-facing product mode. This is a policy label, not a transport selector.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -132,6 +135,123 @@ impl Drop for SecretString {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConfigVersion {
+    V1,
+    V2,
+    Unsupported,
+}
+
+impl<'de> Deserialize<'de> for ConfigVersion {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ConfigVersionValueVisitor)
+    }
+}
+
+struct ConfigVersionDocument(ConfigVersion);
+
+impl<'de> Deserialize<'de> for ConfigVersionDocument {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer
+            .deserialize_map(ConfigVersionRootVisitor)
+            .map(Self)
+    }
+}
+
+struct ConfigVersionRootVisitor;
+
+impl<'de> Visitor<'de> for ConfigVersionRootVisitor {
+    type Value = ConfigVersion;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a configuration mapping")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut version = None;
+        while let Some(key) = map.next_key::<ConfigVersionKey>()? {
+            match key {
+                ConfigVersionKey::Version => {
+                    if version.is_some() {
+                        return Err(A::Error::custom("invalid configuration version metadata"));
+                    }
+                    version = Some(map.next_value::<ConfigVersion>()?);
+                }
+                ConfigVersionKey::Other => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+
+        version.ok_or_else(|| A::Error::custom("invalid configuration version metadata"))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum ConfigVersionKey {
+    Version,
+    #[serde(other)]
+    Other,
+}
+
+struct ConfigVersionValueVisitor;
+
+impl<'de> Visitor<'de> for ConfigVersionValueVisitor {
+    type Value = ConfigVersion;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an integer configuration version")
+    }
+
+    fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E> {
+        Ok(match value {
+            1 => ConfigVersion::V1,
+            2 => ConfigVersion::V2,
+            _ => ConfigVersion::Unsupported,
+        })
+    }
+
+    fn visit_i128<E>(self, value: i128) -> std::result::Result<Self::Value, E> {
+        Ok(match value {
+            1 => ConfigVersion::V1,
+            2 => ConfigVersion::V2,
+            _ => ConfigVersion::Unsupported,
+        })
+    }
+
+    fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E> {
+        Ok(match value {
+            1 => ConfigVersion::V1,
+            2 => ConfigVersion::V2,
+            _ => ConfigVersion::Unsupported,
+        })
+    }
+
+    fn visit_u128<E>(self, value: u128) -> std::result::Result<Self::Value, E> {
+        Ok(match value {
+            1 => ConfigVersion::V1,
+            2 => ConfigVersion::V2,
+            _ => ConfigVersion::Unsupported,
+        })
+    }
+}
+
+fn config_version(input: &str) -> Result<ConfigVersion> {
+    ConfigVersionDocument::deserialize(serde_yaml_ng::Deserializer::from_str(input))
+        .map(|document| document.0)
+        .map_err(|_| Error::Config("invalid configuration version metadata".into()))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientConfig {
     pub version: u16,
@@ -149,7 +269,7 @@ pub struct ClientConfig {
 
 impl ClientConfig {
     pub fn from_yaml_str(input: &str) -> Result<Self> {
-        let cfg: Self = from_yaml_str_rejecting_unknown_fields(input)?;
+        let cfg: Self = from_versioned_yaml_str_rejecting_unknown_fields(input)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -576,7 +696,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     pub fn from_yaml_str(input: &str) -> Result<Self> {
-        let cfg: Self = from_yaml_str_rejecting_unknown_fields(input)?;
+        let cfg: Self = from_versioned_yaml_str_rejecting_unknown_fields(input)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -703,6 +823,18 @@ impl ServerConfig {
             self.advanced.experimental_h3,
         )?;
         Ok(())
+    }
+}
+
+fn from_versioned_yaml_str_rejecting_unknown_fields<'de, T>(input: &'de str) -> Result<T>
+where
+    T: Deserialize<'de>,
+{
+    match config_version(input)? {
+        ConfigVersion::V1 => from_yaml_str_rejecting_unknown_fields(input),
+        ConfigVersion::V2 | ConfigVersion::Unsupported => {
+            Err(Error::Config("unsupported configuration version".into()))
+        }
     }
 }
 
@@ -2028,6 +2160,106 @@ server:
     }
 
     #[test]
+    fn canonical_yaml_rejects_v2_shaped_documents_before_v1_deserialization() {
+        let client = r#"
+version: 2
+profile:
+  endpoints: []
+"#;
+        let server = r#"
+version: 2
+service:
+  listeners: []
+"#;
+
+        assert_eq!(
+            ClientConfig::from_yaml_str(client).unwrap_err().to_string(),
+            "configuration error: unsupported configuration version"
+        );
+        assert_eq!(
+            ServerConfig::from_yaml_str(server).unwrap_err().to_string(),
+            "configuration error: unsupported configuration version"
+        );
+    }
+
+    #[test]
+    fn canonical_yaml_rejects_every_unsupported_integer_version() {
+        for version in ["-1", "0", "2", "65536"] {
+            let input = format!("version: {version}\nfuture: true\n");
+            let expected = "configuration error: unsupported configuration version";
+
+            assert_eq!(
+                ClientConfig::from_yaml_str(&input).unwrap_err().to_string(),
+                expected
+            );
+            assert_eq!(
+                ServerConfig::from_yaml_str(&input).unwrap_err().to_string(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_yaml_version_discriminator_fails_closed_for_invalid_metadata() {
+        let cases = [
+            (
+                "missing",
+                "future: true\n".to_owned(),
+                "configuration error: invalid configuration version metadata",
+            ),
+            (
+                "duplicate",
+                "version: 1\nversion: 2\n".to_owned(),
+                "configuration error: invalid configuration version metadata",
+            ),
+            (
+                "non-integer",
+                "version: \"2\"\nfuture: true\n".to_owned(),
+                "configuration error: invalid configuration version metadata",
+            ),
+            (
+                "non-mapping",
+                "- version\n- 1\n".to_owned(),
+                "configuration error: invalid configuration version metadata",
+            ),
+        ];
+
+        for (case_name, input, expected) in cases {
+            assert_eq!(
+                ClientConfig::from_yaml_str(&input).unwrap_err().to_string(),
+                expected,
+                "client {case_name}"
+            );
+            assert_eq!(
+                ServerConfig::from_yaml_str(&input).unwrap_err().to_string(),
+                expected,
+                "server {case_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_yaml_version_errors_do_not_echo_untrusted_content() {
+        let private_marker = "PRIVATE_CONFIG_VERSION_MARKER_DO_NOT_ECHO";
+        let long_suffix = "L".repeat(4_096);
+        let input = format!("version: |\n  {private_marker}{long_suffix}\nfuture: true\n");
+
+        for rendered in [
+            ClientConfig::from_yaml_str(&input).unwrap_err().to_string(),
+            ServerConfig::from_yaml_str(&input).unwrap_err().to_string(),
+        ] {
+            assert_eq!(
+                rendered,
+                "configuration error: invalid configuration version metadata"
+            );
+            assert!(!rendered.contains(private_marker));
+            assert!(!rendered.contains(&long_suffix));
+            assert!(rendered.len() <= 128);
+            assert!(rendered.chars().all(|character| !character.is_control()));
+        }
+    }
+
+    #[test]
     fn canonical_client_yaml_rejects_unknown_channel_binding_key() {
         let secret = SecretString::generate();
         let input = canonical_client_yaml(&secret)
@@ -2202,20 +2434,40 @@ server:
         let secret = SecretString::generate();
         let client = canonical_client_yaml(&secret);
         let client_multi_document = format!("{client}\n---\n{client}");
-        assert!(ClientConfig::from_yaml_str(&client_multi_document).is_err());
+        assert_eq!(
+            ClientConfig::from_yaml_str(&client_multi_document)
+                .unwrap_err()
+                .to_string(),
+            "configuration error: invalid configuration version metadata"
+        );
 
         let server = canonical_server_yaml(&secret);
         let server_multi_document = format!("{server}\n---\n{server}");
-        assert!(ServerConfig::from_yaml_str(&server_multi_document).is_err());
+        assert_eq!(
+            ServerConfig::from_yaml_str(&server_multi_document)
+                .unwrap_err()
+                .to_string(),
+            "configuration error: invalid configuration version metadata"
+        );
     }
 
     #[test]
-    fn canonical_yaml_keeps_known_duplicate_key_rejection() {
+    fn canonical_yaml_keeps_known_root_and_nested_duplicate_key_rejection() {
         let secret = SecretString::generate();
-        let input =
+        let client_root =
             canonical_client_yaml(&secret).replace("mode: auto", "mode: auto\nmode: private");
+        let client_nested = canonical_client_yaml(&secret).replace(
+            "  address: \"example.invalid:443\"",
+            "  address: \"example.invalid:443\"\n  address: \"other.invalid:443\"",
+        );
+        let server_nested = canonical_server_yaml(&secret).replace(
+            "  tunnel_path: \"/assets/upload\"",
+            "  tunnel_path: \"/assets/upload\"\n  tunnel_path: \"/other\"",
+        );
 
-        assert!(ClientConfig::from_yaml_str(&input).is_err());
+        assert!(ClientConfig::from_yaml_str(&client_root).is_err());
+        assert!(ClientConfig::from_yaml_str(&client_nested).is_err());
+        assert!(ServerConfig::from_yaml_str(&server_nested).is_err());
     }
 
     #[test]
@@ -2226,6 +2478,20 @@ server:
 
         let config: ClientConfig = serde_yaml_ng::from_str(&input).unwrap();
         assert!(!config.auth.channel_binding.require);
+    }
+
+    #[test]
+    fn direct_generic_serde_version_behavior_remains_separate_from_canonical_readers() {
+        let secret = SecretString::generate();
+        let client_input = canonical_client_yaml(&secret).replace("version: 1", "version: 2");
+        let client: ClientConfig = serde_yaml_ng::from_str(&client_input).unwrap();
+        assert_eq!(client.version, 2);
+        assert!(client.validate().is_err());
+
+        let server_input = canonical_server_yaml(&secret).replace("version: 1", "version: 2");
+        let server: ServerConfig = serde_yaml_ng::from_str(&server_input).unwrap();
+        assert_eq!(server.version, 2);
+        assert!(server.validate().is_err());
     }
 
     #[test]

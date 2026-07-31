@@ -342,19 +342,7 @@ async fn main() -> Result<()> {
             approved_host_label,
             proxy_vpn_conflict_checked,
         }),
-        Commands::ConfigUri { command } => match command {
-            ConfigUriCommand::Export {
-                client,
-                include_secret,
-                qr,
-            } => export_config_uri(&client, include_secret, qr),
-            ConfigUriCommand::Import {
-                uri,
-                clipboard,
-                dry_run,
-                output,
-            } => import_config_uri_from_args(uri.as_deref(), clipboard, dry_run, output.as_deref()),
-        },
+        Commands::ConfigUri { command } => run_config_uri_command(command),
         Commands::Experimental { command } => match command {
             ExperimentalCommand::List => {
                 print_experimental_track_list();
@@ -1898,6 +1886,10 @@ struct ProfileUri {
     experimental_tun: bool,
 }
 
+const INVALID_PROFILE_URI_QUERY: &str = "invalid profile URI query";
+const INVALID_PROFILE_URI: &str = "invalid profile URI";
+const PROFILE_URI_MAX_BYTES: usize = 16 * 1024;
+
 fn export_config_uri(path: &Path, include_secret: bool, qr: bool) -> Result<()> {
     validate_qr_export(include_secret, qr)?;
     let cfg = read_client_config(&path.to_path_buf())?;
@@ -1959,6 +1951,22 @@ impl ClipboardReader for OsClipboardReader {
     }
 }
 
+fn run_config_uri_command(command: ConfigUriCommand) -> Result<()> {
+    match command {
+        ConfigUriCommand::Export {
+            client,
+            include_secret,
+            qr,
+        } => export_config_uri(&client, include_secret, qr),
+        ConfigUriCommand::Import {
+            uri,
+            clipboard,
+            dry_run,
+            output,
+        } => import_config_uri_from_args(uri.as_deref(), clipboard, dry_run, output.as_deref()),
+    }
+}
+
 fn import_config_uri_from_args(
     uri: Option<&str>,
     clipboard: bool,
@@ -2010,7 +2018,12 @@ fn read_profile_uri_from_stdin() -> Result<String> {
 }
 
 fn profile_uri_contains_secret(uri: &str) -> bool {
-    uri.contains("secret=") || uri.contains("secret%3D")
+    let raw_detected = uri.contains("secret=") || uri.contains("secret%3D");
+    let decoded_detected = match Url::parse(uri) {
+        Ok(url) => url.password().is_some() || url.query_pairs().any(|(key, _)| key == "secret"),
+        Err(_) => false,
+    };
+    raw_detected || decoded_detected
 }
 
 #[cfg(target_os = "macos")]
@@ -2293,12 +2306,15 @@ fn yaml_double_quoted(value: &str) -> String {
 impl ProfileUri {
     fn parse(input: &str) -> Result<Self> {
         let input = normalize_profile_uri_payload(input)?;
+        validate_profile_uri_input(input)?;
         let url = Url::parse(input).context("parse profile URI")?;
         anyhow::ensure!(url.scheme() == "maverick", "URI scheme must be maverick");
         anyhow::ensure!(
             url.host_str() == Some("profile") && url.path() == "/v1",
             "unsupported Maverick profile URI version"
         );
+        validate_profile_uri_v1_envelope(&url)?;
+        validate_profile_uri_v1_query(&url)?;
         let server = required_profile_query(&url, "server")?;
         let server_name = required_profile_query(&url, "name")?;
         let tunnel_path = required_profile_query(&url, "path")?;
@@ -2409,6 +2425,107 @@ impl ProfileUri {
         cfg.validate()?;
         Ok(cfg)
     }
+}
+
+fn validate_profile_uri_input(input: &str) -> Result<()> {
+    anyhow::ensure!(input.len() <= PROFILE_URI_MAX_BYTES, INVALID_PROFILE_URI);
+    anyhow::ensure!(
+        !profile_uri_authority_has_userinfo_or_port_syntax(input),
+        INVALID_PROFILE_URI
+    );
+    let Some((_, query_and_fragment)) = input.split_once('?') else {
+        return Ok(());
+    };
+    let query = query_and_fragment
+        .split_once('#')
+        .map_or(query_and_fragment, |(query, _)| query);
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        anyhow::ensure!(
+            profile_uri_query_component_is_lossless(key)
+                && profile_uri_query_component_is_lossless(value),
+            INVALID_PROFILE_URI
+        );
+    }
+    Ok(())
+}
+
+fn profile_uri_query_component_is_lossless(component: &str) -> bool {
+    let encoded = component.as_bytes();
+    let mut decoded = Vec::with_capacity(encoded.len());
+    let mut index = 0;
+    while index < encoded.len() {
+        if encoded[index] == b'%' {
+            let Some(high) = encoded.get(index + 1).and_then(|byte| hex_value(*byte)) else {
+                return false;
+            };
+            let Some(low) = encoded.get(index + 2).and_then(|byte| hex_value(*byte)) else {
+                return false;
+            };
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(if encoded[index] == b'+' {
+                b' '
+            } else {
+                encoded[index]
+            });
+            index += 1;
+        }
+    }
+    std::str::from_utf8(&decoded).is_ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn validate_profile_uri_v1_envelope(url: &Url) -> Result<()> {
+    anyhow::ensure!(
+        url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none()
+            && url.fragment().is_none(),
+        INVALID_PROFILE_URI
+    );
+    Ok(())
+}
+
+fn profile_uri_authority_has_userinfo_or_port_syntax(input: &str) -> bool {
+    let Some((_, after_scheme)) = input.split_once("://") else {
+        return false;
+    };
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    after_scheme[..authority_end].contains(['@', ':'])
+}
+
+fn validate_profile_uri_v1_query(url: &Url) -> Result<()> {
+    let mut seen = 0_u16;
+    for (key, _) in url.query_pairs() {
+        let bit = match key.as_ref() {
+            "server" => 1 << 0,
+            "name" => 1 << 1,
+            "path" => 1 << 2,
+            "mode" => 1 << 3,
+            "credential_id" => 1 << 4,
+            "secret" => 1 << 5,
+            "cert_pin" => 1 << 6,
+            "experimental_h3" => 1 << 7,
+            "experimental_ech" => 1 << 8,
+            "experimental_tun" => 1 << 9,
+            _ => anyhow::bail!(INVALID_PROFILE_URI_QUERY),
+        };
+        anyhow::ensure!(seen & bit == 0, INVALID_PROFILE_URI_QUERY);
+        seen |= bit;
+    }
+    Ok(())
 }
 
 fn normalize_profile_uri_payload(input: &str) -> Result<&str> {
@@ -3116,6 +3233,14 @@ async fn start_echo_server() -> Result<SocketAddr> {
 mod tests {
     use super::*;
 
+    fn assert_fixed_private_safe_profile_uri_error(error: &str) {
+        assert_eq!(error, INVALID_PROFILE_URI);
+        assert!(error.len() <= 64);
+        assert!(!error.contains("PRIVATE"));
+        assert!(!error.contains('\n'));
+        assert!(!error.contains('\u{1b}'));
+    }
+
     #[cfg(unix)]
     #[test]
     fn warns_for_group_readable_config() {
@@ -3293,12 +3418,41 @@ mod tests {
 
     #[test]
     fn secret_bearing_profile_uri_is_detected_for_argv_warning() {
-        assert!(profile_uri_contains_secret(
-            "maverick://profile/v1?server=example.com&secret=mv1_placeholder"
-        ));
+        let secret = SecretString::generate();
+        let plain = format!(
+            "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&secret={}",
+            secret.expose_secret()
+        );
+        let encoded = format!(
+            "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&se%63ret={}",
+            secret.expose_secret()
+        );
+        let malformed_raw = format!("not-a-profile-uri?secret={}", secret.expose_secret());
+        let malformed_raw_encoded_equals =
+            format!("not-a-profile-uri?secret%3D{}", secret.expose_secret());
+        let password = format!(
+            "maverick://user:{}@profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto",
+            secret.expose_secret()
+        );
+
+        assert!(profile_uri_contains_secret(&plain));
+        assert!(profile_uri_contains_secret(&encoded));
+        assert!(profile_uri_contains_secret(&malformed_raw));
+        assert!(profile_uri_contains_secret(&malformed_raw_encoded_equals));
+        assert!(profile_uri_contains_secret(&password));
+        assert_eq!(
+            ProfileUri::parse(&password).unwrap_err().to_string(),
+            INVALID_PROFILE_URI
+        );
+        let parsed = ProfileUri::parse(&encoded).unwrap();
+        assert_eq!(
+            parsed.secret.as_ref().map(SecretString::expose_secret),
+            Some(secret.expose_secret())
+        );
         assert!(!profile_uri_contains_secret(
             "maverick://profile/v1?server=example.com"
         ));
+        assert!(!profile_uri_contains_secret("not a profile URI"));
     }
 
     #[test]
@@ -3983,6 +4137,21 @@ server:
     }
 
     #[test]
+    fn cli_canonical_yaml_entrypoints_reject_v2_before_v1_deserialization() {
+        let client = "version: 2\nprofile:\n  endpoints: []\n";
+        let server = "version: 2\nservice:\n  listeners: []\n";
+
+        assert_eq!(
+            migration_report("client", client).unwrap_err().to_string(),
+            "configuration error: unsupported configuration version"
+        );
+        assert_eq!(
+            migration_report("server", server).unwrap_err().to_string(),
+            "configuration error: unsupported configuration version"
+        );
+    }
+
+    #[test]
     fn server_migration_report_lists_auth_limit_defaults() {
         let secret = SecretString::generate();
         let input = format!(
@@ -4225,6 +4394,338 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
         )
         .unwrap_err();
         assert!(err.to_string().contains("control characters"));
+    }
+
+    #[test]
+    fn profile_uri_v1_rejects_ambiguous_outer_envelopes() {
+        let query = "?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto";
+        let cases = [
+            ("empty username", format!("maverick://@profile/v1{query}")),
+            (
+                "empty username and password",
+                format!("maverick://:@profile/v1{query}"),
+            ),
+            ("empty port", format!("maverick://profile:/v1{query}")),
+            (
+                "out-of-range port",
+                format!("maverick://profile:65536/v1{query}"),
+            ),
+            (
+                "malformed port",
+                format!("maverick://profile:not-a-port/v1{query}"),
+            ),
+            ("username", format!("maverick://user@profile/v1{query}")),
+            (
+                "password",
+                format!("maverick://user:PRIVATE_PASSWORD@profile/v1{query}"),
+            ),
+            ("port", format!("maverick://profile:443/v1{query}")),
+            (
+                "fragment",
+                format!("maverick://profile/v1{query}#PRIVATE_FRAGMENT"),
+            ),
+            ("empty fragment", format!("maverick://profile/v1{query}#")),
+        ];
+        let accepted: Vec<_> = cases
+            .iter()
+            .filter_map(|(label, uri)| ProfileUri::parse(uri).is_ok().then_some(*label))
+            .collect();
+
+        assert!(
+            accepted.is_empty(),
+            "strict parser unexpectedly accepted {accepted:?}"
+        );
+        for (_, uri) in cases {
+            let error = ProfileUri::parse(&uri).unwrap_err().to_string();
+            assert_fixed_private_safe_profile_uri_error(&error);
+        }
+
+        let legal_query_delimiters = ProfileUri::parse(
+            "maverick://profile/v1?server=example.com:443&name=user@example.com&path=%2Fassets%2Fupload&mode=auto",
+        )
+        .unwrap();
+        assert_eq!(legal_query_delimiters.server, "example.com:443");
+        assert_eq!(legal_query_delimiters.server_name, "user@example.com");
+    }
+
+    #[test]
+    fn profile_uri_v1_rejects_non_lossless_query_encoding() {
+        let cases = [
+            ("bare percent", "PRIVATE_MARKER%"),
+            ("one hex digit", "PRIVATE_MARKER%0"),
+            ("non-hex digits", "PRIVATE_MARKER%GG"),
+            ("invalid UTF-8", "PRIVATE_MARKER%FF"),
+        ];
+        let accepted: Vec<_> = cases
+            .iter()
+            .filter_map(|(label, name)| {
+                let uri = format!(
+                    "maverick://profile/v1?server=example.com%3A443&name={name}&path=%2Fassets%2Fupload&mode=auto"
+                );
+                ProfileUri::parse(&uri).is_ok().then_some(*label)
+            })
+            .collect();
+
+        assert!(
+            accepted.is_empty(),
+            "strict parser unexpectedly accepted {accepted:?}"
+        );
+        for (_, name) in cases {
+            let uri = format!(
+                "maverick://profile/v1?server=example.com%3A443&name={name}&path=%2Fassets%2Fupload&mode=auto"
+            );
+            let error = ProfileUri::parse(&uri).unwrap_err().to_string();
+            assert_fixed_private_safe_profile_uri_error(&error);
+        }
+    }
+
+    #[test]
+    fn profile_uri_v1_query_decoder_preserves_form_semantics() {
+        let valid_components = [
+            "plain",
+            "lower%2fupper%2F",
+            "%E2%9C%93",
+            "%e2%9c%93",
+            "hello+world",
+            "%26amp%3B",
+            "left%3Dright",
+            "raw=合法",
+        ];
+        let invalid_components = ["%", "%0", "%GG", "%FF", "%E2%82"];
+
+        for component in valid_components {
+            assert!(
+                profile_uri_query_component_is_lossless(component),
+                "valid component rejected: {component}"
+            );
+        }
+        for component in invalid_components {
+            assert!(
+                !profile_uri_query_component_is_lossless(component),
+                "invalid component accepted: {component}"
+            );
+        }
+
+        let profile = ProfileUri::parse(
+            "maverick://profile/v1?server=example.com%3a443&name=%E2%9C%93+Name&path=%2fassets%2Fencoded%26amp%3B%3D&mode=auto",
+        )
+        .unwrap();
+        assert_eq!(profile.server, "example.com:443");
+        assert_eq!(profile.server_name, "✓ Name");
+        assert_eq!(profile.tunnel_path, "/assets/encoded&amp;=");
+    }
+
+    #[test]
+    fn profile_uri_v1_rejects_input_over_16_kib() {
+        fn sized_uri(target_len: usize) -> String {
+            let prefix = "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2F";
+            let suffix = "&mode=auto";
+            assert!(prefix.len() + suffix.len() <= target_len);
+            format!(
+                "{prefix}{}{suffix}",
+                "a".repeat(target_len - prefix.len() - suffix.len())
+            )
+        }
+
+        let at_limit = sized_uri(16 * 1024);
+        let over_limit = sized_uri(16 * 1024 + 1);
+        assert_eq!(at_limit.len(), 16 * 1024);
+        assert_eq!(over_limit.len(), 16 * 1024 + 1);
+        ProfileUri::parse(&at_limit).unwrap();
+        let err = ProfileUri::parse(&over_limit).unwrap_err();
+        assert_fixed_private_safe_profile_uri_error(&err.to_string());
+    }
+
+    #[test]
+    fn invalid_profile_uri_envelope_rejects_before_secret_or_file_materialization() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            "maverick://@profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret=mv1_short",
+            "maverick://:@profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret=mv1_short",
+            "maverick://profile:/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret=mv1_short",
+            "maverick://user:PRIVATE_PASSWORD@profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret=mv1_short",
+            "maverick://profile/v1?server=example.com%3A443&name=PRIVATE_MARKER%GG&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret=mv1_short",
+        ];
+
+        for (index, uri) in cases.into_iter().enumerate() {
+            let output = dir.path().join(format!("must-not-exist-{index}.yaml"));
+            let error = import_config_uri(uri, false, Some(&output))
+                .unwrap_err()
+                .to_string();
+            assert_fixed_private_safe_profile_uri_error(&error);
+            assert!(!output.exists());
+        }
+    }
+
+    #[test]
+    fn config_uri_import_command_rejects_invalid_authority_before_file_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("must-not-exist.yaml");
+        let uri = "maverick://profile:65536/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret=mv1_short";
+        let cli = Cli::try_parse_from([
+            "maverick",
+            "config-uri",
+            "import",
+            "--uri",
+            uri,
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Commands::ConfigUri { command } = cli.command else {
+            panic!("expected config-uri command");
+        };
+
+        let error = run_config_uri_command(command).unwrap_err().to_string();
+
+        assert_fixed_private_safe_profile_uri_error(&error);
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn profile_uri_rejects_unknown_query_key() {
+        let err = ProfileUri::parse(
+            "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&cert_pni=sha256%2Fignored",
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), INVALID_PROFILE_URI_QUERY);
+    }
+
+    #[test]
+    fn profile_uri_rejects_duplicate_required_query_key() {
+        let err = ProfileUri::parse(
+            "maverick://profile/v1?server=first.example%3A443&server=second.example%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto",
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), INVALID_PROFILE_URI_QUERY);
+    }
+
+    #[test]
+    fn profile_uri_rejects_every_recognized_duplicate_query_key() {
+        let cases = [
+            ("server", "second.example:443"),
+            ("name", "second.example"),
+            ("path", "/second"),
+            ("mode", "stable"),
+            ("credential_id", "u_second"),
+            ("secret", "mv1_second"),
+            ("cert_pin", "sha256/second"),
+            ("experimental_h3", "false"),
+            ("experimental_ech", "false"),
+            ("experimental_tun", "false"),
+        ];
+
+        for (duplicate_key, duplicate_value) in cases {
+            let mut url = Url::parse("maverick://profile/v1").unwrap();
+            {
+                let mut pairs = url.query_pairs_mut();
+                pairs.append_pair("server", "first.example:443");
+                pairs.append_pair("name", "first.example");
+                pairs.append_pair("path", "/first");
+                pairs.append_pair("mode", "auto");
+                if !matches!(duplicate_key, "server" | "name" | "path" | "mode") {
+                    pairs.append_pair(duplicate_key, "first");
+                }
+                pairs.append_pair(duplicate_key, duplicate_value);
+            }
+
+            let err = ProfileUri::parse(url.as_str()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                INVALID_PROFILE_URI_QUERY,
+                "duplicate key {duplicate_key}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_uri_rejects_percent_encoded_unknown_and_duplicate_keys() {
+        let unknown = ProfileUri::parse(
+            "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&cert%5Fpni=ignored",
+        )
+        .unwrap_err();
+        assert_eq!(unknown.to_string(), INVALID_PROFILE_URI_QUERY);
+
+        let duplicate = ProfileUri::parse(
+            "maverick://profile/v1?server=first.example%3A443&%73erver=second.example%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto",
+        )
+        .unwrap_err();
+        assert_eq!(duplicate.to_string(), INVALID_PROFILE_URI_QUERY);
+    }
+
+    #[test]
+    fn profile_uri_query_error_does_not_echo_untrusted_input() {
+        let private_marker = "PRIVATE_MARKER_DO_NOT_ECHO";
+        let long_text = "x".repeat(4096);
+        let cases = [
+            (
+                format!("unknown\n\u{1b}[31m{private_marker}"),
+                "ignored".to_owned(),
+            ),
+            (
+                "unknown".to_owned(),
+                format!("value\n\u{1b}[31m{private_marker}{long_text}"),
+            ),
+        ];
+
+        for (unknown_key, unknown_value) in cases {
+            let mut url = Url::parse("maverick://profile/v1").unwrap();
+            {
+                let mut pairs = url.query_pairs_mut();
+                pairs.append_pair("server", "example.com:443");
+                pairs.append_pair("name", "example.com");
+                pairs.append_pair("path", "/assets/upload");
+                pairs.append_pair("mode", "auto");
+                pairs.append_pair(&unknown_key, &unknown_value);
+            }
+
+            let err = ProfileUri::parse(url.as_str()).unwrap_err().to_string();
+            assert_eq!(err, INVALID_PROFILE_URI_QUERY);
+            assert!(!err.contains(private_marker));
+            assert!(!err.contains('\n'));
+            assert!(!err.contains('\u{1b}'));
+            assert!(!err.contains(&long_text));
+        }
+    }
+
+    #[test]
+    fn invalid_profile_uri_query_rejects_before_secret_or_file_materialization() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("must-not-exist.yaml");
+        let uri = "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret=mv1_short&unknown=ignored";
+
+        let err = import_config_uri(uri, false, Some(&output))
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(err, INVALID_PROFILE_URI_QUERY);
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn profile_uri_accepts_legal_fields_in_arbitrary_order() {
+        let secret = SecretString::generate();
+        let cert_pin = format!("sha256/{}", URL_SAFE_NO_PAD.encode([7_u8; 32]));
+        let uri = format!(
+            "maverick://profile/v1?experimental_tun=true&cert_pin={cert_pin}&secret={}&mode=private&path=%2Fassets%2Fupload&experimental_ech=false&credential_id=u_example&name=example.com&experimental_h3=true&server=example.com%3A443",
+            secret.expose_secret()
+        );
+
+        let profile = ProfileUri::parse(&uri).unwrap();
+
+        assert_eq!(profile.server, "example.com:443");
+        assert_eq!(profile.server_name, "example.com");
+        assert_eq!(profile.tunnel_path, "/assets/upload");
+        assert_eq!(profile.mode, Mode::Private);
+        assert_eq!(profile.credential_id.as_deref(), Some("u_example"));
+        assert_eq!(
+            profile.secret.as_ref().map(SecretString::expose_secret),
+            Some(secret.expose_secret())
+        );
+        assert_eq!(profile.cert_pin.as_deref(), Some(cert_pin.as_str()));
+        assert!(profile.experimental_h3);
+        assert!(!profile.experimental_ech);
+        assert!(profile.experimental_tun);
     }
 
     #[test]

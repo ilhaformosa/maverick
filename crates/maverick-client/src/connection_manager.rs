@@ -50,6 +50,11 @@ pub(crate) struct H2PoolShutdownSnapshot {
     pub(crate) pooled_h2_client_observed_outer_tls12_connections: u64,
     pub(crate) pooled_h2_client_observed_outer_tls13_connections: u64,
     pub(crate) pooled_h2_client_observed_outer_tls_unknown_connections: u64,
+    pub(crate) pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections: u64,
+    pub(crate) pooled_h2_client_observed_outer_tls_group_x25519_connections: u64,
+    pub(crate) pooled_h2_client_observed_outer_tls_group_secp256r1_connections: u64,
+    pub(crate) pooled_h2_client_observed_outer_tls_group_secp384r1_connections: u64,
+    pub(crate) pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections: u64,
 }
 
 pub(crate) struct ClientTunnelPool {
@@ -177,6 +182,11 @@ struct H2ConnectionPoolState {
     pooled_h2_client_observed_outer_tls12_connections: u64,
     pooled_h2_client_observed_outer_tls13_connections: u64,
     pooled_h2_client_observed_outer_tls_unknown_connections: u64,
+    pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections: u64,
+    pooled_h2_client_observed_outer_tls_group_x25519_connections: u64,
+    pooled_h2_client_observed_outer_tls_group_secp256r1_connections: u64,
+    pooled_h2_client_observed_outer_tls_group_secp384r1_connections: u64,
+    pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections: u64,
     streams_opened: u64,
     streams_reused: u64,
     reconnects: u64,
@@ -199,6 +209,7 @@ impl H2ConnectionPoolState {
     fn record_installed_connection(
         &mut self,
         observed_outer_tls_version: crate::h2_transport::ObservedOuterTlsVersion,
+        observed_outer_tls_group: crate::h2_transport::ObservedOuterTlsGroup,
     ) {
         let next_connections_created = self.connections_created.saturating_add(1);
         if next_connections_created == self.connections_created {
@@ -219,6 +230,33 @@ impl H2ConnectionPoolState {
             crate::h2_transport::ObservedOuterTlsVersion::Unknown => {
                 self.pooled_h2_client_observed_outer_tls_unknown_connections = self
                     .pooled_h2_client_observed_outer_tls_unknown_connections
+                    .saturating_add(1);
+            }
+        }
+        match observed_outer_tls_group {
+            crate::h2_transport::ObservedOuterTlsGroup::X25519MlKem768 => {
+                self.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections = self
+                    .pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections
+                    .saturating_add(1);
+            }
+            crate::h2_transport::ObservedOuterTlsGroup::X25519 => {
+                self.pooled_h2_client_observed_outer_tls_group_x25519_connections = self
+                    .pooled_h2_client_observed_outer_tls_group_x25519_connections
+                    .saturating_add(1);
+            }
+            crate::h2_transport::ObservedOuterTlsGroup::Secp256r1 => {
+                self.pooled_h2_client_observed_outer_tls_group_secp256r1_connections = self
+                    .pooled_h2_client_observed_outer_tls_group_secp256r1_connections
+                    .saturating_add(1);
+            }
+            crate::h2_transport::ObservedOuterTlsGroup::Secp384r1 => {
+                self.pooled_h2_client_observed_outer_tls_group_secp384r1_connections = self
+                    .pooled_h2_client_observed_outer_tls_group_secp384r1_connections
+                    .saturating_add(1);
+            }
+            crate::h2_transport::ObservedOuterTlsGroup::OtherOrUnknown => {
+                self.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections = self
+                    .pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections
                     .saturating_add(1);
             }
         }
@@ -256,6 +294,16 @@ impl H2ConnectionPoolState {
                 .pooled_h2_client_observed_outer_tls13_connections,
             pooled_h2_client_observed_outer_tls_unknown_connections: self
                 .pooled_h2_client_observed_outer_tls_unknown_connections,
+            pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections: self
+                .pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+            pooled_h2_client_observed_outer_tls_group_x25519_connections: self
+                .pooled_h2_client_observed_outer_tls_group_x25519_connections,
+            pooled_h2_client_observed_outer_tls_group_secp256r1_connections: self
+                .pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+            pooled_h2_client_observed_outer_tls_group_secp384r1_connections: self
+                .pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+            pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections: self
+                .pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
         }
     }
 }
@@ -465,6 +513,7 @@ impl H2ConnectionManager {
             transport,
             connection_closed,
             observed_outer_tls_version,
+            observed_outer_tls_group,
         } = connection;
         let mut state = lock_state(&self.inner.state);
         if state.shutdown {
@@ -478,7 +527,7 @@ impl H2ConnectionManager {
         if state.connections_created > 0 {
             state.reconnects = state.reconnects.saturating_add(1);
         }
-        state.record_installed_connection(observed_outer_tls_version);
+        state.record_installed_connection(observed_outer_tls_version, observed_outer_tls_group);
         state.streams_opened = state.streams_opened.saturating_add(1);
         state.active_streams = state.active_streams.saturating_add(1);
         state.connection = Some(CachedH2Connection {
@@ -670,14 +719,17 @@ mod tests {
             },
             connection_closed: closed_rx,
             observed_outer_tls_version: crate::h2_transport::ObservedOuterTlsVersion::Unknown,
+            observed_outer_tls_group: crate::h2_transport::ObservedOuterTlsGroup::OtherOrUnknown,
         }
     }
 
     async fn test_h2_connection_with_observed_outer_tls(
         version: crate::h2_transport::ObservedOuterTlsVersion,
+        group: crate::h2_transport::ObservedOuterTlsGroup,
     ) -> crate::h2_transport::H2Connection {
         let mut connection = test_h2_connection().await;
         connection.observed_outer_tls_version = version;
+        connection.observed_outer_tls_group = group;
         connection
     }
 
@@ -774,12 +826,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn installed_physical_connections_are_counted_once_by_observed_outer_tls_version() {
+    async fn installed_physical_connections_are_counted_once_by_both_outer_tls_partitions() {
+        use crate::h2_transport::ObservedOuterTlsGroup::{
+            OtherOrUnknown, Secp256r1, Secp384r1, X25519MlKem768, X25519,
+        };
         use crate::h2_transport::ObservedOuterTlsVersion::{Tls12, Tls13, Unknown};
 
         let manager = H2ConnectionManager::new(test_config());
         let first = manager
-            .install_and_checkout(test_h2_connection_with_observed_outer_tls(Tls12).await)
+            .install_and_checkout(
+                test_h2_connection_with_observed_outer_tls(Tls12, X25519MlKem768).await,
+            )
             .expect("install first test connection");
         let first_generation = first.generation;
         drop(first);
@@ -806,31 +863,58 @@ mod tests {
                 ),
                 (1, 0, 0)
             );
+            assert_eq!(
+                (
+                    state.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+                    state.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+                    state.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+                    state.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+                    state.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
+                ),
+                (1, 0, 0, 0, 0)
+            );
         }
 
         manager.invalidate_after_readiness_failure(first_generation);
-        let second = manager
-            .install_and_checkout(test_h2_connection_with_observed_outer_tls(Tls13).await)
-            .expect("install replacement test connection");
-        let second_generation = second.generation;
-        drop(second);
-        manager.invalidate_after_readiness_failure(second_generation);
-        drop(
-            manager
-                .install_and_checkout(test_h2_connection_with_observed_outer_tls(Unknown).await)
-                .expect("install second replacement test connection"),
-        );
+        let replacements = [
+            (Tls13, X25519),
+            (Tls13, Secp256r1),
+            (Tls13, Secp384r1),
+            (Unknown, OtherOrUnknown),
+        ];
+        for (index, (version, group)) in replacements.into_iter().enumerate() {
+            let replacement = manager
+                .install_and_checkout(
+                    test_h2_connection_with_observed_outer_tls(version, group).await,
+                )
+                .expect("install replacement test connection");
+            let generation = replacement.generation;
+            drop(replacement);
+            if index + 1 < replacements.len() {
+                manager.invalidate_after_readiness_failure(generation);
+            }
+        }
 
         let state = lock_state(&manager.inner.state);
-        assert_eq!(state.connections_created, 3);
-        assert_eq!(state.reconnects, 2);
+        assert_eq!(state.connections_created, 5);
+        assert_eq!(state.reconnects, 4);
         assert_eq!(
             (
                 state.pooled_h2_client_observed_outer_tls12_connections,
                 state.pooled_h2_client_observed_outer_tls13_connections,
                 state.pooled_h2_client_observed_outer_tls_unknown_connections,
             ),
-            (1, 1, 1)
+            (1, 3, 1)
+        );
+        assert_eq!(
+            (
+                state.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+                state.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+                state.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+                state.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+                state.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
+            ),
+            (1, 1, 1, 1, 1)
         );
         assert_eq!(
             state.pooled_h2_client_observed_outer_tls12_connections as u128
@@ -838,29 +922,70 @@ mod tests {
                 + state.pooled_h2_client_observed_outer_tls_unknown_connections as u128,
             state.connections_created as u128
         );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_x25519_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_secp256r1_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_secp384r1_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections
+                    as u128,
+            state.connections_created as u128
+        );
         drop(state);
 
         let shutdown_snapshot = manager.shutdown_snapshot();
-        assert_eq!(shutdown_snapshot.pool.connections_created, 3);
+        assert_eq!(shutdown_snapshot.pool.connections_created, 5);
         assert_eq!(
             (
                 shutdown_snapshot.pooled_h2_client_observed_outer_tls12_connections,
                 shutdown_snapshot.pooled_h2_client_observed_outer_tls13_connections,
                 shutdown_snapshot.pooled_h2_client_observed_outer_tls_unknown_connections,
             ),
-            (1, 1, 1)
+            (1, 3, 1)
+        );
+        assert_eq!(
+            (
+                shutdown_snapshot
+                    .pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+                shutdown_snapshot.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+                shutdown_snapshot.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+                shutdown_snapshot.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+                shutdown_snapshot
+                    .pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
+            ),
+            (1, 1, 1, 1, 1)
         );
     }
 
     #[test]
-    fn observed_outer_tls_partition_saturates_without_losing_the_invariant() {
+    fn observed_outer_tls_partitions_saturate_without_losing_the_invariants() {
         let mut state = H2ConnectionPoolState {
-            connections_created: u64::MAX,
-            pooled_h2_client_observed_outer_tls12_connections: u64::MAX,
+            connections_created: u64::MAX - 1,
+            pooled_h2_client_observed_outer_tls12_connections: u64::MAX - 1,
+            pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections: u64::MAX - 1,
             ..H2ConnectionPoolState::default()
         };
 
-        state.record_installed_connection(crate::h2_transport::ObservedOuterTlsVersion::Tls13);
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls12_connections as u128
+                + state.pooled_h2_client_observed_outer_tls13_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_unknown_connections as u128,
+            state.connections_created as u128
+        );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_x25519_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_secp256r1_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_secp384r1_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections
+                    as u128,
+            state.connections_created as u128
+        );
+
+        state.record_installed_connection(
+            crate::h2_transport::ObservedOuterTlsVersion::Tls12,
+            crate::h2_transport::ObservedOuterTlsGroup::X25519MlKem768,
+        );
 
         assert_eq!(state.connections_created, u64::MAX);
         assert_eq!(
@@ -871,6 +996,122 @@ mod tests {
         assert_eq!(
             state.pooled_h2_client_observed_outer_tls_unknown_connections,
             0
+        );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+            u64::MAX
+        );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+            0
+        );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+            0
+        );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+            0
+        );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
+            0
+        );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls12_connections as u128
+                + state.pooled_h2_client_observed_outer_tls13_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_unknown_connections as u128,
+            state.connections_created as u128
+        );
+        assert_eq!(
+            state.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_x25519_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_secp256r1_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_secp384r1_connections as u128
+                + state.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections
+                    as u128,
+            state.connections_created as u128
+        );
+
+        let saturated_tls_partition = (
+            state.pooled_h2_client_observed_outer_tls12_connections,
+            state.pooled_h2_client_observed_outer_tls13_connections,
+            state.pooled_h2_client_observed_outer_tls_unknown_connections,
+        );
+        let saturated_group_partition = (
+            state.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+            state.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+            state.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+            state.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+            state.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
+        );
+
+        state.record_installed_connection(
+            crate::h2_transport::ObservedOuterTlsVersion::Tls13,
+            crate::h2_transport::ObservedOuterTlsGroup::X25519,
+        );
+
+        assert_eq!(state.connections_created, u64::MAX);
+        assert_eq!(
+            (
+                state.pooled_h2_client_observed_outer_tls12_connections,
+                state.pooled_h2_client_observed_outer_tls13_connections,
+                state.pooled_h2_client_observed_outer_tls_unknown_connections,
+            ),
+            saturated_tls_partition
+        );
+        assert_eq!(
+            (
+                state.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+                state.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+                state.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+                state.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+                state.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
+            ),
+            saturated_group_partition
+        );
+        assert_eq!(
+            saturated_tls_partition.0 as u128
+                + saturated_tls_partition.1 as u128
+                + saturated_tls_partition.2 as u128,
+            state.connections_created as u128
+        );
+        assert_eq!(
+            saturated_group_partition.0 as u128
+                + saturated_group_partition.1 as u128
+                + saturated_group_partition.2 as u128
+                + saturated_group_partition.3 as u128
+                + saturated_group_partition.4 as u128,
+            state.connections_created as u128
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_connection_rejected_before_install_is_not_counted() {
+        let manager = H2ConnectionManager::new(test_config());
+        manager.shutdown();
+
+        let connection = test_h2_connection_with_observed_outer_tls(
+            crate::h2_transport::ObservedOuterTlsVersion::Tls13,
+            crate::h2_transport::ObservedOuterTlsGroup::X25519,
+        )
+        .await;
+        assert!(manager.install_and_checkout(connection).is_err());
+
+        let snapshot = manager.shutdown_snapshot();
+        assert_eq!(snapshot.pool.connections_created, 0);
+        assert_eq!(
+            (
+                snapshot.pooled_h2_client_observed_outer_tls12_connections,
+                snapshot.pooled_h2_client_observed_outer_tls13_connections,
+                snapshot.pooled_h2_client_observed_outer_tls_unknown_connections,
+                snapshot.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+                snapshot.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+                snapshot.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+                snapshot.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+                snapshot.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
+            ),
+            (0, 0, 0, 0, 0, 0, 0, 0)
         );
     }
 

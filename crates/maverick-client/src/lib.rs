@@ -42,6 +42,11 @@ fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {
             "pooled_h2_client_observed_outer_tls12_connections={} ",
             "pooled_h2_client_observed_outer_tls13_connections={} ",
             "pooled_h2_client_observed_outer_tls_unknown_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_x25519_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_secp256r1_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_secp384r1_connections={} ",
+            "pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections={} ",
             "streams_opened={} ",
             "streams_reused={} ",
             "reconnects={} ",
@@ -88,6 +93,11 @@ fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {
         snapshot.pooled_h2_client_observed_outer_tls12_connections,
         snapshot.pooled_h2_client_observed_outer_tls13_connections,
         snapshot.pooled_h2_client_observed_outer_tls_unknown_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_x25519_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_secp256r1_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_secp384r1_connections,
+        snapshot.pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections,
         pool.streams_opened,
         pool.streams_reused,
         pool.reconnects,
@@ -503,6 +513,11 @@ mod build_gate_tests {
             pooled_h2_client_observed_outer_tls12_connections: 41,
             pooled_h2_client_observed_outer_tls13_connections: 42,
             pooled_h2_client_observed_outer_tls_unknown_connections: 43,
+            pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections: 20,
+            pooled_h2_client_observed_outer_tls_group_x25519_connections: 21,
+            pooled_h2_client_observed_outer_tls_group_secp256r1_connections: 22,
+            pooled_h2_client_observed_outer_tls_group_secp384r1_connections: 23,
+            pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections: 40,
         });
 
         assert_eq!(
@@ -513,6 +528,11 @@ mod build_gate_tests {
                 "pooled_h2_client_observed_outer_tls12_connections=41 ",
                 "pooled_h2_client_observed_outer_tls13_connections=42 ",
                 "pooled_h2_client_observed_outer_tls_unknown_connections=43 ",
+                "pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections=20 ",
+                "pooled_h2_client_observed_outer_tls_group_x25519_connections=21 ",
+                "pooled_h2_client_observed_outer_tls_group_secp256r1_connections=22 ",
+                "pooled_h2_client_observed_outer_tls_group_secp384r1_connections=23 ",
+                "pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections=40 ",
                 "streams_opened=2 ",
                 "streams_reused=3 ",
                 "reconnects=4 ",
@@ -565,6 +585,8 @@ mod build_gate_tests {
             "provider-account",
             "/private/cert.pem",
             "TLS handshake failed",
+            "selected_group=X25519MLKEM768",
+            "selected_curve=P-256",
         ] {
             assert!(!summary.contains(private_value));
         }

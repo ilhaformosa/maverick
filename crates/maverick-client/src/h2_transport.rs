@@ -36,10 +36,20 @@ pub(crate) enum ObservedOuterTlsVersion {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ObservedOuterTlsGroup {
+    X25519MlKem768,
+    X25519,
+    Secp256r1,
+    Secp384r1,
+    OtherOrUnknown,
+}
+
 pub(crate) struct H2Connection {
     pub transport: H2TunnelRequestSender,
     pub connection_closed: watch::Receiver<bool>,
     pub observed_outer_tls_version: ObservedOuterTlsVersion,
+    pub(crate) observed_outer_tls_group: ObservedOuterTlsGroup,
 }
 
 pub async fn connect(config: &ClientConfig) -> Result<H2TunnelRequestSender> {
@@ -78,6 +88,8 @@ async fn connect_rustls_inner(config: &ClientConfig) -> Result<H2Connection> {
         .context("TLS handshake failed")?;
     let observed_outer_tls_version =
         observed_outer_tls_version_from_rustls(tls.get_ref().1.protocol_version());
+    let observed_outer_tls_group =
+        observed_outer_tls_group_from_rustls(tls.get_ref().1.negotiated_key_exchange_group());
     let channel_binding =
         rustls_client_channel_binding(tls.get_ref().1, end_to_end_channel_binding_enabled(config))?;
     let (sender, connection_closed) =
@@ -89,6 +101,7 @@ async fn connect_rustls_inner(config: &ClientConfig) -> Result<H2Connection> {
         },
         connection_closed,
         observed_outer_tls_version,
+        observed_outer_tls_group,
     })
 }
 
@@ -171,6 +184,7 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
             anyhow::bail!("browser TLS server certificate pin mismatch");
         }
     }
+    let observed_outer_tls_group = observed_outer_tls_group_from_boring(tls.ssl().curve());
     let channel_binding =
         boring_client_channel_binding(tls.ssl(), end_to_end_channel_binding_enabled(config))?;
     let (sender, connection_closed) =
@@ -182,6 +196,7 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
         },
         connection_closed,
         observed_outer_tls_version,
+        observed_outer_tls_group,
     })
 }
 
@@ -195,12 +210,40 @@ fn observed_outer_tls_version_from_rustls(
     }
 }
 
+fn observed_outer_tls_group_from_rustls(
+    group: Option<&'static dyn rustls::crypto::SupportedKxGroup>,
+) -> ObservedOuterTlsGroup {
+    match group.map(rustls::crypto::SupportedKxGroup::name) {
+        Some(rustls::NamedGroup::X25519MLKEM768) => ObservedOuterTlsGroup::X25519MlKem768,
+        Some(rustls::NamedGroup::X25519) => ObservedOuterTlsGroup::X25519,
+        Some(rustls::NamedGroup::secp256r1) => ObservedOuterTlsGroup::Secp256r1,
+        Some(rustls::NamedGroup::secp384r1) => ObservedOuterTlsGroup::Secp384r1,
+        Some(_) | None => ObservedOuterTlsGroup::OtherOrUnknown,
+    }
+}
+
 #[cfg(feature = "browser-tls")]
 fn observed_outer_tls_version_from_boring(version: Option<SslVersion>) -> ObservedOuterTlsVersion {
     match version {
         Some(SslVersion::TLS1_2) => ObservedOuterTlsVersion::Tls12,
         Some(SslVersion::TLS1_3) => ObservedOuterTlsVersion::Tls13,
         Some(_) | None => ObservedOuterTlsVersion::Unknown,
+    }
+}
+
+#[cfg(feature = "browser-tls")]
+fn observed_outer_tls_group_from_boring(group_id: Option<u16>) -> ObservedOuterTlsGroup {
+    const SECP256R1: u16 = 23;
+    const SECP384R1: u16 = 24;
+    const X25519: u16 = 29;
+    const X25519_MLKEM768: u16 = 0x11ec;
+
+    match group_id {
+        Some(X25519_MLKEM768) => ObservedOuterTlsGroup::X25519MlKem768,
+        Some(X25519) => ObservedOuterTlsGroup::X25519,
+        Some(SECP256R1) => ObservedOuterTlsGroup::Secp256r1,
+        Some(SECP384R1) => ObservedOuterTlsGroup::Secp384r1,
+        Some(_) | None => ObservedOuterTlsGroup::OtherOrUnknown,
     }
 }
 
@@ -421,7 +464,8 @@ mod ech_api_tests {
 #[cfg(test)]
 mod tcp_socket_tests {
     use super::{
-        enable_outer_tcp_nodelay, observed_outer_tls_version_from_rustls, ObservedOuterTlsVersion,
+        enable_outer_tcp_nodelay, observed_outer_tls_group_from_rustls,
+        observed_outer_tls_version_from_rustls, ObservedOuterTlsGroup, ObservedOuterTlsVersion,
     };
     use anyhow::Result;
     use tokio::net::{TcpListener, TcpStream};
@@ -446,6 +490,38 @@ mod tcp_socket_tests {
         );
     }
 
+    #[test]
+    fn rustls_negotiated_group_api_maps_to_fixed_observed_outer_tls_class() {
+        use rustls::crypto::aws_lc_rs::kx_group::{
+            SECP256R1, SECP256R1MLKEM768, SECP384R1, X25519, X25519MLKEM768,
+        };
+
+        assert_eq!(
+            observed_outer_tls_group_from_rustls(Some(X25519MLKEM768)),
+            ObservedOuterTlsGroup::X25519MlKem768
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_rustls(Some(X25519)),
+            ObservedOuterTlsGroup::X25519
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_rustls(Some(SECP256R1)),
+            ObservedOuterTlsGroup::Secp256r1
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_rustls(Some(SECP384R1)),
+            ObservedOuterTlsGroup::Secp384r1
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_rustls(Some(SECP256R1MLKEM768)),
+            ObservedOuterTlsGroup::OtherOrUnknown
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_rustls(None),
+            ObservedOuterTlsGroup::OtherOrUnknown
+        );
+    }
+
     #[cfg(feature = "browser-tls")]
     #[test]
     fn boring_protocol_version_maps_to_fixed_observed_outer_tls_class() {
@@ -467,6 +543,37 @@ mod tcp_socket_tests {
         assert_eq!(
             observed_outer_tls_version_from_boring(Some(SslVersion::TLS1_1)),
             ObservedOuterTlsVersion::Unknown
+        );
+    }
+
+    #[cfg(feature = "browser-tls")]
+    #[test]
+    fn boring_selected_group_api_maps_to_fixed_observed_outer_tls_class() {
+        use super::observed_outer_tls_group_from_boring;
+
+        assert_eq!(
+            observed_outer_tls_group_from_boring(Some(0x11ec)),
+            ObservedOuterTlsGroup::X25519MlKem768
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_boring(Some(29)),
+            ObservedOuterTlsGroup::X25519
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_boring(Some(23)),
+            ObservedOuterTlsGroup::Secp256r1
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_boring(Some(24)),
+            ObservedOuterTlsGroup::Secp384r1
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_boring(Some(0x0202)),
+            ObservedOuterTlsGroup::OtherOrUnknown
+        );
+        assert_eq!(
+            observed_outer_tls_group_from_boring(None),
+            ObservedOuterTlsGroup::OtherOrUnknown
         );
     }
 

@@ -987,20 +987,41 @@ destination-free numeric and boolean fields. If the active filter excludes
 `info`, or an SDK embedding has no tracing subscriber, this event may not be
 visible. In addition to the existing public connection-pool snapshot fields,
 its crate-private shutdown-only data has exactly these observed outer-TLS
-counters:
+version counters:
 
 - `pooled_h2_client_observed_outer_tls12_connections`;
 - `pooled_h2_client_observed_outer_tls13_connections`; and
 - `pooled_h2_client_observed_outer_tls_unknown_connections`.
 
+The same snapshot has exactly these observed outer-TLS key-exchange-group
+counters:
+
+- `pooled_h2_client_observed_outer_tls_group_x25519_mlkem768_connections`;
+- `pooled_h2_client_observed_outer_tls_group_x25519_connections`;
+- `pooled_h2_client_observed_outer_tls_group_secp256r1_connections`;
+- `pooled_h2_client_observed_outer_tls_group_secp384r1_connections`; and
+- `pooled_h2_client_observed_outer_tls_group_other_or_unknown_connections`.
+
 These counters classify only physical H2 connection generations managed by
 `ClientTunnelPool` after actual TLS and H2 setup both succeeded and the
 generation was installed in the pool. Each installed generation is classified
 once; cached checkout and stream reuse do not increment the counters. The
-counters saturate without breaking the stored invariant that TLS 1.2 plus TLS
-1.3 plus unknown equals `connections_created`. `unknown` means the TLS backend
-returned no negotiated version or a version other than TLS 1.2 or TLS 1.3; it
-is never inferred from configured or offered versions.
+counters saturate without breaking either stored invariant: TLS 1.2 plus TLS
+1.3 plus unknown equals `connections_created`, and the five group classes also
+sum to `connections_created`. `unknown` means the TLS backend returned no
+negotiated version or a version other than TLS 1.2 or TLS 1.3.
+`other_or_unknown` means its formal negotiated-group API returned no group or a
+group outside the four fixed classes. Neither result is inferred from configured
+or offered values, and a connection that never installs in the pool is not
+counted.
+
+The client reads rustls's actual `negotiated_key_exchange_group()` result or
+BoringSSL's actual selected group ID after the TLS handshake and reduces it
+immediately to the fixed class. It does not retain or emit a raw library group
+name or ID. The `x25519_mlkem768` class reports only which group the TLS backend
+said was negotiated. It does not enable that group, define require/prefer
+policy, or establish a post-quantum security claim. Those remain a separate,
+later T015 policy decision.
 
 The observation is the client-facing outer TLS leg. For direct H2 that leg is
 client to Maverick server. With a TLS-terminating provider front it is client to
@@ -1012,15 +1033,16 @@ any other security proof.
 
 H3, H3-to-H2 non-pooled fallback, WebSocket, direct non-pooled
 `tunnel::open` H2, and any H2 connection not installed by this pool are outside
-these counters. Three zero values mean only that this process installed no
-pool-managed H2 physical connection; they do not prove that the process used no
-TLS or H2. The summary never includes the server address or name, a provider,
-port, destination, credential, secret, certificate path, connection ID,
-error string, browsing content, or any user-provided string. Its counter payload
-contains no per-connection or per-version timestamp, although the surrounding
-logger may attach one event time to the controlled-shutdown info event. The
-process-lifetime connection and stream counts are still activity-volume metadata
-and should be handled accordingly.
+these counters. All-zero version and group partitions mean only that this
+process installed no pool-managed H2 physical connection; they do not prove
+that the process used no TLS or H2. The summary never includes the server
+address or name, a provider, port, destination, credential, secret, certificate
+path, connection ID, raw group name or ID, error string, browsing content, or
+any user-provided string. Its counter payload contains no per-connection,
+per-version, or per-group timestamp, although the surrounding tracing logger
+may attach one event time to the controlled-shutdown info event. The
+process-lifetime connection and stream counts are still activity-volume
+metadata and should be handled accordingly.
 
 ## Certificate Pinning
 

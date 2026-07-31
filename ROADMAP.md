@@ -17,40 +17,47 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T014b-1 — Observe pooled H2 client-facing outer TLS versions
+### T014b-2 — Observe actual pooled H2 outer TLS key-exchange groups
 
 This repository-local slice is not bound to a release version.
 
 - **User result:** During an owner- or operator-controlled shutdown, the
   privacy-safe H2 pool summary reports how many pool-managed physical
-  connections actually negotiated outer TLS 1.2, TLS 1.3, or an unknown
-  version. This is bounded diagnostic context, not an ordinary user's live
-  status or a security recommendation.
-- **Scope:** Read the negotiated version from rustls or BoringSSL after the real
-  TLS handshake and before handing the stream to H2. Carry one fixed
-  `TLS 1.2 | TLS 1.3 | unknown` classification to `ClientTunnelPool`, then count
-  it exactly once when `install_and_checkout` installs the completed physical
-  H2 generation. Keep the counts in a crate-private shutdown-only snapshot and
-  include only fixed, destination-free integer counters in the existing
-  controlled-shutdown summary.
+  connections actually negotiated each fixed outer-TLS key-exchange group
+  class. This is bounded diagnostic context, not an ordinary user's live
+  status, a security recommendation, or a post-quantum claim.
+- **Scope:** Read the actually negotiated group from rustls
+  `negotiated_key_exchange_group()` or BoringSSL's selected group API after the
+  real TLS handshake. Immediately reduce it to
+  `x25519_mlkem768 | x25519 | secp256r1 | secp384r1 | other_or_unknown`, carry
+  only that fixed class into `ClientTunnelPool`, and count it at the same
+  `install_and_checkout` generation-install point as the existing outer-TLS
+  version observation. Keep both partitions in the crate-private shutdown-only
+  snapshot and include only fixed, destination-free integer counters in the
+  existing controlled-shutdown summary.
 - **Acceptance:** First installation counts once; cached checkout and stream
   reuse do not recount it; each replacement generation counts once.
-  TLS 1.2 plus TLS 1.3 plus unknown always equals `connections_created`, with
-  saturating counters. `unknown` is fail-safe for a missing or other backend
-  result and is never guessed from configured or offered versions. The public
-  `H2ConnectionPoolSnapshot` and `H2TunnelRequestSender`, connection success
-  and failure behavior, TLS settings, authentication, wire, config and schema
-  remain unchanged. Default browser TLS, no-default-features rustls, and H3
-  feature builds and tests remain healthy.
+  The five group counters sum to `connections_created`, independently of the
+  existing TLS 1.2, TLS 1.3, and unknown version partition, with saturating
+  counters. `other_or_unknown` is fail-safe for a missing or unclassified
+  backend result and is never guessed from configured or offered groups.
+  Failed connections that never install are not counted. The public
+  `H2ConnectionPoolSnapshot` and `H2TunnelRequestSender`, connection success and
+  failure behavior, TLS settings and group lists, authentication, wire, config
+  and schema remain unchanged. Default browser TLS, no-default-features rustls,
+  and H3 feature builds and tests remain healthy.
 - **Out of scope:** H3, H3-to-H2 non-pooled fallback, WebSocket, direct
   non-pooled `tunnel::open` H2, authenticated-session counts, provider-to-origin
   TLS, destination HTTPS, end-to-end Maverick TLS, ECH, post-quantum claims,
-  channel-binding claims, cipher/group/ALPN/SNI details, ordinary-user live
-  diagnostics, public APIs, config or schema changes, dependencies, servers,
-  real networks, releases, and product or Live results. With a TLS-terminating
-  provider front, the observed leg is client to provider edge. All-zero counts
-  mean only that this process installed no H2 physical connection managed by
-  this pool.
+  require/prefer policy, enabling any hybrid-group registry entry,
+  channel-binding claims, raw library group names, other cipher/ALPN/SNI
+  details, ordinary-user live diagnostics, public APIs, config or schema
+  changes, dependencies, servers, real networks, releases, and product or Live
+  results. With a TLS-terminating provider front, the observed leg is client to
+  provider edge. All-zero counts mean only that this process installed no H2
+  physical connection managed by this pool. This observation is a prerequisite
+  input for a later T015 policy decision; it neither defines nor authorizes that
+  policy.
 - **Stop conditions:** Stop if implementation requires a seventh file,
   `STATUS.md`, Cargo or lockfile changes, a dependency, a public API, config,
   schema or version change, core, SDK, CLI, server, H3, WebSocket or non-pooled

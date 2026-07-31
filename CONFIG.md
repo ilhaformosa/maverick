@@ -475,7 +475,7 @@ compatibility decision. An envelope declaring a newer schema can report typed
 by the current reader; a payload containing future-only fields can be rejected
 during deserialization before that status is available.
 
-## Profile URI v1 query boundary
+## Profile URI v1 parser boundary
 
 The CLI Profile URI v1 reader accepts exactly these ten decoded query keys:
 `server`, `name`, `path`, `mode`, `credential_id`, `secret`, `cert_pin`,
@@ -493,6 +493,35 @@ supported extension mechanism, and the old reader did not preserve ignored
 data. Legal v1 fields and field order, canonical serialization order,
 materialization defaults, the secret-omission default, QR and clipboard safety
 rules, the file-permission rule, and the overwrite rule remain unchanged.
+
+The outer envelope is exactly the existing `maverick://profile/v1?...` shape.
+A v1 URI carrying a username, password, authority port, or fragment is rejected;
+this includes an empty fragment and any user-information or port delimiter whose
+value is empty. Before URL parsing or field reads, every `%` in each raw query
+key or value must have exactly two hexadecimal digits, and the decoded bytes in
+that component must be valid UTF-8. Lowercase and uppercase hex digits are both
+legal. URL form `+` behavior, encoded `&` and `=` characters, valid Unicode,
+and the existing absence of Unicode normalization remain unchanged.
+
+The normalized single URI accepted by the parser is limited to 16 KiB. The
+exact limit is legal; one additional byte is rejected. This is a parser input
+contract, not a claim that every upstream allocation is bounded: the stdin and
+clipboard commands may already have read their payload into memory before this
+check. This slice does not add field-specific or credential-specific limits and
+does not rewrite clipboard process handling or stdin as a streaming reader.
+
+These envelope, lossless-decoding, and length failures use the fixed error
+`invalid profile URI`; they do not echo the URI, user information, password,
+fragment, endpoint, query key or value, raw decoded bytes, or a lower-level
+untrusted error. A parseable URL password also triggers the existing fixed argv
+secret warning. Raw and decoded query-secret detection remains in place,
+including the malformed-input raw fallback.
+
+This is also an intentional compatibility tightening. The older reader
+accepted and ignored user information, authority ports, and fragments, and its
+query decoder could accept malformed percent text or replace invalid UTF-8
+lossily. Those ambiguous shapes are now rejected. Legal v1 URIs retain their
+existing meaning and form semantics.
 
 Profile URI v2 is still unimplemented and `/v2` remains rejected. A future v2
 codec should be unified in core while remaining a separate compatibility

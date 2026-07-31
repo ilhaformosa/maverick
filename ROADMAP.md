@@ -17,31 +17,37 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T011a-1 — Enforce the strict Profile URI v1 query boundary
+### T011a-2 — Enforce the strict Profile URI v1 envelope
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** A mistyped or ambiguous Profile URI v1 query fails safely
-  instead of silently dropping a field or choosing one of two conflicting
-  values.
-- **Scope:** Before reading individual fields, inspect every decoded v1 query
-  pair once. Accept only the ten existing v1 keys and reject any unknown or
-  repeated key with one fixed privacy-safe error. Preserve legal field order,
-  serialization order, defaults, secret handling, and materialization behavior.
-- **Acceptance:** Unknown and percent-encoded unknown keys fail closed; every
-  recognized required, optional, secret, pin, and boolean key fails when
-  repeated, including percent-encoded duplicates. Rejection occurs before
-  secret parsing or file creation and never echoes untrusted query content.
-  Legal v1 round trips, imports, QR and clipboard safety, overwrite protection,
-  and explicit v2 rejection remain unchanged.
+- **User result:** A Profile URI with hidden outer baggage, broken percent
+  encoding, invalid decoded text, or excessive parser input fails safely
+  instead of being silently simplified or changed.
+- **Scope:** Accept only the existing `maverick://profile/v1?...` envelope with
+  no username, password, authority port, or fragment. Validate query percent
+  triplets and decoded UTF-8 without lossy replacement, preserving URL form
+  `+` behavior and legal Unicode. Bound the normalized parser input at 16 KiB
+  before URL parsing or field reads, and warn for an argv URL password without
+  exposing it.
+- **Acceptance:** Username, password, port, fragment (including an empty
+  fragment), incomplete or invalid percent triplets, invalid decoded UTF-8,
+  and input above the exact limit all fail with a fixed privacy-safe error.
+  Exact-limit input and legal lowercase or uppercase hex, Unicode, `+`, and
+  encoded delimiters remain accepted. Rejection precedes secret parsing and
+  file creation. The existing ten-key allowlist, duplicate rejection,
+  serialization order, defaults, secret handling, QR and clipboard rules,
+  permissions, overwrite protection, and explicit v2 rejection remain
+  unchanged.
 - **Out of scope:** Profile URI v2, a core codec, stored-profile migration,
-  complete config v2, a client-role envelope or readiness API, runtime consumer,
-  public API or schema changes, dependencies, server behavior, and real network
-  work.
+  field-specific or credential-specific size limits, stdin or clipboard
+  streaming, complete config v2, a client-role envelope or readiness API,
+  runtime consumer, public API or schema changes, dependencies, server
+  behavior, and real network work.
 - **Stop conditions:** Stop if implementation requires a fourth file,
   `STATUS.md`, Cargo or lockfile changes, a dependency, public API or schema
-  expansion, a core, SDK, client, or server change, a real network, or any
-  system-network mutation.
+  expansion, a core, SDK, client, or server change, an upstream input rewrite,
+  a real network, or any system-network mutation.
 
 ## Execution Order
 

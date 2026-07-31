@@ -5,12 +5,16 @@ on:
     paths:
       - ".cargo/**"
       - ".github/workflows/supply-chain.yml"
+      - ".github/workflows/pilot-release.yml"
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/**/Cargo.toml"
       - "deny.toml"
       - "rust-toolchain.toml"
+      - "scripts/generate-cyclonedx-sbom.sh"
       - "scripts/security-dependency-inventory.sh"
+      - "scripts/test-cyclonedx-sbom.sh"
+      - "scripts/verify-cyclonedx-sbom.sh"
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
@@ -25,11 +29,12 @@ permissions:
 jobs:
   dependency-inventory:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
@@ -45,4 +50,11 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: cargo install cargo-audit --version 0.22.2 --locked
       - run: cargo install cargo-deny --version 0.20.2 --locked
+      - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+      - name: Fetch both release-target dependency closures
+        run: |
+          cargo fetch --locked --target x86_64-unknown-linux-gnu
+          cargo fetch --locked --target aarch64-apple-darwin
       - run: ./scripts/security-dependency-inventory.sh
+      - name: Generate and verify target-aware development SBOMs
+        run: ./scripts/test-cyclonedx-sbom.sh

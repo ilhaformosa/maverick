@@ -22,12 +22,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          toolchain: 1.97.1
-          components: rustfmt, clippy
-      - run: sudo apt-get update && sudo apt-get install -y binutils clang cmake file ripgrep shellcheck
-      - name: Verify the current remote tag, current main, and product gates
+      - name: Verify the current remote tag and current main
         run: |
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
           git fetch --no-tags --force --atomic origin \
@@ -38,7 +33,20 @@ jobs:
             --sha "$GITHUB_SHA" \
             --version "$version" \
             --main-ref origin/main
-          ./scripts/local-harness.sh
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - run: sudo apt-get update && sudo apt-get install -y binutils clang cmake file ripgrep shellcheck
+      - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+      - name: Fetch both release-target dependency closures
+        run: |
+          cargo fetch --locked --target x86_64-unknown-linux-gnu
+          cargo fetch --locked --target aarch64-apple-darwin
+      - name: Verify target-aware CycloneDX SBOM gates
+        run: ./scripts/test-cyclonedx-sbom.sh
+      - name: Verify local product gates
+        run: ./scripts/local-harness.sh
 
   build:
     needs: verify
@@ -60,6 +68,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: 1.97.1
+      - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+      - name: Fetch the exact release-target dependency closure
+        run: cargo fetch --locked --target "${{ matrix.target }}"
       - name: Install Linux build tools
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y binutils clang cmake file ripgrep
@@ -76,6 +87,19 @@ jobs:
             --expected-revision "$GITHUB_SHA" \
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level native
+          sbom="dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.cdx.json"
+          ./scripts/generate-cyclonedx-sbom.sh \
+            --expected-version "$version" \
+            --expected-revision "$GITHUB_SHA" \
+            --target "$MAVERICK_PILOT_TARGET" \
+            --output "$sbom"
+          ./scripts/verify-cyclonedx-sbom.sh \
+            --sbom "$sbom" \
+            --expected-version "$version" \
+            --expected-revision "$GITHUB_SHA" \
+            --expected-target "$MAVERICK_PILOT_TARGET" \
+            --verification-level full \
+            --source-root .
       - name: Reverify the exact files approved for upload
         id: reverified
         env:
@@ -83,21 +107,36 @@ jobs:
         run: |
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
           archive_name="maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
+          sbom_name="maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.cdx.json"
           staging="$(mktemp -d "$RUNNER_TEMP/maverick-verified.XXXXXX")"
           chmod 700 "$staging"
           cp "dist/$archive_name" "$staging/$archive_name"
           cp "dist/$archive_name.sha256" "$staging/$archive_name.sha256"
-          chmod 0444 "$staging/$archive_name" "$staging/$archive_name.sha256"
+          cp "dist/$sbom_name" "$staging/$sbom_name"
+          chmod 0444 \
+            "$staging/$archive_name" \
+            "$staging/$archive_name.sha256" \
+            "$staging/$sbom_name"
+          test "$(find "$staging" -mindepth 1 -maxdepth 1 -type f ! -type l -print | wc -l)" -eq 3
+          test "$(find "$staging" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 3
           ./scripts/verify-pilot-artifact.sh \
             --archive "$staging/$archive_name" \
             --expected-version "$version" \
             --expected-revision "$GITHUB_SHA" \
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level static
+          ./scripts/verify-cyclonedx-sbom.sh \
+            --sbom "$staging/$sbom_name" \
+            --expected-version "$version" \
+            --expected-revision "$GITHUB_SHA" \
+            --expected-target "$MAVERICK_PILOT_TARGET" \
+            --verification-level structural \
+            --source-root .
           chmod 0555 "$staging"
           {
             echo "archive=$staging/$archive_name"
             echo "checksum=$staging/$archive_name.sha256"
+            echo "sbom=$staging/$sbom_name"
           } >>"$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -105,6 +144,7 @@ jobs:
           path: |
             ${{ steps.reverified.outputs.archive }}
             ${{ steps.reverified.outputs.checksum }}
+            ${{ steps.reverified.outputs.sbom }}
           if-no-files-found: error
           retention-days: 7
 
@@ -128,16 +168,18 @@ jobs:
         with:
           name: pilot-aarch64-apple-darwin
           path: dist
-      - name: Statically reverify the exact four files selected for publication
+      - name: Statically reverify the exact six files selected for publication
         id: reverified
         run: |
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
           linux_name="maverick-${version}-pilot-x86_64-unknown-linux-gnu.tar.gz"
+          linux_sbom_name="maverick-${version}-pilot-x86_64-unknown-linux-gnu.cdx.json"
           mac_name="maverick-${version}-pilot-aarch64-apple-darwin.tar.gz"
+          mac_sbom_name="maverick-${version}-pilot-aarch64-apple-darwin.cdx.json"
           expected_files="$(
             printf '%s\n' \
-              "$linux_name" "$linux_name.sha256" \
-              "$mac_name" "$mac_name.sha256" |
+              "$linux_name" "$linux_name.sha256" "$linux_sbom_name" \
+              "$mac_name" "$mac_name.sha256" "$mac_sbom_name" |
               LC_ALL=C sort
           )"
           actual_files="$(
@@ -146,12 +188,12 @@ jobs:
               LC_ALL=C sort
           )"
           test "$actual_files" = "$expected_files"
-          test "$(find dist -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 4
+          test "$(find dist -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 6
           staging="$(mktemp -d "$RUNNER_TEMP/maverick-publish.XXXXXX")"
           chmod 700 "$staging"
           for name in \
-            "$linux_name" "$linux_name.sha256" \
-            "$mac_name" "$mac_name.sha256"; do
+            "$linux_name" "$linux_name.sha256" "$linux_sbom_name" \
+            "$mac_name" "$mac_name.sha256" "$mac_sbom_name"; do
             cp "dist/$name" "$staging/$name"
             chmod 0444 "$staging/$name"
           done
@@ -167,10 +209,26 @@ jobs:
             --expected-revision "$GITHUB_SHA" \
             --expected-target aarch64-apple-darwin \
             --verification-level static
+          ./scripts/verify-cyclonedx-sbom.sh \
+            --sbom "$staging/$linux_sbom_name" \
+            --expected-version "$version" \
+            --expected-revision "$GITHUB_SHA" \
+            --expected-target x86_64-unknown-linux-gnu \
+            --verification-level structural \
+            --source-root .
+          ./scripts/verify-cyclonedx-sbom.sh \
+            --sbom "$staging/$mac_sbom_name" \
+            --expected-version "$version" \
+            --expected-revision "$GITHUB_SHA" \
+            --expected-target aarch64-apple-darwin \
+            --verification-level structural \
+            --source-root .
           linux_sha="$(sha256sum "$staging/$linux_name" | awk '{print $1}')"
           linux_checksum_sha="$(sha256sum "$staging/$linux_name.sha256" | awk '{print $1}')"
+          linux_sbom_sha="$(sha256sum "$staging/$linux_sbom_name" | awk '{print $1}')"
           mac_sha="$(sha256sum "$staging/$mac_name" | awk '{print $1}')"
           mac_checksum_sha="$(sha256sum "$staging/$mac_name.sha256" | awk '{print $1}')"
+          mac_sbom_sha="$(sha256sum "$staging/$mac_sbom_name" | awk '{print $1}')"
           chmod 0555 "$staging"
           notes_file="$(mktemp "$RUNNER_TEMP/maverick-release-notes.XXXXXX")"
           printf '%s\n' \
@@ -185,9 +243,13 @@ jobs:
             echo "linux_name=$linux_name"
             echo "linux_sha=$linux_sha"
             echo "linux_checksum_sha=$linux_checksum_sha"
+            echo "linux_sbom_name=$linux_sbom_name"
+            echo "linux_sbom_sha=$linux_sbom_sha"
             echo "mac_name=$mac_name"
             echo "mac_sha=$mac_sha"
             echo "mac_checksum_sha=$mac_checksum_sha"
+            echo "mac_sbom_name=$mac_sbom_name"
+            echo "mac_sbom_sha=$mac_sbom_sha"
             echo "notes_file=$notes_file"
           } >>"$GITHUB_OUTPUT"
       - name: Recheck remote gates and publish the reverified prerelease
@@ -197,16 +259,20 @@ jobs:
           LINUX_NAME: ${{ steps.reverified.outputs.linux_name }}
           LINUX_SHA: ${{ steps.reverified.outputs.linux_sha }}
           LINUX_CHECKSUM_SHA: ${{ steps.reverified.outputs.linux_checksum_sha }}
+          LINUX_SBOM_NAME: ${{ steps.reverified.outputs.linux_sbom_name }}
+          LINUX_SBOM_SHA: ${{ steps.reverified.outputs.linux_sbom_sha }}
           MAC_NAME: ${{ steps.reverified.outputs.mac_name }}
           MAC_SHA: ${{ steps.reverified.outputs.mac_sha }}
           MAC_CHECKSUM_SHA: ${{ steps.reverified.outputs.mac_checksum_sha }}
+          MAC_SBOM_NAME: ${{ steps.reverified.outputs.mac_sbom_name }}
+          MAC_SBOM_SHA: ${{ steps.reverified.outputs.mac_sbom_sha }}
           NOTES_FILE: ${{ steps.reverified.outputs.notes_file }}
         run: |
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
           expected_files="$(
             printf '%s\n' \
-              "$LINUX_NAME" "$LINUX_NAME.sha256" \
-              "$MAC_NAME" "$MAC_NAME.sha256" |
+              "$LINUX_NAME" "$LINUX_NAME.sha256" "$LINUX_SBOM_NAME" \
+              "$MAC_NAME" "$MAC_NAME.sha256" "$MAC_SBOM_NAME" |
               LC_ALL=C sort
           )"
           actual_files="$(
@@ -216,11 +282,13 @@ jobs:
               LC_ALL=C sort
           )"
           test "$actual_files" = "$expected_files"
-          test "$(find "$STAGING" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 4
+          test "$(find "$STAGING" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 6
           test "$(sha256sum "$STAGING/$LINUX_NAME" | awk '{print $1}')" = "$LINUX_SHA"
           test "$(sha256sum "$STAGING/$LINUX_NAME.sha256" | awk '{print $1}')" = "$LINUX_CHECKSUM_SHA"
+          test "$(sha256sum "$STAGING/$LINUX_SBOM_NAME" | awk '{print $1}')" = "$LINUX_SBOM_SHA"
           test "$(sha256sum "$STAGING/$MAC_NAME" | awk '{print $1}')" = "$MAC_SHA"
           test "$(sha256sum "$STAGING/$MAC_NAME.sha256" | awk '{print $1}')" = "$MAC_CHECKSUM_SHA"
+          test "$(sha256sum "$STAGING/$MAC_SBOM_NAME" | awk '{print $1}')" = "$MAC_SBOM_SHA"
           printf '%s  %s\n' "$LINUX_SHA" "$LINUX_NAME" |
             cmp -s - "$STAGING/$LINUX_NAME.sha256"
           printf '%s  %s\n' "$MAC_SHA" "$MAC_NAME" |
@@ -236,8 +304,10 @@ jobs:
           exec gh release create "$GITHUB_REF_NAME" \
             "$STAGING/$LINUX_NAME" \
             "$STAGING/$LINUX_NAME.sha256" \
+            "$STAGING/$LINUX_SBOM_NAME" \
             "$STAGING/$MAC_NAME" \
             "$STAGING/$MAC_NAME.sha256" \
+            "$STAGING/$MAC_SBOM_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --prerelease \

@@ -101,9 +101,11 @@ rg -q "$active_privacy_pattern" \
   AGENTS.md README.md STATUS.md ROADMAP.md CONFIG.md THREAT_MODEL.md SECURITY.md \
   docs/TRANSPORT_ARCHITECTURE.md docs/TEST_SERVER_PREPARATION.md \
   docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md scripts/user-smoke.sh \
-  scripts/build-pilot.sh scripts/prepare-test-server.sh \
+  scripts/build-pilot.sh scripts/generate-cyclonedx-sbom.sh \
+  scripts/prepare-test-server.sh scripts/test-cyclonedx-sbom.sh \
   scripts/test-prepare-test-server.sh scripts/verify-pilot-artifact.sh \
-  scripts/verify-release-tag.sh scripts/test-release-gates.sh \
+  scripts/verify-cyclonedx-sbom.sh scripts/verify-release-tag.sh \
+  scripts/test-release-gates.sh \
   crates config .github/workflows 2>/dev/null || active_privacy_status=$?
 case "$active_privacy_status" in
   0)
@@ -135,9 +137,11 @@ done
 
 git diff --check
 bash -n scripts/local-harness.sh scripts/user-smoke.sh scripts/build-pilot.sh \
-  scripts/security-dependency-inventory.sh scripts/prepare-test-server.sh \
-  scripts/test-prepare-test-server.sh scripts/verify-pilot-artifact.sh \
-  scripts/verify-release-tag.sh scripts/test-release-gates.sh
+  scripts/generate-cyclonedx-sbom.sh scripts/security-dependency-inventory.sh \
+  scripts/prepare-test-server.sh scripts/test-cyclonedx-sbom.sh \
+  scripts/test-prepare-test-server.sh scripts/verify-cyclonedx-sbom.sh \
+  scripts/verify-pilot-artifact.sh scripts/verify-release-tag.sh \
+  scripts/test-release-gates.sh
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck -s bash scripts/*.sh
 fi

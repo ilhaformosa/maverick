@@ -17,69 +17,52 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T019c — Drill the published macOS Beta upgrade and rollback
+### T018b-2 — Gate target-aware CycloneDX sidecars
 
-- **User result:** A local Apple Silicon Mac can exercise the exact published
-  Beta.1 → Beta.2 → Beta.1 artifact lifecycle before a later release decision.
-  An incompatible config blocks the upgrade while Beta.1 remains selected; a
-  compatible config permits the switch and an explicit rollback restores
-  Beta.1. This is a local quality drill, not a product, user, release,
-  deployment, or Stable result.
-- **Scope:** Add one Bash 3.2-compatible, network-free script that accepts only
-  four local Apple Silicon release inputs, pins both published identities,
-  verifies Beta.2 through the current native artifact verifier, narrowly
-  adapts the exact fixed Beta.1 packaging, and runs the bounded private
-  config/preflight/upgrade/rollback lifecycle through an isolated-directory
-  selector. This selector drill is not an installer, updater, or system
-  installation. The execution-only validation may download only these four
-  public GitHub release assets into a private directory outside the repository;
-  the script itself never downloads:
-  - `https://github.com/ilhaformosa/maverick/releases/download/v1.2.0-beta.1/maverick-1.2.0-beta.1-pilot-aarch64-apple-darwin.tar.gz`
-  - `https://github.com/ilhaformosa/maverick/releases/download/v1.2.0-beta.1/maverick-1.2.0-beta.1-pilot-aarch64-apple-darwin.tar.gz.sha256`
-  - `https://github.com/ilhaformosa/maverick/releases/download/v1.2.0-beta.2/maverick-1.2.0-beta.2-pilot-aarch64-apple-darwin.tar.gz`
-  - `https://github.com/ilhaformosa/maverick/releases/download/v1.2.0-beta.2/maverick-1.2.0-beta.2-pilot-aarch64-apple-darwin.tar.gz.sha256`
-- **Acceptance:** The script verifies the fixed outer and inner release
-  identities, native `version` and `user-smoke`, known-field config
-  compatibility, Beta.2's fail-closed unknown-key upgrade preflight, both
-  versions' rejection of config version 2, selection preservation after one
-  predictable preflight failure, the successful Beta.2 selection, explicit
-  Beta.1 rollback, immutable fixture and backup hashes, bounded process
-  cleanup, and no retained selector or temporary directory. Linux parity stays
-  deferred until a native Linux host or authorized CI can run it.
-- **Out of scope:** Stored-profile migration work already covered by Rust
-  tests; a stored-profile result, migration API, framework, or downgrade
-  writer; installer, updater, service manager, or atomic-switch claim; system
-  installation or services; Linux success inferred from macOS; real users,
-  live networks, publication, tag, release, upload, deployment, Stable
-  decision, receipt, ledger, watchdog, evidence schema, Python coordination,
-  and changes to current product truth.
-- **Stop conditions:** Stop if either input differs from its exact published
-  identity, the host is not native Apple Silicon macOS, Beta.2 cannot pass the
-  unchanged native verifier, Beta.1 requires an adapter broader than its fixed
-  digest, the lifecycle needs a product or third-file change, or any gate needs
-  network, credential, system-network, service, release, CI, or host changes.
+- **User result:** A future pilot release can carry one CycloneDX JSON 1.5
+  sidecar for each shipped target. Each sidecar describes the actual
+  `maverick-cli` default-release runtime dependency closure for that target,
+  instead of pretending that one workspace-wide list fits both binaries.
+- **Scope:** Pin `cargo-cyclonedx` 0.5.9 and generate two deterministic files:
+  `maverick-<version>-pilot-x86_64-unknown-linux-gnu.cdx.json` and
+  `maverick-<version>-pilot-aarch64-apple-darwin.cdx.json`. Run the stock tool
+  in a private identity-neutral `git archive` snapshot, select the single
+  `maverick` binary document by its JSON identity and target, normalize all
+  references together, reject private paths, and compare the result with
+  locked offline Cargo metadata. The package declares Apache-2.0; its upstream
+  derived-MIT acknowledgement remains part of the tool's governance history.
+- **Acceptance:** Each target generates twice byte-for-byte identically; the
+  structural verifier checks the minimal CycloneDX 1.5 contract without
+  claiming full JSON Schema validation; full verification proves the locked
+  normal/runtime closure has no dev, build, test, or unrelated workspace
+  component. The sidecars stay outside the unchanged seven-entry archive.
+  A future release gate accepts exactly two archives, two archive checksums,
+  and two sidecars, rechecks all six byte identities, and never executes a
+  downloaded binary in the publish job.
+- **Claim boundary:** This slice does not rewrite published Beta.1 or Beta.2,
+  complete all of T018, prove that dependencies are vulnerability-free, prove
+  link-time composition or complete native/C/C++/system/toolchain coverage,
+  attest provenance, make the binary reproducible, or provide a cryptographic
+  signature. It adds no archive-digest property: matching version, target, and
+  revision plus the exact six-file release gate bind each archive to its
+  sidecar.
+- **Stop conditions:** Stop if the stock tool cannot isolate the shipped CLI
+  runtime closure, if a manifest or lock must change, if the archive contract
+  must change, if a permission or remote action is needed, or if the bounded
+  implementation needs an eighth file.
 
 ## Execution Order
 
-1. **Fix only reproduced Beta failures.** After Beta.2, use the smallest local
-   reproduction and repair for a failure that a Beta user or an authorized
-   field run actually observes. Preserve destination-free diagnostics and the
-   existing privacy boundaries. Do not add speculative transports, tuning,
-   orchestration, or connection-health machinery merely because Beta has
-   started. A product-binary change requires a new reviewed Beta artifact; a
-   documentation-only clarification must not pretend to be a product fix.
-2. **Validate the Stable candidate on a fresh origin.** Before any Stable
-   decision, obtain separate authorization for one freshly provisioned clean
-   temporary origin and repeat artifact verification, from-scratch installation,
-   ordinary browsing, and the applicable reliability and compatibility checks
-   using the exact Stable-candidate artifact. The origin must pass the current
-   host policy and every recorded stop rule. A retained reference origin or
-   Beta result cannot replace this clean-origin gate, and this roadmap item does
-   not itself authorize a server, provider change, spending, network change, or
-   Stable claim.
-3. **Track native server-side ECH upstream.** Keep the current provider-fronted
-   path labeled as a workaround, not ECH. Do not fork rustls or vendor an
-   unmerged ECH patch in the current plan.
+1. **Finish T018b-2 locally.** Add and verify only the target-aware CycloneDX
+   generator, shared verifier, focused negative tests, and the two existing
+   release workflows plus local harness wiring described above.
+2. **Run T019d Linux published-artifact parity separately.** A native Linux
+   published-artifact drill still needs its own owner authorization for push
+   and GitHub Actions dispatch. This roadmap item grants neither.
+3. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+   need an explicit identity and remote-permission design; signatures need a
+   trust-root and key-custody decision; reproducible builds need a separate
+   byte-for-byte build experiment. An SBOM is not any of those things.
 
 ## Work Explicitly Stopped
 

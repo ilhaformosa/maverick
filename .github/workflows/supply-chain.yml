@@ -9,6 +9,7 @@ on:
       - "Cargo.toml"
       - "crates/**/Cargo.toml"
       - "deny.toml"
+      - "rust-toolchain.toml"
       - "scripts/security-dependency-inventory.sh"
   schedule:
     - cron: "17 3 * * 1"
@@ -39,6 +40,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.97.1
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: cargo install cargo-audit --version 0.22.2 --locked
       - run: cargo install cargo-deny --version 0.20.2 --locked

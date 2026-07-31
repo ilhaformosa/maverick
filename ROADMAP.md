@@ -17,44 +17,34 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T016b — Verify Beta.2 ↔ Beta.1 direct-H2 process compatibility
+### T018b-1 — Pin the ordinary Rust toolchain
 
-- **User result:** A maintainer can run one local command that establishes
-  direct-H2 compatibility only when processes built from the exact published
-  Beta.2 and Beta.1 source identities complete both client/server directions,
-  auth v1 and auth v2, and both supported TLS backends. An incomplete run makes
-  no incompatibility claim.
-- **Scope:** Export the two local annotated tags with `git archive`, verify
-  their fixed tag-object IDs, direct commit targets, tag names, package
-  versions, and locks with Git replace objects disabled, then archive only the
-  pinned commits and build their CLI processes with `cargo --offline --locked`.
-  Run same-version positive controls before the cross-version matrix. Use only
-  `127.0.0.1`, OS-assigned ephemeral ports, private temporary files, anonymous
-  test credentials and certificates, and direct H2. Test the default
-  browser-TLS build and the explicit `--no-default-features` rustls build.
-- **Acceptance:** Beta.2 client → Beta.1 server and Beta.1 client → Beta.2
-  server both relay an exact payload for auth v1 and auth v2 on each TLS
-  backend. Before those eight cross-version cells run, the corresponding eight
-  same-version cells pass and all four historical binaries pass build, version,
-  and config preflights. Environment, toolchain, identity, build, config, or
-  same-version failures stop without being mislabeled as incompatibility.
-  Any other non-completing process case reports only that the matrix did not
-  complete and compatibility was not established; a direct incompatibility
-  claim requires separate typed protocol evidence.
-  Protocol, config, auth, frame, stored-profile, and Profile URI versions remain
-  unchanged.
-- **Out of scope:** H3 or H3 fallback, WebSocket, provider-fronted paths,
-  historical release archives, remote networks, providers, other platforms,
-  product runtime changes, public APIs, manifests, dependencies, auth v3, PQ
-  policy, SBOM or signature work, rollback rehearsal, release work, and product
-  or Live results. Existing strict YAML and stored-profile rejection, explicit
-  Beta.1 flat-profile migration, and new-envelope rejection by the old reader
-  remain intentional. T017 is already complete and is not repeated here.
-- **Stop conditions:** Stop if the exact local tag identities are unavailable,
-  a build needs network access, a historical same-version control is unhealthy,
-  or safe completion requires a sixth file, a manifest or lock change, product
-  code, a wire/schema/version change, a current-tip binary standing in for a
-  release, a remote action, or any host-network mutation.
+- **User result:** Ordinary local development, product CI, pilot release, and
+  supply-chain jobs select Rust `1.97.1` exactly instead of following a moving
+  `stable` toolchain. The scheduled parser-fuzz job remains an explicit,
+  isolated exception on `nightly-2026-07-21` with `cargo-fuzz 0.13.2`.
+- **Scope:** Add one minimal root toolchain file with Rust `1.97.1`, `rustfmt`,
+  and Clippy; select that exact toolchain in every ordinary Rust installation
+  step; make toolchain changes trigger the supply-chain pull-request job; and
+  make every fuzz Rust and Cargo command explicitly select its pinned nightly.
+  This repository-local slice is not tied to a release version.
+- **Acceptance:** The repository root resolves `rustc` and Cargo to `1.97.1`;
+  all existing root and fuzz locks remain unchanged under locked offline
+  metadata; formatting, builds, tests, Clippy, rustdoc, product smoke, the
+  complete Beta.2 ↔ Beta.1 compatibility matrix, and both bounded fuzz targets
+  pass on their selected toolchains. Static workflow checks prove the existing
+  action SHAs and permissions are preserved, ordinary jobs do not float on
+  `stable`, supply-chain paths cover the toolchain file, and fuzz commands
+  cannot inherit the root pin.
+- **Out of scope:** An MSRV declaration, `rust-version`, dependency or lock
+  changes, source formatting fixes, product/API/schema/version changes,
+  release assets, SBOM, provenance, signatures, CI dispatch, publication,
+  deployment, and any claim that all of T018 is complete.
+- **Stop conditions:** Stop if Rust `1.97.1` or its required components are
+  unavailable, the selected toolchain requires a source or lock change, the
+  fuzz nightly or `cargo-fuzz` pin is unavailable, a gate can pass only through
+  a scope expansion, or completion requires release, secret, permission,
+  product, network, or host changes.
 
 ## Execution Order
 

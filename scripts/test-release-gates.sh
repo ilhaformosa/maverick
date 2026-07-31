@@ -910,6 +910,15 @@ chmod 0755 "$file_uri_noise_binary"
 new_artifact_case file-uri-noise "$file_uri_noise_binary"
 expect_artifact_pass file-uri-noise "$current_archive" "$current_target" static
 
+linker_file_uri_noise_binary="$test_root/linker-file-uri-noise-binary"
+compile_fixture_binary "$linker_file_uri_noise_binary" 0 ""
+printf '\0%s\0' "regular fi""le://Failed building..." \
+  >>"$linker_file_uri_noise_binary"
+chmod 0755 "$linker_file_uri_noise_binary"
+new_artifact_case linker-file-uri-noise "$linker_file_uri_noise_binary"
+expect_artifact_pass linker-file-uri-noise "$current_archive" "$current_target" \
+  static
+
 private_user_path_binary="$test_root/private-user-path-binary"
 compile_fixture_binary "$private_user_path_binary" 0 ""
 printf '%s' "/U""sers/$TEST_MARKER" >>"$private_user_path_binary"

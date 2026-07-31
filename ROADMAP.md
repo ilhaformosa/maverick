@@ -17,37 +17,46 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T011a-2 — Enforce the strict Profile URI v1 envelope
+### T014b-1 — Observe pooled H2 client-facing outer TLS versions
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** A Profile URI with hidden outer baggage, broken percent
-  encoding, invalid decoded text, or excessive parser input fails safely
-  instead of being silently simplified or changed.
-- **Scope:** Accept only the existing `maverick://profile/v1?...` envelope with
-  no username, password, authority port, or fragment. Validate query percent
-  triplets and decoded UTF-8 without lossy replacement, preserving URL form
-  `+` behavior and legal Unicode. Bound the normalized parser input at 16 KiB
-  before URL parsing or field reads, and warn for an argv URL password without
-  exposing it.
-- **Acceptance:** Username, password, port, fragment (including an empty
-  fragment), incomplete or invalid percent triplets, invalid decoded UTF-8,
-  and input above the exact limit all fail with a fixed privacy-safe error.
-  Exact-limit input and legal lowercase or uppercase hex, Unicode, `+`, and
-  encoded delimiters remain accepted. Rejection precedes secret parsing and
-  file creation. The existing ten-key allowlist, duplicate rejection,
-  serialization order, defaults, secret handling, QR and clipboard rules,
-  permissions, overwrite protection, and explicit v2 rejection remain
-  unchanged.
-- **Out of scope:** Profile URI v2, a core codec, stored-profile migration,
-  field-specific or credential-specific size limits, stdin or clipboard
-  streaming, complete config v2, a client-role envelope or readiness API,
-  runtime consumer, public API or schema changes, dependencies, server
-  behavior, and real network work.
-- **Stop conditions:** Stop if implementation requires a fourth file,
-  `STATUS.md`, Cargo or lockfile changes, a dependency, public API or schema
-  expansion, a core, SDK, client, or server change, an upstream input rewrite,
-  a real network, or any system-network mutation.
+- **User result:** During an owner- or operator-controlled shutdown, the
+  privacy-safe H2 pool summary reports how many pool-managed physical
+  connections actually negotiated outer TLS 1.2, TLS 1.3, or an unknown
+  version. This is bounded diagnostic context, not an ordinary user's live
+  status or a security recommendation.
+- **Scope:** Read the negotiated version from rustls or BoringSSL after the real
+  TLS handshake and before handing the stream to H2. Carry one fixed
+  `TLS 1.2 | TLS 1.3 | unknown` classification to `ClientTunnelPool`, then count
+  it exactly once when `install_and_checkout` installs the completed physical
+  H2 generation. Keep the counts in a crate-private shutdown-only snapshot and
+  include only fixed, destination-free integer counters in the existing
+  controlled-shutdown summary.
+- **Acceptance:** First installation counts once; cached checkout and stream
+  reuse do not recount it; each replacement generation counts once.
+  TLS 1.2 plus TLS 1.3 plus unknown always equals `connections_created`, with
+  saturating counters. `unknown` is fail-safe for a missing or other backend
+  result and is never guessed from configured or offered versions. The public
+  `H2ConnectionPoolSnapshot` and `H2TunnelRequestSender`, connection success
+  and failure behavior, TLS settings, authentication, wire, config and schema
+  remain unchanged. Default browser TLS, no-default-features rustls, and H3
+  feature builds and tests remain healthy.
+- **Out of scope:** H3, H3-to-H2 non-pooled fallback, WebSocket, direct
+  non-pooled `tunnel::open` H2, authenticated-session counts, provider-to-origin
+  TLS, destination HTTPS, end-to-end Maverick TLS, ECH, post-quantum claims,
+  channel-binding claims, cipher/group/ALPN/SNI details, ordinary-user live
+  diagnostics, public APIs, config or schema changes, dependencies, servers,
+  real networks, releases, and product or Live results. With a TLS-terminating
+  provider front, the observed leg is client to provider edge. All-zero counts
+  mean only that this process installed no H2 physical connection managed by
+  this pool.
+- **Stop conditions:** Stop if implementation requires a seventh file,
+  `STATUS.md`, Cargo or lockfile changes, a dependency, a public API, config,
+  schema or version change, core, SDK, CLI, server, H3, WebSocket or non-pooled
+  tunnel changes, new diagnostics machinery, a remote or real network, any
+  system-network mutation, or any claim that this diagnostic itself improves
+  security or proves a product or Live result.
 
 ## Execution Order
 

@@ -981,12 +981,46 @@ browsing content, error strings, or per-event timestamps. The metrics listener
 is disabled unless configured and must remain loopback-only; Maverick does not
 upload or persist these counters.
 
-On a controlled client shutdown, Maverick also logs one fixed aggregate H2 pool
-summary containing only the existing integer and boolean connection-pool
-snapshot fields. It never includes the server address, a destination, a
-credential, an error string, browsing content, or any user-provided string.
-The process-lifetime connection and stream counts are still activity-volume
-metadata and should be handled accordingly.
+On an owner- or operator-controlled client shutdown, Maverick also emits one
+info-level, fixed aggregate H2 pool summary containing only fixed,
+destination-free numeric and boolean fields. If the active filter excludes
+`info`, or an SDK embedding has no tracing subscriber, this event may not be
+visible. In addition to the existing public connection-pool snapshot fields,
+its crate-private shutdown-only data has exactly these observed outer-TLS
+counters:
+
+- `pooled_h2_client_observed_outer_tls12_connections`;
+- `pooled_h2_client_observed_outer_tls13_connections`; and
+- `pooled_h2_client_observed_outer_tls_unknown_connections`.
+
+These counters classify only physical H2 connection generations managed by
+`ClientTunnelPool` after actual TLS and H2 setup both succeeded and the
+generation was installed in the pool. Each installed generation is classified
+once; cached checkout and stream reuse do not increment the counters. The
+counters saturate without breaking the stored invariant that TLS 1.2 plus TLS
+1.3 plus unknown equals `connections_created`. `unknown` means the TLS backend
+returned no negotiated version or a version other than TLS 1.2 or TLS 1.3; it
+is never inferred from configured or offered versions.
+
+The observation is the client-facing outer TLS leg. For direct H2 that leg is
+client to Maverick server. With a TLS-terminating provider front it is client to
+provider edge, not provider to origin. It is not an authenticated-tunnel count:
+a physical connection remains counted if later Maverick credential or
+authentication work fails. It does not describe end-to-end Maverick TLS,
+origin TLS, destination HTTPS, ECH, post-quantum properties, channel binding, or
+any other security proof.
+
+H3, H3-to-H2 non-pooled fallback, WebSocket, direct non-pooled
+`tunnel::open` H2, and any H2 connection not installed by this pool are outside
+these counters. Three zero values mean only that this process installed no
+pool-managed H2 physical connection; they do not prove that the process used no
+TLS or H2. The summary never includes the server address or name, a provider,
+port, destination, credential, secret, certificate path, connection ID,
+error string, browsing content, or any user-provided string. Its counter payload
+contains no per-connection or per-version timestamp, although the surrounding
+logger may attach one event time to the controlled-shutdown info event. The
+process-lifetime connection and stream counts are still activity-volume metadata
+and should be handled accordingly.
 
 ## Certificate Pinning
 

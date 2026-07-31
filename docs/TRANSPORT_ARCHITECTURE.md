@@ -8,11 +8,16 @@ Status: compact description of the active product path.
 local application
   -> loopback SOCKS5 / HTTP CONNECT / DNS listener
   -> Maverick client
-  -> TLS 1.3 + HTTP/2 connection
+  -> client-facing TLS + HTTP/2 connection
   -> authenticated Maverick frames
   -> Maverick server
   -> policy-checked target connection
 ```
+
+The direct Maverick origin accepts and uses TLS 1.3 with H2. A
+TLS-terminating provider-facing outer H2 leg may negotiate TLS 1.2 or TLS 1.3.
+This client-facing observation does not describe provider-to-origin TLS or
+destination TLS.
 
 The client reuses a bounded H2 connection across local flows. Authentication is
 inside the encrypted carrier and can bind to TLS exporter material. The server

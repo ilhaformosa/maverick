@@ -29,9 +29,17 @@ use tracing::debug;
 
 use crate::transport::H2TunnelRequestSender;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ObservedOuterTlsVersion {
+    Tls12,
+    Tls13,
+    Unknown,
+}
+
 pub(crate) struct H2Connection {
     pub transport: H2TunnelRequestSender,
     pub connection_closed: watch::Receiver<bool>,
+    pub observed_outer_tls_version: ObservedOuterTlsVersion,
 }
 
 pub async fn connect(config: &ClientConfig) -> Result<H2TunnelRequestSender> {
@@ -68,6 +76,8 @@ async fn connect_rustls_inner(config: &ClientConfig) -> Result<H2Connection> {
         .connect(server_name, tcp)
         .await
         .context("TLS handshake failed")?;
+    let observed_outer_tls_version =
+        observed_outer_tls_version_from_rustls(tls.get_ref().1.protocol_version());
     let channel_binding =
         rustls_client_channel_binding(tls.get_ref().1, end_to_end_channel_binding_enabled(config))?;
     let (sender, connection_closed) =
@@ -78,6 +88,7 @@ async fn connect_rustls_inner(config: &ClientConfig) -> Result<H2Connection> {
             channel_binding,
         },
         connection_closed,
+        observed_outer_tls_version,
     })
 }
 
@@ -147,6 +158,7 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
     let tls = tokio_boring::connect(connect_config, &config.server.server_name, tcp)
         .await
         .context("browser TLS handshake failed")?;
+    let observed_outer_tls_version = observed_outer_tls_version_from_boring(tls.ssl().version2());
     if let Some(pin) = &config.server.cert_pin {
         let expected_sha256 = parse_cert_pin(pin)?;
         let cert = tls
@@ -169,7 +181,27 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
             channel_binding,
         },
         connection_closed,
+        observed_outer_tls_version,
     })
+}
+
+fn observed_outer_tls_version_from_rustls(
+    version: Option<rustls::ProtocolVersion>,
+) -> ObservedOuterTlsVersion {
+    match version {
+        Some(rustls::ProtocolVersion::TLSv1_2) => ObservedOuterTlsVersion::Tls12,
+        Some(rustls::ProtocolVersion::TLSv1_3) => ObservedOuterTlsVersion::Tls13,
+        Some(_) | None => ObservedOuterTlsVersion::Unknown,
+    }
+}
+
+#[cfg(feature = "browser-tls")]
+fn observed_outer_tls_version_from_boring(version: Option<SslVersion>) -> ObservedOuterTlsVersion {
+    match version {
+        Some(SslVersion::TLS1_2) => ObservedOuterTlsVersion::Tls12,
+        Some(SslVersion::TLS1_3) => ObservedOuterTlsVersion::Tls13,
+        Some(_) | None => ObservedOuterTlsVersion::Unknown,
+    }
 }
 
 fn enable_outer_tcp_nodelay(tcp: &TcpStream) -> Result<()> {
@@ -388,9 +420,55 @@ mod ech_api_tests {
 
 #[cfg(test)]
 mod tcp_socket_tests {
-    use super::enable_outer_tcp_nodelay;
+    use super::{
+        enable_outer_tcp_nodelay, observed_outer_tls_version_from_rustls, ObservedOuterTlsVersion,
+    };
     use anyhow::Result;
     use tokio::net::{TcpListener, TcpStream};
+
+    #[test]
+    fn rustls_protocol_version_maps_to_fixed_observed_outer_tls_class() {
+        assert_eq!(
+            observed_outer_tls_version_from_rustls(Some(rustls::ProtocolVersion::TLSv1_2)),
+            ObservedOuterTlsVersion::Tls12
+        );
+        assert_eq!(
+            observed_outer_tls_version_from_rustls(Some(rustls::ProtocolVersion::TLSv1_3)),
+            ObservedOuterTlsVersion::Tls13
+        );
+        assert_eq!(
+            observed_outer_tls_version_from_rustls(None),
+            ObservedOuterTlsVersion::Unknown
+        );
+        assert_eq!(
+            observed_outer_tls_version_from_rustls(Some(rustls::ProtocolVersion::TLSv1_1)),
+            ObservedOuterTlsVersion::Unknown
+        );
+    }
+
+    #[cfg(feature = "browser-tls")]
+    #[test]
+    fn boring_protocol_version_maps_to_fixed_observed_outer_tls_class() {
+        use super::observed_outer_tls_version_from_boring;
+        use boring::ssl::SslVersion;
+
+        assert_eq!(
+            observed_outer_tls_version_from_boring(Some(SslVersion::TLS1_2)),
+            ObservedOuterTlsVersion::Tls12
+        );
+        assert_eq!(
+            observed_outer_tls_version_from_boring(Some(SslVersion::TLS1_3)),
+            ObservedOuterTlsVersion::Tls13
+        );
+        assert_eq!(
+            observed_outer_tls_version_from_boring(None),
+            ObservedOuterTlsVersion::Unknown
+        );
+        assert_eq!(
+            observed_outer_tls_version_from_boring(Some(SslVersion::TLS1_1)),
+            ObservedOuterTlsVersion::Unknown
+        );
+    }
 
     #[tokio::test]
     async fn outer_tcp_configuration_enables_nodelay() -> Result<()> {

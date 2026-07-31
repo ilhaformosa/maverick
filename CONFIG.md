@@ -348,6 +348,15 @@ the five policy axes do not block projection. Those fields are not migrated.
 This API has no raw-YAML adapter or serializer and does not produce a complete
 or runnable config-v2 client, server agreement, or runtime result.
 
+### T012b-1 first transport-axis runtime consumer
+
+The client default-transport selector consumes only the successful T010b
+projection's explicit H2 transport axis. A projection blocker, invalid v1
+source, or unsupported future transport axis uses the unchanged legacy v1
+selector, preserving existing non-projected paths. This is not a complete
+config-v2, trust, name-privacy, shaping, authentication, or runtime migration,
+and it does not claim peer confirmation or connection success.
+
 ### T010a effective-behavior handoff
 
 T010a must evaluate strictly valid v1 configuration before T009 freezes a

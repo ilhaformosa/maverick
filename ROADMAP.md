@@ -17,36 +17,32 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T010b — Add the first Auto/H2 client policy projection
+### T012b-1 — Consume v2 Policy for the first Auto/H2 transport decision
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** Maintainers can project the first strictly bounded valid
-  config-v1 client subset into a reusable typed v2 Policy without claiming a
-  complete configuration migration.
-- **Scope:** Add one public core entry point for an already parsed
-  `ClientConfig`, a private-field result wrapper, current typed blockers, and
-  product tests. Update the publish-disabled T010a client oracle only so Auto
-  no longer receives the legacy-compatibility blocker, then test the production
-  projection against that independent oracle.
-- **Acceptance:** A valid Auto, direct-H2, plain-SNI, shaping-disabled client
-  with no H3, WebSocket, or TLS-terminating front projects exactly to
-  Standard/H2/DirectToMaverick/PlainSni/Disabled. The result retains Auto as
-  separate compatibility metadata, derives wire byte `0` only through
-  `Mode::wire_id()`, and reports no peer confirmation. Canonical source
-  validation runs first; the remaining blocker order is Mode, H3, WebSocket,
-  TLS-terminating front, then shaping. Client Auto loses only the obsolete
-  oracle blocker; server, Stable, and valid Private behavior remain blocked.
-  Returned values and blockers reveal no source configuration values.
-- **Out of scope:** Raw YAML and Profile URI adapters, canonical YAML or other
-  serialization, complete client or server config-v2 types, Stable or Private
-  positive projection, H3, WebSocket, fronted transport, enabled shaping,
-  runtime, CLI or SDK consumers, peer confirmation, auth v3, diagnostics, PQ,
+- **User result:** The first real client runtime decision uses the already
+  validated v2 Policy transport axis for the narrow Auto/direct-H2 subset,
+  without changing any other working v1 transport path.
+- **Scope:** In the existing private default-transport decision path, consume
+  `project_v1_client_policy` only when it succeeds with explicit H2. Keep the
+  public selector signature and explicit H2, WebSocket, and H3 connection
+  primitives unchanged. Add private provenance tests and short contract notes.
+- **Acceptance:** Omitted or explicit Auto in the supported T010b subset selects
+  H2 with proof that the decision came from projected Policy. Every projection
+  blocker, invalid source, and unsupported future success falls back to the
+  unchanged legacy selector. Stable, valid Private where supported, configured
+  H3, explicit or provider-fronted WebSocket, provider-fronted H2, and enabled
+  shaping keep their current behavior across applicable feature builds.
+- **Out of scope:** A complete client-role assembly or config v2; public API,
+  schema, dependency, auth, frame, Mode wire byte, trust, name privacy, shaping
+  runtime, H3 fallback, endpoint, secret, listener, Profile URI, SDK or CLI
+  consumer, server, peer confirmation, connection-success claim, real network,
   release, deployment, and publication.
-- **Stop conditions:** Stop if the slice requires `STATUS.md`, a fifth file,
-  Cargo or lockfile changes, a dependency, a schema/version or
-  protocol/auth/frame/wire change, a runtime consumer, a real network, or any
-  system-network mutation.
+- **Stop conditions:** Stop if implementation requires a fourth file,
+  `STATUS.md`, Cargo or lockfile changes, a dependency, public API expansion,
+  duplicated projection rules, a protocol/auth/frame/wire change, a real
+  network, or any system-network mutation.
 
 ## Execution Order
 

@@ -17,40 +17,36 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013a — Freeze legacy-auth policy-projection compatibility
+### T010b — Add the first Auto/H2 client policy projection
 
 This repository-local slice is not bound to a release version.
 
-- **User result:** Maintainers can identify the first honest v1-to-v2 client
-  policy projection without calling local requested policy a peer-confirmed or
-  runtime-observed result.
-- **Scope:** In `CONFIG.md` and this roadmap only, freeze that auth v1/v2
-  MAC-protect the client's legacy Mode but do not confirm it as a shared session
-  policy. Keep legacy Mode separate from the five v2 axes, and define the first
-  positive T010b input as a config-v1 `Mode::Auto` client with H2-only,
-  direct-to-Maverick, plain-SNI, shaping-disabled behavior and no other blocker.
-- **Acceptance:** The positive projection uses `transport.strategy: h2`, keeps
-  source Mode Auto/wire byte 0 only as internal legacy compatibility metadata,
-  and writes no Mode into v2 Policy YAML. Stable, Private, server migration,
-  H3, WebSocket, mixed TrustRoute, enabled shaping, cross-boundary fallback,
-  and peer confirmation remain distinct typed blockers. Ready means only
-  **client policy projection ready**, not a complete or runnable v2 config.
-  Existing protocol, config, auth, frame, stored-profile, version, and wire
-  behavior remain unchanged.
-- **Out of scope:** T010b implementation, product code, tests, auth v3 or any
-  equivalent new wire contract, authenticated policy echo or selection,
-  downgrade negotiation, RFC 9266 policy confirmation, fronted inner
-  application-session or per-flow MAC, expiry, revocation, POST-to-CONNECT, H3,
-  PQ/KEX, Profile URI v2, runtime consumers, publication, deployment, and
-  release work.
-- **Stop conditions:** Stop before changing `STATUS.md`, any source or test,
-  Cargo or a lockfile, any schema or version, any protocol/auth/frame/wire fact,
-  any secret or network state, or any file outside `CONFIG.md` and `ROADMAP.md`.
-
-After this contract is reviewed, the next repository-local slice is T010b's
-first config-v1 Auto/H2 client policy projection. It must produce only the
-strict five-axis policy result and separate internal legacy compatibility
-metadata; complete client or server migration remains later work.
+- **User result:** Maintainers can project the first strictly bounded valid
+  config-v1 client subset into a reusable typed v2 Policy without claiming a
+  complete configuration migration.
+- **Scope:** Add one public core entry point for an already parsed
+  `ClientConfig`, a private-field result wrapper, current typed blockers, and
+  product tests. Update the publish-disabled T010a client oracle only so Auto
+  no longer receives the legacy-compatibility blocker, then test the production
+  projection against that independent oracle.
+- **Acceptance:** A valid Auto, direct-H2, plain-SNI, shaping-disabled client
+  with no H3, WebSocket, or TLS-terminating front projects exactly to
+  Standard/H2/DirectToMaverick/PlainSni/Disabled. The result retains Auto as
+  separate compatibility metadata, derives wire byte `0` only through
+  `Mode::wire_id()`, and reports no peer confirmation. Canonical source
+  validation runs first; the remaining blocker order is Mode, H3, WebSocket,
+  TLS-terminating front, then shaping. Client Auto loses only the obsolete
+  oracle blocker; server, Stable, and valid Private behavior remain blocked.
+  Returned values and blockers reveal no source configuration values.
+- **Out of scope:** Raw YAML and Profile URI adapters, canonical YAML or other
+  serialization, complete client or server config-v2 types, Stable or Private
+  positive projection, H3, WebSocket, fronted transport, enabled shaping,
+  runtime, CLI or SDK consumers, peer confirmation, auth v3, diagnostics, PQ,
+  release, deployment, and publication.
+- **Stop conditions:** Stop if the slice requires `STATUS.md`, a fifth file,
+  Cargo or lockfile changes, a dependency, a schema/version or
+  protocol/auth/frame/wire change, a runtime consumer, a real network, or any
+  system-network mutation.
 
 ## Execution Order
 

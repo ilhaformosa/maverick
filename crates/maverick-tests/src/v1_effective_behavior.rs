@@ -379,7 +379,9 @@ pub fn evaluate_client(config: &ClientConfig, h3_compiled: bool) -> ClientV1Beha
     if shaping.facts.effective_enabled {
         blockers.push(MappingBlocker::EnabledShapingPolicyUnfrozen);
     }
-    blockers.push(MappingBlocker::LegacyModeCompatibilityUnresolved);
+    if config.mode != Mode::Auto {
+        blockers.push(MappingBlocker::LegacyModeCompatibilityUnresolved);
+    }
 
     ClientV1Behavior {
         mode: ClientLegacyMode {
@@ -710,6 +712,11 @@ mod tests {
     use super::*;
     use maverick_client::scheduler::{SchedulerPolicy, SchedulerState};
     use maverick_client::transport::TransportKind;
+    use maverick_core::config::v2::{
+        project_v1_client_policy, NamePrivacyMinimum as V2NamePrivacyMinimum,
+        TrafficShapingPolicy as V2TrafficShapingPolicy, TransportStrategy as V2TransportStrategy,
+        TrustRoute as V2TrustRoute, V1ClientPolicyProjectionBlocker,
+    };
     use maverick_core::config::{
         ClientNextCredentialConfig, NextCredentialConfig, SecretString, TlsFingerprintMode,
         UserCredentialRotationConfig,
@@ -810,6 +817,116 @@ fallback:
             assert_eq!(server.mode.wire_id, wire_id);
             assert!(!server.mode.client_mode_compared_or_stored);
         }
+    }
+
+    #[test]
+    fn auto_h2_policy_projection_matches_the_independent_oracle() {
+        for config in [client(Mode::Auto), {
+            let mut explicit = client(Mode::Auto);
+            explicit.advanced.shaping.max_padding_bytes_per_frame = 7;
+            explicit.advanced.shaping.max_overhead_ratio = 0.5;
+            explicit.advanced.shaping.max_delay_ms = 999;
+            explicit.advanced.shaping.max_batch_bytes = 17;
+            explicit.advanced.shaping.cover_traffic_window_ms = 42;
+            explicit
+        }] {
+            config.validate().unwrap();
+            let behavior = evaluate_client(&config, false);
+            assert!(behavior.blockers.is_empty());
+            let projection = project_v1_client_policy(&config).unwrap();
+            let policy = projection.policy();
+            assert_eq!(behavior.carrier_security.len(), 1);
+            let carrier_security = &behavior.carrier_security[0];
+            assert!(matches!(
+                (
+                    behavior.carrier.candidate_selection_policy,
+                    carrier_security.carrier,
+                    policy.transport_strategy()
+                ),
+                (ClientCarrier::H2Only, Carrier::H2, V2TransportStrategy::H2)
+            ));
+            assert!(matches!(
+                (
+                    carrier_security.trust_route.configured_assumption,
+                    policy.trust_route()
+                ),
+                (TrustRoute::DirectToMaverick, V2TrustRoute::DirectToMaverick)
+            ));
+            assert!(matches!(
+                (carrier_security.name_privacy, policy.name_privacy_minimum()),
+                (
+                    NamePrivacy::ClientPlainSni { .. },
+                    V2NamePrivacyMinimum::PlainSni
+                )
+            ));
+            assert!(matches!(
+                (
+                    behavior.shaping.facts.effective_enabled,
+                    policy.traffic_shaping_policy()
+                ),
+                (false, V2TrafficShapingPolicy::Disabled)
+            ));
+            assert_eq!(projection.legacy_mode(), Mode::Auto);
+            assert_eq!(projection.legacy_mode().wire_id(), 0);
+            assert!(!projection.legacy_mode_peer_confirmed());
+        }
+    }
+
+    #[test]
+    fn h3_and_fronted_h2_projection_blockers_match_oracle_boundaries() {
+        let mut h3 = client(Mode::Auto);
+        h3.advanced.experimental_h3 = true;
+        h3.validate().unwrap();
+        assert_eq!(
+            project_v1_client_policy(&h3),
+            Err(V1ClientPolicyProjectionBlocker::H3Configured)
+        );
+        assert_eq!(
+            evaluate_client(&h3, false).blockers,
+            vec![MappingBlocker::UnsupportedV2Carrier]
+        );
+        assert_eq!(
+            evaluate_client(&h3, true).blockers,
+            vec![
+                MappingBlocker::UnsupportedV2Carrier,
+                MappingBlocker::H3SetupFallbackCrossesSecurityBoundary,
+            ]
+        );
+
+        let mut fronted_h2 = client(Mode::Auto);
+        enable_front(&mut fronted_h2, CdnFrontingCarrier::H2);
+        assert!(evaluate_client(&fronted_h2, true).blockers.is_empty());
+        assert_eq!(
+            project_v1_client_policy(&fronted_h2),
+            Err(V1ClientPolicyProjectionBlocker::TlsTerminatingFrontConfigured)
+        );
+    }
+
+    #[test]
+    fn stable_and_server_legacy_mode_blockers_remain() {
+        assert_eq!(
+            evaluate_client(&client(Mode::Stable), false).blockers,
+            vec![MappingBlocker::LegacyModeCompatibilityUnresolved]
+        );
+        assert_eq!(
+            evaluate_server(&server(Mode::Auto), false).blockers,
+            vec![MappingBlocker::LegacyModeCompatibilityUnresolved]
+        );
+    }
+
+    #[cfg(all(
+        feature = "browser-tls",
+        any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )
+    ))]
+    #[test]
+    fn private_client_legacy_mode_blocker_remains() {
+        assert_eq!(
+            evaluate_client(&client(Mode::Private), false).blockers,
+            vec![MappingBlocker::LegacyModeCompatibilityUnresolved]
+        );
     }
 
     #[cfg(all(
@@ -1493,7 +1610,6 @@ advanced:
                 MappingBlocker::UnsupportedV2Carrier,
                 MappingBlocker::H3SetupFallbackCrossesSecurityBoundary,
                 MappingBlocker::EnabledShapingPolicyUnfrozen,
-                MappingBlocker::LegacyModeCompatibilityUnresolved,
             ]
         );
     }

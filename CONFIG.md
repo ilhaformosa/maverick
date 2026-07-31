@@ -328,6 +328,26 @@ front cannot share one exporter across its two TLS connections. Inner
 application-session authentication and per-flow MAC for that route remain later
 work.
 
+### T010b Auto/H2 client policy projection foundation
+
+`maverick_core::config::v2::project_v1_client_policy(&ClientConfig)` is the
+only public T010b entry point. It returns a typed policy-only projection or a
+typed, value-free blocker. It first applies canonical config-v1 client
+validation, then checks blockers in this fixed order: legacy Mode, configured
+H3, configured WebSocket, any TLS-terminating front, and enabled traffic
+shaping.
+
+The successful result exposes only the five-axis `Policy`, the retained legacy
+Mode, and whether a peer confirmed that Mode. For this first subset the retained
+Mode is Auto, its existing `wire_id()` remains `0`, and peer confirmation is
+always false. The wire byte has no separate stored or serialized copy, and
+legacy Mode never enters Policy.
+
+Valid direct-H2 channel-binding choices and valid configuration fields outside
+the five policy axes do not block projection. Those fields are not migrated.
+This API has no raw-YAML adapter or serializer and does not produce a complete
+or runnable config-v2 client, server agreement, or runtime result.
+
 ### T010a effective-behavior handoff
 
 T010a must evaluate strictly valid v1 configuration before T009 freezes a

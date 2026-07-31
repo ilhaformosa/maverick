@@ -17,53 +17,44 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T014b-2 — Observe actual pooled H2 outer TLS key-exchange groups
+### T016b — Verify Beta.2 ↔ Beta.1 direct-H2 process compatibility
 
-This repository-local slice is not bound to a release version.
-
-- **User result:** During an owner- or operator-controlled shutdown, the
-  privacy-safe H2 pool summary reports how many pool-managed physical
-  connections actually negotiated each fixed outer-TLS key-exchange group
-  class. This is bounded diagnostic context, not an ordinary user's live
-  status, a security recommendation, or a post-quantum claim.
-- **Scope:** Read the actually negotiated group from rustls
-  `negotiated_key_exchange_group()` or BoringSSL's selected group API after the
-  real TLS handshake. Immediately reduce it to
-  `x25519_mlkem768 | x25519 | secp256r1 | secp384r1 | other_or_unknown`, carry
-  only that fixed class into `ClientTunnelPool`, and count it at the same
-  `install_and_checkout` generation-install point as the existing outer-TLS
-  version observation. Keep both partitions in the crate-private shutdown-only
-  snapshot and include only fixed, destination-free integer counters in the
-  existing controlled-shutdown summary.
-- **Acceptance:** First installation counts once; cached checkout and stream
-  reuse do not recount it; each replacement generation counts once.
-  The five group counters sum to `connections_created`, independently of the
-  existing TLS 1.2, TLS 1.3, and unknown version partition, with saturating
-  counters. `other_or_unknown` is fail-safe for a missing or unclassified
-  backend result and is never guessed from configured or offered groups.
-  Failed connections that never install are not counted. The public
-  `H2ConnectionPoolSnapshot` and `H2TunnelRequestSender`, connection success and
-  failure behavior, TLS settings and group lists, authentication, wire, config
-  and schema remain unchanged. Default browser TLS, no-default-features rustls,
-  and H3 feature builds and tests remain healthy.
-- **Out of scope:** H3, H3-to-H2 non-pooled fallback, WebSocket, direct
-  non-pooled `tunnel::open` H2, authenticated-session counts, provider-to-origin
-  TLS, destination HTTPS, end-to-end Maverick TLS, ECH, post-quantum claims,
-  require/prefer policy, enabling any hybrid-group registry entry,
-  channel-binding claims, raw library group names, other cipher/ALPN/SNI
-  details, ordinary-user live diagnostics, public APIs, config or schema
-  changes, dependencies, servers, real networks, releases, and product or Live
-  results. With a TLS-terminating provider front, the observed leg is client to
-  provider edge. All-zero counts mean only that this process installed no H2
-  physical connection managed by this pool. This observation is a prerequisite
-  input for a later T015 policy decision; it neither defines nor authorizes that
-  policy.
-- **Stop conditions:** Stop if implementation requires a seventh file,
-  `STATUS.md`, Cargo or lockfile changes, a dependency, a public API, config,
-  schema or version change, core, SDK, CLI, server, H3, WebSocket or non-pooled
-  tunnel changes, new diagnostics machinery, a remote or real network, any
-  system-network mutation, or any claim that this diagnostic itself improves
-  security or proves a product or Live result.
+- **User result:** A maintainer can run one local command that establishes
+  direct-H2 compatibility only when processes built from the exact published
+  Beta.2 and Beta.1 source identities complete both client/server directions,
+  auth v1 and auth v2, and both supported TLS backends. An incomplete run makes
+  no incompatibility claim.
+- **Scope:** Export the two local annotated tags with `git archive`, verify
+  their fixed tag-object IDs, direct commit targets, tag names, package
+  versions, and locks with Git replace objects disabled, then archive only the
+  pinned commits and build their CLI processes with `cargo --offline --locked`.
+  Run same-version positive controls before the cross-version matrix. Use only
+  `127.0.0.1`, OS-assigned ephemeral ports, private temporary files, anonymous
+  test credentials and certificates, and direct H2. Test the default
+  browser-TLS build and the explicit `--no-default-features` rustls build.
+- **Acceptance:** Beta.2 client → Beta.1 server and Beta.1 client → Beta.2
+  server both relay an exact payload for auth v1 and auth v2 on each TLS
+  backend. Before those eight cross-version cells run, the corresponding eight
+  same-version cells pass and all four historical binaries pass build, version,
+  and config preflights. Environment, toolchain, identity, build, config, or
+  same-version failures stop without being mislabeled as incompatibility.
+  Any other non-completing process case reports only that the matrix did not
+  complete and compatibility was not established; a direct incompatibility
+  claim requires separate typed protocol evidence.
+  Protocol, config, auth, frame, stored-profile, and Profile URI versions remain
+  unchanged.
+- **Out of scope:** H3 or H3 fallback, WebSocket, provider-fronted paths,
+  historical release archives, remote networks, providers, other platforms,
+  product runtime changes, public APIs, manifests, dependencies, auth v3, PQ
+  policy, SBOM or signature work, rollback rehearsal, release work, and product
+  or Live results. Existing strict YAML and stored-profile rejection, explicit
+  Beta.1 flat-profile migration, and new-envelope rejection by the old reader
+  remain intentional. T017 is already complete and is not repeated here.
+- **Stop conditions:** Stop if the exact local tag identities are unavailable,
+  a build needs network access, a historical same-version control is unhealthy,
+  or safe completion requires a sixth file, a manifest or lock change, product
+  code, a wire/schema/version change, a current-tip binary standing in for a
+  release, a remote action, or any host-network mutation.
 
 ## Execution Order
 

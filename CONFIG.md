@@ -328,6 +328,53 @@ front cannot share one exporter across its two TLS connections. Inner
 application-session authentication and per-flow MAC for that route remain later
 work.
 
+## Published N/N-1 direct-H2 compatibility contract
+
+For this repository-local contract, N is the annotated local tag
+`v1.2.0-beta.2`, tag object
+`3a2f7409c3193d03349219b1f8c144d76db74d67`, direct commit
+`6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, package
+`1.2.0-beta.2`. N-1 is the annotated local tag `v1.2.0-beta.1`, tag object
+`71c1a5fdf0cf74aa1c9ee7dc3a578647fba8a720`, direct commit
+`75b2a666f236043c3f3c611a9f2c3de8526c3171`, package
+`1.2.0-beta.1`. An unpublished development tip is not N.
+
+Run the complete local contract with:
+
+```sh
+./scripts/test-n-minus-one-compat.sh
+```
+
+The command disables Git replace objects for every source-identity operation.
+It verifies each exact tag object, tag name, direct commit target, package
+version, and lock, then archives the pinned commit rather than rereading a tag
+ref. Private fixture tests prove that replace objects, a rebuilt tag, or a
+nested tag cannot substitute the archived source. The command then builds four
+historical CLI binaries offline: Beta.2 and Beta.1 with the default
+browser-TLS/H2 feature set, and both again with `--no-default-features` for
+rustls/H2. Build, version, and common-config preflights run before eight
+same-version process controls. Only after those controls pass does the command
+run eight cross-version cells: both client/server directions, auth v1 and auth
+v2, on both TLS backends. Every cell starts real historical client and server
+processes and requires exact TCP bytes to traverse SOCKS5 and direct H2 on
+loopback.
+
+This contract changes no protocol, config, authentication, frame,
+stored-profile, or Profile URI version. It does not relax intentional
+compatibility tightening: strict YAML and stored-profile rejection remain,
+published Beta.1 flat profiles still require explicit migration, and a Beta.1
+reader still rejects the new stored-profile envelope. It authorizes no
+auth-version fallback.
+
+A passing result proves only direct-H2 interoperability between processes built
+offline from those exact local tag sources with the current local toolchain. It
+does not verify historical published archives, H3 or H3 fallback, WebSocket,
+provider-fronted behavior, a real provider or network, every platform, or a
+product or Live result. A nonzero process case says only that the matrix did not
+complete and compatibility was not established. It is not called an
+incompatibility unless separate typed protocol evidence supports that narrower
+conclusion.
+
 ### T010b Auto/H2 client policy projection foundation
 
 `maverick_core::config::v2::project_v1_client_policy(&ClientConfig)` is the

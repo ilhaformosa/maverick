@@ -6,22 +6,14 @@ export LC_ALL=C
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-readonly TARGET="aarch64-apple-darwin"
+readonly MAC_TARGET="aarch64-apple-darwin"
+readonly LINUX_TARGET="x86_64-unknown-linux-gnu"
 readonly BETA1_TAG="v1.2.0-beta.1"
 readonly BETA1_VERSION="${BETA1_TAG#v}"
 readonly BETA1_REVISION="75b2a666f236043c3f3c611a9f2c3de8526c3171"
-readonly BETA1_BASENAME="maverick-1.2.0-beta.1-pilot-aarch64-apple-darwin.tar.gz"
-readonly BETA1_BYTES="5565864"
-readonly BETA1_SHA256="d44c553c22de52abdb2dfbe4bb7e7bf8d982ce5bdf9cb90f5ae4b8c01d29fc3e"
-readonly BETA1_CHECKSUM_SHA256="202e4b29c6f46b97b87a52784384a11f6be329412aba934af5ecaf9b9c3db272"
 readonly BETA2_TAG="v1.2.0-beta.2"
 readonly BETA2_VERSION="${BETA2_TAG#v}"
 readonly BETA2_REVISION="6862a3004ec9c3b1e52fd03f71dc47b771564cc4"
-readonly BETA2_BASENAME="maverick-1.2.0-beta.2-pilot-aarch64-apple-darwin.tar.gz"
-readonly BETA2_BYTES="5607172"
-readonly BETA2_SHA256="e48c87795e534d141c5b563a1da4e36ca485c75542046fdd925c2c8495d9a7f1"
-readonly BETA2_CHECKSUM_SHA256="71bd02e2b6d31318356f5197ab61eff1db258b7bb2b95fe553a0bedaa0c935e9"
-readonly CHECKSUM_BYTES="122"
 readonly MAX_ARCHIVE_BYTES="67108864"
 readonly MAX_TEXT_BYTES="1048576"
 readonly MAX_SMALL_TEXT_BYTES="4096"
@@ -30,6 +22,7 @@ readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,so
 readonly CLEANUP_MARKER_CONTENT="maverick-n-minus-one-private-root"
 
 private_tmp=""
+selected_target=""
 source_beta1_archive=""
 source_beta1_checksum=""
 source_beta2_archive=""
@@ -42,6 +35,8 @@ snapshot_archive=""
 snapshot_checksum=""
 run_status=0
 bounded_supervisor_pid=""
+tar_tool=""
+tar_flavor=""
 
 cleanup() {
   case "$private_tmp" in
@@ -91,7 +86,13 @@ file_size() {
 
 sha256_file() {
   local digest
-  digest="$(/usr/bin/shasum -a 256 "$1" 2>/dev/null | awk '{print $1}')" || fail
+  if command -v shasum >/dev/null 2>&1; then
+    digest="$(shasum -a 256 "$1" 2>/dev/null | awk '{print $1}')" || fail
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$1" 2>/dev/null | awk '{print $1}')" || fail
+  else
+    fail
+  fi
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || fail
   printf '%s\n' "$digest"
 }
@@ -154,10 +155,19 @@ extract_archive_safely() {
   local archive="$1"
   local extract_dir="$2"
 
-  /usr/bin/tar --version 2>/dev/null | grep -Fq "bsdtar" || fail
-  COPYFILE_DISABLE=1 /usr/bin/tar \
-    --no-same-owner --no-same-permissions --no-acls --no-fflags --no-xattrs \
-    -xzf "$archive" -C "$extract_dir" >/dev/null 2>&1 || fail
+  case "$tar_flavor" in
+    bsdtar)
+      COPYFILE_DISABLE=1 "$tar_tool" \
+        --no-same-owner --no-same-permissions --no-acls --no-fflags --no-xattrs \
+        -xzf "$archive" -C "$extract_dir" >/dev/null 2>&1 || fail
+      ;;
+    gnu-tar)
+      "$tar_tool" --extract --gzip --file="$archive" --directory="$extract_dir" \
+        --no-same-owner --no-same-permissions --no-acls --no-xattrs \
+        --no-selinux --delay-directory-restore >/dev/null 2>&1 || fail
+      ;;
+    *) fail ;;
+  esac
 }
 
 verify_beta1_archive_shape() {
@@ -167,26 +177,35 @@ verify_beta1_archive_shape() {
   local expected_types="$private_tmp/beta1-expected-types"
   local observed_types="$private_tmp/beta1-observed-types"
 
-  printf '%s\n' \
-    "maverick-pilot/" \
-    "maverick-pilot/LICENSE" \
-    "maverick-pilot/START_HERE.txt" \
-    "maverick-pilot/SOURCE.txt" \
-    "maverick-pilot/maverick" \
-    "maverick-pilot/VERSION.txt" \
-    "maverick-pilot/SHA256SUMS" >"$expected_names"
-  /usr/bin/tar -tzf "$archive" >"$observed_names" 2>/dev/null || fail
+  case "$TARGET" in
+    "$MAC_TARGET")
+      printf '%s\n' \
+        "maverick-pilot/" \
+        "maverick-pilot/LICENSE" \
+        "maverick-pilot/START_HERE.txt" \
+        "maverick-pilot/SOURCE.txt" \
+        "maverick-pilot/maverick" \
+        "maverick-pilot/VERSION.txt" \
+        "maverick-pilot/SHA256SUMS" >"$expected_names"
+      ;;
+    "$LINUX_TARGET")
+      printf '%s\n' \
+        "maverick-pilot/" \
+        "maverick-pilot/SOURCE.txt" \
+        "maverick-pilot/START_HERE.txt" \
+        "maverick-pilot/maverick" \
+        "maverick-pilot/VERSION.txt" \
+        "maverick-pilot/SHA256SUMS" \
+        "maverick-pilot/LICENSE" >"$expected_names"
+      ;;
+    *) fail ;;
+  esac
+  "$tar_tool" -tzf "$archive" >"$observed_names" 2>/dev/null || fail
   cmp -s "$observed_names" "$expected_names" || fail
 
-  printf '%s\n' \
-    "d maverick-pilot/" \
-    "- maverick-pilot/LICENSE" \
-    "- maverick-pilot/START_HERE.txt" \
-    "- maverick-pilot/SOURCE.txt" \
-    "- maverick-pilot/maverick" \
-    "- maverick-pilot/VERSION.txt" \
-    "- maverick-pilot/SHA256SUMS" >"$expected_types"
-  /usr/bin/tar -tvzf "$archive" 2>/dev/null |
+  awk '{ type = ($0 ~ /\/$/ ? "d" : "-"); print type " " $0 }' \
+    "$expected_names" >"$expected_types"
+  "$tar_tool" -tvzf "$archive" 2>/dev/null |
     awk 'NF > 1 { print substr($1, 1, 1) " " $NF }' >"$observed_types" || fail
   cmp -s "$observed_types" "$expected_types" || fail
 }
@@ -222,7 +241,10 @@ verify_beta1_metadata() {
   local expected_source="$private_tmp/expected-beta1-source"
   local expected_version="$private_tmp/expected-beta1-version"
   local binary="$payload_root/maverick"
+  local elf_type
   local file_description
+  local readelf_header
+  local readelf_tool
 
   printf '%s\n' \
     "repository: https://github.com/ilhaformosa/maverick" \
@@ -239,12 +261,53 @@ verify_beta1_metadata() {
   cmp -s "$expected_version" "$payload_root/VERSION.txt" || fail
 
   file_description="$(file -b "$binary" 2>/dev/null)" || fail
-  [[ "$(field_hex "$binary" 0 4)" == "cffaedfe" ]] || fail
-  [[ "$(field_hex "$binary" 4 4)" == "0c000001" ]] || fail
-  [[ "$(field_hex "$binary" 12 4)" == "02000000" ]] || fail
-  [[ "$file_description" == *"Mach-O"* && "$file_description" == *"arm64"* ]] || fail
-  [[ "$file_description" != *"universal"* && "$file_description" != *"fat"* ]] ||
-    fail
+  case "$TARGET" in
+    "$MAC_TARGET")
+      [[ "$(field_hex "$binary" 0 4)" == "cffaedfe" ]] || fail
+      [[ "$(field_hex "$binary" 4 4)" == "0c000001" ]] || fail
+      [[ "$(field_hex "$binary" 12 4)" == "02000000" ]] || fail
+      [[ "$file_description" == *"Mach-O"* &&
+        "$file_description" == *"arm64"* ]] || fail
+      [[ "$file_description" != *"universal"* &&
+        "$file_description" != *"fat"* ]] || fail
+      ;;
+    "$LINUX_TARGET")
+      [[ "$(field_hex "$binary" 0 7)" == "7f454c46020101" ]] || fail
+      elf_type="$(field_hex "$binary" 16 2)"
+      [[ "$elf_type" == "0200" || "$elf_type" == "0300" ]] || fail
+      [[ "$(field_hex "$binary" 18 2)" == "3e00" ]] || fail
+      [[ "$file_description" == *"ELF"* &&
+        "$file_description" == *"x86-64"* ]] || fail
+      if command -v readelf >/dev/null 2>&1; then
+        readelf_tool="$(command -v readelf 2>/dev/null)" || fail
+      elif command -v greadelf >/dev/null 2>&1; then
+        readelf_tool="$(command -v greadelf 2>/dev/null)" || fail
+      else
+        fail
+      fi
+      readelf_header="$("$readelf_tool" -h "$binary" 2>/dev/null)" || fail
+      printf '%s\n' "$readelf_header" |
+        grep -Eq 'Class:[[:space:]]+ELF64' || fail
+      printf '%s\n' "$readelf_header" |
+        grep -Eq 'Data:[[:space:]]+2.s complement, little endian' || fail
+      printf '%s\n' "$readelf_header" |
+        grep -Eq 'Machine:[[:space:]]+Advanced Micro Devices X86-64' || fail
+      case "$elf_type" in
+        0200)
+          [[ "$file_description" == *"executable"* ]] || fail
+          printf '%s\n' "$readelf_header" |
+            grep -Eq 'Type:[[:space:]]+EXEC[[:space:]]' || fail
+          ;;
+        0300)
+          [[ "$file_description" == *"pie executable"* ]] || fail
+          printf '%s\n' "$readelf_header" |
+            grep -Eq 'Type:[[:space:]]+DYN.*Position-Independent Executable' ||
+            fail
+          ;;
+      esac
+      ;;
+    *) fail ;;
+  esac
   [[ -x "$binary" ]] || fail
 }
 
@@ -540,6 +603,11 @@ verify_inputs_unchanged() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --target)
+      [[ $# -ge 2 && -z "$selected_target" ]] || fail
+      selected_target="$2"
+      shift 2
+      ;;
     --beta1-archive)
       [[ $# -ge 2 && -z "$source_beta1_archive" ]] || fail
       source_beta1_archive="$2"
@@ -568,13 +636,74 @@ done
 
 [[ -n "$source_beta1_archive" && -n "$source_beta1_checksum" ]] || fail
 [[ -n "$source_beta2_archive" && -n "$source_beta2_checksum" ]] || fail
-[[ "$(uname -s 2>/dev/null)" == "Darwin" ]] || fail
-[[ "$(uname -m 2>/dev/null)" == "arm64" ]] || fail
+if [[ -z "$selected_target" ]]; then
+  selected_target="$MAC_TARGET"
+fi
+
+case "$selected_target" in
+  "$MAC_TARGET")
+    TARGET="$MAC_TARGET"
+    BETA1_BASENAME="maverick-1.2.0-beta.1-pilot-aarch64-apple-darwin.tar.gz"
+    BETA1_BYTES="5565864"
+    BETA1_SHA256="d44c553c22de52abdb2dfbe4bb7e7bf8d982ce5bdf9cb90f5ae4b8c01d29fc3e"
+    BETA1_CHECKSUM_SHA256="202e4b29c6f46b97b87a52784384a11f6be329412aba934af5ecaf9b9c3db272"
+    BETA2_BASENAME="maverick-1.2.0-beta.2-pilot-aarch64-apple-darwin.tar.gz"
+    BETA2_BYTES="5607172"
+    BETA2_SHA256="e48c87795e534d141c5b563a1da4e36ca485c75542046fdd925c2c8495d9a7f1"
+    BETA2_CHECKSUM_SHA256="71bd02e2b6d31318356f5197ab61eff1db258b7bb2b95fe553a0bedaa0c935e9"
+    CHECKSUM_BYTES="122"
+    ;;
+  "$LINUX_TARGET")
+    TARGET="$LINUX_TARGET"
+    BETA1_BASENAME="maverick-1.2.0-beta.1-pilot-x86_64-unknown-linux-gnu.tar.gz"
+    BETA1_BYTES="6139821"
+    BETA1_SHA256="7867332bcf8cb440b24a7b0569d4e58b554e207a43499ac1cc7e0650dba6b7d5"
+    BETA1_CHECKSUM_SHA256="56aa22b84a8e5272a8bfe21aa0e9d2fb503f1d0f892957018224f87bc291e7ac"
+    BETA2_BASENAME="maverick-1.2.0-beta.2-pilot-x86_64-unknown-linux-gnu.tar.gz"
+    BETA2_BYTES="6185627"
+    BETA2_SHA256="6a9afc7c5b1d024f5d279a683a6bf02a4d99fa3437f477fc018283f05688c24b"
+    BETA2_CHECKSUM_SHA256="291336c4ff54062bcae5dbfc624850a0ea3b8e1b65667c121ea9e3d13000cf47"
+    CHECKSUM_BYTES="126"
+    ;;
+  *) fail ;;
+esac
+readonly TARGET BETA1_BASENAME BETA1_BYTES BETA1_SHA256
+readonly BETA1_CHECKSUM_SHA256 BETA2_BASENAME BETA2_BYTES BETA2_SHA256
+readonly BETA2_CHECKSUM_SHA256 CHECKSUM_BYTES
+
+host_os="$(uname -s 2>/dev/null)" || fail
+host_cpu="$(uname -m 2>/dev/null)" || fail
+case "$TARGET" in
+  "$MAC_TARGET")
+    [[ "$host_os" == "Darwin" && "$host_cpu" == "arm64" ]] || fail
+    [[ -x /usr/bin/tar ]] || fail
+    tar_tool="/usr/bin/tar"
+    [[ "$("$tar_tool" --version 2>/dev/null)" == *"bsdtar"* ]] || fail
+    tar_flavor="bsdtar"
+    ;;
+  "$LINUX_TARGET")
+    [[ "$host_os" == "Linux" && "$host_cpu" == "x86_64" ]] || fail
+    tar_tool="$(command -v tar 2>/dev/null)" || fail
+    [[ "$("$tar_tool" --version 2>/dev/null)" == *"GNU tar"* ]] || fail
+    tar_flavor="gnu-tar"
+    ;;
+  *) fail ;;
+esac
+readonly tar_tool tar_flavor
+echo "platform_gate: $host_os/$host_cpu/$tar_flavor: PASS"
 
 private_tmp="$(mktemp -d /tmp/maverick-n-minus-one.XXXXXX 2>/dev/null)" || fail
 [[ -d "$private_tmp" && ! -L "$private_tmp" ]] || fail
 chmod 0700 "$private_tmp" >/dev/null 2>&1 || fail
-[[ "$(stat -f '%Lp' "$private_tmp" 2>/dev/null)" == "700" ]] || fail
+case "$TARGET" in
+  "$MAC_TARGET")
+    [[ "$(stat -f '%Lp' "$private_tmp" 2>/dev/null)" == "700" ]] || fail
+    ;;
+  "$LINUX_TARGET")
+    [[ "$(stat -c '%a' "$private_tmp" 2>/dev/null)" == "700" ]] || fail
+    ;;
+  *) fail ;;
+esac
 printf '%s\n' "$CLEANUP_MARKER_CONTENT" >"$private_tmp/.cleanup-marker" || fail
 chmod 0600 "$private_tmp/.cleanup-marker" >/dev/null 2>&1 || fail
 

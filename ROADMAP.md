@@ -17,49 +17,45 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T018b-2 — Gate target-aware CycloneDX sidecars
+### T019d — Verify Linux published-artifact upgrade and rollback parity
 
-- **User result:** A future pilot release can carry one CycloneDX JSON 1.5
-  sidecar for each shipped target. Each sidecar describes the actual
-  `maverick-cli` default-release runtime dependency closure for that target,
-  instead of pretending that one workspace-wide list fits both binaries.
-- **Scope:** Pin `cargo-cyclonedx` 0.5.9 and generate two deterministic files:
-  `maverick-<version>-pilot-x86_64-unknown-linux-gnu.cdx.json` and
-  `maverick-<version>-pilot-aarch64-apple-darwin.cdx.json`. Run the stock tool
-  in a private identity-neutral `git archive` snapshot, select the single
-  `maverick` binary document by its JSON identity and target, normalize all
-  references together, reject private paths, and compare the result with
-  locked offline Cargo metadata. The package declares Apache-2.0; its upstream
-  derived-MIT acknowledgement remains part of the tool's governance history.
-- **Acceptance:** Each target generates twice byte-for-byte identically; the
-  structural verifier checks the minimal CycloneDX 1.5 contract without
-  claiming full JSON Schema validation; full verification proves the locked
-  normal/runtime closure has no dev, build, test, or unrelated workspace
-  component. The sidecars stay outside the unchanged seven-entry archive.
-  A future release gate accepts exactly two archives, two archive checksums,
-  and two sidecars, rechecks all six byte identities, and never executes a
-  downloaded binary in the publish job.
-- **Claim boundary:** This slice does not rewrite published Beta.1 or Beta.2,
-  complete all of T018, prove that dependencies are vulnerability-free, prove
-  link-time composition or complete native/C/C++/system/toolchain coverage,
-  attest provenance, make the binary reproducible, or provide a cryptographic
-  signature. It adds no archive-digest property: matching version, target, and
-  revision plus the exact six-file release gate bind each archive to its
-  sidecar.
-- **Stop conditions:** Stop if the stock tool cannot isolate the shipped CLI
-  runtime closure, if a manifest or lock must change, if the archive contract
-  must change, if a permission or remote action is needed, or if the bounded
-  implementation needs an eighth file.
+- **User result:** The exact published x86-64 Linux Beta.1 and Beta.2 archives
+  receive the same upgrade and rollback exercise as the published Apple
+  Silicon archives, on their native supported platform.
+- **Scope:** Reuse the existing N-1 drill with target-bound archive sizes and
+  SHA-256 identities. Download only the four public Linux release files in the
+  one-time pull-request-only read-only Ubuntu job, then exercise them with GNU
+  tar and native execution in an isolated private temporary root.
+- **Acceptance:** Verify both checksum layers, source/version/target metadata,
+  x86-64 ELF identity, `version`, loopback-only `user-smoke`, known version-1
+  configurations, the Beta.1-permissive/Beta.2-strict unknown-key boundary,
+  failed-preflight selection preservation, Beta.1 to Beta.2 upgrade, Beta.1
+  rollback, unchanged inputs and fixtures, bounded processes, and cleanup.
+  The unchanged default invocation must still pass the published macOS drill.
+- **Claim boundary:** This is published-artifact compatibility evidence, not a
+  source build, candidate artifact, installer, updater, service manager,
+  deployment, product or user result, release result, or broad Linux support
+  claim.
+- **Stop conditions:** Stop on any tag, release, asset, size, checksum, source
+  revision, architecture, published behavior, or baseline drift. Stop if the
+  drill needs a secret, write permission, release workflow, asset upload,
+  product-code change, or host-network change.
 
 ## Execution Order
 
-1. **Finish T018b-2 locally.** Add and verify only the target-aware CycloneDX
-   generator, shared verifier, focused negative tests, and the two existing
-   release workflows plus local harness wiring described above.
-2. **Run T019d Linux published-artifact parity separately.** A native Linux
-   published-artifact drill still needs its own owner authorization for push
-   and GitHub Actions dispatch. This roadmap item grants neither.
-3. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+1. **Finish and independently review T019d locally.** Keep the change to the
+   shared drill, this execution order, and one temporary read-only pull-request
+   workflow.
+2. **Produce the native Linux evidence once.** Only after the separate review
+   gate, push the exact cumulative branch and create the separately authorized
+   Draft PR. The workflow must hard-check that exact same-repository head
+   branch and commit before downloading the four fixed public release files.
+3. **Remove the temporary trigger after review.** A separate owner instruction
+   is required before the cleanup commit deletes the one-time workflow. Do not
+   mark Ready, merge, tag, publish, upload an asset, deploy, or change a host
+   network as part of T019d. Every future run needs new owner authorization;
+   this ordering grants no standing remote permission.
+4. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate
    byte-for-byte build experiment. An SBOM is not any of those things.

@@ -10,6 +10,7 @@ tag_verifier="$repo_root/scripts/verify-release-tag.sh"
 test_root=""
 
 readonly TEST_VERSION="1.2.0-beta.2"
+readonly TEST_RELEASE_NOTE_VERSION="1.2.0-beta.3"
 readonly TEST_REVISION="1111111111111111111111111111111111111111"
 readonly TEST_MARKER="SYNTH_PRIVATE_MARKER_DO_NOT_ECHO"
 readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
@@ -505,10 +506,224 @@ expect_tag_fail() {
   grep -Fx "release tag verification failed" "$log" >/dev/null || fail_test
 }
 
+run_release_note() {
+  local fixture_root="$1"
+  local snapshot_dir="$fixture_root/private-snapshot"
+  local snapshot_path="$snapshot_dir/release-notes.md"
+  local snapshot_sha
+  (
+    cd "$fixture_root"
+    mkdir "$snapshot_dir"
+    chmod 0700 "$snapshot_dir"
+    if snapshot_release_note \
+      "docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md" \
+      "$TEST_RELEASE_NOTE_VERSION" \
+      "$snapshot_path" &&
+      chmod 0444 "$snapshot_path" &&
+      verify_release_note "$snapshot_path" "$TEST_RELEASE_NOTE_VERSION" &&
+      snapshot_sha="$(release_note_sha256 "$snapshot_path")" &&
+      release_note_digest_matches "$snapshot_path" "$snapshot_sha"; then
+      echo "release note verification OK"
+    else
+      echo "release note verification failed" >&2
+      return 1
+    fi
+  )
+}
+
+expect_release_note_pass() {
+  local label="$1"
+  local fixture_root="$2"
+  local log="$test_root/logs/$label"
+  trace_test "$label"
+  run_release_note "$fixture_root" >"$log" 2>&1 || fail_test
+  grep -Fx "release note verification OK" "$log" >/dev/null || fail_test
+}
+
+expect_release_note_fail() {
+  local label="$1"
+  local fixture_root="$2"
+  local hidden="${3:-}"
+  local log="$test_root/logs/$label"
+  trace_test "$label"
+  if run_release_note "$fixture_root" >"$log" 2>&1; then
+    fail_test
+  fi
+  [[ "$(wc -l <"$log" | tr -d '[:space:]')" == "1" ]] || fail_test
+  grep -Fx "release note verification failed" "$log" >/dev/null || fail_test
+  if [[ -n "$hidden" ]]; then
+    ! grep -F "$hidden" "$log" >/dev/null 2>&1 || fail_test
+  fi
+}
+
+extract_release_note_function() {
+  local function_name="$1"
+  local destination="$2"
+  local function_block
+  function_block="$(
+    sed -n "/^          ${function_name}() {$/,/^          }$/p" \
+      "$release_workflow"
+  )"
+  [[ -n "$function_block" ]] || fail_test
+  printf '%s\n' "$function_block" | sed 's/^          //' >>"$destination"
+}
+
 test_root="$(mktemp -d /tmp/maverick-release-gates.XXXXXX 2>/dev/null)" || fail_test
 [[ -d "$test_root" && ! -L "$test_root" ]] || fail_test
 chmod 0700 "$test_root"
 mkdir "$test_root/artifacts" "$test_root/logs" "$test_root/repos"
+
+release_workflow="$repo_root/.github/workflows/pilot-release.yml"
+release_note_verifier="$test_root/verify-release-note.sh"
+: >"$release_note_verifier"
+for function_name in \
+  snapshot_release_note verify_release_note release_note_sha256 \
+  release_note_digest_matches; do
+  extract_release_note_function "$function_name" "$release_note_verifier"
+done
+[[ -s "$release_note_verifier" ]] || fail_test
+# shellcheck source=/dev/null
+source "$release_note_verifier"
+for function_name in \
+  snapshot_release_note verify_release_note release_note_sha256 \
+  release_note_digest_matches; do
+  type "$function_name" >/dev/null 2>&1 || fail_test
+done
+grep -F "notes_source=\"docs/releases/v\${version}.md\"" "$release_workflow" \
+  >/dev/null || fail_test
+snapshot_call_pattern="snapshot_release_note \"\$notes_source\" \"\$version\" \"\$notes_file\""
+verification_call_pattern="verify_release_note \"\$notes_file\" \"\$version\""
+digest_call_pattern="notes_sha=\"\$(release_note_sha256 \"\$notes_file\")\""
+final_digest_pattern="release_note_digest_matches \"\$NOTES_FILE\" \"\$NOTES_SHA\""
+notes_file_pattern="--notes-file \"\$NOTES_FILE\""
+release_create_pattern="exec gh release create \"\$GITHUB_REF_NAME\""
+snapshot_call_line="$(
+  grep -Fn "$snapshot_call_pattern" "$release_workflow" | cut -d: -f1
+)"
+verification_call_line="$(
+  grep -Fn "$verification_call_pattern" "$release_workflow" | cut -d: -f1
+)"
+digest_call_line="$(
+  grep -Fn "$digest_call_pattern" "$release_workflow" | cut -d: -f1
+)"
+final_digest_call_line="$(
+  grep -Fn "$final_digest_pattern" "$release_workflow" | cut -d: -f1
+)"
+release_create_line="$(
+  grep -Fn "$release_create_pattern" "$release_workflow" | cut -d: -f1
+)"
+[[ "$snapshot_call_line" =~ ^[0-9]+$ ]] || fail_test
+[[ "$verification_call_line" =~ ^[0-9]+$ ]] || fail_test
+[[ "$digest_call_line" =~ ^[0-9]+$ ]] || fail_test
+[[ "$final_digest_call_line" =~ ^[0-9]+$ ]] || fail_test
+[[ "$release_create_line" =~ ^[0-9]+$ ]] || fail_test
+[[ "$snapshot_call_line" -lt "$verification_call_line" ]] || fail_test
+[[ "$verification_call_line" -lt "$digest_call_line" ]] || fail_test
+[[ "$((release_create_line - final_digest_call_line))" -eq 4 ]] || fail_test
+[[ "$(grep -Fc "$final_digest_pattern" "$release_workflow")" -eq 1 ]] ||
+  fail_test
+[[ "$(grep -Fc -- "$notes_file_pattern" "$release_workflow")" -eq 1 ]] ||
+  fail_test
+
+release_notes_root="$test_root/release-notes"
+mkdir "$release_notes_root"
+valid_root="$release_notes_root/valid"
+mkdir -p "$valid_root/docs/releases"
+valid_note="$valid_root/docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md"
+printf '%s\n' \
+  "# Maverick v$TEST_RELEASE_NOTE_VERSION" \
+  "" \
+  "A public, version-specific Beta release note." >"$valid_note"
+expect_release_note_pass release-note-valid "$valid_root"
+
+missing_root="$release_notes_root/missing"
+mkdir -p "$missing_root/docs/releases"
+expect_release_note_fail release-note-missing "$missing_root"
+
+symlink_root="$release_notes_root/symlink"
+mkdir -p "$symlink_root/docs/releases"
+symlink_note="$symlink_root/docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md"
+ln -s "$valid_note" "$symlink_note"
+expect_release_note_fail release-note-symlink "$symlink_root"
+
+oversized_root="$release_notes_root/oversized"
+mkdir -p "$oversized_root/docs/releases"
+oversized_note="$oversized_root/docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md"
+printf '# Maverick v%s\n\n' "$TEST_RELEASE_NOTE_VERSION" >"$oversized_note"
+dd if=/dev/zero bs=1 count=65537 2>/dev/null | tr '\000' a >>"$oversized_note"
+expect_release_note_fail release-note-oversized "$oversized_root"
+
+wrong_version_root="$release_notes_root/wrong-version"
+mkdir -p "$wrong_version_root/docs/releases"
+wrong_version_note="$wrong_version_root/docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md"
+printf '%s\n' "# Maverick v1.2.0-beta.9" >"$wrong_version_note"
+expect_release_note_fail release-note-version-mismatch "$wrong_version_root"
+
+control_root="$release_notes_root/control"
+mkdir -p "$control_root/docs/releases"
+control_note="$control_root/docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md"
+cp "$valid_note" "$control_note"
+printf '\033' >>"$control_note"
+expect_release_note_fail release-note-control-character "$control_root"
+
+private_root="$release_notes_root/private"
+mkdir -p "$private_root/docs/releases"
+private_note="$private_root/docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md"
+cp "$valid_note" "$private_note"
+printf '%s\n' "/U""sers/$TEST_MARKER/build" >>"$private_note"
+expect_release_note_fail release-note-private-text "$private_root" "$TEST_MARKER"
+
+trace_test release-note-source-mutation-after-snapshot
+source_mutation_root="$release_notes_root/source-mutation"
+source_mutation_snapshot_dir="$source_mutation_root/private-snapshot"
+source_mutation_source="docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md"
+source_mutation_snapshot="$source_mutation_snapshot_dir/release-notes.md"
+mkdir -p "$source_mutation_root/docs/releases" "$source_mutation_snapshot_dir"
+chmod 0700 "$source_mutation_snapshot_dir"
+cp "$valid_note" "$source_mutation_root/$source_mutation_source"
+(
+  cd "$source_mutation_root"
+  snapshot_release_note \
+    "$source_mutation_source" \
+    "$TEST_RELEASE_NOTE_VERSION" \
+    "$source_mutation_snapshot"
+)
+chmod 0444 "$source_mutation_snapshot"
+verify_release_note "$source_mutation_snapshot" "$TEST_RELEASE_NOTE_VERSION"
+source_mutation_sha="$(release_note_sha256 "$source_mutation_snapshot")"
+cp "$source_mutation_snapshot" "$source_mutation_root/verified-bytes.md"
+printf '%s\n' "changed after snapshot $TEST_MARKER" \
+  >"$source_mutation_root/$source_mutation_source"
+cmp -s "$source_mutation_snapshot" "$source_mutation_root/verified-bytes.md" ||
+  fail_test
+release_note_digest_matches "$source_mutation_snapshot" "$source_mutation_sha" ||
+  fail_test
+
+trace_test release-note-snapshot-mutation-before-publish
+snapshot_mutation_root="$release_notes_root/snapshot-mutation"
+snapshot_mutation_snapshot_dir="$snapshot_mutation_root/private-snapshot"
+snapshot_mutation_source="docs/releases/v${TEST_RELEASE_NOTE_VERSION}.md"
+snapshot_mutation_snapshot="$snapshot_mutation_snapshot_dir/release-notes.md"
+mkdir -p "$snapshot_mutation_root/docs/releases" "$snapshot_mutation_snapshot_dir"
+chmod 0700 "$snapshot_mutation_snapshot_dir"
+cp "$valid_note" "$snapshot_mutation_root/$snapshot_mutation_source"
+(
+  cd "$snapshot_mutation_root"
+  snapshot_release_note \
+    "$snapshot_mutation_source" \
+    "$TEST_RELEASE_NOTE_VERSION" \
+    "$snapshot_mutation_snapshot"
+)
+chmod 0444 "$snapshot_mutation_snapshot"
+verify_release_note "$snapshot_mutation_snapshot" "$TEST_RELEASE_NOTE_VERSION"
+snapshot_mutation_sha="$(release_note_sha256 "$snapshot_mutation_snapshot")"
+chmod 0644 "$snapshot_mutation_snapshot"
+printf '%s\n' "changed after verification $TEST_MARKER" \
+  >>"$snapshot_mutation_snapshot"
+if release_note_digest_matches \
+  "$snapshot_mutation_snapshot" "$snapshot_mutation_sha"; then
+  fail_test
+fi
 
 host_os="$(uname -s)"
 host_cpu="$(uname -m)"

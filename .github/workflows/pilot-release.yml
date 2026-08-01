@@ -176,6 +176,96 @@ jobs:
           linux_sbom_name="maverick-${version}-pilot-x86_64-unknown-linux-gnu.cdx.json"
           mac_name="maverick-${version}-pilot-aarch64-apple-darwin.tar.gz"
           mac_sbom_name="maverick-${version}-pilot-aarch64-apple-darwin.cdx.json"
+          snapshot_release_note() {
+            local source_path="$1"
+            local expected_version="$2"
+            local snapshot_path="$3"
+            local snapshot_parent
+            [[ "$source_path" == "docs/releases/v${expected_version}.md" ]] ||
+              return 1
+            [[ -d docs && ! -L docs ]] || return 1
+            [[ -d docs/releases && ! -L docs/releases ]] || return 1
+            [[ -f "$source_path" && ! -L "$source_path" ]] || return 1
+            snapshot_parent="${snapshot_path%/*}"
+            [[ "$snapshot_parent" != "$snapshot_path" ]] || return 1
+            [[ -d "$snapshot_parent" && ! -L "$snapshot_parent" ]] || return 1
+            [[ ! -e "$snapshot_path" && ! -L "$snapshot_path" ]] || return 1
+            cp "$source_path" "$snapshot_path" >/dev/null 2>&1 || return 1
+            [[ -f "$snapshot_path" && ! -L "$snapshot_path" ]]
+          }
+          verify_release_note() {
+            local note_path="$1"
+            local expected_version="$2"
+            local note_bytes
+            local privacy_pattern
+            local privacy_status=0
+            [[ -f "$note_path" && ! -L "$note_path" ]] || return 1
+            note_bytes="$(
+              wc -c <"$note_path" 2>/dev/null | tr -d '[:space:]'
+            )" || return 1
+            [[ "$note_bytes" =~ ^[0-9]+$ ]] || return 1
+            [[ "$note_bytes" -gt 0 && "$note_bytes" -le 65536 ]] || return 1
+            [[ "$(
+              grep -Fxc "# Maverick v$expected_version" "$note_path" 2>/dev/null
+            )" -eq 1 ]] ||
+              return 1
+            od -An -tu1 -v "$note_path" 2>/dev/null |
+              awk '{
+                for (i = 1; i <= NF; i++) {
+                  if (($i < 32 && $i != 10) || $i == 127) exit 1
+                }
+              }' || return 1
+            privacy_pattern='/U''sers/[^/[:space:]]+|/ho''me/[^/[:space:]]+|fi''le://([^/[:space:]]+/[^[:space:]]*|[^/[:space:]]+$|/+[^/[:space:]]+/[^[:space:]]+)|ssh''-rsa|BE''GIN (RSA |EC |OPENSSH )?PRI''VATE KEY|mv''1_[A-Za-z0-9_-]{43,}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-(proj-|svcacct-)?[A-Za-z0-9_-]{40,}|dop_v1_[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,}|OPENAI_''API_KEY|DIGITALOCEAN_''API_TOKEN|AWS_SECRET_''ACCESS_KEY'
+            grep -E -i -q "$privacy_pattern" "$note_path" 2>/dev/null ||
+              privacy_status=$?
+            [[ "$privacy_status" -eq 1 ]]
+          }
+          release_note_sha256() {
+            local note_path="$1"
+            local digest
+            [[ -f "$note_path" && ! -L "$note_path" ]] || return 1
+            if command -v sha256sum >/dev/null 2>&1; then
+              digest="$(
+                sha256sum "$note_path" 2>/dev/null | awk '{print $1}'
+              )" || return 1
+            elif command -v shasum >/dev/null 2>&1; then
+              digest="$(
+                shasum -a 256 "$note_path" 2>/dev/null | awk '{print $1}'
+              )" || return 1
+            else
+              return 1
+            fi
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+            printf '%s\n' "$digest"
+          }
+          notes_source="docs/releases/v${version}.md"
+          notes_dir="$(
+            mktemp -d "$RUNNER_TEMP/maverick-release-notes.XXXXXX" 2>/dev/null
+          )" || {
+            echo "release note verification failed" >&2
+            exit 1
+          }
+          if ! chmod 0700 "$notes_dir" >/dev/null 2>&1; then
+            echo "release note verification failed" >&2
+            exit 1
+          fi
+          notes_file="$notes_dir/release-notes.md"
+          if ! snapshot_release_note "$notes_source" "$version" "$notes_file"; then
+            echo "release note verification failed" >&2
+            exit 1
+          fi
+          if ! chmod 0444 "$notes_file" >/dev/null 2>&1; then
+            echo "release note verification failed" >&2
+            exit 1
+          fi
+          if ! verify_release_note "$notes_file" "$version"; then
+            echo "release note verification failed" >&2
+            exit 1
+          fi
+          notes_sha="$(release_note_sha256 "$notes_file")" || {
+            echo "release note verification failed" >&2
+            exit 1
+          }
           expected_files="$(
             printf '%s\n' \
               "$linux_name" "$linux_name.sha256" "$linux_sbom_name" \
@@ -230,14 +320,6 @@ jobs:
           mac_checksum_sha="$(sha256sum "$staging/$mac_name.sha256" | awk '{print $1}')"
           mac_sbom_sha="$(sha256sum "$staging/$mac_sbom_name" | awk '{print $1}')"
           chmod 0555 "$staging"
-          notes_file="$(mktemp "$RUNNER_TEMP/maverick-release-notes.XXXXXX")"
-          printf '%s\n' \
-            "Experimental owner-pilot binaries for $GITHUB_REF_NAME." \
-            "" \
-            "Generate fresh configs locally with \`./maverick gen-config\`; the archives contain no shared credentials." \
-            "Maverick is experimental prerelease software provided without warranty. Read STATUS.md and SECURITY.md before use." \
-            >"$notes_file"
-          chmod 0444 "$notes_file"
           {
             echo "staging=$staging"
             echo "linux_name=$linux_name"
@@ -251,6 +333,7 @@ jobs:
             echo "mac_sbom_name=$mac_sbom_name"
             echo "mac_sbom_sha=$mac_sbom_sha"
             echo "notes_file=$notes_file"
+            echo "notes_sha=$notes_sha"
           } >>"$GITHUB_OUTPUT"
       - name: Recheck remote gates and publish the reverified prerelease
         env:
@@ -267,7 +350,28 @@ jobs:
           MAC_SBOM_NAME: ${{ steps.reverified.outputs.mac_sbom_name }}
           MAC_SBOM_SHA: ${{ steps.reverified.outputs.mac_sbom_sha }}
           NOTES_FILE: ${{ steps.reverified.outputs.notes_file }}
+          NOTES_SHA: ${{ steps.reverified.outputs.notes_sha }}
         run: |
+          release_note_digest_matches() {
+            local note_path="$1"
+            local expected_sha="$2"
+            local actual_sha
+            [[ -f "$note_path" && ! -L "$note_path" ]] || return 1
+            [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+            if command -v sha256sum >/dev/null 2>&1; then
+              actual_sha="$(
+                sha256sum "$note_path" 2>/dev/null | awk '{print $1}'
+              )" || return 1
+            elif command -v shasum >/dev/null 2>&1; then
+              actual_sha="$(
+                shasum -a 256 "$note_path" 2>/dev/null | awk '{print $1}'
+              )" || return 1
+            else
+              return 1
+            fi
+            [[ "$actual_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
+            [[ "$actual_sha" == "$expected_sha" ]]
+          }
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
           expected_files="$(
             printf '%s\n' \
@@ -301,6 +405,10 @@ jobs:
             --sha "$GITHUB_SHA" \
             --version "$version" \
             --main-ref origin/main
+          if ! release_note_digest_matches "$NOTES_FILE" "$NOTES_SHA"; then
+            echo "release note verification failed" >&2
+            exit 1
+          fi
           exec gh release create "$GITHUB_REF_NAME" \
             "$STAGING/$LINUX_NAME" \
             "$STAGING/$LINUX_NAME.sha256" \

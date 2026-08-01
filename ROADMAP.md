@@ -17,18 +17,31 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-There is currently no queued repository-local slice. Resume the failure-driven
-order only when a Beta failure is reproduced or the owner explicitly selects a
-new minimal slice. Local and GitHub Actions quality evidence do not change the
-product truth in `STATUS.md`.
+The only queued repository-local slice is the local Beta.3 release candidate:
+
+- audit the actual Beta.2-to-current-source net change and write one public,
+  version-specific release note;
+- update only the workspace package version and its two lockfile copies;
+- make the tag-driven release workflow reject a missing, mismatched, unsafe, or
+  invalid version-specific release note; and
+- complete local gates plus one ignored Apple Silicon candidate-artifact check,
+  then stop on a clean local branch for independent review.
+
+This slice changes no product behavior, protocol, config, authentication,
+frame, URI, or stored-profile schema. Local checks and candidate output do not
+change the product truth in `STATUS.md`.
 
 ## Execution Order
 
-1. **Wait for a concrete input.** A reproduced Beta failure or an explicit
-   owner instruction must name the next minimal slice before repository-local
-   work resumes. Use the failure-driven order below rather than creating a
-   standing queue.
-2. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+1. **Prepare and independently review the local Beta.3 candidate.** Complete
+   only the release-only queue above and stop after the local candidate is
+   clean and reviewable.
+2. **Require a new owner decision before publication.** This stage does not
+   authorize push, pull request creation or update, Ready status, merge, tag,
+   release, upload, deployment, or any real-network or system-network action.
+   A formal tag and release require the owner to give explicit authorization in
+   the parent task after independent review.
+3. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate
    byte-for-byte build experiment. An SBOM is not any of those things.

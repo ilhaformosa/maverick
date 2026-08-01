@@ -17,6 +17,8 @@ jobs:
   public-pr-gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
     env:
       MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       MAVERICK_PILOT_TARGET: x86_64-unknown-linux-gnu
@@ -191,3 +193,62 @@ jobs:
       - name: Run the local product harness
         if: steps.scope.outputs.docs_only != 'true'
         run: ./scripts/local-harness.sh
+
+  macos-sbom-gate:
+    needs: public-pr-gate
+    if: ${{ needs.public-pr-gate.outputs.docs_only != 'true' }}
+    runs-on: macos-14
+    timeout-minutes: 20
+    env:
+      MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      MAVERICK_SBOM_TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.97.1
+      - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+      - run: cargo fetch --locked --target "$MAVERICK_SBOM_TARGET"
+      - name: Generate and fully verify the exact-head macOS SBOM
+        run: |
+          set -euo pipefail
+          actual_revision="$(git rev-parse HEAD)"
+          if [[ "$actual_revision" != "$MAVERICK_EXPECTED_REVISION" ]]; then
+            echo "checked-out revision does not match the selected event revision" >&2
+            exit 1
+          fi
+          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          private_output=""
+          cleanup() {
+            case "$private_output" in
+              "$RUNNER_TEMP"/maverick-sbom-ci.*)
+                [[ ! -d "$private_output" ]] ||
+                  find "$private_output" -depth -delete >/dev/null 2>&1 || true
+                ;;
+            esac
+          }
+          trap cleanup EXIT
+          private_output="$(
+            mktemp -d "$RUNNER_TEMP/maverick-sbom-ci.XXXXXX" 2>/dev/null
+          )" || {
+            echo "macOS SBOM gate failed" >&2
+            exit 1
+          }
+          chmod 0700 "$private_output"
+          sbom="$private_output/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.cdx.json"
+          ./scripts/generate-cyclonedx-sbom.sh \
+            --expected-version "$version" \
+            --expected-revision "$actual_revision" \
+            --target "$MAVERICK_SBOM_TARGET" \
+            --output "$sbom"
+          ./scripts/verify-cyclonedx-sbom.sh \
+            --sbom "$sbom" \
+            --expected-version "$version" \
+            --expected-revision "$actual_revision" \
+            --expected-target "$MAVERICK_SBOM_TARGET" \
+            --verification-level full \
+            --source-root .

@@ -7,18 +7,33 @@ export LC_ALL=C
 readonly EXPECTED_TOOL_VERSION=0.5.9
 readonly PUBLIC_REPOSITORY="https://github.com/ilhaformosa/maverick"
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-verifier="$repo_root/scripts/verify-cyclonedx-sbom.sh"
 expected_version=""
 expected_revision=""
 target=""
 output_path=""
 private_tmp=""
+current_stage=environment
 
 fail() {
-  echo "CycloneDX SBOM generation failed" >&2
+  trap - HUP INT TERM
+  local public_stage="$current_stage"
+  case "$public_stage" in
+    arguments | environment | source | snapshot | generation | candidate | \
+      normalization | verification | integrity | output) ;;
+    *) public_stage=internal ;;
+  esac
+  printf 'CycloneDX SBOM generation failed: %s\n' "$public_stage" >&2 || :
   exit 1
 }
+
+script_dir="$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" || fail
+repo_root="$(
+  cd "$script_dir/.." 2>/dev/null || exit 1
+  pwd 2>/dev/null
+)" || fail
+verifier="$repo_root/scripts/verify-cyclonedx-sbom.sh"
+
+current_stage=arguments
 
 cleanup() {
   case "$private_tmp" in
@@ -30,16 +45,26 @@ cleanup() {
 }
 
 trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
+trap 'current_stage=internal; fail' HUP INT TERM
 
 sha256_file() {
+  local digest=""
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    digest="$(
+      {
+        shasum -a 256 "$1" | awk '{print $1}'
+      } 2>/dev/null
+    )" || return 1
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    digest="$(
+      {
+        sha256sum "$1" | awk '{print $1}'
+      } 2>/dev/null
+    )" || return 1
   else
-    fail
+    return 1
   fi
+  printf '%s\n' "$digest" 2>/dev/null || return 1
 }
 
 while [[ $# -gt 0 ]]; do
@@ -77,13 +102,17 @@ case "$target" in
   *) fail ;;
 esac
 [[ -n "$output_path" && ! -e "$output_path" && ! -L "$output_path" ]] || fail
-output_dir="$(dirname "$output_path")"
+output_dir="$(dirname "$output_path" 2>/dev/null)" || fail
 [[ -d "$output_dir" && ! -L "$output_dir" ]] || fail
 expected_name="maverick-${expected_version}-pilot-${target}.cdx.json"
-[[ "$(basename "$output_path")" == "$expected_name" ]] || fail
+output_name="$(basename "$output_path" 2>/dev/null)" || fail
+[[ "$output_name" == "$expected_name" ]] || fail
+
+current_stage=environment
 [[ -x "$verifier" ]] || fail
 command -v jq >/dev/null 2>&1 || fail
 
+current_stage=source
 manifest_version="$(
   awk -F'"' '/^version =/ {print $2; exit}' "$repo_root/Cargo.toml" 2>/dev/null
 )" || fail
@@ -95,17 +124,20 @@ current_revision="$(
 git -C "$repo_root" cat-file -e "$expected_revision^{commit}" \
   >/dev/null 2>&1 || fail
 
+current_stage=environment
 cargo_bin="${CARGO_BIN:-}"
 if [[ -z "$cargo_bin" ]]; then
   if command -v cargo >/dev/null 2>&1; then
-    cargo_bin="$(command -v cargo)"
-  elif [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
+    cargo_bin="$(command -v cargo 2>/dev/null)" || fail
+  elif [[ -n "${HOME:-}" && -x "${HOME}/.cargo/bin/cargo" ]]; then
     cargo_bin="${HOME}/.cargo/bin/cargo"
   else
     fail
   fi
 fi
-"$cargo_bin" --version 2>/dev/null | grep -Eq '^cargo 1\.97\.1 ' || fail
+{
+  "$cargo_bin" --version | grep -Eq '^cargo 1\.97\.1 '
+} >/dev/null 2>&1 || fail
 
 cyclonedx_bin="${CARGO_CYCLONEDX_BIN:-}"
 if [[ -z "$cyclonedx_bin" ]]; then
@@ -118,6 +150,7 @@ tool_version="$(
 [[ "$tool_version" == "cargo-cyclonedx-cyclonedx $EXPECTED_TOOL_VERSION" ]] ||
   fail
 
+current_stage=snapshot
 private_tmp="$(mktemp -d /tmp/maverick-sbom-generate.XXXXXX 2>/dev/null)" ||
   fail
 chmod 0700 "$private_tmp" >/dev/null 2>&1 || fail
@@ -127,7 +160,7 @@ mkdir -m 0700 "$snapshot_root" >/dev/null 2>&1 || fail
 status_before="$private_tmp/status-before"
 status_after="$private_tmp/status-after"
 git -C "$repo_root" status --porcelain=v1 --untracked-files=all \
-  >"$status_before" 2>/dev/null || fail
+  2>/dev/null >"$status_before" || fail
 
 locks=(
   Cargo.lock
@@ -136,15 +169,19 @@ locks=(
 )
 lock_hashes_before="$private_tmp/lock-hashes-before"
 lock_hashes_after="$private_tmp/lock-hashes-after"
+: 2>/dev/null >"$lock_hashes_before" || fail
 for lock_path in "${locks[@]}"; do
   [[ -f "$repo_root/$lock_path" && ! -L "$repo_root/$lock_path" ]] || fail
   lock_digest="$(sha256_file "$repo_root/$lock_path")" || fail
   [[ "$lock_digest" =~ ^[0-9a-f]{64}$ ]] || fail
-  printf '%s  %s\n' "$lock_digest" "$lock_path"
-done >"$lock_hashes_before"
+  printf '%s  %s\n' "$lock_digest" "$lock_path" \
+    2>/dev/null >>"$lock_hashes_before" || fail
+done
 
-git -C "$repo_root" archive --format=tar "$expected_revision" 2>/dev/null |
-  tar -xf - -C "$snapshot_root" >/dev/null 2>&1 || fail
+{
+  git -C "$repo_root" archive --format=tar "$expected_revision" |
+    tar -xf - -C "$snapshot_root"
+} >/dev/null 2>&1 || fail
 [[ -f "$snapshot_root/Cargo.lock" ]] || fail
 [[ -f "$snapshot_root/crates/maverick-cli/Cargo.toml" ]] || fail
 [[ ! -e "$snapshot_root/.git" ]] || fail
@@ -157,9 +194,10 @@ printf '%s\n' \
   'set -euo pipefail' \
   '[[ $# -ge 1 && "$1" == "metadata" ]] || exit 64' \
   'exec "${MAVERICK_REAL_CARGO:?}" "$@" --locked --offline' \
-  >"$metadata_wrapper"
+  2>/dev/null >"$metadata_wrapper" || fail
 chmod 0700 "$metadata_wrapper" >/dev/null 2>&1 || fail
 
+current_stage=source
 source_epoch="$(
   git -C "$repo_root" show -s --format=%ct "$expected_revision" 2>/dev/null
 )" || fail
@@ -176,14 +214,18 @@ else
   fail
 fi
 
+current_stage=generation
 generation_log="$private_tmp/generation.log"
-(
-  cd "$snapshot_root"
-  CARGO="$metadata_wrapper" \
-    CARGO_NET_OFFLINE=true \
-    MAVERICK_REAL_CARGO="$cargo_bin" \
-    SOURCE_DATE_EPOCH="$source_epoch" \
-    "$cyclonedx_bin" cyclonedx \
+generation_status=0
+{
+  (
+    cd "$snapshot_root" || exit 1
+    exec env \
+      CARGO="$metadata_wrapper" \
+      CARGO_NET_OFFLINE=true \
+      MAVERICK_REAL_CARGO="$cargo_bin" \
+      SOURCE_DATE_EPOCH="$source_epoch" \
+      "$cyclonedx_bin" cyclonedx \
       --manifest-path crates/maverick-cli/Cargo.toml \
       --format json \
       --spec-version 1.5 \
@@ -195,14 +237,22 @@ generation_log="$private_tmp/generation.log"
       --no-default-features \
       --features maverick-cli/browser-tls \
       -qq
-) >"$generation_log" 2>&1 || fail
+  ) >"$generation_log" 2>&1
+} 2>/dev/null || generation_status=$?
+[[ "$generation_status" -eq 0 ]] || fail
 
+current_stage=candidate
 candidate=""
 candidate_count=0
 candidate_files="$private_tmp/candidate-files"
 find "$snapshot_root" -type f ! -type l -name '*.cdx.json' -print0 \
-  >"$candidate_files" 2>/dev/null || fail
+  2>/dev/null >"$candidate_files" || fail
 chmod 0600 "$candidate_files" >/dev/null 2>&1 || fail
+candidate_open_status=0
+{
+  exec 3<"$candidate_files"
+} 2>/dev/null || candidate_open_status=$?
+[[ "$candidate_open_status" -eq 0 ]] || fail
 while IFS= read -r -d '' generated; do
   candidate_status=0
   jq -e \
@@ -226,13 +276,17 @@ while IFS= read -r -d '' generated; do
     1) ;;
     *) fail ;;
   esac
-done <"$candidate_files"
+done <&3
+{
+  exec 3<&-
+} 2>/dev/null || fail
 [[ "$candidate_count" -eq 1 && -n "$candidate" ]] || fail
 
 jq -e \
   'has("serialNumber") | not' \
   "$candidate" >/dev/null 2>&1 || fail
 
+current_stage=normalization
 normalized="$private_tmp/normalized.cdx.json"
 exact_vcs="${PUBLIC_REPOSITORY}/tree/${expected_revision}"
 jq -S \
@@ -284,10 +338,11 @@ jq -S \
       )] |
     sort_by(.ref)
   )
-' "$candidate" >"$normalized" 2>/dev/null || fail
+' "$candidate" 2>/dev/null >"$normalized" || fail
 chmod 0600 "$normalized" >/dev/null 2>&1 || fail
 
 mv "$normalized" "$private_tmp/$expected_name" >/dev/null 2>&1 || fail
+current_stage=verification
 "$verifier" \
   --sbom "$private_tmp/$expected_name" \
   --expected-version "$expected_version" \
@@ -296,16 +351,22 @@ mv "$normalized" "$private_tmp/$expected_name" >/dev/null 2>&1 || fail
   --verification-level full \
   --source-root "$repo_root" >/dev/null 2>&1 || fail
 
+current_stage=integrity
+: 2>/dev/null >"$lock_hashes_after" || fail
 for lock_path in "${locks[@]}"; do
   lock_digest="$(sha256_file "$repo_root/$lock_path")" || fail
   [[ "$lock_digest" =~ ^[0-9a-f]{64}$ ]] || fail
-  printf '%s  %s\n' "$lock_digest" "$lock_path"
-done >"$lock_hashes_after"
-cmp -s "$lock_hashes_before" "$lock_hashes_after" || fail
+  printf '%s  %s\n' "$lock_digest" "$lock_path" \
+    2>/dev/null >>"$lock_hashes_after" || fail
+done
+cmp -s "$lock_hashes_before" "$lock_hashes_after" \
+  >/dev/null 2>&1 || fail
 git -C "$repo_root" status --porcelain=v1 --untracked-files=all \
-  >"$status_after" 2>/dev/null || fail
-cmp -s "$status_before" "$status_after" || fail
+  2>/dev/null >"$status_after" || fail
+cmp -s "$status_before" "$status_after" >/dev/null 2>&1 || fail
 
+current_stage=output
 install -m 0600 "$private_tmp/$expected_name" "$output_path" \
   >/dev/null 2>&1 || fail
-echo "target-aware CycloneDX SBOM generated: $expected_name"
+printf 'target-aware CycloneDX SBOM generated: %s\n' "$expected_name" \
+  2>/dev/null || fail

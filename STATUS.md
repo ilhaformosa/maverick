@@ -92,8 +92,15 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace Beta.3 source: `1.2.0-beta.3`. PR #22 and PR #23 have merged. The
-  annotated `v1.2.0-beta.3` tag exists as tag object
+- Workspace Beta.4 candidate source: `1.2.0-beta.4`. The verifier repair from
+  PR #25 is merged at main commit
+  `6d69fd5d57f5963dbd2cc51ebaffc754073de3cc`; its pull-request checks and the
+  exact-main product, CodeQL, Linux artifact, and macOS SBOM checks passed. The
+  Beta.4 candidate is not yet tagged or published and has no public release
+  asset. It changes no Maverick protocol, config, stored-profile schema,
+  authentication wire, or frame wire format. The failed Beta.3 publication
+  attempt remains immutable: the annotated
+  `v1.2.0-beta.3` tag exists as tag object
   `3f3f1e20000cdd5857d14c665181eb88902c838f` and directly targets `main`
   commit `fa201b6844ace93a95411ec9162c3317d4868043`. Pilot-release run
   `30690464199` stopped fail-closed: verification succeeded; the Linux build,
@@ -101,30 +108,18 @@ censorship resistance, production readiness, or browser identity.
   succeeded; and the macOS binary, archive, and native verification succeeded
   before CycloneDX SBOM generation failed. The macOS artifact upload did not
   occur, and publication was skipped. No GitHub Release or public release asset
-  exists. This is not a Rust product failure. Subsequent ordinary macOS PR CI
-  isolated a privacy-safe graph-reference verifier/recheck inconsistency. It
-  has not yet proved a portable correction or a successful publication. Until
-  a later separately authorized publication succeeds and is independently
-  reverified, the published and last independently reverified version remains
-  Beta.2 as recorded below.
-- Recovery repair authorization (2026-08-02): the owner authorizes the existing
-  Draft PR #25 to complete the minimal CycloneDX SBOM recovery by adding
-  `scripts/verify-cyclonedx-sbom.sh` to the existing scope of
-  `scripts/generate-cyclonedx-sbom.sh`, `scripts/test-cyclonedx-sbom.sh`, and
-  `.github/workflows/ci.yml`. The repair may replace the graph-reference
-  verifier predicate that ordinary macOS PR CI showed can disagree with an
-  immediate independent set recheck, using fixed, privacy-safe, portable checks
-  and focused regression coverage. This permits local implementation, commit,
-  push, updates to Draft PR #25, ordinary PR and exact-main CI, independent
-  review, Ready state, and merge of the exact reviewed head when no blocker
-  remains. It does not authorize product, Cargo, schema, version,
-  release-workflow, deployment, live-network, or system-network changes.
-- Successor Beta publication authorization (2026-08-02): the existing
+  exists. This was not a Rust product failure. The repaired shared CycloneDX
+  verifier now checks the root/component and dependency-reference sets in
+  portable steps and retains fixed privacy-safe errors. These are quality
+  controls, not a successful publication or a product result. Until Beta.4 is
+  published and independently reverified, the published and last independently
+  reverified version remains Beta.2 as recorded below.
+- Successor Beta publication authorization (2026-08-02): with the verifier
+  repair merged and its exact main checks complete, the existing
   annotated `v1.2.0-beta.3` tag remains fixed at its original commit and must
   not be moved, deleted, force-updated, reused, or given replacement assets.
-  After the verifier repair is merged and its exact main commit passes the
-  required checks, the owner authorizes one separate `1.2.0-beta.4` candidate
-  path limited to `Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`,
+  The owner authorizes one separate `1.2.0-beta.4` candidate path limited to
+  `Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`,
   `docs/releases/v1.2.0-beta.4.md`, `STATUS.md`, and `ROADMAP.md`. That candidate
   may be implemented, committed, pushed, reviewed through a pull request, and
   merged when all gates pass. It remains unpublished until one annotated
@@ -159,6 +154,8 @@ censorship resistance, production readiness, or browser identity.
   replaced, or retroactively renamed.
 - Protocol version: `1` (unchanged).
 - Config version: `1` (unchanged).
+- Stored-client-profile schema version: `1` (unchanged).
+- Existing authentication and frame wire formats: unchanged.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

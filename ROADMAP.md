@@ -17,29 +17,28 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-The only queued repository-local slice is the Beta.3 Draft PR review
-transition:
+No product-code slice is queued.
 
-- push the exact reviewed candidate and its narrow governance transition to the
-  candidate branch;
-- create a Draft PR to `main`, allow its ordinary PR CI to run, observe the
-  current CI state, and then stop and report.
+Until `main` contains the exact reviewed PR #22 candidate, the sole repository
+transition is to mark that exact head Ready and merge it without changing its
+reviewed contents. Once `main` contains it, the queue is empty and waits for a
+separate owner release decision.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user
-result, release result, or publication authorization. This slice changes no
-product behavior, protocol, config, authentication, frame, URI, or
-stored-profile schema.
+result, release result, or publication authorization.
 
 ## Execution Order
 
-1. **Open the exact Beta.3 candidate for Draft review.** Push the reviewed
-   branch, create its Draft PR, observe ordinary PR CI, and stop and report.
-2. **Require a new owner decision before any further promotion.** This stage
-   does not authorize Ready status, merge, tag, release, upload, deployment, or
-   any live-network or system-network action. A formal tag and release require
-   the owner to give explicit authorization in the parent task after review.
-3. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+1. **Promote only the exact reviewed head.** Until `main` contains the PR #22
+   candidate, mark its exact checked head Ready and merge without content
+   changes.
+2. **Stop after the merge.** Once `main` contains that candidate, leave the
+   repository-local queue empty and report the resulting main revision.
+3. **Require a separate owner decision before publication.** Merge does not
+   authorize tag, release, upload, deployment, or any live-network or
+   system-network action.
+4. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate
    byte-for-byte build experiment. An SBOM is not any of those things.

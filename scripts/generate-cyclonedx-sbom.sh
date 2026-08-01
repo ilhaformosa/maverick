@@ -24,8 +24,9 @@ fail() {
       case "${public_stage#verification-}" in
         ambiguous-identity | arguments | basename | cargo-version | closure | \
           document-count | duplicate-ref | graph-dependency | graph-ref | \
-          graph-ref-duplicate | graph-ref-extra | graph-ref-missing | \
-          graph-ref-mixed | identity | input | json | metadata | \
+          graph-ref-duplicate | graph-ref-extra | graph-ref-inconsistent | \
+          graph-ref-missing | graph-ref-mixed | graph-ref-ref-type | \
+          graph-ref-structure | identity | input | json | metadata | \
           metadata-root | mutation | oversized | privacy | root | serial | \
           source | source-version | target | timestamp | tool | \
           tool-identity | vcs) ;;
@@ -85,17 +86,17 @@ classify_graph_ref_failure() {
   local expected_file="$private_tmp/graph-ref-detail.expected"
   local detail
   jq -r '
-    if (.metadata.component."bom-ref" | type) != "string" or
-       (.components | type) != "array" or
-       ([.components[] |
+    if (.dependencies | type) != "array"
+    then "structure"
+    elif ([.dependencies[] | type == "object"] | all | not)
+    then "structure"
+    elif ([.dependencies[] | (.ref | type) == "string"] | all | not)
+    then "ref-type"
+    elif (.metadata.component."bom-ref" | type) != "string" or
+         (.components | type) != "array" or
+         ([.components[] |
           if type == "object"
           then (."bom-ref" | type) == "string"
-          else false
-          end] | all | not) or
-       (.dependencies | type) != "array" or
-       ([.dependencies[] |
-          if type == "object"
-          then (.ref | type) == "string"
           else false
           end] | all | not)
     then "unknown"
@@ -113,12 +114,12 @@ classify_graph_ref_failure() {
       then "extra"
       elif (($unique_refs - $unique_graph_refs) | length) > 0
       then "missing"
-      else "unknown"
+      else "inconsistent"
       end
     end
   ' "$sbom" >"$detail_file" 2>/dev/null || return 0
   chmod 0600 "$detail_file" >/dev/null 2>&1 || return 0
-  for detail in duplicate extra missing mixed; do
+  for detail in duplicate extra inconsistent missing mixed ref-type structure; do
     printf '%s\n' "$detail" >"$expected_file" 2>/dev/null || return 0
     if cmp -s "$expected_file" "$detail_file" >/dev/null 2>&1; then
       current_stage="verification-graph-ref-$detail"

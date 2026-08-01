@@ -792,16 +792,20 @@ real_jq="$(command -v jq)" || fail
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'normalization=false' \
+  'classifier=false' \
+  'verifier_graph_ref=false' \
   'for argument in "$@"; do' \
   '  case "$argument" in' \
   '    *"def canonical_purl:"*) normalization=true ;;' \
+  '    *"then \"duplicate\""*) classifier=true ;;' \
+  '    *"(\$graph_refs == \$refs) and"*) verifier_graph_ref=true ;;' \
   '  esac' \
   'done' \
   'if [[ "$normalization" == true ]]; then' \
   '  normalized="${MOCK_GRAPH_REF_TMP:?}/normalized.json"' \
   '  "${REAL_JQ:?}" "$@" >"$normalized" || exit 43' \
   '  case "${MOCK_GRAPH_REF_MODE:?}" in' \
-  '    missing)' \
+  '    missing | classifier-error)' \
   '      filter=".dependencies = .dependencies[:-1]"' \
   '      ;;' \
   '    structure-type)' \
@@ -810,10 +814,24 @@ printf '%s\n' \
   '    ref-type)' \
   '      filter=".dependencies[0].ref = null"' \
   '      ;;' \
+  '    inconsistent)' \
+  '      filter="."' \
+  '      ;;' \
   '    *) exit 43 ;;' \
   '  esac' \
   '  "${REAL_JQ:?}" "$filter" "$normalized"' \
   '  exit $?' \
+  'fi' \
+  'if [[ "${MOCK_GRAPH_REF_MODE:?}" == inconsistent &&' \
+  '      "$verifier_graph_ref" == true ]]; then' \
+  '  exit 1' \
+  'fi' \
+  'if [[ "${MOCK_GRAPH_REF_MODE:?}" == classifier-error &&' \
+  '      "$classifier" == true ]]; then' \
+  '  : >"${MOCK_GRAPH_REF_SENTINEL:?}" || exit 43' \
+  '  private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  '  printf "%s\n" "$private_marker" >&2' \
+  '  exit 44' \
   'fi' \
   'exec "${REAL_JQ:?}" "$@"' >"$mock_graph_ref_dir/jq"
 chmod 0700 "$mock_graph_ref_dir/jq"
@@ -822,16 +840,36 @@ expect_generator_failure graph-ref-missing verification-graph-ref-missing \
   "REAL_JQ=$real_jq" \
   "MOCK_GRAPH_REF_TMP=$private_tmp" \
   "MOCK_GRAPH_REF_MODE=missing"
-expect_generator_failure graph-ref-structure-type verification-graph-ref \
+expect_generator_failure graph-ref-structure-type \
+  verification-graph-ref-structure \
   "PATH=$mock_graph_ref_dir:$PATH" \
   "REAL_JQ=$real_jq" \
   "MOCK_GRAPH_REF_TMP=$private_tmp" \
   "MOCK_GRAPH_REF_MODE=structure-type"
-expect_generator_failure graph-ref-ref-type verification-graph-ref \
+expect_generator_failure graph-ref-ref-type verification-graph-ref-ref-type \
   "PATH=$mock_graph_ref_dir:$PATH" \
   "REAL_JQ=$real_jq" \
   "MOCK_GRAPH_REF_TMP=$private_tmp" \
   "MOCK_GRAPH_REF_MODE=ref-type"
+expect_generator_failure graph-ref-inconsistent \
+  verification-graph-ref-inconsistent \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=inconsistent"
+graph_ref_classifier_sentinel="$private_tmp/graph-ref-classifier-fired"
+graph_ref_private_segment="maverick-sbom-graph-ref-marker"
+expect_generator_failure graph-ref-classifier-error verification-graph-ref \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=classifier-error" \
+  "MOCK_GRAPH_REF_SENTINEL=$graph_ref_classifier_sentinel" \
+  "MOCK_PRIVATE_SEGMENT=$graph_ref_private_segment"
+[[ -f "$graph_ref_classifier_sentinel" ]] || fail
+graph_ref_classifier_log="$private_tmp/generator-graph-ref-classifier-error-output"
+assert_literal_absent \
+  "/U""sers/$graph_ref_private_segment/private" "$graph_ref_classifier_log"
 
 mock_integrity_dir="$private_tmp/mock-integrity"
 mkdir -m 0700 "$mock_integrity_dir"
@@ -939,11 +977,11 @@ wait "$verify_pid" || mutation_status=$?
 [[ "$(cat "$mutation_output")" == "sbom verification failed: mutation" ]] || fail
 negative_checks=$((negative_checks + 1))
 
-[[ "$negative_checks" -eq 53 ]] || fail
+[[ "$negative_checks" -eq 55 ]] || fail
 linux_bytes="$(measure_test_file "$linux_first")" || fail
 mac_bytes="$(measure_test_file "$mac_first")" || fail
 [[ "$linux_bytes" =~ ^[0-9]+$ && "$mac_bytes" =~ ^[0-9]+$ ]] || fail
 [[ "$linux_bytes" -le "$max_sbom_bytes" ]] || fail
 [[ "$mac_bytes" -le "$max_sbom_bytes" ]] || fail
 
-echo "CycloneDX SBOM focused tests OK (2 targets, 53 negative checks)"
+echo "CycloneDX SBOM focused tests OK (2 targets, 55 negative checks)"

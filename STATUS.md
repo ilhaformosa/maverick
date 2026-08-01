@@ -92,19 +92,35 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace Beta.3 source: `1.2.0-beta.3`. PR #22 has merged. The owner has
-  authorized one fail-closed release-only transition after this authorization
-  record itself is merged through a pull request: create one annotated
-  `v1.2.0-beta.3` tag that directly targets that exact `main` commit, push only
-  that tag, and allow the existing `pilot-release` workflow to publish the
-  digest-bound version-specific release note plus exactly six assets (two pilot
-  archives, their two checksum files, and two target-aware CycloneDX SBOMs).
-  Any failed gate or fact that cannot be proved stops the transition. Do not
-  move, replace, or force the tag; do not replace an asset or change source to
-  retry. Until publication and independent public re-verification both finish,
-  the published and last independently reverified version remains Beta.2 as
-  recorded below. This authorization does not include deployment, a live-network
-  or system-network action, or any other tag, version, or release.
+- Workspace Beta.3 source: `1.2.0-beta.3`. PR #22 and PR #23 have merged. The
+  annotated `v1.2.0-beta.3` tag exists as tag object
+  `3f3f1e20000cdd5857d14c665181eb88902c838f` and directly targets `main`
+  commit `fa201b6844ace93a95411ec9162c3317d4868043`. Pilot-release run
+  `30690464199` stopped fail-closed: verification succeeded; the Linux build,
+  target-aware CycloneDX SBOM, re-verification, and Actions artifact upload
+  succeeded; and the macOS binary, archive, and native verification succeeded
+  before CycloneDX SBOM generation failed. The macOS artifact upload did not
+  occur, and publication was skipped. No GitHub Release or public release asset
+  exists. This is not a Rust product failure, and the available evidence proves
+  neither a transient environment failure nor a deterministic generator or
+  workflow cause. Until a later separately authorized publication succeeds and
+  is independently reverified, the published and last independently reverified
+  version remains Beta.2 as recorded below.
+- Recovery authorization (2026-08-01): the owner authorizes one minimal
+  diagnostic slice limited to adding privacy-safe fixed failure-stage
+  classifications to the existing CycloneDX SBOM generator, adding regression
+  coverage for that behavior, and obtaining exact SBOM-generation evidence in
+  ordinary macOS pull-request CI. Implementation is limited to
+  `scripts/generate-cyclonedx-sbom.sh`, `scripts/test-cyclonedx-sbom.sh`, and
+  `.github/workflows/ci.yml`; needing any other file or any product, Cargo,
+  schema, version, or release-workflow change stops for a new decision. This
+  permits local implementation, commit, push, a Draft PR, ordinary PR checks,
+  independent review, and merge if no blocker remains. It does not authorize
+  rerunning the failed release workflow; moving, deleting, or force-updating
+  `v1.2.0-beta.3`; any other release-tag or release-asset mutation; creation or
+  mutation of a GitHub Release; a Beta.4 publication; deployment; or a
+  live-network or system-network action. CI remains quality evidence, not a
+  product or user result.
 - Current published Beta prerelease and last independently reverified public
   artifact: `v1.2.0-beta.2`. Its annotated tag directly targets main commit
   `6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, and GitHub marks the prerelease

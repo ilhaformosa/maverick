@@ -17,30 +17,28 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-The only queued repository-local slice is the local Beta.3 release candidate:
+The only queued repository-local slice is the Beta.3 Draft PR review
+transition:
 
-- audit the actual Beta.2-to-current-source net change and write one public,
-  version-specific release note;
-- update only the workspace package version and its two lockfile copies;
-- make the tag-driven release workflow reject a missing, mismatched, unsafe, or
-  invalid version-specific release note; and
-- complete local gates plus one ignored Apple Silicon candidate-artifact check,
-  then stop on a clean local branch for independent review.
+- push the exact reviewed candidate and its narrow governance transition to the
+  candidate branch;
+- create a Draft PR to `main`, allow its ordinary PR CI to run, observe the
+  current CI state, and then stop and report.
 
-This slice changes no product behavior, protocol, config, authentication,
-frame, URI, or stored-profile schema. Local checks and candidate output do not
-change the product truth in `STATUS.md`.
+Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
+can close a platform-evidence gap, but they are not a product result, user
+result, release result, or publication authorization. This slice changes no
+product behavior, protocol, config, authentication, frame, URI, or
+stored-profile schema.
 
 ## Execution Order
 
-1. **Prepare and independently review the local Beta.3 candidate.** Complete
-   only the release-only queue above and stop after the local candidate is
-   clean and reviewable.
-2. **Require a new owner decision before publication.** This stage does not
-   authorize push, pull request creation or update, Ready status, merge, tag,
-   release, upload, deployment, or any real-network or system-network action.
-   A formal tag and release require the owner to give explicit authorization in
-   the parent task after independent review.
+1. **Open the exact Beta.3 candidate for Draft review.** Push the reviewed
+   branch, create its Draft PR, observe ordinary PR CI, and stop and report.
+2. **Require a new owner decision before any further promotion.** This stage
+   does not authorize Ready status, merge, tag, release, upload, deployment, or
+   any live-network or system-network action. A formal tag and release require
+   the owner to give explicit authorization in the parent task after review.
 3. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate

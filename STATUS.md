@@ -92,11 +92,13 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace Beta.3 candidate source: `1.2.0-beta.3`. It is a local release-only
-  candidate and remains unmerged, untagged, and unpublished. It is not a public
-  artifact or release, and it does not authorize a push, pull request, tag,
-  upload, deployment, or live-network action. The published and independently
-  reverified version remains Beta.2 as recorded below.
+- Workspace Beta.3 candidate source: `1.2.0-beta.3`. It is prepared for Draft PR
+  review and remains unmerged, untagged, and unpublished. It is not a public
+  artifact or release. The owner has authorized only pushing the candidate
+  branch and creating or updating its Draft PR. This does not authorize Ready
+  status, merge, tag, release, Actions artifact or public asset upload,
+  deployment, or any live-network or system-network action. The published and
+  independently reverified version remains Beta.2 as recorded below.
 - Current published Beta prerelease and last independently reverified public
   artifact: `v1.2.0-beta.2`. Its annotated tag directly targets main commit
   `6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, and GitHub marks the prerelease

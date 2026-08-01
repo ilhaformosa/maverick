@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-08-01
+Date: 2026-08-02
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -101,26 +101,48 @@ censorship resistance, production readiness, or browser identity.
   succeeded; and the macOS binary, archive, and native verification succeeded
   before CycloneDX SBOM generation failed. The macOS artifact upload did not
   occur, and publication was skipped. No GitHub Release or public release asset
-  exists. This is not a Rust product failure, and the available evidence proves
-  neither a transient environment failure nor a deterministic generator or
-  workflow cause. Until a later separately authorized publication succeeds and
-  is independently reverified, the published and last independently reverified
-  version remains Beta.2 as recorded below.
-- Recovery authorization (2026-08-01): the owner authorizes one minimal
-  diagnostic slice limited to adding privacy-safe fixed failure-stage
-  classifications to the existing CycloneDX SBOM generator, adding regression
-  coverage for that behavior, and obtaining exact SBOM-generation evidence in
-  ordinary macOS pull-request CI. Implementation is limited to
+  exists. This is not a Rust product failure. Subsequent ordinary macOS PR CI
+  isolated a privacy-safe graph-reference verifier/recheck inconsistency. It
+  has not yet proved a portable correction or a successful publication. Until
+  a later separately authorized publication succeeds and is independently
+  reverified, the published and last independently reverified version remains
+  Beta.2 as recorded below.
+- Recovery repair authorization (2026-08-02): the owner authorizes the existing
+  Draft PR #25 to complete the minimal CycloneDX SBOM recovery by adding
+  `scripts/verify-cyclonedx-sbom.sh` to the existing scope of
   `scripts/generate-cyclonedx-sbom.sh`, `scripts/test-cyclonedx-sbom.sh`, and
-  `.github/workflows/ci.yml`; needing any other file or any product, Cargo,
-  schema, version, or release-workflow change stops for a new decision. This
-  permits local implementation, commit, push, a Draft PR, ordinary PR checks,
-  independent review, and merge if no blocker remains. It does not authorize
-  rerunning the failed release workflow; moving, deleting, or force-updating
-  `v1.2.0-beta.3`; any other release-tag or release-asset mutation; creation or
-  mutation of a GitHub Release; a Beta.4 publication; deployment; or a
-  live-network or system-network action. CI remains quality evidence, not a
-  product or user result.
+  `.github/workflows/ci.yml`. The repair may replace the graph-reference
+  verifier predicate that ordinary macOS PR CI showed can disagree with an
+  immediate independent set recheck, using fixed, privacy-safe, portable checks
+  and focused regression coverage. This permits local implementation, commit,
+  push, updates to Draft PR #25, ordinary PR and exact-main CI, independent
+  review, Ready state, and merge of the exact reviewed head when no blocker
+  remains. It does not authorize product, Cargo, schema, version,
+  release-workflow, deployment, live-network, or system-network changes.
+- Successor Beta publication authorization (2026-08-02): the existing
+  annotated `v1.2.0-beta.3` tag remains fixed at its original commit and must
+  not be moved, deleted, force-updated, reused, or given replacement assets.
+  After the verifier repair is merged and its exact main commit passes the
+  required checks, the owner authorizes one separate `1.2.0-beta.4` candidate
+  path limited to `Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`,
+  `docs/releases/v1.2.0-beta.4.md`, `STATUS.md`, and `ROADMAP.md`. That candidate
+  may be implemented, committed, pushed, reviewed through a pull request, and
+  merged when all gates pass. It remains unpublished until one annotated
+  `v1.2.0-beta.4` tag is created directly on the exact reviewed Beta.4
+  candidate merge commit while it is current main, only that tag is pushed,
+  the existing release workflow publishes the digest-bound Beta.4 release note
+  and exactly two archives, two checksum files, and two target-aware SBOMs, and
+  the resulting public prerelease and exact assets are independently
+  reverified.
+  Only then may a final two-document fact update be committed, pushed,
+  reviewed, and merged to record Beta.4 as the current published version.
+  Until then the published and last independently reverified version remains
+  Beta.2. If the Beta.4 workflow or independent public verification fails, do
+  not rerun that workflow, move, delete, or force-update the tag, or create,
+  replace, or mutate its GitHub Release or assets. Stop and return to the owner;
+  no Beta.5 or alternate publication route is authorized automatically. This
+  authorization does not include deployment or any live-network or
+  system-network change.
 - Current published Beta prerelease and last independently reverified public
   artifact: `v1.2.0-beta.2`. Its annotated tag directly targets main commit
   `6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, and GitHub marks the prerelease

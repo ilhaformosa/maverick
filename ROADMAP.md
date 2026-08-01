@@ -19,11 +19,10 @@ adopted nor automatically rejected.
 
 No product-code slice is queued.
 
-The active queue is the owner-authorized Beta release recovery. It first
-records the widened verifier scope, then completes and merges the existing
-diagnostic PR, and only after exact-main verification prepares one separately
-reviewed Beta.4 candidate. This is an execution order, not evidence that a
-release already exists, and it does not create a receipt, seal, registry,
+The active queue is only the owner-authorized Beta.4 candidate, publication,
+independent public verification, and final fact update. The immutable failed
+Beta.3 tag is not retried or reused. This is an execution order, not evidence
+that Beta.4 already exists, and it does not create a receipt, seal, registry,
 coordinator, or successor release framework.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
@@ -32,32 +31,28 @@ result, release result, or publication authorization.
 
 ## Execution Order
 
-1. **Merge the widened authorization alone.** Use a two-document governance PR
-   containing only `STATUS.md` and `ROADMAP.md`.
-2. **Complete PR #25.** Add only the authorized shared-verifier correction and
-   focused regression coverage. Obtain ordinary PR CI and independent review,
-   then merge only the exact reviewed head when no blocker remains.
-3. **Reverify exact main.** Require the repaired macOS SBOM path and all
-   existing required main checks to pass. CI remains quality evidence, not a
-   release or user result.
-4. **Prepare Beta.4 separately.** Because the fixed Beta.3 tag cannot move,
-   prepare the minimal version, lockfile, current-truth, roadmap, and
-   version-specific release-note changes for `1.2.0-beta.4` in a separate PR.
-   Do not add product or release-workflow changes.
-5. **Publish once, fail closed.** After the Beta.4 candidate merges and every
+1. **Prepare and review Beta.4.** Validate the minimal six-file candidate:
+   workspace version, root and fuzz lockfiles, `STATUS.md`, `ROADMAP.md`, and
+   the complete version-specific release note. Push it through one Draft pull
+   request, all required checks, and independent review, then merge only the
+   exact reviewed head. Do not add product or release-workflow changes.
+2. **Publish once, fail closed.** After the Beta.4 candidate merges and every
    pre-tag fact is proved, create one annotated `v1.2.0-beta.4` tag directly on
    the exact reviewed candidate merge commit while it is current main, push
    only that tag, and allow the existing workflow to publish the digest-bound
    release note and exact six assets. Never move a failed tag, rerun its failed
    workflow, or create or replace its Release or assets.
-6. **Verify before recording success.** Independently download and verify the
+3. **Verify before recording success.** Independently download and verify the
    public tag, release metadata, exact assets, checksums, SBOMs, source
    revisions, targets, and native artifacts. Only afterward update `STATUS.md`
    to record a successful Beta.4 publication.
-7. **Stop for alternatives if needed.** Any unresolved repair, candidate, tag,
+4. **Record only proved facts.** If public verification succeeds, use one final
+   two-document pull request to record Beta.4 as current published truth and
+   clear the release queue. Do not turn local or CI evidence into a user result.
+5. **Stop for alternatives if needed.** Any unresolved candidate, tag,
    workflow, or public-asset failure stops without an automatic Beta.5 or a
    different publication mechanism.
-8. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+6. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate
    byte-for-byte build experiment. An SBOM is not any of those things.
@@ -90,6 +85,7 @@ Use the shortest failure-driven next step:
   without a separate owner decision.
 
 The Maverick protocol version, config version, and stored-profile schema
-version remain `1` for the published Beta.2 release; existing authentication
-and frame wire formats are unchanged. Any future version or wire-format change
-requires an explicit compatibility decision based on observed user need.
+version remain `1` in both the published Beta.2 release and the Beta.4
+candidate; existing authentication and frame wire formats are unchanged. Any
+future version or wire-format change requires an explicit compatibility
+decision based on observed user need.

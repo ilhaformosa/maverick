@@ -92,14 +92,19 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace Beta.3 candidate source: `1.2.0-beta.3`. The exact reviewed source
-  is authorized to be marked Ready and merged through PR #22. Before that
-  merge, it is a PR candidate; after that merge, it is a candidate on `main`
-  that remains untagged and unpublished. Neither state is a public artifact or
-  release. This authorization does not include tag, release, Actions artifact
-  or public asset upload, deployment, or any live-network or system-network
-  action. The published and independently reverified version remains Beta.2 as
-  recorded below.
+- Workspace Beta.3 source: `1.2.0-beta.3`. PR #22 has merged. The owner has
+  authorized one fail-closed release-only transition after this authorization
+  record itself is merged through a pull request: create one annotated
+  `v1.2.0-beta.3` tag that directly targets that exact `main` commit, push only
+  that tag, and allow the existing `pilot-release` workflow to publish the
+  digest-bound version-specific release note plus exactly six assets (two pilot
+  archives, their two checksum files, and two target-aware CycloneDX SBOMs).
+  Any failed gate or fact that cannot be proved stops the transition. Do not
+  move, replace, or force the tag; do not replace an asset or change source to
+  retry. Until publication and independent public re-verification both finish,
+  the published and last independently reverified version remains Beta.2 as
+  recorded below. This authorization does not include deployment, a live-network
+  or system-network action, or any other tag, version, or release.
 - Current published Beta prerelease and last independently reverified public
   artifact: `v1.2.0-beta.2`. Its annotated tag directly targets main commit
   `6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, and GitHub marks the prerelease

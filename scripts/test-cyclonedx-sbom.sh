@@ -784,6 +784,55 @@ verification_capture_log="$private_tmp/generator-verification-capture-error-outp
 assert_literal_absent \
   "/U""sers/$verification_capture_segment/private" "$verification_capture_log"
 
+mock_graph_ref_dir="$private_tmp/mock-graph-ref-missing"
+mkdir -m 0700 "$mock_graph_ref_dir"
+real_jq="$(command -v jq)" || fail
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'normalization=false' \
+  'for argument in "$@"; do' \
+  '  case "$argument" in' \
+  '    *"def canonical_purl:"*) normalization=true ;;' \
+  '  esac' \
+  'done' \
+  'if [[ "$normalization" == true ]]; then' \
+  '  normalized="${MOCK_GRAPH_REF_TMP:?}/normalized.json"' \
+  '  "${REAL_JQ:?}" "$@" >"$normalized" || exit 43' \
+  '  case "${MOCK_GRAPH_REF_MODE:?}" in' \
+  '    missing)' \
+  '      filter=".dependencies = .dependencies[:-1]"' \
+  '      ;;' \
+  '    structure-type)' \
+  '      filter=".dependencies = {}"' \
+  '      ;;' \
+  '    ref-type)' \
+  '      filter=".dependencies[0].ref = null"' \
+  '      ;;' \
+  '    *) exit 43 ;;' \
+  '  esac' \
+  '  "${REAL_JQ:?}" "$filter" "$normalized"' \
+  '  exit $?' \
+  'fi' \
+  'exec "${REAL_JQ:?}" "$@"' >"$mock_graph_ref_dir/jq"
+chmod 0700 "$mock_graph_ref_dir/jq"
+expect_generator_failure graph-ref-missing verification-graph-ref-missing \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=missing"
+expect_generator_failure graph-ref-structure-type verification-graph-ref \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=structure-type"
+expect_generator_failure graph-ref-ref-type verification-graph-ref \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=ref-type"
+
 mock_integrity_dir="$private_tmp/mock-integrity"
 mkdir -m 0700 "$mock_integrity_dir"
 real_shasum="$(command -v shasum)"
@@ -890,11 +939,11 @@ wait "$verify_pid" || mutation_status=$?
 [[ "$(cat "$mutation_output")" == "sbom verification failed: mutation" ]] || fail
 negative_checks=$((negative_checks + 1))
 
-[[ "$negative_checks" -eq 50 ]] || fail
+[[ "$negative_checks" -eq 53 ]] || fail
 linux_bytes="$(measure_test_file "$linux_first")" || fail
 mac_bytes="$(measure_test_file "$mac_first")" || fail
 [[ "$linux_bytes" =~ ^[0-9]+$ && "$mac_bytes" =~ ^[0-9]+$ ]] || fail
 [[ "$linux_bytes" -le "$max_sbom_bytes" ]] || fail
 [[ "$mac_bytes" -le "$max_sbom_bytes" ]] || fail
 
-echo "CycloneDX SBOM focused tests OK (2 targets, 50 negative checks)"
+echo "CycloneDX SBOM focused tests OK (2 targets, 53 negative checks)"

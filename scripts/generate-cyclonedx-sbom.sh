@@ -24,9 +24,11 @@ fail() {
       case "${public_stage#verification-}" in
         ambiguous-identity | arguments | basename | cargo-version | closure | \
           document-count | duplicate-ref | graph-dependency | graph-ref | \
-          identity | input | json | metadata | metadata-root | mutation | \
-          oversized | privacy | root | serial | source | source-version | \
-          target | timestamp | tool | tool-identity | vcs) ;;
+          graph-ref-duplicate | graph-ref-extra | graph-ref-missing | \
+          graph-ref-mixed | identity | input | json | metadata | \
+          metadata-root | mutation | oversized | privacy | root | serial | \
+          source | source-version | target | timestamp | tool | \
+          tool-identity | vcs) ;;
         *) public_stage=internal ;;
       esac
       ;;
@@ -75,6 +77,55 @@ sha256_file() {
     return 1
   fi
   printf '%s\n' "$digest" 2>/dev/null || return 1
+}
+
+classify_graph_ref_failure() {
+  local sbom="$1"
+  local detail_file="$private_tmp/graph-ref-detail"
+  local expected_file="$private_tmp/graph-ref-detail.expected"
+  local detail
+  jq -r '
+    if (.metadata.component."bom-ref" | type) != "string" or
+       (.components | type) != "array" or
+       ([.components[] |
+          if type == "object"
+          then (."bom-ref" | type) == "string"
+          else false
+          end] | all | not) or
+       (.dependencies | type) != "array" or
+       ([.dependencies[] |
+          if type == "object"
+          then (.ref | type) == "string"
+          else false
+          end] | all | not)
+    then "unknown"
+    else
+      ([.metadata.component."bom-ref"] + [.components[]."bom-ref"] | sort) as $refs |
+      ([.dependencies[].ref] | sort) as $graph_refs |
+      ($refs | unique) as $unique_refs |
+      ($graph_refs | unique) as $unique_graph_refs |
+      if ($graph_refs | length) != ($unique_graph_refs | length)
+      then "duplicate"
+      elif (($unique_graph_refs - $unique_refs) | length) > 0 and
+           (($unique_refs - $unique_graph_refs) | length) > 0
+      then "mixed"
+      elif (($unique_graph_refs - $unique_refs) | length) > 0
+      then "extra"
+      elif (($unique_refs - $unique_graph_refs) | length) > 0
+      then "missing"
+      else "unknown"
+      end
+    end
+  ' "$sbom" >"$detail_file" 2>/dev/null || return 0
+  chmod 0600 "$detail_file" >/dev/null 2>&1 || return 0
+  for detail in duplicate extra missing mixed; do
+    printf '%s\n' "$detail" >"$expected_file" 2>/dev/null || return 0
+    if cmp -s "$expected_file" "$detail_file" >/dev/null 2>&1; then
+      current_stage="verification-graph-ref-$detail"
+      return 0
+    fi
+  done
+  return 0
 }
 
 while [[ $# -gt 0 ]]; do
@@ -386,6 +437,9 @@ if [[ "$verification_status" -ne 0 ]]; then
     if cmp -s "$verification_expected" "$verification_log" \
       >/dev/null 2>&1; then
       current_stage="verification-$verification_code"
+      if [[ "$verification_code" == "graph-ref" ]]; then
+        classify_graph_ref_failure "$private_tmp/$expected_name"
+      fi
       break
     fi
   done

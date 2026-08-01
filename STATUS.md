@@ -92,54 +92,45 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace Beta.4 candidate source: `1.2.0-beta.4`. The verifier repair from
-  PR #25 is merged at main commit
-  `6d69fd5d57f5963dbd2cc51ebaffc754073de3cc`; its pull-request checks and the
-  exact-main product, CodeQL, Linux artifact, and macOS SBOM checks passed. The
-  Beta.4 candidate is not yet tagged or published and has no public release
-  asset. It changes no Maverick protocol, config, stored-profile schema,
-  authentication wire, or frame wire format. The failed Beta.3 publication
-  attempt remains immutable: the annotated
-  `v1.2.0-beta.3` tag exists as tag object
-  `3f3f1e20000cdd5857d14c665181eb88902c838f` and directly targets `main`
+- Workspace source, current published Beta prerelease, and last independently
+  reverified public artifact: `v1.2.0-beta.4`. PR #27 merged the reviewed
+  candidate as main commit
+  `5109d89bdddc23a2830eda2c0c56a954d3b214a9`. Annotated tag object
+  `18f18eee87f8a89c662356334ae3f85d80bc577e` directly targets that commit.
+  Pilot-release run `30718828654` completed successfully: its exact-tag/current-
+  main gate, local product gates, Linux and macOS archive builds, native
+  verification, target-aware CycloneDX generation and verification, exact-file
+  re-verification, and publication jobs all passed. GitHub marks the resulting
+  non-draft prerelease immutable, and it contains exactly two archives, two
+  checksum files, and two target-aware SBOMs.
+  Independent public checks reconfirmed the tag, current-main ancestry, release
+  metadata, byte-for-byte release note, exact six asset names, uploaded states,
+  sizes, and GitHub API SHA-256 digests. The downloaded Apple Silicon archive
+  passed static and native verification, and both downloaded SBOMs passed the
+  full locked runtime-closure verifier. The Linux archive was natively verified
+  on the matching Ubuntu release runner before publication; the publish job
+  statically reverified the exact uploaded bytes, and the independently
+  downloaded bytes matched the public API digest. A separate macOS check also
+  reconfirmed the Linux checksum and archive contents before stopping
+  fail-closed at the architecture-tool gate because GNU `readelf` is not
+  installed there. These are publication quality controls, not a new human
+  user, real-network, production, anonymity, or broad censorship-resistance
+  result. Beta.4 changes no Maverick protocol version, config version,
+  stored-profile schema version, or existing authentication/frame wire format.
+- The failed Beta.3 publication attempt remains immutable. Annotated
+  `v1.2.0-beta.3` tag object
+  `3f3f1e20000cdd5857d14c665181eb88902c838f` directly targets `main`
   commit `fa201b6844ace93a95411ec9162c3317d4868043`. Pilot-release run
   `30690464199` stopped fail-closed: verification succeeded; the Linux build,
   target-aware CycloneDX SBOM, re-verification, and Actions artifact upload
   succeeded; and the macOS binary, archive, and native verification succeeded
   before CycloneDX SBOM generation failed. The macOS artifact upload did not
   occur, and publication was skipped. No GitHub Release or public release asset
-  exists. This was not a Rust product failure. The repaired shared CycloneDX
-  verifier now checks the root/component and dependency-reference sets in
-  portable steps and retains fixed privacy-safe errors. These are quality
-  controls, not a successful publication or a product result. Until Beta.4 is
-  published and independently reverified, the published and last independently
-  reverified version remains Beta.2 as recorded below.
-- Successor Beta publication authorization (2026-08-02): with the verifier
-  repair merged and its exact main checks complete, the existing
-  annotated `v1.2.0-beta.3` tag remains fixed at its original commit and must
-  not be moved, deleted, force-updated, reused, or given replacement assets.
-  The owner authorizes one separate `1.2.0-beta.4` candidate path limited to
-  `Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`,
-  `docs/releases/v1.2.0-beta.4.md`, `STATUS.md`, and `ROADMAP.md`. That candidate
-  may be implemented, committed, pushed, reviewed through a pull request, and
-  merged when all gates pass. It remains unpublished until one annotated
-  `v1.2.0-beta.4` tag is created directly on the exact reviewed Beta.4
-  candidate merge commit while it is current main, only that tag is pushed,
-  the existing release workflow publishes the digest-bound Beta.4 release note
-  and exactly two archives, two checksum files, and two target-aware SBOMs, and
-  the resulting public prerelease and exact assets are independently
-  reverified.
-  Only then may a final two-document fact update be committed, pushed,
-  reviewed, and merged to record Beta.4 as the current published version.
-  Until then the published and last independently reverified version remains
-  Beta.2. If the Beta.4 workflow or independent public verification fails, do
-  not rerun that workflow, move, delete, or force-update the tag, or create,
-  replace, or mutate its GitHub Release or assets. Stop and return to the owner;
-  no Beta.5 or alternate publication route is authorized automatically. This
-  authorization does not include deployment or any live-network or
-  system-network change.
-- Current published Beta prerelease and last independently reverified public
-  artifact: `v1.2.0-beta.2`. Its annotated tag directly targets main commit
+  exists. This was not a Rust product failure. The later portable verifier
+  repair and Beta.4 publication do not retroactively turn Beta.3 into a release,
+  and its tag was not moved, deleted, force-updated, reused, or given assets.
+- The previous `v1.2.0-beta.2` prerelease remains immutable. Its annotated tag
+  directly targets main commit
   `6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, and GitHub marks the prerelease
   immutable. The release contains exactly the two supported pilot archives and
   their checksum files. Post-publication checks reconfirmed the release and
@@ -148,8 +139,9 @@ censorship resistance, production readiness, or browser identity.
   static and native verification on the matching Ubuntu release runner; a
   separate macOS recheck confirmed its archive, source, version, checksum, and
   raw ELF identity before stopping fail-closed because GNU `readelf` is not
-  installed on that workstation. These are publication quality controls, not
-  a new product result.
+  installed on that workstation. It remains the independently verified
+  rollback option documented for Beta.4; it was not moved, replaced, or
+  retroactively renamed.
 - The historical `v1.2.0-beta.1` and `v1.2.0-alpha.6` releases were not moved,
   replaced, or retroactively renamed.
 - Protocol version: `1` (unchanged).

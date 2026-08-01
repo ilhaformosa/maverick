@@ -19,13 +19,14 @@ adopted nor automatically rejected.
 
 No product-code slice is queued.
 
-The sole queued slice is the fail-closed Beta.3 release-only transition
-authorized in `STATUS.md`: merge the two-document governance record, verify the
-resulting exact `main`, create and push its direct annotated Beta.3 tag, let the
-existing release workflow run, independently reverify the public release, and
-then record only the facts that actually passed. Any failure empties this queue
-and stops for a new owner decision; it does not authorize a substitute source,
-tag, asset, workflow, or retry.
+The failed Beta.3 release-only transition is no longer queued. The sole queued
+slice is the minimal recovery diagnostic authorized in `STATUS.md`: first merge
+this two-document governance record, then use a separate diagnostic PR to add
+privacy-safe fixed failure-stage classifications to the existing CycloneDX SBOM
+generator, cover them with regression tests, and obtain exact SBOM-generation
+evidence in ordinary macOS pull-request CI. This is an execution queue, not a
+completion ledger, and it does not create a receipt, seal, registry,
+coordinator, or successor release framework.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user
@@ -33,21 +34,18 @@ result, release result, or publication authorization.
 
 ## Execution Order
 
-1. **Merge the authorization record alone.** Use a two-document governance PR
-   and merge only its exact checked head.
-2. **Bind the release to final `main`.** Re-run the local and required public
-   gates on the resulting exact commit before creating any tag.
-3. **Create one direct annotated tag.** Create and push only
-   `v1.2.0-beta.3`, directly targeting that exact `main` commit.
-4. **Use the existing fail-closed workflow.** Let `pilot-release` publish only
-   the digest-bound version-specific note and the exact six authorized assets.
-5. **Independently reverify the public result.** Check the tag, release state,
-   note bytes, asset set, digests, archives, and target-aware SBOMs. Stop on any
-   failure or fact that cannot be proved.
-6. **Record facts after they exist.** If publication and re-verification pass,
-   use a separate two-document PR to update current truth and empty the release
-   queue. This order is not a completion ledger.
-7. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+1. **Merge the recovery authorization alone.** Use a two-document governance
+   PR and merge only its exact checked head.
+2. **Use a separate diagnostic PR.** Make only the authorized fixed-stage and
+   regression changes, obtain ordinary macOS CI evidence for exact SBOM
+   generation, and merge only after independent review finds no blocker.
+3. **Decide from the real failure stage.** Use the newly visible fixed stage to
+   decide the smallest correction; do not guess that the failure was transient
+   or deterministic. If correction requires source or workflow changes, the
+   existing Beta.3 tag cannot move, and any future publication requires a new,
+   separately owner-authorized version decision, with Beta.4 only a candidate.
+   This slice does not authorize that publication.
+4. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate
    byte-for-byte build experiment. An SBOM is not any of those things.

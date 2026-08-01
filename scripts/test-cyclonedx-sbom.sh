@@ -718,8 +718,71 @@ printf '%s\n' \
   'printf "%s\n" "/U""sers/example/private" >&2' \
   'exit 42' >"$mock_verification_dir/wc"
 chmod 0700 "$mock_verification_dir/wc"
-expect_generator_failure verification-tool-error verification \
+expect_generator_failure verification-tool-error verification-input \
   "PATH=$mock_verification_dir:$PATH"
+
+real_cmp="$(command -v cmp)" || fail
+mock_verification_closure_dir="$private_tmp/mock-verification-closure"
+mkdir -m 0700 "$mock_verification_closure_dir"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${2:-} ${3:-}" in' \
+  '  *"/expected-components /"*"/actual-components") exit 1 ;;' \
+  'esac' \
+  'exec "${REAL_CMP:?}" "$@"' >"$mock_verification_closure_dir/cmp"
+chmod 0700 "$mock_verification_closure_dir/cmp"
+expect_generator_failure verification-closure verification-closure \
+  "PATH=$mock_verification_closure_dir:$PATH" \
+  "REAL_CMP=$real_cmp"
+
+mock_verification_malformed_dir="$private_tmp/mock-verification-malformed"
+mkdir -m 0700 "$mock_verification_malformed_dir"
+verification_private_segment="maverick-sbom-verification-marker"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${2:-} ${3:-}" in' \
+  '  *"/expected-components /"*"/actual-components")' \
+  '    private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  '    printf "sbom verification failed: closure\n\033[31m%s\n%s\033[0m\n" \
+      "$private_marker" "synthetic detail" >&2' \
+  '    exit 1' \
+  '    ;;' \
+  'esac' \
+  'exec "${REAL_CMP:?}" "$@"' >"$mock_verification_malformed_dir/cmp"
+chmod 0700 "$mock_verification_malformed_dir/cmp"
+expect_generator_failure verification-malformed-output verification \
+  "PATH=$mock_verification_malformed_dir:$PATH" \
+  "REAL_CMP=$real_cmp" \
+  "MOCK_PRIVATE_SEGMENT=$verification_private_segment"
+verification_public_log="$private_tmp/generator-verification-malformed-output-output"
+assert_literal_absent \
+  "/U""sers/$verification_private_segment/private" "$verification_public_log"
+assert_literal_absent $'\033' "$verification_public_log"
+
+mock_verification_capture_dir="$private_tmp/mock-verification-capture"
+mkdir -m 0700 "$mock_verification_capture_dir"
+real_cat="$(command -v cat)" || fail
+verification_capture_segment="maverick-sbom-capture-marker"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '"${REAL_CAT:?}" >/dev/null || exit 43' \
+  'private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  'printf "%s\n" "$private_marker" >&2' \
+  'exit 42' >"$mock_verification_capture_dir/tail"
+chmod 0700 "$mock_verification_capture_dir/tail"
+expect_generator_failure verification-capture-error verification \
+  "PATH=$mock_verification_capture_dir:$PATH" \
+  "REAL_CAT=$real_cat" \
+  "MOCK_PRIVATE_SEGMENT=$verification_capture_segment"
+verification_capture_log="$private_tmp/generator-verification-capture-error-output"
+assert_literal_absent \
+  "/U""sers/$verification_capture_segment/private" "$verification_capture_log"
 
 mock_integrity_dir="$private_tmp/mock-integrity"
 mkdir -m 0700 "$mock_integrity_dir"
@@ -827,11 +890,11 @@ wait "$verify_pid" || mutation_status=$?
 [[ "$(cat "$mutation_output")" == "sbom verification failed: mutation" ]] || fail
 negative_checks=$((negative_checks + 1))
 
-[[ "$negative_checks" -eq 47 ]] || fail
+[[ "$negative_checks" -eq 50 ]] || fail
 linux_bytes="$(measure_test_file "$linux_first")" || fail
 mac_bytes="$(measure_test_file "$mac_first")" || fail
 [[ "$linux_bytes" =~ ^[0-9]+$ && "$mac_bytes" =~ ^[0-9]+$ ]] || fail
 [[ "$linux_bytes" -le "$max_sbom_bytes" ]] || fail
 [[ "$mac_bytes" -le "$max_sbom_bytes" ]] || fail
 
-echo "CycloneDX SBOM focused tests OK (2 targets, 47 negative checks)"
+echo "CycloneDX SBOM focused tests OK (2 targets, 50 negative checks)"

@@ -20,6 +20,16 @@ fail() {
   case "$public_stage" in
     arguments | environment | source | snapshot | generation | candidate | \
       normalization | verification | integrity | output) ;;
+    verification-*)
+      case "${public_stage#verification-}" in
+        ambiguous-identity | arguments | basename | cargo-version | closure | \
+          document-count | duplicate-ref | graph-dependency | graph-ref | \
+          identity | input | json | metadata | metadata-root | mutation | \
+          oversized | privacy | root | serial | source | source-version | \
+          target | timestamp | tool | tool-identity | vcs) ;;
+        *) public_stage=internal ;;
+      esac
+      ;;
     *) public_stage=internal ;;
   esac
   printf 'CycloneDX SBOM generation failed: %s\n' "$public_stage" >&2 || :
@@ -343,13 +353,44 @@ chmod 0600 "$normalized" >/dev/null 2>&1 || fail
 
 mv "$normalized" "$private_tmp/$expected_name" >/dev/null 2>&1 || fail
 current_stage=verification
-"$verifier" \
+verification_log="$private_tmp/verification.log"
+verification_pipeline_status=()
+if "$verifier" \
   --sbom "$private_tmp/$expected_name" \
   --expected-version "$expected_version" \
   --expected-revision "$expected_revision" \
   --expected-target "$target" \
   --verification-level full \
-  --source-root "$repo_root" >/dev/null 2>&1 || fail
+  --source-root "$repo_root" 2>&1 |
+  tail -c 4096 >"$verification_log" 2>/dev/null; then
+  verification_pipeline_status=("${PIPESTATUS[@]}")
+else
+  verification_pipeline_status=("${PIPESTATUS[@]}")
+fi
+[[ "${#verification_pipeline_status[@]}" -eq 2 ]] || fail
+verification_status="${verification_pipeline_status[0]}"
+verification_capture_status="${verification_pipeline_status[1]}"
+[[ "$verification_capture_status" -eq 0 ]] || fail
+chmod 0600 "$verification_log" >/dev/null 2>&1 || fail
+if [[ "$verification_status" -ne 0 ]]; then
+  verification_expected="$private_tmp/verification.expected"
+  verification_codes=(
+    ambiguous-identity arguments basename cargo-version closure document-count
+    duplicate-ref graph-dependency graph-ref identity input json metadata
+    metadata-root mutation oversized privacy root serial source source-version
+    target timestamp tool tool-identity vcs
+  )
+  for verification_code in "${verification_codes[@]}"; do
+    printf 'sbom verification failed: %s\n' "$verification_code" \
+      >"$verification_expected" 2>/dev/null || fail
+    if cmp -s "$verification_expected" "$verification_log" \
+      >/dev/null 2>&1; then
+      current_stage="verification-$verification_code"
+      break
+    fi
+  done
+  fail
+fi
 
 current_stage=integrity
 : 2>/dev/null >"$lock_hashes_after" || fail

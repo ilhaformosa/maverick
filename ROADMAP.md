@@ -17,18 +17,28 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-There is currently no queued repository-local slice. Resume the failure-driven
-order only when a Beta failure is reproduced or the owner explicitly selects a
-new minimal slice. Local and GitHub Actions quality evidence do not change the
-product truth in `STATUS.md`.
+No product-code slice is queued.
+
+Until `main` contains the exact reviewed PR #22 candidate, the sole repository
+transition is to mark that exact head Ready and merge it without changing its
+reviewed contents. Once `main` contains it, the queue is empty and waits for a
+separate owner release decision.
+
+Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
+can close a platform-evidence gap, but they are not a product result, user
+result, release result, or publication authorization.
 
 ## Execution Order
 
-1. **Wait for a concrete input.** A reproduced Beta failure or an explicit
-   owner instruction must name the next minimal slice before repository-local
-   work resumes. Use the failure-driven order below rather than creating a
-   standing queue.
-2. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+1. **Promote only the exact reviewed head.** Until `main` contains the PR #22
+   candidate, mark its exact checked head Ready and merge without content
+   changes.
+2. **Stop after the merge.** Once `main` contains that candidate, leave the
+   repository-local queue empty and report the resulting main revision.
+3. **Require a separate owner decision before publication.** Merge does not
+   authorize tag, release, upload, deployment, or any live-network or
+   system-network action.
+4. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate
    byte-for-byte build experiment. An SBOM is not any of those things.

@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-07-30
+Date: 2026-08-01
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -92,6 +92,14 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
+- Workspace Beta.3 candidate source: `1.2.0-beta.3`. The exact reviewed source
+  is authorized to be marked Ready and merged through PR #22. Before that
+  merge, it is a PR candidate; after that merge, it is a candidate on `main`
+  that remains untagged and unpublished. Neither state is a public artifact or
+  release. This authorization does not include tag, release, Actions artifact
+  or public asset upload, deployment, or any live-network or system-network
+  action. The published and independently reverified version remains Beta.2 as
+  recorded below.
 - Current published Beta prerelease and last independently reverified public
   artifact: `v1.2.0-beta.2`. Its annotated tag directly targets main commit
   `6862a3004ec9c3b1e52fd03f71dc47b771564cc4`, and GitHub marks the prerelease

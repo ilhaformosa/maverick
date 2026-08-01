@@ -17,13 +17,10 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No product-code slice is queued.
-
-The active queue is only the owner-authorized Beta.4 candidate, publication,
-independent public verification, and final fact update. The immutable failed
-Beta.3 tag is not retried or reused. This is an execution order, not evidence
-that Beta.4 already exists, and it does not create a receipt, seal, registry,
-coordinator, or successor release framework.
+No product-code or release slice is queued. Current publication facts live only
+in `STATUS.md`; this queue does not keep a completion ledger. A future slice
+requires either a reproduced Beta failure or a newly owner-defined minimal
+task, and must be placed here before execution.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user
@@ -31,28 +28,14 @@ result, release result, or publication authorization.
 
 ## Execution Order
 
-1. **Prepare and review Beta.4.** Validate the minimal six-file candidate:
-   workspace version, root and fuzz lockfiles, `STATUS.md`, `ROADMAP.md`, and
-   the complete version-specific release note. Push it through one Draft pull
-   request, all required checks, and independent review, then merge only the
-   exact reviewed head. Do not add product or release-workflow changes.
-2. **Publish once, fail closed.** After the Beta.4 candidate merges and every
-   pre-tag fact is proved, create one annotated `v1.2.0-beta.4` tag directly on
-   the exact reviewed candidate merge commit while it is current main, push
-   only that tag, and allow the existing workflow to publish the digest-bound
-   release note and exact six assets. Never move a failed tag, rerun its failed
-   workflow, or create or replace its Release or assets.
-3. **Verify before recording success.** Independently download and verify the
-   public tag, release metadata, exact assets, checksums, SBOMs, source
-   revisions, targets, and native artifacts. Only afterward update `STATUS.md`
-   to record a successful Beta.4 publication.
-4. **Record only proved facts.** If public verification succeeds, use one final
-   two-document pull request to record Beta.4 as current published truth and
-   clear the release queue. Do not turn local or CI evidence into a user result.
-5. **Stop for alternatives if needed.** Any unresolved candidate, tag,
-   workflow, or public-asset failure stops without an automatic Beta.5 or a
-   different publication mechanism.
-6. **Keep stronger supply-chain claims deferred.** Provenance and attestation
+1. **Wait for a concrete input.** Accept privacy-safe Beta feedback, a
+   reproduced failure, or an explicit owner-defined minimal task. Do not infer
+   a new product, release, deployment, or real-network authorization.
+2. **Define one smallest slice.** Before implementation, put its user result,
+   file scope, acceptance checks, out-of-scope boundary, and stop conditions in
+   this queue. Preserve `STATUS.md` as the sole current-truth and authorization
+   source.
+3. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate
    byte-for-byte build experiment. An SBOM is not any of those things.
@@ -85,7 +68,6 @@ Use the shortest failure-driven next step:
   without a separate owner decision.
 
 The Maverick protocol version, config version, and stored-profile schema
-version remain `1` in both the published Beta.2 release and the Beta.4
-candidate; existing authentication and frame wire formats are unchanged. Any
-future version or wire-format change requires an explicit compatibility
-decision based on observed user need.
+version remain `1` in the published Beta.4 release; existing authentication and
+frame wire formats are unchanged. Any future version or wire-format change
+requires an explicit compatibility decision based on observed user need.

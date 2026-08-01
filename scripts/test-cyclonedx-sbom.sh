@@ -12,9 +12,10 @@ fail() {
   exit 1
 }
 
+script_dir="$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" || fail
 repo_root="$(
-  cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null &&
-    pwd
+  cd "$script_dir/.." 2>/dev/null || exit 1
+  pwd 2>/dev/null
 )" || fail
 generator="$repo_root/scripts/generate-cyclonedx-sbom.sh"
 verifier="$repo_root/scripts/verify-cyclonedx-sbom.sh"
@@ -104,6 +105,142 @@ mkdir -m 0700 \
   "$private_tmp/linux-first" "$private_tmp/linux-second" \
   "$private_tmp/mac-first" "$private_tmp/mac-second"
 
+expect_generator_failure() {
+  local name="$1"
+  local expected_stage="$2"
+  shift 2
+  local output_dir="$private_tmp/generator-$name"
+  local output_path="$output_dir/$linux_name"
+  local output_log="$private_tmp/generator-$name-output"
+  local expected_log="$private_tmp/generator-$name-expected"
+  mkdir -m 0700 "$output_dir"
+  if env "$@" "$generator" \
+    --expected-version "$version" \
+    --expected-revision "$revision" \
+    --target "$linux_target" \
+    --output "$output_path" >"$output_log" 2>&1; then
+    fail
+  fi
+  printf 'CycloneDX SBOM generation failed: %s\n' "$expected_stage" \
+    >"$expected_log"
+  cmp -s "$expected_log" "$output_log" || fail
+  [[ ! -e "$output_path" && ! -L "$output_path" ]] || fail
+  negative_checks=$((negative_checks + 1))
+}
+
+real_cyclonedx_bin="${CARGO_CYCLONEDX_BIN:-}"
+if [[ -z "$real_cyclonedx_bin" ]]; then
+  real_cyclonedx_bin="$(command -v cargo-cyclonedx 2>/dev/null || true)"
+fi
+[[ -x "$real_cyclonedx_bin" ]] || fail
+
+mock_cargo_grep_dir="$private_tmp/mock-cargo-grep"
+mkdir -m 0700 "$mock_cargo_grep_dir"
+cargo_grep_sentinel="$private_tmp/cargo-grep-fired"
+cargo_grep_segment="maverick-sbom-cargo-version-marker"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  ': >"${MOCK_GREP_SENTINEL:?}" || exit 43' \
+  'private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  'printf "%s\n" "$private_marker" >&2' \
+  'exit 42' >"$mock_cargo_grep_dir/grep"
+chmod 0700 "$mock_cargo_grep_dir/grep"
+expect_generator_failure cargo-version-grep-error environment \
+  "PATH=$mock_cargo_grep_dir:$PATH" \
+  "MOCK_GREP_SENTINEL=$cargo_grep_sentinel" \
+  "MOCK_PRIVATE_SEGMENT=$cargo_grep_segment"
+[[ -f "$cargo_grep_sentinel" ]] || fail
+cargo_grep_public_log="$private_tmp/generator-cargo-version-grep-error-output"
+assert_literal_absent \
+  "/U""sers/$cargo_grep_segment/private" "$cargo_grep_public_log"
+
+mock_dirname_dir="$private_tmp/mock-dirname"
+mkdir -m 0700 "$mock_dirname_dir"
+real_dirname="$(command -v dirname 2>/dev/null)" || fail
+dirname_counter="$private_tmp/dirname-counter"
+dirname_segment="maverick-sbom-dirname-marker"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'count=0' \
+  'if [[ -f "${MOCK_DIRNAME_COUNTER:?}" ]]; then' \
+  '  IFS= read -r count <"$MOCK_DIRNAME_COUNTER" || exit 43' \
+  'fi' \
+  'count=$((count + 1))' \
+  'printf "%s\n" "$count" >"$MOCK_DIRNAME_COUNTER" || exit 43' \
+  '"${REAL_DIRNAME:?}" "$@" || exit 43' \
+  'private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  'printf "%s\n" "$private_marker" >&2' \
+  'exit 42' >"$mock_dirname_dir/dirname"
+chmod 0700 "$mock_dirname_dir/dirname"
+expect_generator_failure dirname-tool-error environment \
+  "PATH=$mock_dirname_dir:$PATH" \
+  "REAL_DIRNAME=$real_dirname" \
+  "MOCK_DIRNAME_COUNTER=$dirname_counter" \
+  "MOCK_PRIVATE_SEGMENT=$dirname_segment"
+[[ "$(cat "$dirname_counter")" == 1 ]] || fail
+dirname_public_log="$private_tmp/generator-dirname-tool-error-output"
+assert_literal_absent \
+  "/U""sers/$dirname_segment/private" "$dirname_public_log"
+
+mock_hash_awk_dir="$private_tmp/mock-hash-awk"
+mkdir -m 0700 "$mock_hash_awk_dir"
+real_awk="$(command -v awk 2>/dev/null)" || fail
+hash_awk_sentinel="$private_tmp/hash-awk-fired"
+hash_awk_segment="maverick-sbom-hash-awk-marker"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'expected_filter="{print $"' \
+  'expected_filter+="1}"' \
+  'for argument in "$@"; do' \
+  '  if [[ "$argument" == "$expected_filter" ]]; then' \
+  '    : >"${MOCK_AWK_SENTINEL:?}" || exit 43' \
+  '    private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  '    printf "%s\n" "$private_marker" >&2' \
+  '    exit 42' \
+  '  fi' \
+  'done' \
+  'exec "${REAL_AWK:?}" "$@"' >"$mock_hash_awk_dir/awk"
+chmod 0700 "$mock_hash_awk_dir/awk"
+expect_generator_failure hash-awk-error snapshot \
+  "PATH=$mock_hash_awk_dir:$PATH" \
+  "CARGO_CYCLONEDX_BIN=$real_cyclonedx_bin" \
+  "REAL_AWK=$real_awk" \
+  "MOCK_AWK_SENTINEL=$hash_awk_sentinel" \
+  "MOCK_PRIVATE_SEGMENT=$hash_awk_segment"
+[[ -f "$hash_awk_sentinel" ]] || fail
+hash_awk_public_log="$private_tmp/generator-hash-awk-error-output"
+assert_literal_absent \
+  "/U""sers/$hash_awk_segment/private" "$hash_awk_public_log"
+
+mock_generation_dir="$private_tmp/mock-generation"
+mkdir -m 0700 "$mock_generation_dir"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'if [[ "$*" == "cyclonedx --version" ]]; then' \
+  '  printf "%s\n" "cargo-cyclonedx-cyclonedx 0.5.9"' \
+  '  exit 0' \
+  'fi' \
+  'private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  'printf "\033[31m%s\n%s\033[0m\n" "$private_marker" "synthetic detail" >&2' \
+  'exit 42' >"$mock_generation_dir/cargo-cyclonedx"
+chmod 0700 "$mock_generation_dir/cargo-cyclonedx"
+generation_private_segment="maverick-sbom-sensitive-marker"
+expect_generator_failure generation-tool-error generation \
+  "CARGO_CYCLONEDX_BIN=$mock_generation_dir/cargo-cyclonedx" \
+  "MOCK_PRIVATE_SEGMENT=$generation_private_segment"
+generation_public_log="$private_tmp/generator-generation-tool-error-output"
+assert_literal_absent \
+  "/U""sers/$generation_private_segment/private" "$generation_public_log"
+assert_literal_absent $'\033' "$generation_public_log"
+
 generate_one "$linux_target" "$linux_first"
 generate_one "$linux_target" "$linux_second"
 generate_one "$mac_target" "$mac_first"
@@ -114,6 +251,55 @@ verify_one "$linux_first" "$linux_target" structural
 verify_one "$linux_first" "$linux_target" full
 verify_one "$mac_first" "$mac_target" structural
 verify_one "$mac_first" "$mac_target" full
+
+portable_jq_dir="$private_tmp/portable-jq"
+mkdir -m 0700 "$portable_jq_dir"
+portable_real_jq="$(command -v jq)" || fail
+portable_jq_called="$private_tmp/portable-jq-called"
+legacy_graph_ref_sentinel="$private_tmp/legacy-graph-ref-predicate-fired"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  ': >"${MOCK_PORTABLE_JQ_CALLED:?}" || exit 43' \
+  'legacy_length=false' \
+  'legacy_equality=false' \
+  'for argument in "$@"; do' \
+  '  case "$argument" in' \
+  '    *"length == (\$refs | length)) and"*) legacy_length=true ;;' \
+  '  esac' \
+  '  case "$argument" in' \
+  '    *"(\$graph_refs == \$refs) and"*) legacy_equality=true ;;' \
+  '  esac' \
+  'done' \
+  'if [[ "$legacy_length" == true && "$legacy_equality" == true ]]; then' \
+  '  : >"${MOCK_LEGACY_GRAPH_REF_SENTINEL:?}" || exit 43' \
+  '  exit 1' \
+  'fi' \
+  'exec "${REAL_JQ:?}" "$@"' >"$portable_jq_dir/jq"
+chmod 0700 "$portable_jq_dir/jq"
+portable_output="$private_tmp/portable-jq-output"
+if ! PATH="$portable_jq_dir:$PATH" \
+  REAL_JQ="$portable_real_jq" \
+  MOCK_PORTABLE_JQ_CALLED="$portable_jq_called" \
+  MOCK_LEGACY_GRAPH_REF_SENTINEL="$legacy_graph_ref_sentinel" \
+  "$verifier" \
+    --sbom "$mac_first" \
+    --expected-version "$version" \
+    --expected-revision "$revision" \
+    --expected-target "$mac_target" \
+    --verification-level structural \
+    --source-root "$repo_root" >"$portable_output" 2>&1; then
+  [[ -f "$portable_jq_called" ]] || fail
+  [[ -f "$legacy_graph_ref_sentinel" ]] || fail
+  [[ "$(cat "$portable_output")" == \
+    "sbom verification failed: graph-ref" ]] || fail
+  fail
+fi
+[[ -f "$portable_jq_called" ]] || fail
+[[ ! -e "$legacy_graph_ref_sentinel" ]] || fail
+[[ "$(cat "$portable_output")" == \
+  "minimal CycloneDX 1.5 structural contract verified" ]] || fail
 
 linux_components="$(jq '.components | length' "$linux_first")"
 mac_components="$(jq '.components | length' "$mac_first")"
@@ -474,31 +660,6 @@ mock_uniq_result="$(cat "$mock_uniq_output")" || fail
   fail
 negative_checks=$((negative_checks + 1))
 
-real_cyclonedx_bin="${CARGO_CYCLONEDX_BIN:-}"
-if [[ -z "$real_cyclonedx_bin" ]]; then
-  real_cyclonedx_bin="$(command -v cargo-cyclonedx 2>/dev/null || true)"
-fi
-[[ -x "$real_cyclonedx_bin" ]] || fail
-
-expect_generator_failure() {
-  local name="$1"
-  shift
-  local output_dir="$private_tmp/generator-$name"
-  local output_path="$output_dir/$linux_name"
-  local output_log="$private_tmp/generator-$name-output"
-  mkdir -m 0700 "$output_dir"
-  if env "$@" "$generator" \
-    --expected-version "$version" \
-    --expected-revision "$revision" \
-    --target "$linux_target" \
-    --output "$output_path" >"$output_log" 2>&1; then
-    fail
-  fi
-  [[ "$(cat "$output_log")" == "CycloneDX SBOM generation failed" ]] || fail
-  [[ ! -e "$output_path" && ! -L "$output_path" ]] || fail
-  negative_checks=$((negative_checks + 1))
-}
-
 mock_hash_dir="$private_tmp/mock-hash"
 mkdir -m 0700 "$mock_hash_dir"
 printf '%s\n' \
@@ -516,7 +677,7 @@ printf '%s\n' \
   >"$mock_hash_dir/cargo-cyclonedx"
 chmod 0700 "$mock_hash_dir/shasum" "$mock_hash_dir/cargo-cyclonedx"
 hash_sentinel="$private_tmp/hash-generator-started"
-expect_generator_failure hash-tool \
+expect_generator_failure hash-tool snapshot \
   "PATH=$mock_hash_dir:$PATH" \
   "CARGO_CYCLONEDX_BIN=$mock_hash_dir/cargo-cyclonedx" \
   "REAL_CYCLONEDX_BIN=$real_cyclonedx_bin" \
@@ -541,7 +702,7 @@ printf '%s\n' \
   'esac' \
   'exec "${REAL_FIND:?}" "$@"' >"$mock_find_dir/find"
 chmod 0700 "$mock_find_dir/find"
-expect_generator_failure find-partial-error \
+expect_generator_failure find-partial-error candidate \
   "PATH=$mock_find_dir:$PATH" \
   "REAL_FIND=$real_find"
 
@@ -571,11 +732,225 @@ printf '%s\n' \
   'fi' \
   'exec "${REAL_JQ:?}" "$@"' >"$mock_jq_dir/jq"
 chmod 0700 "$mock_jq_dir/jq"
-expect_generator_failure jq-tool-error \
+expect_generator_failure jq-tool-error candidate \
   "PATH=$mock_jq_dir:$PATH" \
   "REAL_JQ=$real_jq" \
   "MOCK_JQ_SENTINEL=$jq_error_sentinel"
 [[ -f "$jq_error_sentinel" ]] || fail
+
+mock_normalization_dir="$private_tmp/mock-normalization"
+mkdir -m 0700 "$mock_normalization_dir"
+normalization_sentinel="$private_tmp/normalization-error-fired"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'for argument in "$@"; do' \
+  '  if [[ "$argument" == "-S" ]]; then' \
+  '    : >"${MOCK_NORMALIZATION_SENTINEL:?}"' \
+  '    printf "%s\n" "/U""sers/example/private" >&2' \
+  '    exit 42' \
+  '  fi' \
+  'done' \
+  'exec "${REAL_JQ:?}" "$@"' >"$mock_normalization_dir/jq"
+chmod 0700 "$mock_normalization_dir/jq"
+expect_generator_failure normalization-tool-error normalization \
+  "PATH=$mock_normalization_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_NORMALIZATION_SENTINEL=$normalization_sentinel"
+[[ -f "$normalization_sentinel" ]] || fail
+
+mock_verification_dir="$private_tmp/mock-verification"
+mkdir -m 0700 "$mock_verification_dir"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf "%s\n" "/U""sers/example/private" >&2' \
+  'exit 42' >"$mock_verification_dir/wc"
+chmod 0700 "$mock_verification_dir/wc"
+expect_generator_failure verification-tool-error verification-input \
+  "PATH=$mock_verification_dir:$PATH"
+
+real_cmp="$(command -v cmp)" || fail
+mock_verification_closure_dir="$private_tmp/mock-verification-closure"
+mkdir -m 0700 "$mock_verification_closure_dir"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${2:-} ${3:-}" in' \
+  '  *"/expected-components /"*"/actual-components") exit 1 ;;' \
+  'esac' \
+  'exec "${REAL_CMP:?}" "$@"' >"$mock_verification_closure_dir/cmp"
+chmod 0700 "$mock_verification_closure_dir/cmp"
+expect_generator_failure verification-closure verification-closure \
+  "PATH=$mock_verification_closure_dir:$PATH" \
+  "REAL_CMP=$real_cmp"
+
+mock_verification_malformed_dir="$private_tmp/mock-verification-malformed"
+mkdir -m 0700 "$mock_verification_malformed_dir"
+verification_private_segment="maverick-sbom-verification-marker"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${2:-} ${3:-}" in' \
+  '  *"/expected-components /"*"/actual-components")' \
+  '    private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  '    printf "sbom verification failed: closure\n\033[31m%s\n%s\033[0m\n" \
+      "$private_marker" "synthetic detail" >&2' \
+  '    exit 1' \
+  '    ;;' \
+  'esac' \
+  'exec "${REAL_CMP:?}" "$@"' >"$mock_verification_malformed_dir/cmp"
+chmod 0700 "$mock_verification_malformed_dir/cmp"
+expect_generator_failure verification-malformed-output verification \
+  "PATH=$mock_verification_malformed_dir:$PATH" \
+  "REAL_CMP=$real_cmp" \
+  "MOCK_PRIVATE_SEGMENT=$verification_private_segment"
+verification_public_log="$private_tmp/generator-verification-malformed-output-output"
+assert_literal_absent \
+  "/U""sers/$verification_private_segment/private" "$verification_public_log"
+assert_literal_absent $'\033' "$verification_public_log"
+
+mock_verification_capture_dir="$private_tmp/mock-verification-capture"
+mkdir -m 0700 "$mock_verification_capture_dir"
+real_cat="$(command -v cat)" || fail
+verification_capture_segment="maverick-sbom-capture-marker"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '"${REAL_CAT:?}" >/dev/null || exit 43' \
+  'private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  'printf "%s\n" "$private_marker" >&2' \
+  'exit 42' >"$mock_verification_capture_dir/tail"
+chmod 0700 "$mock_verification_capture_dir/tail"
+expect_generator_failure verification-capture-error verification \
+  "PATH=$mock_verification_capture_dir:$PATH" \
+  "REAL_CAT=$real_cat" \
+  "MOCK_PRIVATE_SEGMENT=$verification_capture_segment"
+verification_capture_log="$private_tmp/generator-verification-capture-error-output"
+assert_literal_absent \
+  "/U""sers/$verification_capture_segment/private" "$verification_capture_log"
+
+mock_graph_ref_dir="$private_tmp/mock-graph-ref-missing"
+mkdir -m 0700 "$mock_graph_ref_dir"
+real_jq="$(command -v jq)" || fail
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'normalization=false' \
+  'classifier=false' \
+  'verifier_graph_ref=false' \
+  'for argument in "$@"; do' \
+  '  case "$argument" in' \
+  '    *"def canonical_purl:"*) normalization=true ;;' \
+  '    *"then \"duplicate\""*) classifier=true ;;' \
+  '    *"(\$graph_refs == \$refs)"*) verifier_graph_ref=true ;;' \
+  '  esac' \
+  'done' \
+  'if [[ "$normalization" == true ]]; then' \
+  '  normalized="${MOCK_GRAPH_REF_TMP:?}/normalized.json"' \
+  '  "${REAL_JQ:?}" "$@" >"$normalized" || exit 43' \
+  '  case "${MOCK_GRAPH_REF_MODE:?}" in' \
+  '    missing | classifier-error)' \
+  '      filter=".dependencies = .dependencies[:-1]"' \
+  '      ;;' \
+  '    structure-type)' \
+  '      filter=".dependencies = {}"' \
+  '      ;;' \
+  '    ref-type)' \
+  '      filter=".dependencies[0].ref = null"' \
+  '      ;;' \
+  '    inconsistent)' \
+  '      filter="."' \
+  '      ;;' \
+  '    *) exit 43 ;;' \
+  '  esac' \
+  '  "${REAL_JQ:?}" "$filter" "$normalized"' \
+  '  exit $?' \
+  'fi' \
+  'if [[ "${MOCK_GRAPH_REF_MODE:?}" == inconsistent &&' \
+  '      "$verifier_graph_ref" == true ]]; then' \
+  '  exit 1' \
+  'fi' \
+  'if [[ "${MOCK_GRAPH_REF_MODE:?}" == classifier-error &&' \
+  '      "$classifier" == true ]]; then' \
+  '  : >"${MOCK_GRAPH_REF_SENTINEL:?}" || exit 43' \
+  '  private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
+  '  printf "%s\n" "$private_marker" >&2' \
+  '  exit 44' \
+  'fi' \
+  'exec "${REAL_JQ:?}" "$@"' >"$mock_graph_ref_dir/jq"
+chmod 0700 "$mock_graph_ref_dir/jq"
+expect_generator_failure graph-ref-missing verification-graph-ref-missing \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=missing"
+expect_generator_failure graph-ref-structure-type \
+  verification-graph-ref-structure \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=structure-type"
+expect_generator_failure graph-ref-ref-type verification-graph-ref-ref-type \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=ref-type"
+expect_generator_failure graph-ref-inconsistent \
+  verification-graph-ref-inconsistent \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=inconsistent"
+graph_ref_classifier_sentinel="$private_tmp/graph-ref-classifier-fired"
+graph_ref_private_segment="maverick-sbom-graph-ref-marker"
+expect_generator_failure graph-ref-classifier-error verification-graph-ref \
+  "PATH=$mock_graph_ref_dir:$PATH" \
+  "REAL_JQ=$real_jq" \
+  "MOCK_GRAPH_REF_TMP=$private_tmp" \
+  "MOCK_GRAPH_REF_MODE=classifier-error" \
+  "MOCK_GRAPH_REF_SENTINEL=$graph_ref_classifier_sentinel" \
+  "MOCK_PRIVATE_SEGMENT=$graph_ref_private_segment"
+[[ -f "$graph_ref_classifier_sentinel" ]] || fail
+graph_ref_classifier_log="$private_tmp/generator-graph-ref-classifier-error-output"
+assert_literal_absent \
+  "/U""sers/$graph_ref_private_segment/private" "$graph_ref_classifier_log"
+
+mock_integrity_dir="$private_tmp/mock-integrity"
+mkdir -m 0700 "$mock_integrity_dir"
+real_shasum="$(command -v shasum)"
+integrity_counter="$private_tmp/integrity-hash-counter"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'hash_input=""' \
+  'for hash_input in "$@"; do :; done' \
+  'case "$hash_input" in' \
+  '  */Cargo.lock) ;;' \
+  '  *) exec "${REAL_SHASUM:?}" "$@" ;;' \
+  'esac' \
+  'count=0' \
+  'if [[ -f "${MOCK_HASH_COUNTER:?}" ]]; then' \
+  '  IFS= read -r count <"$MOCK_HASH_COUNTER" || exit 43' \
+  'fi' \
+  'count=$((count + 1))' \
+  'printf "%s\n" "$count" >"$MOCK_HASH_COUNTER" || exit 43' \
+  'if [[ "$count" -gt 3 ]]; then' \
+  '  printf "%s\n" "/U""sers/example/private" >&2' \
+  '  exit 42' \
+  'fi' \
+  'exec "${REAL_SHASUM:?}" "$@"' >"$mock_integrity_dir/shasum"
+chmod 0700 "$mock_integrity_dir/shasum"
+expect_generator_failure integrity-hash-error integrity \
+  "PATH=$mock_integrity_dir:$PATH" \
+  "REAL_SHASUM=$real_shasum" \
+  "MOCK_HASH_COUNTER=$integrity_counter"
+[[ "$(cat "$integrity_counter")" == 4 ]] || fail
 
 mock_install_dir="$private_tmp/mock-install"
 mkdir -m 0700 "$mock_install_dir"
@@ -584,7 +959,7 @@ printf '%s\n' \
   'printf "%s\n" "/U""sers/example/private" >&2' \
   'exit 42' >"$mock_install_dir/install"
 chmod 0700 "$mock_install_dir/install"
-expect_generator_failure install-tool-error \
+expect_generator_failure install-tool-error output \
   "PATH=$mock_install_dir:$PATH"
 
 mock_wc_dir="$private_tmp/mock-wc"
@@ -651,11 +1026,11 @@ wait "$verify_pid" || mutation_status=$?
 [[ "$(cat "$mutation_output")" == "sbom verification failed: mutation" ]] || fail
 negative_checks=$((negative_checks + 1))
 
-[[ "$negative_checks" -eq 40 ]] || fail
+[[ "$negative_checks" -eq 55 ]] || fail
 linux_bytes="$(measure_test_file "$linux_first")" || fail
 mac_bytes="$(measure_test_file "$mac_first")" || fail
 [[ "$linux_bytes" =~ ^[0-9]+$ && "$mac_bytes" =~ ^[0-9]+$ ]] || fail
 [[ "$linux_bytes" -le "$max_sbom_bytes" ]] || fail
 [[ "$mac_bytes" -le "$max_sbom_bytes" ]] || fail
 
-echo "CycloneDX SBOM focused tests OK (2 targets, 40 negative checks)"
+echo "CycloneDX SBOM focused tests OK (2 targets, 55 negative checks)"

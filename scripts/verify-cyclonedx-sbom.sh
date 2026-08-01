@@ -257,11 +257,18 @@ jq -e '
 ' "$sbom_document" >/dev/null 2>&1 || fail duplicate-ref
 
 jq -e '
+  (.dependencies | type) == "array"
+' "$sbom_document" >/dev/null 2>&1 || fail graph-ref
+
+jq -e '
+  all(.dependencies[];
+    (type == "object") and (.ref | type == "string"))
+' "$sbom_document" >/dev/null 2>&1 || fail graph-ref
+
+jq -e '
   ([.metadata.component."bom-ref"] + [.components[]."bom-ref"] | sort) as $refs |
-  (.dependencies | type == "array" and length == ($refs | length)) and
   ([.dependencies[].ref] | sort) as $graph_refs |
-  ($graph_refs == $refs) and
-  (($graph_refs | length) == ($graph_refs | unique | length))
+  ($graph_refs == $refs)
 ' "$sbom_document" >/dev/null 2>&1 || fail graph-ref
 
 jq -e '

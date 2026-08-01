@@ -252,6 +252,55 @@ verify_one "$linux_first" "$linux_target" full
 verify_one "$mac_first" "$mac_target" structural
 verify_one "$mac_first" "$mac_target" full
 
+portable_jq_dir="$private_tmp/portable-jq"
+mkdir -m 0700 "$portable_jq_dir"
+portable_real_jq="$(command -v jq)" || fail
+portable_jq_called="$private_tmp/portable-jq-called"
+legacy_graph_ref_sentinel="$private_tmp/legacy-graph-ref-predicate-fired"
+# These single quotes deliberately preserve variables for the generated mock.
+# shellcheck disable=SC2016
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  ': >"${MOCK_PORTABLE_JQ_CALLED:?}" || exit 43' \
+  'legacy_length=false' \
+  'legacy_equality=false' \
+  'for argument in "$@"; do' \
+  '  case "$argument" in' \
+  '    *"length == (\$refs | length)) and"*) legacy_length=true ;;' \
+  '  esac' \
+  '  case "$argument" in' \
+  '    *"(\$graph_refs == \$refs) and"*) legacy_equality=true ;;' \
+  '  esac' \
+  'done' \
+  'if [[ "$legacy_length" == true && "$legacy_equality" == true ]]; then' \
+  '  : >"${MOCK_LEGACY_GRAPH_REF_SENTINEL:?}" || exit 43' \
+  '  exit 1' \
+  'fi' \
+  'exec "${REAL_JQ:?}" "$@"' >"$portable_jq_dir/jq"
+chmod 0700 "$portable_jq_dir/jq"
+portable_output="$private_tmp/portable-jq-output"
+if ! PATH="$portable_jq_dir:$PATH" \
+  REAL_JQ="$portable_real_jq" \
+  MOCK_PORTABLE_JQ_CALLED="$portable_jq_called" \
+  MOCK_LEGACY_GRAPH_REF_SENTINEL="$legacy_graph_ref_sentinel" \
+  "$verifier" \
+    --sbom "$mac_first" \
+    --expected-version "$version" \
+    --expected-revision "$revision" \
+    --expected-target "$mac_target" \
+    --verification-level structural \
+    --source-root "$repo_root" >"$portable_output" 2>&1; then
+  [[ -f "$portable_jq_called" ]] || fail
+  [[ -f "$legacy_graph_ref_sentinel" ]] || fail
+  [[ "$(cat "$portable_output")" == \
+    "sbom verification failed: graph-ref" ]] || fail
+  fail
+fi
+[[ -f "$portable_jq_called" ]] || fail
+[[ ! -e "$legacy_graph_ref_sentinel" ]] || fail
+[[ "$(cat "$portable_output")" == \
+  "minimal CycloneDX 1.5 structural contract verified" ]] || fail
+
 linux_components="$(jq '.components | length' "$linux_first")"
 mac_components="$(jq '.components | length' "$mac_first")"
 [[ "$linux_components" == 177 && "$mac_components" == 176 ]] || fail
@@ -798,7 +847,7 @@ printf '%s\n' \
   '  case "$argument" in' \
   '    *"def canonical_purl:"*) normalization=true ;;' \
   '    *"then \"duplicate\""*) classifier=true ;;' \
-  '    *"(\$graph_refs == \$refs) and"*) verifier_graph_ref=true ;;' \
+  '    *"(\$graph_refs == \$refs)"*) verifier_graph_ref=true ;;' \
   '  esac' \
   'done' \
   'if [[ "$normalization" == true ]]; then' \

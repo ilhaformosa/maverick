@@ -1,0 +1,5 @@
+# Preserve byte-exact unified-diff context lines in the reviewed patch artifacts.
+PATCHES/*.patch -whitespace
+
+# Preserve the one upstream trailing-space line from the exact 0.29.3 source.
+src/recovery/mod.rs -whitespace

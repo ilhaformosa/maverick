@@ -741,6 +741,10 @@ fn apply_early_data_policy(_config: &mut quiche::Config, policy: EarlyDataPolicy
 
 fn bounded_h3_config() -> Result<quiche::h3::Config, FoundationError> {
     let mut config = quiche::h3::Config::new().map_err(|_| FoundationError::H3Unavailable)?;
+    // This is unconditional for every client and server driver created by the
+    // private foundation. It must be enabled before H3 connection creation or
+    // any H3 I/O; there is no configuration fallback to quiche's default.
+    config.set_reject_peer_push_activity(true);
     // This bounds the decoded field section at 16 KiB. quiche 0.29.3 allows
     // an encoded temporary header block up to 24 KiB before ExcessiveLoad.
     config.set_max_field_section_size(MAX_FIELD_SECTION_BYTES);
@@ -863,6 +867,52 @@ mod tests {
             Some(value) => value,
             None => panic!("{message}"),
         }
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    fn foundation_strict_test_session() -> (TempDir, quiche::h3::testing::Session) {
+        let temp = fixed_ok(
+            TempDir::new(),
+            "create strict-gate temporary certificate directory",
+        );
+        let cert_path = temp.path().join("cert.pem");
+        let key_path = temp.path().join("key.pem");
+        let certified = fixed_ok(
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]),
+            "generate strict-gate temporary certificate",
+        );
+        fixed_ok(
+            std::fs::write(&cert_path, certified.cert.pem()),
+            "write strict-gate temporary certificate",
+        );
+        fixed_ok(
+            std::fs::write(&key_path, certified.key_pair.serialize_pem()),
+            "write strict-gate temporary key",
+        );
+        let mut transport = fixed_ok(
+            bounded_self_signed_loopback_quic_config(),
+            "build strict-gate transport configuration",
+        );
+        fixed_ok(
+            transport.load_cert_chain_from_pem_file(fixed_some(
+                cert_path.to_str(),
+                "read strict-gate temporary certificate path",
+            )),
+            "load strict-gate temporary certificate",
+        );
+        fixed_ok(
+            transport.load_priv_key_from_pem_file(fixed_some(
+                key_path.to_str(),
+                "read strict-gate temporary key path",
+            )),
+            "load strict-gate temporary key",
+        );
+        let h3_config = fixed_ok(bounded_h3_config(), "build strict H3 configuration");
+        let session = fixed_ok(
+            quiche::h3::testing::Session::with_configs(&mut transport, &h3_config),
+            "build strict-gate paired-role session",
+        );
+        (temp, session)
     }
 
     async fn bounded_test_lock<'lock>(
@@ -1285,6 +1335,38 @@ mod tests {
         );
         assert!(std::error::Error::source(&error).is_none());
         drop(held_guard);
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    #[test]
+    fn foundation_h3_builder_enables_strict_gate_for_client_and_server_roles() {
+        use quiche::h3::{self, frame};
+
+        let (_server_temp, mut server_rejects) = foundation_strict_test_session();
+        fixed_ok(server_rejects.handshake(), "handshake strict server role");
+        fixed_ok(
+            server_rejects.send_frame_client(frame::Frame::MaxPushId { push_id: 2 }, 2, false),
+            "send strict server-role peer push frame",
+        );
+        assert_eq!(
+            server_rejects.poll_server(),
+            Err(h3::Error::FrameUnexpected)
+        );
+
+        let (_client_temp, mut client_rejects) = foundation_strict_test_session();
+        fixed_ok(client_rejects.handshake(), "handshake strict client role");
+        fixed_ok(
+            client_rejects.pipe.server.stream_send(19, &[1], false),
+            "send strict client-role peer push stream",
+        );
+        fixed_ok(
+            client_rejects.advance(),
+            "advance strict client-role peer push stream",
+        );
+        assert_eq!(
+            client_rejects.poll_client(),
+            Err(h3::Error::FrameUnexpected)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

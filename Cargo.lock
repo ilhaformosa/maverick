@@ -1382,6 +1382,7 @@ dependencies = [
  "h3",
  "h3-quinn",
  "http",
+ "log",
  "maverick-core",
  "maverick-tun",
  "quiche",
@@ -1754,8 +1755,6 @@ checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 [[package]]
 name = "quiche"
 version = "0.29.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d"
 dependencies = [
  "boring",
  "bytes",

@@ -1,0 +1,32 @@
+diff --git a/quiche-0.29.3/src/h3/mod.rs b/quiche-0.29.3/src/h3/mod.rs
+--- a/quiche-0.29.3/src/h3/mod.rs
++++ b/quiche-0.29.3/src/h3/mod.rs
+@@ -706,8 +706,13 @@
+         self.max_priority_update_size = v;
+     }
+ 
+-    /// Rejects all peer activity related to HTTP/3 server push.
++    /// Rejects peer `MAX_PUSH_ID`, `PUSH_PROMISE`, `CANCEL_PUSH`, push-form
++    /// `PRIORITY_UPDATE`, and push-stream activity.
+     ///
++    /// This does not handle `GOAWAY`, request-form `PRIORITY_UPDATE`, QUIC
++    /// Datagrams, or any other pre-authentication HTTP/3 event or state. Those
++    /// boundaries require separate checks by the caller.
++    ///
+     /// The default value is `false`.
+     pub fn set_reject_peer_push_activity(&mut self, enabled: bool) {
+         self.reject_peer_push_activity = enabled;
+diff --git a/quiche-0.29.3/src/h3/stream.rs b/quiche-0.29.3/src/h3/stream.rs
+--- a/quiche-0.29.3/src/h3/stream.rs
++++ b/quiche-0.29.3/src/h3/stream.rs
+@@ -265,7 +265,9 @@
+         self.state
+     }
+ 
+-    pub fn with_peer_input_logging_suppressed(mut self, enabled: bool) -> Self {
++    pub(super) fn with_peer_input_logging_suppressed(
++        mut self, enabled: bool,
++    ) -> Self {
+         self.suppress_peer_input_logging = enabled;
+         self
+     }

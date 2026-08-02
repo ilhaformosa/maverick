@@ -17,70 +17,65 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T026a — freeze direct-H3 auth-v3 connection-control mapping (docs only)
+### T026b-1 — adopt a repository-internal quiche strict peer-push gate
 
-- **User result:** Freeze one unambiguous, carrier-specific exception to the
-  current fail-closed pre-auth H3 event gate: exactly one ordinary HTTP/3 POST
-  request stream carries the existing 256-byte `ClientControl` and exact
-  320-byte `ServerConfirmation` on the same physical QUIC/TLS generation. The
-  freeze keeps CONNECT, Extended CONNECT, Datagram payload, targets, and every
-  user flow forbidden before complete mutual confirmation.
-- **Scope:** Change only `ROADMAP.md` and `docs/AUTH_V3_DIRECT_SPEC.md`. Specify
-  the exact ordered request and response field sections, byte-for-byte scheme,
-  locally trusted authority, path, content type and content length rules,
-  DATA/FIN completion, atomic generation slot, quiche 0.29.3 event handling,
-  the separate bounded QUIC Datagram receive-queue gate, known push activity
-  that quiche does not expose as distinct public events, same-stream
-  blocked/partial-send retry, generation-wide close, no-fallback behavior,
-  privacy-safe diagnostics, and reuse of the existing T023a resource
-  framework. Record the later smallest
-  runtime-reference file and test boundary, but write no Rust and create no
-  product H3 seam.
-- **Acceptance:** The direct-H3 mapping has one answer for every request and
-  response field, duplicate or unknown field, partial or excessive body,
-  trailer, timeout, reset, QPACK/header failure, concurrent stream, Datagram,
-  GOAWAY, PRIORITY_UPDATE, and unknown application event. Cross-check known
-  non-event `PUSH_PROMISE`, `CANCEL_PUSH`, `MAX_PUSH_ID`, push-form
-  `PRIORITY_UPDATE`, and the push-stream boundary separately from genuinely
-  unknown or reserved frames. Prove that every blocked or partial write remains
-  the same attempt, same bound stream, exact remaining bytes, and existing
-  deadline. Cross-check the
-  frozen direct-H3 carrier ID, 256/320 lengths, RFC 9266 label with
-  present-empty context, exact control path policy, connection generation, and
-  no-0-RTT rule against T013b/T013c/T022a/T023a-1. Preserve the existing
-  direct-H2 mapping byte for byte. Markdown structure, exact-file diff, privacy
-  scan, and `STATUS.md` blob checks must pass.
-- **Runtime and truth boundary:** This slice freezes documentation and work
-  order only. `FoundationObservation` remains a collection of same-connection
-  TLS/H3 facts, not an authentication capability or state transition. The
-  current implementation still rejects every application-visible pre-auth H3
-  event, but quiche Datagrams use a separate connection receive queue and
-  T023a-1 did not prove a Datagram admission gate. The public quiche event API
-  also does not independently surface every known push-related frame or stream
-  activity, so T023a-1 did not prove their strict policy rejection. The current
-  server role also
-  has no independently trusted textual authority input and MUST NOT learn one
-  from request bytes or peer SNI. Until those prerequisites and the sole
-  exception are implemented and tested in separately reviewed work, product H3
-  remains unavailable. `STATUS.md` remains byte for byte unchanged and is the
-  only current-truth and authorization source. This queue is not a completion
-  ledger and does not define v1.3 release scope.
-- **Out of scope:** Rust, tests, vectors, config, schema, core, public API,
-  protocol/auth/frame versions, legacy H2 behavior, CONNECT, Extended CONNECT,
-  target, DNS, egress, relay, fallback, user flow, data plane, Datagram payload,
-  resumed sessions, T023a-2 Stateless Retry or multi-connection admission,
-  T023b post-auth quota/expiry/revocation, release, CI, remote, system-network,
-  and real-network work remain deferred.
-- **Stop conditions:** Stop before changing a third file or `STATUS.md`; before
-  changing the frozen 256/320 wire bytes, vectors, labels, context, carrier ID,
-  config/schema/auth/frame/protocol version, core primitive, or H2 mapping; or
-  if quiche cannot express the one strict mapping without accepting pre-auth
-  CONNECT, target, user DATA/Datagram, a second resource framework, private
-  data, remote action, CI, real networking, or a host-network change. Also stop
-  if the public API or a separately reviewed narrow observable/reject seam
-  cannot reject every forbidden known push activity hidden from public H3
-  events; do not classify those known activities as ignorable unknown or
-  reserved frames.
+- **User result:** Maverick's private direct-quiche foundation always enables a
+  reviewed fail-closed H3 setting, so known peer `MAX_PUSH_ID`, `PUSH_PROMISE`,
+  `CANCEL_PUSH`, push-form `PRIORITY_UPDATE`, and push-stream activity cannot
+  stay hidden during later pre-auth direct-H3 runtime work. This removes one
+  foundation blocker only; it does not implement the T026 auth-v3 runtime.
+- **Source, license, and maintenance:** Use a repository-internal, version-pinned
+  library copy under `vendor/quiche-0.29.3`, derived from the exact crates.io
+  archive and its BSD-2-Clause license. Retain the archive checksum, upstream
+  VCS commit, license digest, narrow maintained patches, omissions, and date in
+  the vendor provenance. Do not use a public fork. Maverick maintainers own
+  review, rebasing, and security maintenance of this copy. Keep it excluded
+  from workspace membership so root all-targets do not build upstream examples;
+  sample keys, examples, the FFI build feature, qlog, and unrelated tools stay
+  absent.
+- **Scope:** Change only `ROADMAP.md`, root and client Cargo manifests,
+  `Cargo.lock`, the private `quiche_foundation.rs`, one focused client
+  integration test, and `vendor/quiche-0.29.3/**`. Keep exact quiche 0.29.3 as
+  a repository path dependency and preserve one `boring`/`boring-sys` 4.22.0
+  graph. A clearly named unstable test-support feature may expose quiche's
+  internal in-memory session only to the focused test. `STATUS.md`, public APIs,
+  config, schemas, stored profiles, protocol/auth/frame versions, core, SDK,
+  server crate, and legacy H2 stay byte for byte unchanged.
+- **Acceptance:** Re-hash the source, license, POC patch, and vendor inventory;
+  first reproduce that crates.io 0.29.3 lacks the setter and hides the known
+  push frames. Then prove through real in-memory QUIC/H3 receive paths that
+  strict mode rejects each listed frame or stream before state, QPACK, or TODO
+  acceptance with fixed `FrameUnexpected`, wire code `0x105`, and an empty
+  reason. Cover both peer directions, malformed QPACK input, fragmented
+  non-shortest varint input before SETTINGS, and close propagation. Preserve
+  default-false behavior, existing push-stream behavior, SETTINGS and QPACK
+  request handling, request-form `PRIORITY_UPDATE`, GOAWAY, and unknown/reserved
+  frames. Generate loopback certificates only at test runtime. Prove the one
+  shared foundation H3 builder enables strict mode for both client and server
+  roles before connection creation or H3 I/O, with no configuration fallback.
+  Strict errors, sources, and H3 trace output must not expose peer-controlled
+  values. Offline metadata/tree, lock review, tests, formatting, lint, rustdoc,
+  smoke, harness, dependency inventory, deny, audit, exact-file, privacy, and
+  `STATUS.md` blob gates must pass before one local commit.
+- **Runtime and truth boundary:** This gate does not handle GOAWAY,
+  request-form `PRIORITY_UPDATE`, Datagrams, or other pre-auth events and state.
+  T026 runtime must still inspect quiche's separate bounded Datagram receive
+  queue before any final authentication state transition. qlog remains disabled,
+  and the outer quiche logging/privacy boundary remains in force. This queue is
+  execution order, not a completion ledger; `STATUS.md` remains the only
+  current product truth and authorization source.
+- **Out of scope:** T026 auth-v3 runtime, CONNECT or Extended CONNECT, authority,
+  target, DNS, egress, relay, user DATA or Datagram payload, fallback, public
+  API or configuration, new protocol/framework work, user-visible H3, release,
+  CI, remote, deployment, real-network, and system-network changes remain
+  deferred.
+- **Stop conditions:** Stop if exact source or license provenance cannot be
+  proven; the patch needs QUIC/TLS core, dependencies, unsafe code, a second
+  quiche/BoringSSL, qlog, string parsing, public API, config/schema/version, or
+  another repository file; the path source fails the existing deny policy; any
+  known push activity still returns `Done`; compatibility, unknown/reserved,
+  privacy, dependency, or full local gates regress; tests need a committed key;
+  or target/DNS/CONNECT/relay/user-data capability is introduced.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

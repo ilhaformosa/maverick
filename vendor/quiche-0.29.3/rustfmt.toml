@@ -1,0 +1,3 @@
+# Preserve the exact upstream source formatting and the reviewed two-file
+# maintained delta. Maverick formats its own wrapper and regression tests.
+disable_all_formatting = true

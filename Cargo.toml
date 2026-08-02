@@ -20,7 +20,7 @@ repository = "https://github.com/ilhaformosa/maverick"
 anyhow = "1"
 base64 = "0.22"
 bytes = "1"
-boring = "5.1.0"
+boring = { version = "=4.22.0", features = ["pq-experimental"] }
 brotli = "8.0"
 clap = { version = "4", features = ["derive"] }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
@@ -36,6 +36,7 @@ libc = "=0.2.186"
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
 quinn = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-aws-lc-rs"] }
+quiche = { version = "=0.29.3", default-features = false, features = ["boringssl-boring-crate"] }
 qrcode = { version = "0.14.1", default-features = false }
 rand = "0.9"
 rcgen = "0.13"
@@ -66,7 +67,7 @@ tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
 tokio = { version = "1", features = ["full"] }
-tokio-boring = "5.0.0"
+tokio-boring = "=4.22.0"
 tokio-rustls = "0.26"
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 tokio-util = { version = "0.7", features = ["codec"] }

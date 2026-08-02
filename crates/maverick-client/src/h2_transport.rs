@@ -184,7 +184,7 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
             anyhow::bail!("browser TLS server certificate pin mismatch");
         }
     }
-    let observed_outer_tls_group = observed_outer_tls_group_from_boring(tls.ssl().curve());
+    let observed_outer_tls_group = observed_outer_tls_group_from_boring(tls.ssl().curve_name());
     let channel_binding =
         boring_client_channel_binding(tls.ssl(), end_to_end_channel_binding_enabled(config))?;
     let (sender, connection_closed) =
@@ -232,17 +232,12 @@ fn observed_outer_tls_version_from_boring(version: Option<SslVersion>) -> Observ
 }
 
 #[cfg(feature = "browser-tls")]
-fn observed_outer_tls_group_from_boring(group_id: Option<u16>) -> ObservedOuterTlsGroup {
-    const SECP256R1: u16 = 23;
-    const SECP384R1: u16 = 24;
-    const X25519: u16 = 29;
-    const X25519_MLKEM768: u16 = 0x11ec;
-
-    match group_id {
-        Some(X25519_MLKEM768) => ObservedOuterTlsGroup::X25519MlKem768,
-        Some(X25519) => ObservedOuterTlsGroup::X25519,
-        Some(SECP256R1) => ObservedOuterTlsGroup::Secp256r1,
-        Some(SECP384R1) => ObservedOuterTlsGroup::Secp384r1,
+fn observed_outer_tls_group_from_boring(group_name: Option<&str>) -> ObservedOuterTlsGroup {
+    match group_name {
+        Some("X25519MLKEM768") => ObservedOuterTlsGroup::X25519MlKem768,
+        Some("X25519") => ObservedOuterTlsGroup::X25519,
+        Some("P-256") => ObservedOuterTlsGroup::Secp256r1,
+        Some("P-384") => ObservedOuterTlsGroup::Secp384r1,
         Some(_) | None => ObservedOuterTlsGroup::OtherOrUnknown,
     }
 }
@@ -552,23 +547,23 @@ mod tcp_socket_tests {
         use super::observed_outer_tls_group_from_boring;
 
         assert_eq!(
-            observed_outer_tls_group_from_boring(Some(0x11ec)),
+            observed_outer_tls_group_from_boring(Some("X25519MLKEM768")),
             ObservedOuterTlsGroup::X25519MlKem768
         );
         assert_eq!(
-            observed_outer_tls_group_from_boring(Some(29)),
+            observed_outer_tls_group_from_boring(Some("X25519")),
             ObservedOuterTlsGroup::X25519
         );
         assert_eq!(
-            observed_outer_tls_group_from_boring(Some(23)),
+            observed_outer_tls_group_from_boring(Some("P-256")),
             ObservedOuterTlsGroup::Secp256r1
         );
         assert_eq!(
-            observed_outer_tls_group_from_boring(Some(24)),
+            observed_outer_tls_group_from_boring(Some("P-384")),
             ObservedOuterTlsGroup::Secp384r1
         );
         assert_eq!(
-            observed_outer_tls_group_from_boring(Some(0x0202)),
+            observed_outer_tls_group_from_boring(Some("unknown")),
             ObservedOuterTlsGroup::OtherOrUnknown
         );
         assert_eq!(

@@ -8,6 +8,10 @@ pub mod h2_transport;
 #[cfg(feature = "h3")]
 pub mod h3_transport;
 pub mod http_connect;
+// Private preflight seam; product integration belongs to a later authorized slice.
+#[cfg(feature = "quiche-foundation")]
+#[allow(dead_code)]
+mod quiche_foundation;
 pub mod scheduler;
 pub mod session;
 pub mod socks5;

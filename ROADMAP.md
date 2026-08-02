@@ -17,23 +17,27 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### P0-B1 — Reject Private + experimental H3
+### T020-Q1 — direct quiche foundation and exporter preflight
 
-- **User result:** A configuration cannot promise Private mode while selecting
-  the experimental private POST+DATA H3 carrier.
-- **Scope:** Add symmetric canonical client/server configuration rejection and
-  regression coverage in `crates/maverick-core/src/config.rs`.
-- **Acceptance:** Client `mode: private` and server `mode_default: private`
-  reject `advanced.experimental_h3: true` with the same fixed, privacy-safe
-  error; Private + H2 remains valid; Auto + H3 remains experimental and valid;
-  the existing server Stable + H3 rejection and broader configuration gates
-  continue to pass.
-- **Out of scope:** Dependency upgrades; standard CONNECT or CONNECT-UDP;
-  transport runtime, wire, auth, frame, config-version, stored-schema, release,
-  deployment, or real-network changes; enabling Auto/H3 by default.
-- **Stop conditions:** Stop if either unsafe combination does not reproduce
-  through an otherwise valid canonical fixture, if the fix requires a third
-  file, or if compatibility or repository-local validation cannot be preserved.
+- **User result:** Establish whether the selected quiche route can safely enter
+  formal development without making H3 user-visible.
+- **Scope:** Pin compatible dependencies with one BoringSSL linkage, add a
+  private feature-gated adapter seam with a first-party Tokio UDP driver, and
+  exercise it only through a bounded `127.0.0.1` native-H3 connection test.
+- **Acceptance:** macOS builds the pinned dependency set; the final graph has
+  exactly one `boring` and `boring-sys`; the same live QUIC TLS connection
+  provides a channel-binding exporter and actual negotiated-group observation;
+  ALPN is H3, 0-RTT is off, peer H3 SETTINGS advertise Extended CONNECT and
+  Datagram, and connection, stream, QPACK, header, task, and Datagram queues
+  have explicit bounds. Default and old experimental-H3 behavior stay intact.
+- **Out of scope:** User-visible native H3; CONNECT target relay; auth v3; UDP
+  proxy; Auto selection; config, protocol, auth, frame, wire, or stored-profile
+  version changes; real infrastructure; remote repository or release work;
+  T021.
+- **Stop conditions:** Stop if the route needs two BoringSSL linkages, cannot
+  obtain exporter/group evidence from the current QUIC TLS connection, needs a
+  broad TLS/QUIC fork or public core/SDK backend types, changes a versioned
+  contract, or cannot preserve local compatibility and bounded resources.
 
 This slice is not tied to a release version and does not define release scope.
 

@@ -17,40 +17,42 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T021b — private single-identity QUIC ownership and reuse
+### T013b-1 — direct auth-v3 canonical docs and executable vectors
 
-- **User result:** Prove that one private manager instance represents one
-  identity slot and owns and reuses exactly one live bounded QUIC/H3 connection
-  generation. Two sequential safe borrows use that same physical connection
-  without making H3 user-visible or carrying a real target or authentication.
-- **Scope:** Reuse and narrowly refactor the existing T020-Q1 quiche driver so
-  it remains live after handshake and H3 SETTINGS behind a fixed-capacity,
-  non-waiting command channel and one-lease limit. Keep generation proof private,
-  add deterministic close with bounded join and drop cancellation, and force
-  the CLI logging layer to suppress the `quiche` target namespace regardless of
-  external filter requests. Use only `127.0.0.1`, ephemeral ports, and temporary
-  self-signed test certificates.
-- **Acceptance:** Two sequential acquire/release operations return the same
-  private generation token while the physical connection-creation count stays
-  one. Concurrent lease, command, and task capacity exhaustion rejects
-  immediately with fixed privacy-safe errors. Close rejects new borrows and
-  reclaims the task, socket, permit, command sender, and bounded join; manager
-  drop cancellation is proven without arbitrary sleeps or detached tasks. The
-  T020-Q1 exporter, actual negotiated group, peer transport parameters, ALPN,
-  0-RTT rejection, H3 SETTINGS, and resource-limit checks remain. An external
-  `quiche=trace` request emits no quiche CID, address, header, marker, or raw
-  backend error. Default H2 and the older experimental H3 path stay unchanged.
-- **Out of scope:** Automatic reconnect or generation changes; graceful QUIC
-  drain; address recovery; multiple identities or endpoints; real CONNECT
-  requests or Datagram payloads; auth v3; server product integration;
-  production certificate trust; config or CLI transport selection; Auto or
-  user-visible H3; Linux, real-network, load, publication, or release work.
-- **Stop conditions:** Stop if this needs a second driver, router, or framework;
-  an unbounded queue; a public third-party backend type; a config, protocol,
-  auth, frame, wire, stored-profile, or other version change; a sixth product
-  file; a new dependency; unreliable log suppression; authentication or a data
-  plane; or if one-connection reuse and complete resource reclamation cannot be
-  proven locally.
+- **User result:** Freeze one byte-exact, independently reproducible contract
+  for direct H2/H3 connection authentication before any runtime implementation,
+  so later client and server work cannot silently choose different layouts,
+  identities, policy meanings, exporter inputs, or downgrade behavior.
+- **Scope:** Add one direct auth-v3 specification, four neutral canonical H2/H3
+  ClientControl/ServerConfirmation vectors, and strict test-only
+  encoder/parser/verifier coverage. The tests reuse the existing conformance
+  framework and existing SHA-256, HMAC-SHA256, HKDF-SHA256, and Serde
+  dependencies. They check the exact four-part credential tuple against local
+  provisioning and an independent trusted connection context, atomically model
+  the one-control auth slot, and reject unknown values, reserved bits,
+  malformed lengths, transcript or commitment changes, carrier/TLS/profile/path
+  or exporter/generation mismatch, early data, unsafe clock/expiry/limits,
+  legacy bytes, PSK reuse, and duplicate control messages.
+- **Acceptance:** The test-side oracle independently rebuilds and verifies all
+  four fixed messages; H2 and H3 positive vectors and the complete negative
+  matrix pass locked and offline. Existing v1/v2 vector bytes and legacy
+  exporter label remain unchanged. The repository format, core tests, strict
+  core lint, user smoke, and local harness pass; the diff is privacy-safe,
+  changes exactly the authorized seven files, leaves `STATUS.md` unchanged,
+  and ends as one clean local commit.
+- **Out of scope:** Production parser or runtime auth-v3; changes to the current
+  product auth, config, frame, wire, stored-profile, or public API versions;
+  peer-confirmed product results; reconnect/state-transfer proof; server
+  admission or H3 data plane; TLS-terminating-front application sessions or
+  per-flow MACs; PQ/hybrid guarantees; release, publication, CI, or real-network
+  work. These docs and vectors are not a product result and do not define a
+  v1.3 release scope. T015/PQ remains `DEFER`.
+- **Stop conditions:** Stop if this needs an eighth file, a Cargo or lockfile
+  change, a new dependency, production parser/runtime/public API work, a legacy
+  byte or label reinterpretation, fronted/PQ/reconnect/admission/H3-data-plane
+  implementation, a protocol contradiction that cannot be resolved entirely
+  inside docs/tests, an oracle that cannot independently reproduce the golden
+  bytes, or any private data in the diff.
 
 This slice is not tied to a release version and does not define release scope.
 

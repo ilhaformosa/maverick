@@ -208,6 +208,7 @@ enum FoundationError {
     ManagerClosed,
     ObservationQueueUnavailable,
     PacketUnavailable,
+    PreAuthApplicationActivity,
     SocketUnavailable,
     TaskBudgetUnavailable,
     TlsVersionMismatch,
@@ -229,6 +230,7 @@ impl fmt::Display for FoundationError {
             Self::ManagerClosed => "native H3 manager closed",
             Self::ObservationQueueUnavailable => "native H3 observation queue unavailable",
             Self::PacketUnavailable => "native H3 packet unavailable",
+            Self::PreAuthApplicationActivity => "native H3 pre-auth activity rejected",
             Self::SocketUnavailable => "native H3 socket unavailable",
             Self::TaskBudgetUnavailable => "native H3 task budget unavailable",
             Self::TlsVersionMismatch => "native H3 TLS version mismatch",
@@ -381,6 +383,8 @@ struct FoundationDriver {
     tls_observation: Option<TlsObservation>,
     observation_tx: mpsc::Sender<FoundationObservation>,
     ready_barrier: Arc<Barrier>,
+    #[cfg(test)]
+    pre_auth_request_trigger: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl FoundationDriver {
@@ -408,6 +412,8 @@ impl FoundationDriver {
             tls_observation: None,
             observation_tx,
             ready_barrier,
+            #[cfg(test)]
+            pre_auth_request_trigger: None,
         })
     }
 
@@ -431,7 +437,10 @@ impl FoundationDriver {
 
         loop {
             self.initialize_h3()?;
-            if !foundation_ready && self.process_h3(generation)? {
+            #[cfg(test)]
+            self.send_queued_pre_auth_request()?;
+            let observation_ready = self.process_h3(generation)?;
+            if !foundation_ready && observation_ready {
                 self.flush_packets(&mut send_buffer).await?;
                 timeout(HANDSHAKE_TIMEOUT, self.ready_barrier.wait())
                     .await
@@ -578,12 +587,14 @@ impl FoundationDriver {
         let Some(h3_connection) = self.h3_connection.as_mut() else {
             return Ok(false);
         };
-        loop {
-            match h3_connection.poll(&mut self.connection) {
-                Ok(_) => {}
-                Err(quiche::h3::Error::Done) => break,
-                Err(_) => return Err(FoundationError::H3Unavailable),
-            }
+        match h3_connection.poll(&mut self.connection) {
+            Ok(_) => return Err(FoundationError::PreAuthApplicationActivity),
+            Err(quiche::h3::Error::Done) => {}
+            Err(_) => return Err(FoundationError::H3Unavailable),
+        }
+
+        if self.tls_observation.is_none() {
+            return Ok(false);
         }
 
         let Some(raw_settings) = h3_connection.peer_settings_raw() else {
@@ -620,6 +631,34 @@ impl FoundationDriver {
             })
             .map_err(|_| FoundationError::ObservationQueueUnavailable)?;
         Ok(true)
+    }
+
+    #[cfg(test)]
+    fn send_queued_pre_auth_request(&mut self) -> Result<(), FoundationError> {
+        let send_request = self
+            .pre_auth_request_trigger
+            .as_ref()
+            .is_some_and(|trigger| trigger.load(Ordering::Acquire));
+        if !send_request {
+            return Ok(());
+        }
+        let Some(h3_connection) = self.h3_connection.as_mut() else {
+            return Ok(());
+        };
+        let headers = [
+            quiche::h3::Header::new(b":method", b"GET"),
+            quiche::h3::Header::new(b":scheme", b"https"),
+            quiche::h3::Header::new(b":authority", b"example.invalid"),
+            quiche::h3::Header::new(b":path", b"/"),
+        ];
+        match h3_connection.send_request(&mut self.connection, &headers, true) {
+            Ok(_) => {
+                self.pre_auth_request_trigger = None;
+                Ok(())
+            }
+            Err(quiche::h3::Error::StreamBlocked) => Ok(()),
+            Err(_) => Err(FoundationError::H3Unavailable),
+        }
     }
 
     async fn flush_packets(
@@ -756,7 +795,7 @@ fn peer_setting(settings: &[(u64, u64)], id: u64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, encode_auth_v3_server_confirmation,
@@ -802,8 +841,14 @@ mod tests {
         client_observation_rx: mpsc::Receiver<FoundationObservation>,
         server_observation_rx: mpsc::Receiver<FoundationObservation>,
         client_connections_created: Arc<AtomicUsize>,
+        server_connections_created: Arc<AtomicUsize>,
         client_address: SocketAddr,
         server_address: SocketAddr,
+    }
+
+    struct ClientStartFixture<'fixture> {
+        connections_created: &'fixture AtomicUsize,
+        pre_auth_request_trigger: Option<Arc<AtomicBool>>,
     }
 
     fn fixed_ok<T, E>(result: Result<T, E>, message: &'static str) -> T {
@@ -990,6 +1035,7 @@ mod tests {
         observation_tx: mpsc::Sender<FoundationObservation>,
         ready_barrier: Arc<Barrier>,
         task_permit: OwnedSemaphorePermit,
+        connections_created: &AtomicUsize,
     ) -> Result<SingleIdentityQuicManager, FoundationError> {
         let local_address = socket
             .local_addr()
@@ -1013,6 +1059,7 @@ mod tests {
         let mut connection =
             quiche::accept(&header.dcid, None, local_address, peer_address, &mut config)
                 .map_err(|_| FoundationError::ConnectionUnavailable)?;
+        connections_created.fetch_add(1, Ordering::Relaxed);
         connection
             .recv(
                 &mut first_packet[..length],
@@ -1040,7 +1087,7 @@ mod tests {
         observation_tx: mpsc::Sender<FoundationObservation>,
         ready_barrier: Arc<Barrier>,
         task_permit: OwnedSemaphorePermit,
-        connections_created: &AtomicUsize,
+        fixture: ClientStartFixture<'_>,
     ) -> Result<SingleIdentityQuicManager, FoundationError> {
         let local_address = socket
             .local_addr()
@@ -1055,21 +1102,35 @@ mod tests {
             &mut config,
         )
         .map_err(|_| FoundationError::ConnectionUnavailable)?;
-        connections_created.fetch_add(1, Ordering::Relaxed);
+        fixture.connections_created.fetch_add(1, Ordering::Relaxed);
 
-        let driver = FoundationDriver::new(
+        let mut driver = FoundationDriver::new(
             socket,
             peer_address,
             connection,
             observation_tx,
             ready_barrier,
         )?;
+        driver.pre_auth_request_trigger = fixture.pre_auth_request_trigger;
         SingleIdentityQuicManager::start(driver, task_permit)
     }
 
     async fn start_loopback_pair(
         client_task_budget: &ConnectionTaskBudget,
         server_task_budget: &ConnectionTaskBudget,
+    ) -> LoopbackPair {
+        start_loopback_pair_with_client_request_trigger(
+            client_task_budget,
+            server_task_budget,
+            None,
+        )
+        .await
+    }
+
+    async fn start_loopback_pair_with_client_request_trigger(
+        client_task_budget: &ConnectionTaskBudget,
+        server_task_budget: &ConnectionTaskBudget,
+        pre_auth_request_trigger: Option<Arc<AtomicBool>>,
     ) -> LoopbackPair {
         let temp = fixed_ok(TempDir::new(), "create temporary certificate directory");
         let cert_path = temp.path().join("cert.pem");
@@ -1129,6 +1190,7 @@ mod tests {
         let (server_tx, server_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
         let (client_tx, client_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
         let client_connections_created = Arc::new(AtomicUsize::new(0));
+        let server_connections_created = Arc::new(AtomicUsize::new(0));
 
         let server_setup = start_server(
             server_socket,
@@ -1136,6 +1198,7 @@ mod tests {
             server_tx,
             Arc::clone(&ready_barrier),
             server_permit,
+            &server_connections_created,
         );
         let client = fixed_ok(
             start_client(
@@ -1145,7 +1208,10 @@ mod tests {
                 client_tx,
                 ready_barrier,
                 client_permit,
-                &client_connections_created,
+                ClientStartFixture {
+                    connections_created: &client_connections_created,
+                    pre_auth_request_trigger,
+                },
             ),
             "start managed loopback H3 client",
         );
@@ -1164,6 +1230,7 @@ mod tests {
             client_observation_rx,
             server_observation_rx,
             client_connections_created,
+            server_connections_created,
             client_address,
             server_address,
         }
@@ -1218,6 +1285,97 @@ mod tests {
         );
         assert!(std::error::Error::source(&error).is_none());
         drop(held_guard);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn post_observation_pre_auth_h3_event_closes_same_generation() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let client_task_budget = ConnectionTaskBudget::new();
+        let server_task_budget = ConnectionTaskBudget::new();
+        let request_trigger = Arc::new(AtomicBool::new(false));
+        let mut pair = start_loopback_pair_with_client_request_trigger(
+            &client_task_budget,
+            &server_task_budget,
+            Some(Arc::clone(&request_trigger)),
+        )
+        .await;
+        let (client_observation, server_observation) =
+            receive_loopback_observations(&mut pair).await;
+        assert_t022a_live_facts(&client_observation);
+        assert_t022a_live_facts(&server_observation);
+        assert!(matches!(
+            pair.server_observation_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        let server_generation = server_observation.generation;
+        let server_lease = fixed_ok(
+            pair.server.acquire().await,
+            "acquire observed pre-auth server generation",
+        );
+        assert_eq!(server_lease.generation(), server_generation);
+        server_lease.release();
+        assert_eq!(pair.server_connections_created.load(Ordering::Relaxed), 1);
+
+        request_trigger.store(true, Ordering::Release);
+        let client_lease = fixed_ok(
+            pair.client.acquire().await,
+            "wake client driver for post-observation request",
+        );
+        client_lease.release();
+        let server_result = fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, pair.server.join_driver()).await,
+            "wait for pre-auth H3 activity rejection",
+        );
+
+        assert_eq!(
+            server_result,
+            Err(FoundationError::PreAuthApplicationActivity)
+        );
+        assert_eq!(pair.server_observation_rx.recv().await, None);
+        assert_eq!(
+            pair.server.acquire().await.err(),
+            Some(FoundationError::DriverStopped)
+        );
+        assert_eq!(pair.server_connections_created.load(Ordering::Relaxed), 1);
+
+        let client_address = pair.client_address;
+        let server_address = pair.server_address;
+        drop(pair);
+        let client_permits = fixed_ok(
+            timeout(
+                DRIVER_JOIN_TIMEOUT,
+                client_task_budget
+                    .permits
+                    .clone()
+                    .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
+            )
+            .await,
+            "reclaim rejected-generation client task budget",
+        );
+        let client_permits = fixed_ok(
+            client_permits,
+            "hold reclaimed rejected-generation client task budget",
+        );
+        drop(client_permits);
+        assert_eq!(
+            client_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+        drop(fixed_ok(
+            bind_bounded_loopback_socket(client_address).await,
+            "reclaim rejected-generation client socket",
+        ));
+        drop(fixed_ok(
+            bind_bounded_loopback_socket(server_address).await,
+            "reclaim rejected-generation server socket",
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1892,6 +2050,10 @@ mod tests {
                 "native H3 packet unavailable",
             ),
             (
+                FoundationError::PreAuthApplicationActivity,
+                "native H3 pre-auth activity rejected",
+            ),
+            (
                 FoundationError::SocketUnavailable,
                 "native H3 socket unavailable",
             ),
@@ -1909,10 +2071,16 @@ mod tests {
             let message = error.to_string();
             assert_eq!(message, expected);
             assert!(std::error::Error::source(&error).is_none());
-            assert!(message.len() <= 48);
-            assert!(!message.contains("127.0.0.1"));
-            assert!(!message.contains("localhost"));
-            assert!(!message.contains('/'));
+            let debug = format!("{error:?}");
+            for rendered in [&message, &debug] {
+                assert!(rendered.len() <= 48);
+                assert!(!rendered.contains("127.0.0.1"));
+                assert!(!rendered.contains("localhost"));
+                assert!(!rendered.contains("example.invalid"));
+                assert!(!rendered.contains("GET"));
+                assert!(!rendered.contains("https"));
+                assert!(!rendered.contains('/'));
+            }
         }
     }
 

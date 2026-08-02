@@ -17,56 +17,60 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T022a — private same-generation QUIC auth-v3 exporter binding gate
+### T023a-1 — reject pre-auth H3 application activity under bounded admission
 
-- **User result:** One crate-private, feature-gated loopback proof shows that
-  both ends of the same real quiche QUIC/TLS generation derive the frozen RFC
-  9266 auth-v3 exporter and use it to mutually verify the existing 256-byte
-  ClientControl and 320-byte ServerConfirmation. A replacement generation must
-  authenticate from the beginning and cannot verify the old generation's
-  control or inherit authenticated state.
-- **Scope:** Extend only the existing T021b single-identity manager and driver
-  observation. Bind each observation to its local `ConnectionGeneration`,
-  confirm TLS 1.3 from the live BoringSSL `SslRef`, preserve the legacy channel
-  binding label with absent context, and additionally derive exactly 32 bytes
-  with `AUTH_V3_EXPORTER_LABEL` and present-empty context. Keep exporter bytes
-  in a private redacted wrapper. Compose the existing auth-v3 core primitive
-  only in focused loopback tests using one synthetic singleton profile and a
-  neutral exact control path; do not add a manager, registry, or public seam.
-- **Acceptance:** Client and server observations from one real physical
-  generation have byte-identical auth-v3 exporters, actual TLS 1.3 and ALPN
-  `h3`, no early data, peer QUIC transport parameters, and peer H3 SETTINGS.
-  Each observation token matches a lease from its own manager. The client
-  control verifies with the server's same-generation context, and the server
-  confirmation verifies with the client's. After both managers close, a
-  second real loopback generation has fresh tokens, rejects the first
-  generation's control and exporter provenance, and completes a new auth-v3
-  primitive from the beginning. Tests also reject the legacy-label exporter,
-  a changed or other-generation exporter, and absent RFC 9266 context while
-  explicitly accepting `Some(&[])`. Preserve all Q1/T021b resource,
-  observation, peer-fact, group, ALPN, legacy-exporter, and shutdown tests.
+- **User result:** While the auth-v3 product runtime still does not exist, a
+  peer that exchanges only ordinary QUIC/H3 control streams and acceptable
+  SETTINGS can produce one foundation fact observation. Any later
+  application-visible H3 event is rejected with one fixed privacy-safe error
+  and tears down that same connection generation; it cannot produce a second
+  observation, authentication capability, target work, or automatic
+  replacement.
+- **Scope:** Keep admission inside the existing feature-gated
+  `FoundationDriver` H3 polling path. Poll throughout the managed foundation
+  generation, map any successful quiche application event to a fixed
+  `FoundationError`, and never inspect, format, log, or preserve the event,
+  headers, stream ID, path, address, connection ID, backend error, or payload.
+  Reuse the existing task, command, observation, Datagram, QUIC stream/data,
+  connection-ID, path, QPACK/header, socket, handshake, run, response, idle,
+  and join bounds. The focused negative fixture waits for the ordinary fact
+  observation, then uses one bounded test-only trigger to send one headers-only
+  `GET` to the reserved neutral `.invalid` authority solely as a local attack
+  input; it is not a product request seam or capability.
+- **Acceptance:** Preserve the normal same-generation foundation and every
+  T022a exporter-binding test. Record the receiving server generation after
+  its single normal observation. In a strict local timeout, the later malicious
+  event must make that driver return the fixed pre-auth error, close its
+  observation channel without a second observation, refuse later manager
+  acquisition, leave the real server accept count at one, and reclaim its task
+  and socket resources. Repeat the negative test at least three times. Keep all
+  current task/queue, stream/data, QPACK/header, Datagram, connection-ID/path,
+  and timeout bounds unchanged, and retain fixed error `Display`, `Debug`,
+  source-chain, and log privacy checks.
 - **Runtime and truth boundary:** This is crate-private, non-default,
-  loopback-only foundation evidence. H3 control streams and SETTINGS exist only
-  because quiche establishes H3; no auth control, request, CONNECT, DATA, or
-  Datagram payload is sent. Fresh-handshake no-early-data evidence is not a
-  resumed-session 0-RTT test. Manager close proves bounded reclamation, not
-  graceful drain. This does not establish product runtime, user-visible H3,
-  authentication state transition, target or flow handling, relay, fallback,
-  production, release, or real-network results. `STATUS.md` remains byte for
-  byte unchanged and is the sole current-truth and authorization source. This
-  queue is not a completed ledger and does not define v1.3 release scope.
-- **Out of scope:** H3 request/control payload, CONNECT, target, DNS, egress,
-  relay, fallback, user flow, data plane, Datagram payload, resumed sessions,
-  state transfer, multi-profile or shared-identity management, core/SDK/public
-  API, config, wire, frame, vector, schema, version, release, CI, remote,
+  loopback-only rejection evidence in a foundation that still has no product
+  auth state, authenticated marker, target, DNS, CONNECT handling, relay, flow,
+  or data plane. Ordinary H3 control streams and SETTINGS are not application
+  activity, and `FoundationObservation` records TLS/H3 facts only; it is not an
+  authenticated marker, capability, or state transition. The synthetic request
+  exists only to attack the rejection gate and must not be described as product
+  request support. This closes only the pre-auth application-event gap and does
+  not complete T023a. `STATUS.md` remains byte for byte unchanged and is the
+  sole current-truth and authorization source. This queue is not a completed
+  ledger and does not define v1.3 release scope.
+- **Out of scope:** Stateless Retry, multi-connection admission, post-auth
+  quotas, expiry, revocation, auth runtime integration, authenticated state
+  transitions, request handling, CONNECT, target, DNS, egress, relay, fallback,
+  user flow, data plane, Datagram payload, resumed sessions, core/SDK/public
+  API, config, wire, frame, schema, version, release, CI, remote,
   system-network, and real-network work remain deferred.
 - **Stop conditions:** The exact changed-file boundary is `ROADMAP.md` and
   `crates/maverick-client/src/quiche_foundation.rs`; stop before changing any
-  third file. Also stop if TLS 1.3 cannot be proven from the live `SslRef`, the
-  exporter cannot be tied to the exact manager generation, raw TLS/quiche types
-  or secrets would cross a public boundary, the frozen core/wire/config must
-  change, or success would require an H3 request, CONNECT, target, flow, auth
-  runtime, private data, remote action, or host-network change.
+  third file. Also stop if legal H3 control/SETTINGS cannot be distinguished
+  from application events, a new dependency or public seam is required, the
+  frozen core/wire/config/schema/version must change, or success would require
+  implementing auth runtime, CONNECT, target, DNS, relay, user data, private
+  data, remote action, CI, real networking, or a host-network change.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

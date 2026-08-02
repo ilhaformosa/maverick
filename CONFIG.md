@@ -12,10 +12,10 @@ supporting one does not change, migrate, or enable another.
   canonical readers and public Serde shapes retain their existing behavior.
 - Config schema 2 is permanently policy-only at its current public parser. It
   is not a complete client or server configuration.
-- Config schema 3 is a strict pre-runtime direct-v3 client/server role and
-  provisioning schema. T013c-2 parses and projects it only inside
-  `maverick-core`; the CLI, SDK, client, server, H2, and H3 runtime entry points
-  still reject it.
+- Config schema 3 is a strict pre-runtime direct-v3 client/server role,
+  provisioning, and trusted-authority schema. `maverick-core` parses and
+  projects it only before runtime; the CLI, SDK, client, server, H2, and H3
+  runtime entry points still reject it.
 - Stored-client-profile schema 1 remains unchanged and does not store config
   schema 3.
 
@@ -23,6 +23,10 @@ This separation is intentionally forward-incompatible. A config-v1 reader
 rejects schema 3 at its version-first gate. Direct generic deserialization into
 the public v1 `ClientConfig` or `ServerConfig` also cannot construct those v1
 types from the complete v3 shape because required legacy fields are absent.
+Schema-3 server documents created before the required trusted-authority field
+was added are also intentionally rejected. No product runtime used that
+pre-runtime schema, so config schema remains `3` and there is no compatibility
+migration or fallback for the incomplete shape.
 
 ## Config v3 strict direct-role schema
 
@@ -153,6 +157,11 @@ bound into the owned DeploymentProfile together with the provisioned server
 identity and literal direct route. The address, server name, path, CA, and pin
 remain configuration inputs; they are not runtime observations.
 
+`server.server_name` is also the client's byte-exact trusted expected
+authority. Validation retains its original bytes and case. A future direct-v3
+runtime may only compare request authority and live SNI with this value; those
+inputs never create, select, update, or normalize it.
+
 ### Server role
 
 The server role reuses its listener, TLS paths, and Maverick tunnel path:
@@ -171,6 +180,7 @@ tls:
   key_path: "./key.pem"
 maverick:
   tunnel_path: "/direct-v3"
+  expected_authority: "origin.invalid"
 auth:
   minimum: direct_v3_only
   direct_v3:
@@ -182,6 +192,30 @@ form the trusted DeploymentProfile mapping. Actual TLS version, physical H2/H3
 carrier, exporter provenance, authenticated server identity, route, and path
 are future runtime observations. Configuration cannot manufacture or substitute
 those facts, and T013c-2 does not construct a trusted connection context.
+
+`maverick.expected_authority` is required and is exposed read-only by
+`DirectV3ServerRoleConfig::expected_authority()`. It is the server's
+independent byte-exact trusted expected authority. It belongs to the same
+already validated role config as the singleton binding; request authority and
+live SNI are future comparison inputs only and may never select a profile, PSK,
+credential tuple, route, target, backend, or authority.
+
+### Trusted expected-authority syntax
+
+The client `server.server_name` and server `maverick.expected_authority` use one
+private strict validator. Each must be a nonempty ASCII DNS/SNI hostname of at
+most 253 bytes without a trailing dot. Every dot-separated label is 1 through
+63 bytes, contains only ASCII letters, digits, and internal hyphens, and does
+not start or end with a hyphen. Uppercase and ASCII punycode labels are legal
+and are preserved byte for byte.
+
+The validator rejects user information, ports, colons or brackets, paths,
+queries, fragments, percent encoding, whitespace or control characters,
+underscores, non-ASCII text, leading/trailing/doubled dots, invalid hyphen
+placement, IPv4 and IPv6 literals, and overlong labels or hostnames. It performs
+no URL parsing, case folding, IDNA conversion, percent decoding, trailing-dot
+change, or other normalization. No request, SNI, DNS result, certificate,
+listener, or dial address may fill or repair a missing value.
 
 Config v3 rejects `mode`, `users`, legacy `credential_id`/`secret` placement,
 `auth.v2`, channel-binding toggles, rotation, TLS-terminating fronting, CDN or

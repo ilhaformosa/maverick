@@ -661,32 +661,40 @@ client emits those bytes without case folding, IDNA conversion, trailing-dot
 changes, or any other normalization. It also supplies the same bytes as TLS
 SNI and performs ordinary certificate and identity verification for that name.
 
+Both config sources use the same strict pre-runtime syntax: a nonempty ASCII
+DNS/SNI hostname of at most 253 bytes with no trailing dot. Each dot-separated
+label is 1 through 63 bytes, contains only ASCII letters, digits, and internal
+hyphens, and does not begin or end with a hyphen. Uppercase and ASCII punycode
+labels are preserved byte for byte. User information, ports, colons or
+brackets, paths, queries, fragments, percent encoding, whitespace or control
+characters, underscores, non-ASCII text, empty labels, invalid hyphen
+placement, and IPv4 or IPv6 literals are invalid. Validation performs no case
+folding, IDNA conversion, percent decoding, trailing-dot change, URL parsing,
+or other normalization.
+
 On the server, validation requires an independently configured trusted textual
 authority already bound to the locally selected direct-v3 deployment and TLS
-identity. The request and peer SNI are comparison inputs only: neither may
-create, select, or update that local authority. The server requires exact
-byte-for-byte equality of `:authority` to the server-local expected value and,
-separately, exact equality of the raw SNI bytes from the same server-side
-`SslRef` to that server-local expected value. The current product
-config-schema-3 server role does not contain `server_name` or an expected
-textual authority, so the existing schema does not satisfy this rule.
-Supplying that value through a separately reviewed local
-configuration/provisioning boundary is a prerequisite for product runtime
-integration; until then, that integration MUST stop. It MUST NOT guess from
-the listen address, certificate path, certificate contents, request, SNI, DNS,
-or dial endpoint. A test-private reference input may use one neutral authority
-fixed locally before the connection, but it is not a product authority source
-or authorization to change config/schema/version. Missing trusted authority,
-missing SNI, a backend that cannot expose raw SNI, a non-representable
-configured value, or any mismatch fails closed before a `ClientControl` body
-byte is accepted. The dial address and UDP port are transport inputs and MUST
-NOT replace or be appended to the authority.
+identity. Its exact source is the required config-schema-3
+`maverick.expected_authority` value exposed by
+`DirectV3ServerRoleConfig::expected_authority()`. The request and peer SNI are
+comparison inputs only: neither may create, select, update, or normalize that
+local authority. The server requires exact byte-for-byte equality of
+`:authority` to the server-local expected value and, separately, exact equality
+of the raw SNI bytes from the same server-side `SslRef` to that server-local
+expected value. It MUST NOT guess from the listen address, certificate path,
+certificate contents, request, SNI, DNS, or dial endpoint. Missing trusted
+authority, missing SNI, a backend that cannot expose raw SNI, a
+non-representable configured value, or any mismatch fails closed before a
+`ClientControl` body byte is accepted. The dial address and UDP port are
+transport inputs and MUST NOT replace or be appended to the authority.
 
 The two local expected-authority values and the same-generation SNI comparison
 MUST also remain consistent with the trusted server identity/origin mapping of
 the already preselected singleton deployment profile. Authority or SNI bytes
 MUST NOT select or switch a profile, PSK, credential tuple, target, route, or
-backend.
+backend. The authority and singleton binding belong to the same validated role
+config before I/O; this pre-runtime ownership does not itself compare a live
+request or SNI, authenticate a connection, or enable H2 or H3 runtime.
 
 The raw `:path` value MUST equal the pre-I/O validated config-schema-3 tunnel
 path byte for byte. As in Section 11.1, a query component MUST be completely
@@ -909,9 +917,11 @@ generation.
 
 This H3 carrier mapping changes none of the frozen 256-byte or 320-byte wire
 bytes, canonical vectors, registry values, carrier ID `0x02`, policy block,
-labels, transcript domains, RFC 9266 context, path binding, config or stored
-schema, public API, auth/frame/protocol version, or direct-H2 mapping. The H3
-request and response field sections are carrier framing and are not added to
+labels, transcript domains, RFC 9266 context, path binding, stored schema,
+auth/frame/protocol version, or direct-H2 mapping. Config schema 3 separately
+requires the server's pre-runtime trusted textual authority while retaining
+schema number `3`; its additive read-only accessor does not enable runtime. The
+H3 request and response field sections are carrier framing and are not added to
 the authenticated 256/320-byte transcripts.
 
 The smallest later **test-private runtime-reference** slice SHOULD change only
@@ -931,12 +941,11 @@ tests remain controls. That reference still would not be product H3, CONNECT
 support, a data plane, a product authority source, or a release result.
 
 Product integration is a separate later decision and is not promised to fit
-the two-file reference boundary. It remains blocked until an explicitly
-authorized local configuration or provisioning design gives the server its
-independent trusted textual authority. That future decision MUST NOT infer the
-value from a request, peer SNI, listen address, certificate, DNS, or other
-runtime input and MUST decide any config/schema compatibility impact before
-code changes. This T026a docs slice changes none of those domains.
+the two-file reference boundary. Config schema 3 now represents the independent
+trusted textual authority prerequisite before runtime, but no product runtime
+consumes or compares it. A future integration MUST take the value and singleton
+binding from the same validated role config and MUST NOT infer the value from a
+request, peer SNI, listen address, certificate, DNS, or other runtime input.
 
 Stop that runtime slice before changing a third file; any wire byte, vector,
 label, exporter context, carrier ID, core primitive, config/schema/auth/frame/
@@ -950,8 +959,10 @@ activity hidden from `Event`; or if success requires private data, a remote
 action, CI, real networking, or a host-network change. T023a-2
 Stateless Retry and multi-connection admission and T023b post-auth quotas,
 expiry, and revocation remain deferred. Product integration must additionally
-stop while the server lacks the independent trusted textual authority
-prerequisite.
+stop unless it consumes the independent trusted textual authority from the
+already validated server role config before any I/O and can perform both exact
+request-authority and same-generation raw-SNI comparisons without using either
+input for selection.
 
 ## 12. Downgrade resistance and failure handling
 

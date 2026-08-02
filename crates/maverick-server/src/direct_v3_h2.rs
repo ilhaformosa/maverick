@@ -764,6 +764,7 @@ tls:
   key_path: "{}"
 maverick:
   tunnel_path: "{path}"
+  expected_authority: "localhost"
 auth:
   minimum: direct_v3_only
   direct_v3:

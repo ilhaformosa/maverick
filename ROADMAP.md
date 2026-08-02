@@ -17,47 +17,47 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T026c — test-private direct-H3 auth-v3 runtime reference
+### T012c-1 — trusted direct-v3 expected authority input
 
-- **User result:** Inside the private feature-gated quiche foundation, one real
-  `127.0.0.1` QUIC/H3 generation performs exactly one frozen auth-v3 POST: the
-  client sends the canonical 256-byte control, the server verifies it with the
-  same-generation exporter and sends the canonical 320-byte confirmation, the
-  client completely verifies it, and both roles close. This is a test-private
-  runtime reference, not product H3 or a release result.
-- **Scope:** Change only this queue and
-  `crates/maverick-client/src/quiche_foundation.rs`. Extend the existing private
-  driver and its bounded resources; reuse the canonical auth-v3 core primitive,
-  singleton preselection, live TLS/H3 facts, strict peer-push gate, Datagram
-  gate, and connection-local zero-trace gate. Keep `FoundationObservation`
-  limited to TLS/H3 facts and place test-private auth results in a separate
-  fixed, non-sensitive result.
-- **Acceptance:** Prove red on the accepted T026b-2 baseline with a real exact
-  six-field H3 POST rejected as pre-auth activity, then green for one split-DATA
-  256/320 exchange, complete verification, same-generation binding, exact-once
-  admission, server closure after its final response send is queued, client
-  closure after complete response verification, a private call graph with no
-  target/DNS/egress work, bounded cleanup, and zero H3/QPACK trace records.
-  Cover malformed fields, ordering, lengths, DATA/event sequencing, duplicate
-  control, Datagram and strict-push rejection, malformed or cross-generation
-  auth bytes, fixed diagnostics, and unchanged observation semantics. All
-  focused and full local gates must pass before one local commit.
-- **Out of scope:** Product H3, CONNECT or Extended CONNECT, target or DNS work,
-  egress, relay, user flows or DATA, UDP tunneling, fallback, public API,
-  product config/schema/version, auth wire/core changes, qlog, outer QUIC log
-  claims, exhaustive forced coverage of every partial-write, `Done`,
-  `StreamBlocked`, or deadline branch, CI, push, PR, tag, release, remote,
-  deployment, real-network, and system-network work remain deferred.
-  `STATUS.md` is unchanged.
-- **Stop conditions:** Stop if this needs a third file, dependency/vendor/Cargo
-  work, a public item, product configuration, a wire/core change, raw peer data
-  in diagnostics, a second resource framework, wire-driven profile selection,
-  H3/QPACK formatting before suppression, target/data-plane work, fallback, or
-  facts copied from another physical generation; also stop on any T023a,
-  T026b-1, T026b-2, or full local gate regression.
+- **User result:** Before any future direct-v3 I/O, the validated client and
+  server role configs each own one byte-exact trusted expected authority. A
+  missing or malformed value fails closed instead of being guessed from a
+  request, SNI, listener, certificate, DNS result, or dial endpoint.
+- **Scope:** Change only this queue, `CONFIG.md`, the frozen direct-auth-v3 spec,
+  the existing core schema-3 role parser, its role-config tests, and three
+  `#[cfg(test)]` fixture sites. In
+  `crates/maverick-client/src/direct_v3_h2.rs`, only delete the obsolete
+  bad-name runtime-gate row. In
+  `crates/maverick-server/src/direct_v3_h2.rs`, only add neutral `localhost` as
+  the server fixture's expected authority. In
+  `crates/maverick-client/src/quiche_foundation.rs`, only add the existing
+  `T026C_AUTHORITY` to the H3 server fixture. Make
+  `maverick.expected_authority` required for schema-3 servers, preserve the
+  validated text through one read-only accessor, and apply one private strict
+  DNS/SNI-hostname validator to both roles without normalization.
+- **Acceptance:** Preserve real canonical-parser red evidence for the former
+  missing-server-field and loose-client-name behavior, then prove legal
+  lowercase, uppercase, internal-hyphen, and ASCII-punycode values round-trip
+  byte for byte. Prove both roles reject non-host authority forms, IP literals,
+  invalid DNS labels, non-ASCII, whitespace/control input, and overlong labels
+  or names. Prove server missing/null/unknown/misplaced fields fail closed,
+  errors and Debug remain fixed and value-free, and config-v1, policy-only v2,
+  stored-profile, old-reader, wire, runtime, and version boundaries do not move.
+- **Out of scope:** H2/H3 runtime wiring, live request or SNI comparison,
+  authentication, Developer Mode, target/DNS/egress work, config/auth/frame/
+  protocol/stored-schema version changes, dependencies, SDK/CLI/client/server
+  runtime changes, CI, push, PR, tag, release, remote, deployment, real-network,
+  and system-network work remain deferred. `STATUS.md` is unchanged.
+- **Stop conditions:** Stop on any ninth file, any non-test or production-runtime
+  change in the three fixture files above, or any further scope expansion. Also
+  stop for Cargo/dependency or URL/IDNA work, a version or wire change,
+  authority inference from runtime input, separate client/server validators,
+  input-bearing errors, runtime I/O, product H3, target work, or a focused/full
+  local gate regression.
 
-This slice is not tied to a release version, does not define v1.3 release scope,
-and does not authorize CI, publication, push, deployment, or real-network work.
+This pre-runtime prerequisite is not tied to a release version, does not define
+v1.3 release scope, and does not authorize CI, publication, push, deployment,
+or real-network work.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

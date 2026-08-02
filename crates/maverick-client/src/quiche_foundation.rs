@@ -1233,6 +1233,7 @@ tls:
   key_path: "key.pem"
 maverick:
   tunnel_path: "{T026C_CONTROL_PATH}"
+  expected_authority: "{T026C_AUTHORITY}"
 auth:
   minimum: direct_v3_only
   direct_v3:

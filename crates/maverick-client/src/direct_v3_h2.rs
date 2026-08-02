@@ -1125,7 +1125,6 @@ auth:
                 "localhost",
                 DirectV3H2Backend::Rustls,
             ),
-            ("h2", TEST_PATH, "bad name", DirectV3H2Backend::Rustls),
         ] {
             let role = test_role("127.0.0.1:9", server_name, strategy, path, missing_ca, None);
             let outcome = run_direct_v3_h2_reference(role.direct(), backend).await;

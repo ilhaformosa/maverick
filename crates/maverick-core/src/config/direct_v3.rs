@@ -1,12 +1,13 @@
 //! Strict pre-runtime parser and projection for direct-v3 role configuration.
 //!
 //! Config schema 3 is independent from auth wire v3 and stored-profile schema
-//! version 1. Parsing constructs only locally owned singleton provisioning
-//! and a preselected capability. It does not construct trusted connection
-//! observations, read wire bytes, access a secret store, or enable runtime.
+//! version 1. Parsing constructs only locally owned singleton provisioning,
+//! one byte-exact trusted expected authority, and a preselected capability. It
+//! does not construct trusted connection observations, read wire bytes, access
+//! a secret store, or enable runtime.
 
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -23,6 +24,7 @@ use super::{validate_cert_pin, SecretString};
 
 const INVALID_CLIENT_ROLE: &str = "invalid config v3 client role";
 const INVALID_SERVER_ROLE: &str = "invalid config v3 server role";
+const MAX_DNS_HOSTNAME_LEN: usize = 253;
 
 /// Explicit pre-runtime carrier choice in config schema 3.
 ///
@@ -49,9 +51,10 @@ impl DirectV3TransportStrategy {
 
 /// Validated pre-runtime direct-v3 client role.
 ///
-/// The type owns a secret-bearing singleton binding but exposes no secret,
-/// opaque ID, provisioning handle, or raw YAML. It deliberately implements
-/// neither `Clone`, `Default`, Serialize, nor generic Deserialize.
+/// The type owns one byte-exact authority and a secret-bearing singleton
+/// binding from the same validated config, but exposes no secret, opaque ID,
+/// provisioning handle, or raw YAML. It deliberately implements neither
+/// `Clone`, `Default`, Serialize, nor generic Deserialize.
 ///
 /// ```compile_fail
 /// use maverick_core::config::DirectV3ClientRoleConfig;
@@ -104,7 +107,7 @@ impl DirectV3ClientRoleConfig {
         &self.server_address
     }
 
-    /// Return the reused server-name setting.
+    /// Return the byte-exact trusted expected authority selected before I/O.
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
@@ -138,9 +141,10 @@ impl fmt::Debug for DirectV3ClientRoleConfig {
 
 /// Validated pre-runtime direct-v3 server role.
 ///
-/// The type owns a secret-bearing singleton binding but exposes no secret,
-/// opaque ID, provisioning handle, or raw YAML. It deliberately implements
-/// neither `Clone`, `Default`, Serialize, nor generic Deserialize.
+/// The type owns one byte-exact authority and a secret-bearing singleton
+/// binding from the same validated config, but exposes no secret, opaque ID,
+/// provisioning handle, or raw YAML. It deliberately implements neither
+/// `Clone`, `Default`, Serialize, nor generic Deserialize.
 ///
 /// ```compile_fail
 /// use maverick_core::config::DirectV3ServerRoleConfig;
@@ -172,6 +176,7 @@ pub struct DirectV3ServerRoleConfig {
     cert_path: PathBuf,
     key_path: PathBuf,
     tunnel_path: String,
+    expected_authority: String,
     binding: AuthV3SingletonBinding,
 }
 
@@ -199,6 +204,11 @@ impl DirectV3ServerRoleConfig {
     /// Return the exact path bound into the owned DeploymentProfile mapping.
     pub fn tunnel_path(&self) -> &str {
         &self.tunnel_path
+    }
+
+    /// Return the byte-exact trusted authority selected before any I/O.
+    pub fn expected_authority(&self) -> &str {
+        &self.expected_authority
     }
 
     /// Borrow the capability selected locally before any auth-v3 wire byte.
@@ -229,7 +239,7 @@ pub(super) fn parse_client_role_config(input: &str) -> Result<DirectV3ClientRole
     .map_err(|_| invalid_client_role())?;
     if !wire.local.socks5.listen.ip().is_loopback()
         || !valid_text(&wire.server.address)
-        || !valid_text(&wire.server.server_name)
+        || !valid_expected_authority(&wire.server.server_name.0)
         || !valid_tunnel_path(&wire.server.tunnel_path)
         || wire
             .server
@@ -251,7 +261,7 @@ pub(super) fn parse_client_role_config(input: &str) -> Result<DirectV3ClientRole
         transport_strategy,
         local_socks5_listen: wire.local.socks5.listen,
         server_address: wire.server.address,
-        server_name: wire.server.server_name,
+        server_name: wire.server.server_name.0,
         tunnel_path: wire.server.tunnel_path,
         ca_cert: wire.server.ca_cert,
         cert_pin: wire.server.cert_pin,
@@ -276,6 +286,7 @@ pub(super) fn parse_server_role_config(input: &str) -> Result<DirectV3ServerRole
     if !valid_path(&wire.tls.cert_path)
         || !valid_path(&wire.tls.key_path)
         || !valid_tunnel_path(&wire.maverick.tunnel_path)
+        || !valid_expected_authority(&wire.maverick.expected_authority.0)
     {
         return Err(invalid_server_role());
     }
@@ -288,6 +299,7 @@ pub(super) fn parse_server_role_config(input: &str) -> Result<DirectV3ServerRole
         cert_path: wire.tls.cert_path,
         key_path: wire.tls.key_path,
         tunnel_path: wire.maverick.tunnel_path,
+        expected_authority: wire.maverick.expected_authority.0,
         binding,
     })
 }
@@ -345,6 +357,25 @@ fn decode_opaque_16(value: &str) -> Result<[u8; 16]> {
 
 fn valid_text(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_control)
+}
+
+fn valid_expected_authority(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > MAX_DNS_HOSTNAME_LEN
+        || !value.is_ascii()
+        || value.parse::<IpAddr>().is_ok()
+    {
+        return false;
+    }
+
+    value.split('.').all(|label| {
+        (1..=63).contains(&label.len())
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
 }
 
 fn valid_tunnel_path(value: &str) -> bool {
@@ -498,7 +529,7 @@ struct ClientSocks5Wire {
 #[serde(deny_unknown_fields)]
 struct ClientServerWire {
     address: String,
-    server_name: String,
+    server_name: ExpectedAuthorityWire,
     tunnel_path: String,
     #[serde(default)]
     ca_cert: Option<PathBuf>,
@@ -517,6 +548,21 @@ struct ServerTlsWire {
 #[serde(deny_unknown_fields)]
 struct ServerMaverickWire {
     tunnel_path: String,
+    expected_authority: ExpectedAuthorityWire,
+}
+
+struct ExpectedAuthorityWire(String);
+
+impl<'de> Deserialize<'de> for ExpectedAuthorityWire {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match serde_yaml_ng::Value::deserialize(deserializer)? {
+            serde_yaml_ng::Value::String(value) => Ok(Self(value)),
+            _ => Err(serde::de::Error::custom("invalid expected authority")),
+        }
+    }
 }
 
 #[derive(Deserialize)]

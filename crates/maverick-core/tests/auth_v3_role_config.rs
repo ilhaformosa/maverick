@@ -24,6 +24,8 @@ const NOW: u64 = 1_800_000_000;
 const NOT_AFTER: u64 = NOW + 172_800;
 const CLIENT_ERROR: &str = "configuration error: invalid config v3 client role";
 const SERVER_ERROR: &str = "configuration error: invalid config v3 server role";
+const CLIENT_AUTHORITY: &str = "client-origin.invalid";
+const SERVER_AUTHORITY: &str = "server-origin.invalid";
 
 fn binding_yaml() -> String {
     format!(
@@ -91,6 +93,7 @@ tls:
   key_path: "./synthetic-key.pem"
 maverick:
   tunnel_path: "/synthetic-direct-v3-server"
+  expected_authority: "{SERVER_AUTHORITY}"
 auth:
   minimum: direct_v3_only
   direct_v3:
@@ -163,6 +166,22 @@ fn assert_valid_client_rejection(input: &str) {
 fn assert_valid_server_rejection(input: &str) {
     assert_valid_yaml_document(input);
     assert_server_rejection(input);
+}
+
+fn replace_client_authority(input: &str, authority: &str) -> String {
+    let authority = serde_yaml_ng::to_string(authority).unwrap();
+    input.replace(
+        &format!("  server_name: \"{CLIENT_AUTHORITY}\""),
+        &format!("  server_name: {}", authority.trim_end()),
+    )
+}
+
+fn replace_server_authority(input: &str, authority: &str) -> String {
+    let authority = serde_yaml_ng::to_string(authority).unwrap();
+    input.replace(
+        &format!("  expected_authority: \"{SERVER_AUTHORITY}\""),
+        &format!("  expected_authority: {}", authority.trim_end()),
+    )
 }
 
 fn assert_client_fail_closed(input: &str) {
@@ -263,6 +282,118 @@ fn exercise_primitives(
 }
 
 #[test]
+fn config_v3_server_requires_trusted_expected_authority() {
+    let input = server_yaml("h2").replace(
+        &format!("  expected_authority: \"{SERVER_AUTHORITY}\"\n"),
+        "",
+    );
+    assert_valid_server_rejection(&input);
+}
+
+#[test]
+fn config_v3_client_rejects_server_name_with_port() {
+    let input = replace_client_authority(&client_yaml("h2"), "client-origin.invalid:443");
+    assert_valid_client_rejection(&input);
+}
+
+#[test]
+fn expected_authority_preserves_legal_dns_hostname_bytes_for_both_roles() {
+    let total_max = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(61)
+    );
+    let legal = [
+        "authority.invalid",
+        "AUTHORITY.Example",
+        "api-edge-1.invalid",
+        "xn--bcher-kva.invalid",
+        total_max.as_str(),
+    ];
+
+    for authority in legal {
+        let client_input = replace_client_authority(&client_yaml("h2"), authority);
+        let client = ClientRoleConfig::from_yaml_str(&client_input).unwrap();
+        assert_eq!(client.direct_v3().unwrap().server_name(), authority);
+
+        let server_input = replace_server_authority(&server_yaml("h3"), authority);
+        let server = ServerRoleConfig::from_yaml_str(&server_input).unwrap();
+        assert_eq!(server.direct_v3().unwrap().expected_authority(), authority);
+    }
+}
+
+#[test]
+fn expected_authority_shared_table_rejects_non_host_authorities_for_both_roles() {
+    let label_too_long = format!("{}.invalid", "a".repeat(64));
+    let total_too_long = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(62)
+    );
+    let invalid = [
+        "".to_owned(),
+        "authority.invalid:443".to_owned(),
+        "user@authority.invalid".to_owned(),
+        "authority.invalid/path".to_owned(),
+        "authority.invalid?query".to_owned(),
+        "authority.invalid#fragment".to_owned(),
+        "authority%2einvalid".to_owned(),
+        "authority\u{0001}.invalid".to_owned(),
+        "authority invalid".to_owned(),
+        "bad name".to_owned(),
+        "authority\tinvalid".to_owned(),
+        " authority.invalid".to_owned(),
+        "authority.invalid ".to_owned(),
+        "authority_invalid".to_owned(),
+        "authorité.invalid".to_owned(),
+        ".authority.invalid".to_owned(),
+        "authority.invalid.".to_owned(),
+        "authority..invalid".to_owned(),
+        "-authority.invalid".to_owned(),
+        "authority-.invalid".to_owned(),
+        "192.0.2.1".to_owned(),
+        "2001:db8::1".to_owned(),
+        "[2001:db8::1]".to_owned(),
+        label_too_long,
+        total_too_long,
+    ];
+
+    for authority in invalid {
+        let client_input = replace_client_authority(&client_yaml("h2"), &authority);
+        assert_valid_client_rejection(&client_input);
+
+        let server_input = replace_server_authority(&server_yaml("h3"), &authority);
+        assert_valid_server_rejection(&server_input);
+    }
+}
+
+#[test]
+fn server_expected_authority_rejects_null_unknown_and_misplaced_fields() {
+    let base = server_yaml("h2");
+    let field = format!("  expected_authority: \"{SERVER_AUTHORITY}\"");
+    let cases = [
+        base.replace(&field, "  expected_authority: null"),
+        base.replace(&field, &format!("{field}\n  authority_alias: invalid")),
+        base.replace(
+            &field,
+            &format!("expected_authority: \"{SERVER_AUTHORITY}\""),
+        ),
+    ];
+    for (index, input) in cases.into_iter().enumerate() {
+        assert_valid_yaml_document(&input);
+        assert!(
+            ServerRoleConfig::from_yaml_str(&input).is_err(),
+            "server authority mutation {index} must fail closed"
+        );
+        assert_server_rejection(&input);
+    }
+}
+
+#[test]
 fn neutral_client_h2_and_server_h3_project_to_preselected_primitives() {
     let client = ClientRoleConfig::from_yaml_str(&client_yaml("h2")).unwrap();
     assert_eq!(client.version(), 3);
@@ -290,6 +421,7 @@ fn neutral_client_h2_and_server_h3_project_to_preselected_primitives() {
     assert_eq!(server.cert_path().to_str(), Some("./synthetic-cert.pem"));
     assert_eq!(server.key_path().to_str(), Some("./synthetic-key.pem"));
     assert_eq!(server.tunnel_path(), "/synthetic-direct-v3-server");
+    assert_eq!(server.expected_authority(), SERVER_AUTHORITY);
     exercise_primitives(
         server.transport_strategy().auth_v3_carrier(),
         server.tunnel_path(),
@@ -403,8 +535,8 @@ fn rejects_unknown_keys_at_every_server_specific_mapping_layer() {
             "  key_path: \"./synthetic-key.pem\"\n  unknown: true",
         ),
         base.replace(
-            "  tunnel_path: \"/synthetic-direct-v3-server\"",
-            "  tunnel_path: \"/synthetic-direct-v3-server\"\n  unknown: true",
+            &format!("  expected_authority: \"{SERVER_AUTHORITY}\""),
+            &format!("  expected_authority: \"{SERVER_AUTHORITY}\"\n  unknown: true"),
         ),
     ];
     for input in cases {
@@ -574,9 +706,22 @@ fn rejects_null_or_missing_role_and_binding_fields() {
         server.replace("  key_path: \"./synthetic-key.pem\"\n", ""),
         replace_yaml_block(&server, "maverick:\n", Some("auth:\n"), "maverick: null\n"),
         server.replace("  tunnel_path: \"/synthetic-direct-v3-server\"\n", ""),
+        server.replace(
+            &format!("  expected_authority: \"{SERVER_AUTHORITY}\"\n"),
+            "",
+        ),
+        server.replace(
+            &format!("  expected_authority: \"{SERVER_AUTHORITY}\""),
+            "  expected_authority: null",
+        ),
     ];
-    for input in server_cases {
-        assert_valid_server_rejection(&input);
+    for (index, input) in server_cases.into_iter().enumerate() {
+        assert_valid_yaml_document(&input);
+        assert!(
+            ServerRoleConfig::from_yaml_str(&input).is_err(),
+            "server required-field mutation {index} must fail closed"
+        );
+        assert_server_rejection(&input);
     }
 }
 
@@ -674,6 +819,44 @@ fn errors_and_debug_are_fixed_bounded_private_and_control_free() {
         for forbidden in [SECRET, HANDLE_TEXT, PRINCIPAL_TEXT, "client-origin"] {
             assert!(!output.contains(forbidden));
         }
+    }
+
+    let server = ServerRoleConfig::from_yaml_str(&server_yaml("h3")).unwrap();
+    let direct_debug = format!("{:?}", server.direct_v3().unwrap());
+    let role_debug = format!("{server:?}");
+    for output in [direct_debug, role_debug] {
+        assert!(output.len() <= 64);
+        for forbidden in [SECRET, HANDLE_TEXT, PRINCIPAL_TEXT, SERVER_AUTHORITY] {
+            assert!(!output.contains(forbidden));
+        }
+    }
+}
+
+#[test]
+fn expected_authority_errors_are_fixed_bounded_and_source_free() {
+    let marker = "private-authority-marker.invalid";
+    let client_input = replace_client_authority(&client_yaml("h2"), marker);
+    let client_input = client_input.replace(marker, &format!("{marker}:443"));
+    let server_input = replace_server_authority(&server_yaml("h3"), marker);
+    let server_input = server_input.replace(marker, &format!("{marker}:443"));
+
+    for (input, expected, is_client) in [
+        (client_input, CLIENT_ERROR, true),
+        (server_input, SERVER_ERROR, false),
+    ] {
+        let error = if is_client {
+            ClientRoleConfig::from_yaml_str(&input).unwrap_err()
+        } else {
+            ServerRoleConfig::from_yaml_str(&input).unwrap_err()
+        };
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        assert_eq!(display, expected);
+        assert!(error.source().is_none());
+        assert!(display.len() <= 128);
+        assert!(debug.len() <= 160);
+        assert!(!display.contains(marker));
+        assert!(!debug.contains(marker));
     }
 }
 

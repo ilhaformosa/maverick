@@ -1459,6 +1459,7 @@ dependencies = [
  "hyper-util",
  "maverick-core",
  "quinn",
+ "rand",
  "rcgen",
  "rustls",
  "tempfile",

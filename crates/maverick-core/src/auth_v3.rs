@@ -364,6 +364,41 @@ impl AuthV3PreselectedProfile<'_> {
     pub fn trusted_profile(&self) -> AuthV3TrustedProfile<'_> {
         self.binding.profile.trusted_profile()
     }
+
+    /// Bind independently supplied runtime facts to this already-preselected
+    /// profile without exposing or copying its opaque IDs or secret.
+    ///
+    /// This helper performs no observation and does not prove that the
+    /// exporter came from the same generation. The runtime remains responsible
+    /// for truthfully supplying every actual fact, including exporter
+    /// provenance and the present-empty RFC 9266 context. The existing
+    /// encode/verify primitives still validate the resulting context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn trusted_connection_context<'a>(
+        &'a self,
+        actual_carrier: AuthV3Carrier,
+        actual_tls_version: AuthV3TlsVersion,
+        actual_direct_route: bool,
+        early_data: bool,
+        tls_exporter: &'a [u8; AUTH_V3_EXPORTER_LEN],
+        exporter_from_same_generation: bool,
+        exporter_context: Option<&'a [u8]>,
+        actual_control_path: &'a str,
+    ) -> AuthV3TrustedConnectionContext<'a> {
+        let profile = &self.binding.profile;
+        AuthV3TrustedConnectionContext::new(
+            actual_carrier,
+            actual_tls_version,
+            actual_direct_route,
+            early_data,
+            tls_exporter,
+            exporter_from_same_generation,
+            exporter_context,
+            &profile.deployment_profile_id,
+            &profile.expected_server_identity_id,
+            actual_control_path,
+        )
+    }
 }
 
 impl fmt::Debug for AuthV3PreselectedProfile<'_> {

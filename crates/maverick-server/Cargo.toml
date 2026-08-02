@@ -23,6 +23,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 maverick-core = { path = "../maverick-core" }
 quinn = { workspace = true, optional = true }
+rand.workspace = true
 rustls.workspace = true
 time.workspace = true
 tokio.workspace = true

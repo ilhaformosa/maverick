@@ -17,51 +17,47 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013c-3a1 — freeze direct-H2 auth-v3 control mapping and rustls trust
+### T013c-3b — server-side rustls direct-H2 auth-v3 connection control reference gate
 
-- **User result:** A future direct-H2 client and server can implement the same
-  auth-v3 control exchange without guessing how HTTP/2 carries it or which TLS
-  facts are trusted.
-- **Scope:** Documentation only. Freeze the request and success-response
-  method, a canonical raw path-and-query with the query completely absent,
-  exact content types, body lengths, stream endings, trailer rejection,
-  generation-wide failure behavior, connection ordering, and the first
-  rustls-only direct-H2 trust observations. Freeze a fixed privacy-safe pre-I/O
-  gate that rejects a configured tunnel path containing raw `?` or `#`, or any
-  path that cannot round-trip byte for byte as a legal HTTP/2 path component.
-  Only `ROADMAP.md` and `docs/AUTH_V3_DIRECT_SPEC.md` may change.
-- **Acceptance:** The canonical contract gives one unambiguous mapping for the
-  256-byte `ClientControl` and 320-byte `ServerConfirmation`; closes the whole
-  physical TLS/H2 generation on every pre-auth, duplicate, carrier-shape, or
-  auth failure without legacy fallback; requires the raw HTTP/2 path-and-query
-  to equal the validated tunnel path byte for byte with no query component and
-  rejects even a trailing empty `?`; requires complete confirmation before
-  exposing an authenticated capability; and distinguishes actual rustls TLS
-  1.3, H2 ALPN, exporter, and no-early-data observations from configured or
-  offered values. The future rustls reference entry point rejects an
-  unrepresentable configured path or a non-rustls/non-H2 selection before any
-  I/O, without changing the current config-schema-3 parser or any existing
-  legacy backend/carrier path. The server's only `Authenticating` to
-  `Authenticated` transition point is after local h2 acceptance of the response
-  headers and all 320 response bytes, with the final send carrying `END_STREAM`
-  and returning success. One or more `send_data` operations may carry the body;
-  construction, headers alone, capacity reservation, any partial DATA prefix,
-  or a cumulative length below or above 320 bytes is insufficient. This is only
-  a local h2 acceptance/queueing boundary, not proof of peer receipt. The
-  mapping remains only a future control seam, not a user-flow/data-plane or
-  multi-flow implementation.
-- **Runtime and truth boundary:** This slice enables no runtime, changes no
-  current product fact, and leaves `STATUS.md` byte for byte unchanged.
-  `STATUS.md` remains the sole current-truth and authorization source. This
-  queue remains planning, not a completed-work ledger or a v1.3 release scope.
-- **Out of scope:** User-flow HTTP/data-plane mapping, multi-flow capability,
-  runtime generation state, CLI, SDK, client, server, H3, BrowserMimic/BoringSSL,
-  fronted routes, Auto, multi-profile selection, PSK trials, legacy fallback,
-  config-schema-3 parser tightening, stored profiles, rotation, and PQ/hybrid
-  policy remain deferred.
-- **Stop conditions:** Stop if a third file, Cargo or lockfile change, Rust
-  source, test or vector change, wire/schema change, runtime enablement, remote
-  work, real-network action, release action, or private data is required.
+- **User result:** One dormant server-only reference seam demonstrates the
+  frozen auth-v3 control gate on one real loopback rustls/TLS 1.3 and H2
+  physical generation, without enabling a product client or data plane.
+- **Scope:** Add one crate-private server module that accepts only a config-v3
+  H2 server role through rustls, validates the exact raw control carrier,
+  observes same-generation TLS facts and the RFC 9266 exporter, consumes one
+  pre-auth slot, verifies the frozen 256-byte control, and locally queues the
+  exact 320-byte confirmation before recording authentication. Add only the
+  narrow core bridge needed to bind actual runtime facts to the already
+  preselected singleton profile. Keep the legacy/default server entry points
+  unchanged and leave `STATUS.md` byte for byte unchanged.
+- **Acceptance:** Real `127.0.0.1` plus ephemeral-port tests cover the positive
+  rustls/H2 exchange, exact request and response mapping, same-generation
+  exporter binding, no early data, the `Fresh -> Authenticating ->
+  Authenticated | Closed` gate, unique-slot consumption, generation-wide close
+  on every failure or duplicate, and the final 320-byte `END_STREAM` local h2
+  acceptance boundary. Pre-I/O tests reject H3, non-rustls selection, raw `?`
+  or `#`, and a path that cannot round-trip byte for byte before listener or
+  connection work. Fixed diagnostics reveal no peer, path, opaque identity,
+  secret, exporter, nonce, session, endpoint, or backend error.
+- **Runtime and truth boundary:** The seam is dormant and server-only. It is
+  not called by `run_server`, `start_server`, CLI, SDK, or the default runtime.
+  Loopback evidence is a local reference result, not a working product,
+  production, multi-flow, user-flow, or release result. `STATUS.md` remains the
+  sole current-truth and authorization source. This queue is not a completed
+  ledger and does not define v1.3 release scope.
+- **Out of scope:** Product client, pooling, user-flow or data-plane mapping,
+  DNS, egress, targets, relay, fallback, multi-profile or shared-listener
+  dispatch, H3, BrowserMimic/BoringSSL, Auto, fronted routes, revocation,
+  hard-expiry enforcement, CLI, SDK, stored profiles, release, remote, and real
+  network work remain deferred.
+- **Stop conditions:** The exact changed-file boundary is `ROADMAP.md`,
+  `Cargo.lock`, `crates/maverick-core/src/auth_v3.rs`,
+  `crates/maverick-server/Cargo.toml`,
+  `crates/maverick-server/src/direct_v3_h2.rs`, and
+  `crates/maverick-server/src/lib.rs`; stop and re-adjudicate before changing
+  any other file. Also stop rather than add a stable public runtime API, a
+  wire/vector/schema/version change, a legacy behavior change, runtime
+  enablement, remote action, or private data.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

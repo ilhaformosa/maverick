@@ -34,7 +34,10 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer};
 use url::Url;
 
 #[derive(Debug, Parser)]
@@ -2779,14 +2782,20 @@ fn config_permission_warning(path: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
+fn allows_private_safe_log_target(metadata: &tracing::Metadata<'_>) -> bool {
+    let target = metadata.target();
+    target != "quiche" && !target.starts_with("quiche::")
+}
+
 fn init_tracing(level: &str) {
     let filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(level))
         .unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let formatting = tracing_subscriber::fmt::layer()
         .with_target(false)
-        .try_init();
+        .with_filter(filter)
+        .with_filter(filter_fn(allows_private_safe_log_target));
+    let _ = tracing_subscriber::registry().with(formatting).try_init();
 }
 
 fn random_id() -> String {
@@ -3231,7 +3240,131 @@ async fn start_echo_server() -> Result<SocketAddr> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+
+    struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedLogWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn dispatch_log_record(
+        level: tracing_log::log::Level,
+        target: &'static str,
+        message: &'static str,
+    ) {
+        tracing_log::format_trace(
+            &tracing_log::log::Record::builder()
+                .args(format_args!("{message}"))
+                .level(level)
+                .target(target)
+                .build(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn external_filter_cannot_enable_quiche_trace_output() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let formatting = tracing_subscriber::fmt::layer()
+            .with_writer(move || SharedLogWriter(Arc::clone(&writer_output)))
+            .with_ansi(false)
+            .with_target(false)
+            .with_filter(EnvFilter::new(
+                "quiche=trace,quiche::h3=trace,maverick_cli=info",
+            ))
+            .with_filter(filter_fn(allows_private_safe_log_target));
+        let subscriber = tracing_subscriber::registry().with(formatting);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "maverick_cli", "fixed-safe-marker");
+            tracing::warn!(
+                target: "quiche",
+                datagram = "synthetic-private-datagram",
+                "synthetic-quiche-root-marker"
+            );
+            tracing::trace!(
+                target: "quiche::h3",
+                connection_id = "synthetic-private-cid",
+                peer = "127.0.0.1:4242",
+                header = "synthetic-private-header",
+                error = "synthetic-backend-error",
+                "synthetic-quiche-marker"
+            );
+        });
+
+        let rendered = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("fixed-safe-marker"));
+        for private_marker in [
+            "synthetic-quiche-root-marker",
+            "synthetic-private-datagram",
+            "synthetic-quiche-marker",
+            "synthetic-private-cid",
+            "127.0.0.1:4242",
+            "synthetic-private-header",
+            "synthetic-backend-error",
+        ] {
+            assert!(!rendered.contains(private_marker));
+        }
+    }
+
+    #[test]
+    fn external_filter_cannot_enable_quiche_log_bridge_output() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let formatting = tracing_subscriber::fmt::layer()
+            .with_writer(move || SharedLogWriter(Arc::clone(&writer_output)))
+            .with_ansi(false)
+            .with_target(false)
+            .with_filter(EnvFilter::new(
+                "trace,quiche=trace,quiche::h3=trace,maverick_cli=info",
+            ))
+            .with_filter(filter_fn(allows_private_safe_log_target));
+        let subscriber = tracing_subscriber::registry().with(formatting);
+
+        tracing::subscriber::with_default(subscriber, || {
+            dispatch_log_record(
+                tracing_log::log::Level::Warn,
+                "quiche",
+                "synthetic-bridge-root-marker cid=synthetic-private-cid address=127.0.0.1:4343 datagram=synthetic-private-datagram",
+            );
+            dispatch_log_record(
+                tracing_log::log::Level::Trace,
+                "quiche::h3",
+                "synthetic-bridge-h3-marker header=synthetic-private-header backend=synthetic-backend-error",
+            );
+            dispatch_log_record(
+                tracing_log::log::Level::Info,
+                "maverick_cli",
+                "fixed-safe-log-bridge-marker",
+            );
+        });
+
+        let rendered = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(rendered.contains("fixed-safe-log-bridge-marker"));
+        for private_marker in [
+            "synthetic-bridge-root-marker",
+            "synthetic-bridge-h3-marker",
+            "synthetic-private-cid",
+            "127.0.0.1:4343",
+            "synthetic-private-datagram",
+            "synthetic-private-header",
+            "synthetic-backend-error",
+        ] {
+            assert!(!rendered.contains(private_marker));
+        }
+    }
 
     fn assert_fixed_private_safe_profile_uri_error(error: &str) {
         assert_eq!(error, INVALID_PROFILE_URI);

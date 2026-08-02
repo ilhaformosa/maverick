@@ -17,27 +17,40 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T020-Q1 — direct quiche foundation and exporter preflight
+### T021b — private single-identity QUIC ownership and reuse
 
-- **User result:** Establish whether the selected quiche route can safely enter
-  formal development without making H3 user-visible.
-- **Scope:** Pin compatible dependencies with one BoringSSL linkage, add a
-  private feature-gated adapter seam with a first-party Tokio UDP driver, and
-  exercise it only through a bounded `127.0.0.1` native-H3 connection test.
-- **Acceptance:** macOS builds the pinned dependency set; the final graph has
-  exactly one `boring` and `boring-sys`; the same live QUIC TLS connection
-  provides a channel-binding exporter and actual negotiated-group observation;
-  ALPN is H3, 0-RTT is off, peer H3 SETTINGS advertise Extended CONNECT and
-  Datagram, and connection, stream, QPACK, header, task, and Datagram queues
-  have explicit bounds. Default and old experimental-H3 behavior stay intact.
-- **Out of scope:** User-visible native H3; CONNECT target relay; auth v3; UDP
-  proxy; Auto selection; config, protocol, auth, frame, wire, or stored-profile
-  version changes; real infrastructure; remote repository or release work;
-  T021.
-- **Stop conditions:** Stop if the route needs two BoringSSL linkages, cannot
-  obtain exporter/group evidence from the current QUIC TLS connection, needs a
-  broad TLS/QUIC fork or public core/SDK backend types, changes a versioned
-  contract, or cannot preserve local compatibility and bounded resources.
+- **User result:** Prove that one private manager instance represents one
+  identity slot and owns and reuses exactly one live bounded QUIC/H3 connection
+  generation. Two sequential safe borrows use that same physical connection
+  without making H3 user-visible or carrying a real target or authentication.
+- **Scope:** Reuse and narrowly refactor the existing T020-Q1 quiche driver so
+  it remains live after handshake and H3 SETTINGS behind a fixed-capacity,
+  non-waiting command channel and one-lease limit. Keep generation proof private,
+  add deterministic close with bounded join and drop cancellation, and force
+  the CLI logging layer to suppress the `quiche` target namespace regardless of
+  external filter requests. Use only `127.0.0.1`, ephemeral ports, and temporary
+  self-signed test certificates.
+- **Acceptance:** Two sequential acquire/release operations return the same
+  private generation token while the physical connection-creation count stays
+  one. Concurrent lease, command, and task capacity exhaustion rejects
+  immediately with fixed privacy-safe errors. Close rejects new borrows and
+  reclaims the task, socket, permit, command sender, and bounded join; manager
+  drop cancellation is proven without arbitrary sleeps or detached tasks. The
+  T020-Q1 exporter, actual negotiated group, peer transport parameters, ALPN,
+  0-RTT rejection, H3 SETTINGS, and resource-limit checks remain. An external
+  `quiche=trace` request emits no quiche CID, address, header, marker, or raw
+  backend error. Default H2 and the older experimental H3 path stay unchanged.
+- **Out of scope:** Automatic reconnect or generation changes; graceful QUIC
+  drain; address recovery; multiple identities or endpoints; real CONNECT
+  requests or Datagram payloads; auth v3; server product integration;
+  production certificate trust; config or CLI transport selection; Auto or
+  user-visible H3; Linux, real-network, load, publication, or release work.
+- **Stop conditions:** Stop if this needs a second driver, router, or framework;
+  an unbounded queue; a public third-party backend type; a config, protocol,
+  auth, frame, wire, stored-profile, or other version change; a sixth product
+  file; a new dependency; unreliable log suppression; authentication or a data
+  plane; or if one-connection reuse and complete resource reclamation cannot be
+  proven locally.
 
 This slice is not tied to a release version and does not define release scope.
 

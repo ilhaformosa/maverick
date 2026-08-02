@@ -1,24 +1,30 @@
 //! Private, feature-gated direct-quiche foundation.
 //!
-//! `quiche` owns QUIC, TLS, and HTTP/3. This module only drives one UDP socket
-//! and one connection with Tokio. It has no connection router or control queue,
-//! and no quiche, BoringSSL, or TLS type leaves this private module.
+//! `quiche` owns QUIC, TLS, and HTTP/3. This module drives one UDP socket and
+//! one connection with Tokio behind a fixed-capacity private manager command
+//! queue. It has no connection router, and no quiche, BoringSSL, or TLS type
+//! leaves this private module.
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use boring::ssl::SslRef;
 use maverick_core::auth::{TlsChannelBinding, TLS_CHANNEL_BINDING_EXPORTER_LABEL};
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, Barrier, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Barrier, OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 const MAX_UDP_PAYLOAD_BYTES: usize = 1_350;
 const MAX_DATAGRAM_FRAME_BYTES: u64 = 65_536;
 const SEND_CAPACITY_FACTOR: f64 = 1.0;
 const CONNECTION_TASK_LIMIT: usize = 8;
+const COMMAND_QUEUE_LIMIT: usize = 1;
+const CONNECTION_LEASE_LIMIT: usize = 1;
 const DATAGRAM_QUEUE_LIMIT: usize = 32;
 const OBSERVATION_QUEUE_LIMIT: usize = 1;
 const INITIAL_CONNECTION_WINDOW_BYTES: u64 = 1_048_576;
@@ -36,10 +42,15 @@ const PATH_CHALLENGE_QUEUE_LIMIT: usize = 3;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECTION_RUN_TIMEOUT: Duration = Duration::from_secs(10);
+const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const DRIVER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(2);
 
 const SETTINGS_QPACK_MAX_TABLE_CAPACITY: u64 = 0x1;
 const SETTINGS_MAX_FIELD_SECTION_SIZE: u64 = 0x6;
 const SETTINGS_QPACK_BLOCKED_STREAMS: u64 = 0x7;
+
+static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy)]
 enum EarlyDataPolicy {
@@ -117,12 +128,15 @@ struct FoundationObservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FoundationError {
     AlpnMismatch,
+    CommandQueueUnavailable,
     ConnectionUnavailable,
     DriverStopped,
     DriverTimeout,
     EarlyDataRejected,
     ExporterUnavailable,
     H3Unavailable,
+    LeaseUnavailable,
+    ManagerClosed,
     ObservationQueueUnavailable,
     PacketUnavailable,
     SocketUnavailable,
@@ -133,12 +147,15 @@ impl fmt::Display for FoundationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::AlpnMismatch => "native H3 ALPN mismatch",
+            Self::CommandQueueUnavailable => "native H3 command queue unavailable",
             Self::ConnectionUnavailable => "native H3 connection unavailable",
             Self::DriverStopped => "native H3 driver stopped",
             Self::DriverTimeout => "native H3 driver timeout",
             Self::EarlyDataRejected => "native H3 early data rejected",
             Self::ExporterUnavailable => "native H3 TLS exporter unavailable",
             Self::H3Unavailable => "native H3 connection unavailable",
+            Self::LeaseUnavailable => "native H3 lease unavailable",
+            Self::ManagerClosed => "native H3 manager closed",
             Self::ObservationQueueUnavailable => "native H3 observation queue unavailable",
             Self::PacketUnavailable => "native H3 packet unavailable",
             Self::SocketUnavailable => "native H3 socket unavailable",
@@ -148,6 +165,139 @@ impl fmt::Display for FoundationError {
 }
 
 impl std::error::Error for FoundationError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ConnectionGeneration(u64);
+
+enum DriverCommand {
+    Acquire {
+        response: oneshot::Sender<ConnectionGeneration>,
+    },
+    Close,
+}
+
+struct ConnectionLease<'manager> {
+    generation: ConnectionGeneration,
+    _permit: OwnedSemaphorePermit,
+    _manager: PhantomData<&'manager SingleIdentityQuicManager>,
+}
+
+impl ConnectionLease<'_> {
+    fn generation(&self) -> ConnectionGeneration {
+        self.generation
+    }
+
+    fn release(self) {}
+}
+
+struct SingleIdentityQuicManager {
+    command_tx: Option<mpsc::Sender<DriverCommand>>,
+    lease_permits: Arc<Semaphore>,
+    driver_task: Option<JoinHandle<Result<(), FoundationError>>>,
+}
+
+impl SingleIdentityQuicManager {
+    fn start(
+        driver: FoundationDriver,
+        task_permit: OwnedSemaphorePermit,
+    ) -> Result<Self, FoundationError> {
+        let generation = next_connection_generation()?;
+        let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_LIMIT);
+        let driver_task = tokio::spawn(async move {
+            let _task_permit = task_permit;
+            driver.run(command_rx, generation).await
+        });
+        Ok(Self {
+            command_tx: Some(command_tx),
+            lease_permits: Arc::new(Semaphore::new(CONNECTION_LEASE_LIMIT)),
+            driver_task: Some(driver_task),
+        })
+    }
+
+    async fn acquire(&self) -> Result<ConnectionLease<'_>, FoundationError> {
+        let command_tx = self
+            .command_tx
+            .as_ref()
+            .ok_or(FoundationError::ManagerClosed)?;
+        let permit = self
+            .lease_permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| FoundationError::LeaseUnavailable)?;
+        let (response_tx, response_rx) = oneshot::channel();
+        try_send_driver_command(
+            command_tx,
+            DriverCommand::Acquire {
+                response: response_tx,
+            },
+        )?;
+        let generation = timeout(COMMAND_RESPONSE_TIMEOUT, response_rx)
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::DriverStopped)?;
+        Ok(ConnectionLease {
+            generation,
+            _permit: permit,
+            _manager: PhantomData,
+        })
+    }
+
+    async fn close(&mut self) -> Result<(), FoundationError> {
+        if self.lease_permits.available_permits() != CONNECTION_LEASE_LIMIT {
+            return Err(FoundationError::LeaseUnavailable);
+        }
+        let Some(command_tx) = self.command_tx.take() else {
+            return Ok(());
+        };
+        let send_result = try_send_driver_command(&command_tx, DriverCommand::Close);
+        drop(command_tx);
+        let join_result = self.join_driver().await;
+        send_result.and(join_result)
+    }
+
+    async fn join_driver(&mut self) -> Result<(), FoundationError> {
+        let Some(mut driver_task) = self.driver_task.take() else {
+            return Ok(());
+        };
+        match timeout(DRIVER_JOIN_TIMEOUT, &mut driver_task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(FoundationError::DriverStopped),
+            Err(_) => {
+                driver_task.abort();
+                let _ = timeout(DRIVER_JOIN_TIMEOUT, driver_task).await;
+                Err(FoundationError::DriverTimeout)
+            }
+        }
+    }
+}
+
+impl Drop for SingleIdentityQuicManager {
+    fn drop(&mut self) {
+        self.command_tx.take();
+        if let Some(driver_task) = self.driver_task.take() {
+            driver_task.abort();
+        }
+    }
+}
+
+fn next_connection_generation() -> Result<ConnectionGeneration, FoundationError> {
+    NEXT_CONNECTION_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            generation.checked_add(1)
+        })
+        .map(ConnectionGeneration)
+        .map_err(|_| FoundationError::ConnectionUnavailable)
+}
+
+fn try_send_driver_command(
+    command_tx: &mpsc::Sender<DriverCommand>,
+    command: DriverCommand,
+) -> Result<(), FoundationError> {
+    command_tx.try_send(command).map_err(|error| match error {
+        mpsc::error::TrySendError::Full(_) => FoundationError::CommandQueueUnavailable,
+        mpsc::error::TrySendError::Closed(_) => FoundationError::DriverStopped,
+    })
+}
 
 struct FoundationDriver {
     socket: UdpSocket,
@@ -159,7 +309,6 @@ struct FoundationDriver {
     tls_observation: Option<(TlsChannelBinding, NegotiatedGroup, PeerQuicLimits)>,
     observation_tx: mpsc::Sender<FoundationObservation>,
     ready_barrier: Arc<Barrier>,
-    _task_permit: OwnedSemaphorePermit,
 }
 
 impl FoundationDriver {
@@ -169,7 +318,6 @@ impl FoundationDriver {
         connection: quiche::Connection,
         observation_tx: mpsc::Sender<FoundationObservation>,
         ready_barrier: Arc<Barrier>,
-        task_permit: OwnedSemaphorePermit,
     ) -> Result<Self, FoundationError> {
         let local_address = socket
             .local_addr()
@@ -188,34 +336,35 @@ impl FoundationDriver {
             tls_observation: None,
             observation_tx,
             ready_barrier,
-            _task_permit: task_permit,
         })
     }
 
-    async fn run(mut self) -> Result<(), FoundationError> {
-        match timeout(CONNECTION_RUN_TIMEOUT, self.run_inner()).await {
-            Ok(result) => result,
-            Err(_) => Err(FoundationError::DriverTimeout),
-        }
+    async fn run(
+        mut self,
+        mut command_rx: mpsc::Receiver<DriverCommand>,
+        generation: ConnectionGeneration,
+    ) -> Result<(), FoundationError> {
+        self.run_inner(&mut command_rx, generation).await
     }
 
-    async fn run_inner(&mut self) -> Result<(), FoundationError> {
+    async fn run_inner(
+        &mut self,
+        command_rx: &mut mpsc::Receiver<DriverCommand>,
+        generation: ConnectionGeneration,
+    ) -> Result<(), FoundationError> {
         let handshake_started = Instant::now();
         let mut receive_buffer = [0_u8; MAX_UDP_PAYLOAD_BYTES];
         let mut send_buffer = [0_u8; MAX_UDP_PAYLOAD_BYTES];
+        let mut foundation_ready = false;
 
         loop {
             self.initialize_h3()?;
-            if self.process_h3()? {
+            if !foundation_ready && self.process_h3()? {
                 self.flush_packets(&mut send_buffer).await?;
-                self.ready_barrier.wait().await;
-                // Both peers have parsed SETTINGS. This immediate application
-                // close proves bounded task cleanup, not a full graceful drain.
-                self.connection
-                    .close(true, 0, b"")
-                    .map_err(|_| FoundationError::ConnectionUnavailable)?;
-                self.flush_packets(&mut send_buffer).await?;
-                return Ok(());
+                timeout(HANDSHAKE_TIMEOUT, self.ready_barrier.wait())
+                    .await
+                    .map_err(|_| FoundationError::DriverTimeout)?;
+                foundation_ready = true;
             }
             self.flush_packets(&mut send_buffer).await?;
 
@@ -232,23 +381,68 @@ impl FoundationDriver {
                 .timeout()
                 .unwrap_or(MAX_IDLE_TIMEOUT)
                 .min(MAX_IDLE_TIMEOUT);
-            match timeout(wait, self.socket.recv_from(&mut receive_buffer)).await {
-                Ok(Ok((length, from))) => {
-                    if from != self.peer_address {
-                        return Err(FoundationError::PacketUnavailable);
+
+            if !foundation_ready {
+                self.receive_packet(wait, &mut receive_buffer).await?;
+                continue;
+            }
+
+            tokio::select! {
+                biased;
+                command = command_rx.recv() => {
+                    match command {
+                        Some(DriverCommand::Acquire { response }) => {
+                            let _ = response.send(generation);
+                        }
+                        Some(DriverCommand::Close) | None => {
+                            // T021b promises bounded reclamation, not a
+                            // graceful QUIC drain.
+                            self.connection
+                                .close(true, 0, b"")
+                                .map_err(|_| FoundationError::ConnectionUnavailable)?;
+                            self.flush_packets(&mut send_buffer).await?;
+                            return Ok(());
+                        }
                     }
-                    let info = quiche::RecvInfo {
-                        from,
-                        to: self.local_address,
-                    };
-                    self.connection
-                        .recv(&mut receive_buffer[..length], info)
-                        .map_err(|_| FoundationError::PacketUnavailable)?;
                 }
-                Ok(Err(_)) => return Err(FoundationError::SocketUnavailable),
-                Err(_) => self.connection.on_timeout(),
+                packet = timeout(wait, self.socket.recv_from(&mut receive_buffer)) => {
+                    self.process_received_packet(packet, &mut receive_buffer)?;
+                }
             }
         }
+    }
+
+    async fn receive_packet(
+        &mut self,
+        wait: Duration,
+        receive_buffer: &mut [u8; MAX_UDP_PAYLOAD_BYTES],
+    ) -> Result<(), FoundationError> {
+        let packet = timeout(wait, self.socket.recv_from(receive_buffer)).await;
+        self.process_received_packet(packet, receive_buffer)
+    }
+
+    fn process_received_packet(
+        &mut self,
+        packet: Result<Result<(usize, SocketAddr), std::io::Error>, tokio::time::error::Elapsed>,
+        receive_buffer: &mut [u8; MAX_UDP_PAYLOAD_BYTES],
+    ) -> Result<(), FoundationError> {
+        match packet {
+            Ok(Ok((length, from))) => {
+                if from != self.peer_address {
+                    return Err(FoundationError::PacketUnavailable);
+                }
+                let info = quiche::RecvInfo {
+                    from,
+                    to: self.local_address,
+                };
+                self.connection
+                    .recv(&mut receive_buffer[..length], info)
+                    .map_err(|_| FoundationError::PacketUnavailable)?;
+            }
+            Ok(Err(_)) => return Err(FoundationError::SocketUnavailable),
+            Err(_) => self.connection.on_timeout(),
+        }
+        Ok(())
     }
 
     fn initialize_h3(&mut self) -> Result<(), FoundationError> {
@@ -346,11 +540,13 @@ impl FoundationDriver {
             if info.from != self.local_address || info.to != self.peer_address {
                 return Err(FoundationError::PacketUnavailable);
             }
-            let sent = self
-                .socket
-                .send_to(&send_buffer[..length], info.to)
-                .await
-                .map_err(|_| FoundationError::SocketUnavailable)?;
+            let sent = timeout(
+                SOCKET_IO_TIMEOUT,
+                self.socket.send_to(&send_buffer[..length], info.to),
+            )
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::SocketUnavailable)?;
             if sent != length {
                 return Err(FoundationError::PacketUnavailable);
             }
@@ -358,10 +554,10 @@ impl FoundationDriver {
     }
 }
 
-fn bounded_quic_config(verify_peer: bool) -> Result<quiche::Config, FoundationError> {
+fn bounded_quic_config() -> Result<quiche::Config, FoundationError> {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)
         .map_err(|_| FoundationError::ConnectionUnavailable)?;
-    config.verify_peer(verify_peer);
+    config.verify_peer(true);
     config
         .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
         .map_err(|_| FoundationError::AlpnMismatch)?;
@@ -388,6 +584,15 @@ fn bounded_quic_config(verify_peer: bool) -> Result<quiche::Config, FoundationEr
     config.grease(true);
 
     apply_early_data_policy(&mut config, EarlyDataPolicy::Disabled);
+    Ok(config)
+}
+
+#[cfg(test)]
+fn bounded_self_signed_loopback_quic_config() -> Result<quiche::Config, FoundationError> {
+    let mut config = bounded_quic_config()?;
+    // This exception is confined to self-signed 127.0.0.1 unit tests. A
+    // product trust path must keep the default peer verification above.
+    config.verify_peer(false);
     Ok(config)
 }
 
@@ -456,12 +661,22 @@ fn peer_setting(settings: &[(u64, u64)], id: u64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use tempfile::TempDir;
-    use tokio::task::JoinHandle;
 
     use super::*;
 
-    const TASK_JOIN_TIMEOUT: Duration = Duration::from_secs(12);
+    struct LoopbackPair {
+        _temp: TempDir,
+        client: SingleIdentityQuicManager,
+        server: SingleIdentityQuicManager,
+        client_observation_rx: mpsc::Receiver<FoundationObservation>,
+        server_observation_rx: mpsc::Receiver<FoundationObservation>,
+        client_connections_created: Arc<AtomicUsize>,
+        client_address: SocketAddr,
+        server_address: SocketAddr,
+    }
 
     fn fixed_ok<T, E>(result: Result<T, E>, message: &'static str) -> T {
         match result {
@@ -477,13 +692,13 @@ mod tests {
         }
     }
 
-    async fn run_server(
+    async fn start_server(
         socket: UdpSocket,
         mut config: quiche::Config,
         observation_tx: mpsc::Sender<FoundationObservation>,
         ready_barrier: Arc<Barrier>,
         task_permit: OwnedSemaphorePermit,
-    ) -> Result<(), FoundationError> {
+    ) -> Result<SingleIdentityQuicManager, FoundationError> {
         let local_address = socket
             .local_addr()
             .map_err(|_| FoundationError::SocketUnavailable)?;
@@ -516,26 +731,25 @@ mod tests {
             )
             .map_err(|_| FoundationError::PacketUnavailable)?;
 
-        FoundationDriver::new(
+        let driver = FoundationDriver::new(
             socket,
             peer_address,
             connection,
             observation_tx,
             ready_barrier,
-            task_permit,
-        )?
-        .run()
-        .await
+        )?;
+        SingleIdentityQuicManager::start(driver, task_permit)
     }
 
-    async fn run_client(
+    fn start_client(
         socket: UdpSocket,
         peer_address: SocketAddr,
         mut config: quiche::Config,
         observation_tx: mpsc::Sender<FoundationObservation>,
         ready_barrier: Arc<Barrier>,
         task_permit: OwnedSemaphorePermit,
-    ) -> Result<(), FoundationError> {
+        connections_created: &AtomicUsize,
+    ) -> Result<SingleIdentityQuicManager, FoundationError> {
         let local_address = socket
             .local_addr()
             .map_err(|_| FoundationError::SocketUnavailable)?;
@@ -549,53 +763,22 @@ mod tests {
             &mut config,
         )
         .map_err(|_| FoundationError::ConnectionUnavailable)?;
+        connections_created.fetch_add(1, Ordering::Relaxed);
 
-        FoundationDriver::new(
+        let driver = FoundationDriver::new(
             socket,
             peer_address,
             connection,
             observation_tx,
             ready_barrier,
-            task_permit,
-        )?
-        .run()
-        .await
+        )?;
+        SingleIdentityQuicManager::start(driver, task_permit)
     }
 
-    async fn finish_tasks(
-        mut client_task: JoinHandle<Result<(), FoundationError>>,
-        mut server_task: JoinHandle<Result<(), FoundationError>>,
-    ) {
-        let joined = timeout(TASK_JOIN_TIMEOUT, async {
-            let client = (&mut client_task).await;
-            let server = (&mut server_task).await;
-            (client, server)
-        })
-        .await;
-
-        match joined {
-            Ok((client, server)) => {
-                fixed_ok(
-                    fixed_ok(client, "join loopback H3 client task"),
-                    "finish loopback H3 client task",
-                );
-                fixed_ok(
-                    fixed_ok(server, "join loopback H3 server task"),
-                    "finish loopback H3 server task",
-                );
-            }
-            Err(_) => {
-                client_task.abort();
-                server_task.abort();
-                let _ = client_task.await;
-                let _ = server_task.await;
-                panic!("stop loopback H3 tasks within fixed timeout");
-            }
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn native_h3_loopback_proves_tls_settings_bounds_and_shutdown() {
+    async fn start_loopback_pair(
+        client_task_budget: &ConnectionTaskBudget,
+        server_task_budget: &ConnectionTaskBudget,
+    ) -> LoopbackPair {
         let temp = fixed_ok(TempDir::new(), "create temporary certificate directory");
         let cert_path = temp.path().join("cert.pem");
         let key_path = temp.path().join("key.pem");
@@ -615,7 +798,7 @@ mod tests {
         let key = fixed_some(key_path.to_str(), "read temporary key path");
 
         let mut server_config = fixed_ok(
-            bounded_quic_config(false),
+            bounded_self_signed_loopback_quic_config(),
             "build bounded loopback H3 server configuration",
         );
         fixed_ok(
@@ -627,7 +810,7 @@ mod tests {
             "load temporary loopback key",
         );
         let client_config = fixed_ok(
-            bounded_quic_config(false),
+            bounded_self_signed_loopback_quic_config(),
             "build bounded loopback H3 client configuration",
         );
 
@@ -640,52 +823,140 @@ mod tests {
             UdpSocket::bind("127.0.0.1:0").await,
             "bind loopback H3 client",
         );
+        let client_address = fixed_ok(client_socket.local_addr(), "read loopback client address");
 
-        let task_budget = ConnectionTaskBudget::new();
-        let server_permit = fixed_ok(task_budget.try_acquire(), "reserve loopback H3 server task");
-        let client_permit = fixed_ok(task_budget.try_acquire(), "reserve loopback H3 client task");
+        let server_permit = fixed_ok(
+            server_task_budget.try_acquire(),
+            "reserve loopback H3 server task",
+        );
+        let client_permit = fixed_ok(
+            client_task_budget.try_acquire(),
+            "reserve loopback H3 client task",
+        );
         let ready_barrier = Arc::new(Barrier::new(2));
-        let (server_tx, mut server_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
-        let (client_tx, mut client_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+        let (server_tx, server_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+        let (client_tx, client_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+        let client_connections_created = Arc::new(AtomicUsize::new(0));
 
-        let server_task = tokio::spawn(run_server(
+        let server_setup = start_server(
             server_socket,
             server_config,
             server_tx,
             Arc::clone(&ready_barrier),
             server_permit,
-        ));
-        let client_task = tokio::spawn(run_client(
-            client_socket,
-            server_address,
-            client_config,
-            client_tx,
-            ready_barrier,
-            client_permit,
-        ));
-
-        let client = fixed_some(
+        );
+        let client = fixed_ok(
+            start_client(
+                client_socket,
+                server_address,
+                client_config,
+                client_tx,
+                ready_barrier,
+                client_permit,
+                &client_connections_created,
+            ),
+            "start managed loopback H3 client",
+        );
+        let server = fixed_ok(
             fixed_ok(
-                timeout(CONNECTION_RUN_TIMEOUT, client_rx.recv()).await,
+                timeout(CONNECTION_RUN_TIMEOUT, server_setup).await,
+                "complete loopback H3 server setup",
+            ),
+            "start managed loopback H3 server",
+        );
+
+        LoopbackPair {
+            _temp: temp,
+            client,
+            server,
+            client_observation_rx,
+            server_observation_rx,
+            client_connections_created,
+            client_address,
+            server_address,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_h3_loopback_proves_tls_settings_bounds_and_shutdown() {
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_loopback_pair(&task_budget, &task_budget).await;
+        let client_observation = fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.client_observation_rx.recv()).await,
                 "wait for loopback H3 client observation",
             ),
             "receive loopback H3 client observation",
         );
-        let server = fixed_some(
+        let server_observation = fixed_some(
             fixed_ok(
-                timeout(CONNECTION_RUN_TIMEOUT, server_rx.recv()).await,
+                timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
                 "wait for loopback H3 server observation",
             ),
             "receive loopback H3 server observation",
         );
-        finish_tasks(client_task, server_task).await;
+        let first_lease = fixed_ok(
+            pair.client.acquire().await,
+            "acquire first single-identity H3 lease",
+        );
+        let generation = first_lease.generation();
+        assert_eq!(
+            pair.client.acquire().await.err(),
+            Some(FoundationError::LeaseUnavailable)
+        );
+        first_lease.release();
+        let second_lease = fixed_ok(
+            pair.client.acquire().await,
+            "acquire reused single-identity H3 lease",
+        );
+        assert_eq!(second_lease.generation(), generation);
+        assert_eq!(pair.client_connections_created.load(Ordering::Relaxed), 1);
+        second_lease.release();
+
+        let client_sender = fixed_some(
+            pair.client.command_tx.as_ref(),
+            "read managed client command sender",
+        )
+        .downgrade();
+        let server_sender = fixed_some(
+            pair.server.command_tx.as_ref(),
+            "read managed server command sender",
+        )
+        .downgrade();
+        let (client_close, server_close) = tokio::join!(pair.client.close(), pair.server.close());
+        fixed_ok(client_close, "close managed loopback H3 client");
+        fixed_ok(server_close, "close managed loopback H3 server");
 
         assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
-        assert_eq!(client.channel_binding, server.channel_binding);
-        assert!(client.alpn_h3 && server.alpn_h3);
-        assert!(!client.early_data && !server.early_data);
-        assert_ne!(client.negotiated_group, NegotiatedGroup::OtherOrUnknown);
-        assert_eq!(client.negotiated_group, server.negotiated_group);
+        assert!(client_sender.upgrade().is_none());
+        assert!(server_sender.upgrade().is_none());
+        assert_eq!(
+            pair.client.acquire().await.err(),
+            Some(FoundationError::ManagerClosed)
+        );
+        drop(fixed_ok(
+            UdpSocket::bind(pair.client_address).await,
+            "reclaim managed loopback H3 client socket",
+        ));
+        drop(fixed_ok(
+            UdpSocket::bind(pair.server_address).await,
+            "reclaim managed loopback H3 server socket",
+        ));
+
+        assert_eq!(
+            client_observation.channel_binding,
+            server_observation.channel_binding
+        );
+        assert!(client_observation.alpn_h3 && server_observation.alpn_h3);
+        assert!(!client_observation.early_data && !server_observation.early_data);
+        assert_ne!(
+            client_observation.negotiated_group,
+            NegotiatedGroup::OtherOrUnknown
+        );
+        assert_eq!(
+            client_observation.negotiated_group,
+            server_observation.negotiated_group
+        );
         let expected_quic = PeerQuicLimits {
             max_idle_timeout_ms: MAX_IDLE_TIMEOUT.as_millis() as u64,
             max_udp_payload_bytes: MAX_UDP_PAYLOAD_BYTES as u64,
@@ -699,8 +970,8 @@ mod tests {
             active_connection_id_limit: ACTIVE_CONNECTION_ID_LIMIT,
             max_datagram_frame_bytes: Some(MAX_DATAGRAM_FRAME_BYTES),
         };
-        assert_eq!(client.peer_quic, expected_quic);
-        assert_eq!(server.peer_quic, expected_quic);
+        assert_eq!(client_observation.peer_quic, expected_quic);
+        assert_eq!(server_observation.peer_quic, expected_quic);
         let expected_settings = PeerH3Settings {
             max_field_section_size: Some(MAX_FIELD_SECTION_BYTES),
             qpack_max_table_capacity: Some(QPACK_MAX_TABLE_CAPACITY),
@@ -708,11 +979,13 @@ mod tests {
             extended_connect: true,
             datagram: true,
         };
-        assert_eq!(client.peer_h3, expected_settings);
-        assert_eq!(server.peer_h3, expected_settings);
+        assert_eq!(client_observation.peer_h3, expected_settings);
+        assert_eq!(server_observation.peer_h3, expected_settings);
 
         assert_eq!(MAX_UDP_PAYLOAD_BYTES, 1_350);
         assert_eq!(SEND_CAPACITY_FACTOR, 1.0);
+        assert_eq!(COMMAND_QUEUE_LIMIT, 1);
+        assert_eq!(CONNECTION_LEASE_LIMIT, 1);
         assert_eq!(DATAGRAM_QUEUE_LIMIT, 32);
         assert_eq!(INITIAL_CONNECTION_WINDOW_BYTES, 1_048_576);
         assert_eq!(MAX_BIDI_STREAMS, 8);
@@ -723,6 +996,69 @@ mod tests {
         assert_eq!(MAX_PRIORITY_UPDATE_BYTES, 256);
         assert_eq!(ACTIVE_CONNECTION_ID_LIMIT, 2);
         assert_eq!(PATH_CHALLENGE_QUEUE_LIMIT, 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn manager_drop_cancels_driver_and_reclaims_owned_resources() {
+        let client_task_budget = ConnectionTaskBudget::new();
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_loopback_pair(&client_task_budget, &server_task_budget).await;
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.client_observation_rx.recv()).await,
+                "wait for managed H3 client readiness",
+            ),
+            "receive managed H3 client readiness",
+        );
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
+                "wait for managed H3 server readiness",
+            ),
+            "receive managed H3 server readiness",
+        );
+
+        let mut remaining_permits = Vec::with_capacity(CONNECTION_TASK_LIMIT - 1);
+        for _ in 1..CONNECTION_TASK_LIMIT {
+            remaining_permits.push(fixed_ok(
+                client_task_budget.try_acquire(),
+                "reserve remaining client task capacity",
+            ));
+        }
+        let client_sender = fixed_some(
+            pair.client.command_tx.as_ref(),
+            "read managed client command sender",
+        )
+        .downgrade();
+        let client_address = pair.client_address;
+        drop(pair.client);
+
+        let reclaimed_permit = fixed_ok(
+            timeout(
+                DRIVER_JOIN_TIMEOUT,
+                client_task_budget.permits.clone().acquire_owned(),
+            )
+            .await,
+            "reclaim dropped manager task permit",
+        );
+        let reclaimed_permit = fixed_ok(reclaimed_permit, "hold reclaimed manager task permit");
+        assert!(client_sender.upgrade().is_none());
+        drop(fixed_ok(
+            UdpSocket::bind(client_address).await,
+            "reclaim dropped manager socket",
+        ));
+
+        fixed_ok(pair.server.close().await, "close drop-test H3 server");
+        drop(reclaimed_permit);
+        drop(remaining_permits);
+        assert_eq!(
+            client_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
     }
 
     #[tokio::test]
@@ -761,6 +1097,16 @@ mod tests {
         ));
         assert_eq!(rx.recv().await, Some(observation));
 
+        let (command_tx, _command_rx) = mpsc::channel(COMMAND_QUEUE_LIMIT);
+        fixed_ok(
+            try_send_driver_command(&command_tx, DriverCommand::Close),
+            "fill bounded manager command queue",
+        );
+        assert_eq!(
+            try_send_driver_command(&command_tx, DriverCommand::Close).err(),
+            Some(FoundationError::CommandQueueUnavailable)
+        );
+
         let task_budget = ConnectionTaskBudget::new();
         let mut permits = Vec::with_capacity(CONNECTION_TASK_LIMIT);
         for _ in 0..CONNECTION_TASK_LIMIT {
@@ -782,6 +1128,10 @@ mod tests {
         let cases = [
             (FoundationError::AlpnMismatch, "native H3 ALPN mismatch"),
             (
+                FoundationError::CommandQueueUnavailable,
+                "native H3 command queue unavailable",
+            ),
+            (
                 FoundationError::ConnectionUnavailable,
                 "native H3 connection unavailable",
             ),
@@ -799,6 +1149,11 @@ mod tests {
                 FoundationError::H3Unavailable,
                 "native H3 connection unavailable",
             ),
+            (
+                FoundationError::LeaseUnavailable,
+                "native H3 lease unavailable",
+            ),
+            (FoundationError::ManagerClosed, "native H3 manager closed"),
             (
                 FoundationError::ObservationQueueUnavailable,
                 "native H3 observation queue unavailable",

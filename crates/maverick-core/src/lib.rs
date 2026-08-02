@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod auth_v3;
 pub mod config;
 pub mod crypto;
 pub mod diagnostics;

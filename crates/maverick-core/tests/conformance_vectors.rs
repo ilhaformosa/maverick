@@ -8,6 +8,21 @@ use maverick_core::auth::{
     CLIENT_HELLO_AUTH_LABEL, CLIENT_HELLO_V2_AUTH_LABEL, SERVER_HELLO_AUTH_LABEL,
     SERVER_HELLO_V2_AUTH_LABEL,
 };
+use maverick_core::auth_v3::{
+    encode_auth_v3_client_control, encode_auth_v3_server_confirmation,
+    parse_auth_v3_client_control as parse_production_auth_v3_client_control,
+    parse_auth_v3_server_confirmation as parse_production_auth_v3_server_confirmation,
+    validate_auth_v3_trusted_profiles,
+    verify_auth_v3_client_control as verify_production_auth_v3_client_control,
+    verify_auth_v3_server_confirmation as verify_production_auth_v3_server_confirmation,
+    AuthV3Carrier, AuthV3ClientControlInput, AuthV3ClientReceipt, AuthV3Error,
+    AuthV3ServerConfirmationInput, AuthV3TlsVersion,
+    AuthV3TrustedConnectionContext as ProductionAuthV3TrustedConnectionContext,
+    AuthV3TrustedProfile, AUTH_V3_CLIENT_CONTROL_LEN as PRODUCTION_AUTH_V3_CLIENT_CONTROL_LEN,
+    AUTH_V3_EXPORTER_LABEL as PRODUCTION_AUTH_V3_EXPORTER_LABEL,
+    AUTH_V3_EXPORTER_LEN as PRODUCTION_AUTH_V3_EXPORTER_LEN,
+    AUTH_V3_SERVER_CONFIRMATION_LEN as PRODUCTION_AUTH_V3_SERVER_CONFIRMATION_LEN,
+};
 use maverick_core::frame::ErrorCode;
 use maverick_core::frame::FRAME_HEADER_LEN;
 use maverick_core::replay::ReplayCache;
@@ -51,6 +66,89 @@ const AUTH_V3_POLICY_HASH_LABEL: &[u8] = b"Maverick auth v3 policy hash";
 const AUTH_V3_CLIENT_TRANSCRIPT_LABEL: &[u8] = b"Maverick auth v3 client control transcript";
 const AUTH_V3_CLIENT_COMMITMENT_LABEL: &[u8] = b"Maverick auth v3 client control commitment";
 const AUTH_V3_SERVER_TRANSCRIPT_LABEL: &[u8] = b"Maverick auth v3 server confirmation transcript";
+
+#[test]
+fn auth_v3_production_fixed_lengths_match_frozen_contract() {
+    assert_eq!(PRODUCTION_AUTH_V3_CLIENT_CONTROL_LEN, 256);
+    assert_eq!(PRODUCTION_AUTH_V3_SERVER_CONFIRMATION_LEN, 320);
+    assert_eq!(
+        PRODUCTION_AUTH_V3_EXPORTER_LABEL,
+        b"EXPORTER-Channel-Binding"
+    );
+    assert!(!PRODUCTION_AUTH_V3_EXPORTER_LABEL.contains(&0));
+    assert_eq!(PRODUCTION_AUTH_V3_EXPORTER_LEN, 32);
+}
+
+#[test]
+fn auth_v3_production_h2_h3_four_golden_message_flow() {
+    for carrier in [AUTH_V3_H2_CARRIER, AUTH_V3_H3_CARRIER] {
+        let client_vector = match read_vector(auth_v3_client_file_name(carrier)) {
+            Vector::AuthV3DirectClientControl { vector } => vector,
+            _ => panic!("expected auth-v3 client vector"),
+        };
+        let server_vector = match read_vector(auth_v3_server_file_name(carrier)) {
+            Vector::AuthV3DirectServerConfirmation { vector } => vector,
+            _ => panic!("expected auth-v3 server vector"),
+        };
+
+        let client_inputs = auth_v3_inputs_from_client_vector(&client_vector);
+        let expected_client: [u8; AUTH_V3_CLIENT_CONTROL_LEN] =
+            hex_array(&client_vector.encoded_hex);
+        let production_client = build_production_auth_v3_client_control(&client_inputs).unwrap();
+        assert_eq!(production_client, expected_client, "{}", client_vector.id);
+        assert_eq!(
+            parse_production_auth_v3_client_control(&production_client)
+                .unwrap()
+                .carrier(),
+            production_auth_v3_carrier(carrier),
+            "{}",
+            client_vector.id
+        );
+        let client_profile = production_auth_v3_profile(&client_inputs);
+        let client_connection = production_auth_v3_connection(&client_inputs);
+        let verified_client = verify_production_auth_v3_client_control(
+            &production_client,
+            &client_profile,
+            &client_connection,
+            client_inputs.server_now_unix,
+        )
+        .unwrap();
+
+        let server_inputs = auth_v3_inputs_from_server_vector(&server_vector);
+        assert_eq!(
+            hex_array::<AUTH_V3_CLIENT_CONTROL_LEN>(&server_vector.client_control_encoded_hex),
+            production_client,
+            "{}",
+            server_vector.id
+        );
+        let server_connection = production_auth_v3_connection(&server_inputs);
+        let production_server = encode_auth_v3_server_confirmation(
+            verified_client,
+            &server_connection,
+            &production_auth_v3_server_input(&server_inputs),
+        )
+        .unwrap();
+        let expected_server: [u8; AUTH_V3_SERVER_CONFIRMATION_LEN] =
+            hex_array(&server_vector.encoded_hex);
+        assert_eq!(production_server, expected_server, "{}", server_vector.id);
+        assert_eq!(
+            parse_production_auth_v3_server_confirmation(&production_server)
+                .unwrap()
+                .carrier(),
+            production_auth_v3_carrier(carrier),
+            "{}",
+            server_vector.id
+        );
+        verify_production_auth_v3_server_confirmation(
+            &production_server,
+            &production_client,
+            &production_auth_v3_profile(&server_inputs),
+            &server_connection,
+            &production_auth_v3_receipt(&server_inputs),
+        )
+        .unwrap();
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -651,6 +749,7 @@ fn auth_v3_direct_client_rejects_malformed_and_unsafe_inputs() {
     let inputs = auth_v3_test_inputs(AUTH_V3_H2_CARRIER);
     let encoded = build_auth_v3_client_control(&inputs).encoded.to_vec();
     assert!(verify_auth_v3_client_control(&encoded, &inputs).is_ok());
+    assert!(verify_production_auth_v3_client(&encoded, &inputs).is_ok());
 
     let mut cases = vec![
         (mutated(&encoded, 0, 0xff), AuthV3TestError::Header),
@@ -716,6 +815,7 @@ fn auth_v3_direct_client_rejects_malformed_and_unsafe_inputs() {
             verify_auth_v3_client_control(&candidate, &inputs),
             Err(expected)
         );
+        assert_production_auth_v3_client_rejected(&candidate, &inputs, expected);
     }
 
     let mut truncated = encoded.clone();
@@ -724,12 +824,14 @@ fn auth_v3_direct_client_rejects_malformed_and_unsafe_inputs() {
         verify_auth_v3_client_control(&truncated, &inputs),
         Err(AuthV3TestError::Shape)
     );
+    assert_production_auth_v3_client_rejected(&truncated, &inputs, AuthV3TestError::Shape);
     let mut trailing = encoded.clone();
     trailing.push(0);
     assert_eq!(
         verify_auth_v3_client_control(&trailing, &inputs),
         Err(AuthV3TestError::Shape)
     );
+    assert_production_auth_v3_client_rejected(&trailing, &inputs, AuthV3TestError::Shape);
 
     let mut expired = inputs.clone();
     expired.credential_not_after_unix = expired.server_now_unix;
@@ -737,12 +839,14 @@ fn auth_v3_direct_client_rejects_malformed_and_unsafe_inputs() {
         verify_auth_v3_client_control(&encoded, &expired),
         Err(AuthV3TestError::Credential)
     );
+    assert_production_auth_v3_client_rejected(&encoded, &expired, AuthV3TestError::Credential);
     let mut zero_id = inputs;
     zero_id.principal_id = [0; 16];
     assert_eq!(
         verify_auth_v3_client_control(&encoded, &zero_id),
         Err(AuthV3TestError::Credential)
     );
+    assert_production_auth_v3_client_rejected(&encoded, &zero_id, AuthV3TestError::Credential);
 }
 
 #[test]
@@ -757,6 +861,11 @@ fn auth_v3_direct_requires_trusted_connection_and_exact_registry() {
         verify_auth_v3_client_control(&correctly_macd_h3_claim, &h2_claims_h3),
         Err(AuthV3TestError::Context)
     );
+    assert_production_auth_v3_client_rejected(
+        &correctly_macd_h3_claim,
+        &h2_claims_h3,
+        AuthV3TestError::Context,
+    );
 
     let mut h3_claims_h2 = auth_v3_test_inputs(AUTH_V3_H3_CARRIER);
     h3_claims_h2.wire_carrier = AUTH_V3_H2_CARRIER;
@@ -764,6 +873,11 @@ fn auth_v3_direct_requires_trusted_connection_and_exact_registry() {
     assert_eq!(
         verify_auth_v3_client_control(&correctly_macd_h2_claim, &h3_claims_h2),
         Err(AuthV3TestError::Context)
+    );
+    assert_production_auth_v3_client_rejected(
+        &correctly_macd_h2_claim,
+        &h3_claims_h2,
+        AuthV3TestError::Context,
     );
 
     let mut contexts = Vec::new();
@@ -782,6 +896,11 @@ fn auth_v3_direct_requires_trusted_connection_and_exact_registry() {
     let mut nonempty_exporter_context = h2.clone();
     nonempty_exporter_context.connection.exporter_context = Some(vec![0]);
     contexts.push(nonempty_exporter_context);
+    let mut replacement_generation_claim = h2.clone();
+    replacement_generation_claim
+        .connection
+        .exporter_from_same_generation = false;
+    contexts.push(replacement_generation_claim);
     let mut wrong_deployment = h2.clone();
     wrong_deployment.connection.deployment_profile_id[0] ^= 1;
     contexts.push(wrong_deployment);
@@ -796,28 +915,57 @@ fn auth_v3_direct_requires_trusted_connection_and_exact_registry() {
             verify_auth_v3_client_control(&h2_encoded, &context),
             Err(AuthV3TestError::Context)
         );
+        assert_production_auth_v3_client_rejected(&h2_encoded, &context, AuthV3TestError::Context);
     }
 
     let mut reused_psk = h2.clone();
     reused_psk.deployment_profile_id[0] ^= 1;
     assert_eq!(
-        validate_auth_v3_provisioning_registry(&[h2.clone(), reused_psk]),
+        validate_auth_v3_provisioning_registry(&[h2.clone(), reused_psk.clone()]),
         Err(AuthV3TestError::Credential)
+    );
+    assert_eq!(
+        validate_auth_v3_trusted_profiles(&[
+            production_auth_v3_profile(&h2),
+            production_auth_v3_profile(&reused_psk),
+        ]),
+        Err(AuthV3Error::Credential)
     );
 
     let mut different_psk = h2.clone();
-    different_psk.secret = ALT_TEST_SECRET.to_owned();
+    different_psk.secret = SecretString::new(ALT_TEST_SECRET).unwrap();
     assert_eq!(
-        validate_auth_v3_provisioning_registry(&[h2.clone(), different_psk]),
+        validate_auth_v3_provisioning_registry(&[h2.clone(), different_psk.clone()]),
         Err(AuthV3TestError::Credential)
+    );
+    assert_eq!(
+        validate_auth_v3_trusted_profiles(&[
+            production_auth_v3_profile(&h2),
+            production_auth_v3_profile(&different_psk),
+        ]),
+        Err(AuthV3Error::Credential)
     );
     assert_eq!(
         validate_auth_v3_provisioning_registry(&[h2.clone(), h2.clone()]),
         Err(AuthV3TestError::Credential)
     );
+    assert_eq!(
+        validate_auth_v3_trusted_profiles(&[
+            production_auth_v3_profile(&h2),
+            production_auth_v3_profile(&h2),
+        ]),
+        Err(AuthV3Error::Credential)
+    );
 
     let mut conflicting_profile = h2.clone();
     conflicting_profile.expected_control_path = "/conflicting-test-control".to_owned();
+    assert_eq!(
+        validate_auth_v3_trusted_profiles(&[
+            production_auth_v3_profile(&h2),
+            production_auth_v3_profile(&conflicting_profile),
+        ]),
+        Err(AuthV3Error::Context)
+    );
     assert_eq!(
         validate_auth_v3_provisioning_registry(&[h2, conflicting_profile]),
         Err(AuthV3TestError::Context)
@@ -840,6 +988,11 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
         .encoded
         .to_vec();
     assert!(verify_auth_v3_server_confirmation(&encoded, &client, &inputs).is_ok());
+    assert_eq!(
+        build_production_auth_v3_server_confirmation(&inputs, &client).unwrap(),
+        encoded.as_slice()
+    );
+    assert!(verify_production_auth_v3_server(&encoded, &client, &inputs).is_ok());
 
     let mut server_ahead_by_300 = inputs.clone();
     server_ahead_by_300.client_now_unix = server_ahead_by_300.server_now_unix - 300;
@@ -854,6 +1007,10 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
         &server_ahead_by_300,
     )
     .is_ok());
+    assert!(
+        verify_production_auth_v3_server(&skewed_server, &skewed_client, &server_ahead_by_300,)
+            .is_ok()
+    );
     assert!(auth_v3_valid_server_expiries(
         10_000, 11_800, 96_400, 96_400
     ));
@@ -898,6 +1055,17 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
         &credential_boundary,
     )
     .is_ok());
+    assert_eq!(
+        build_production_auth_v3_server_confirmation(&credential_boundary, &boundary_client)
+            .unwrap(),
+        boundary_server
+    );
+    assert!(verify_production_auth_v3_server(
+        &boundary_server,
+        &boundary_client,
+        &credential_boundary,
+    )
+    .is_ok());
 
     let mut admission_after_credential = inputs.clone();
     admission_after_credential.credential_not_after_unix =
@@ -907,8 +1075,18 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
         Err(AuthV3TestError::Expiry)
     ));
     assert_eq!(
+        build_production_auth_v3_server_confirmation(&admission_after_credential, &client),
+        Err(AuthV3Error::Expiry)
+    );
+    assert_eq!(
         verify_auth_v3_server_confirmation(&encoded, &client, &admission_after_credential),
         Err(AuthV3TestError::Expiry)
+    );
+    assert_production_auth_v3_server_rejected(
+        &encoded,
+        &client,
+        &admission_after_credential,
+        AuthV3Error::Expiry,
     );
 
     let mut hard_after_credential = inputs.clone();
@@ -918,8 +1096,18 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
         Err(AuthV3TestError::Expiry)
     ));
     assert_eq!(
+        build_production_auth_v3_server_confirmation(&hard_after_credential, &client),
+        Err(AuthV3Error::Expiry)
+    );
+    assert_eq!(
         verify_auth_v3_server_confirmation(&encoded, &client, &hard_after_credential),
         Err(AuthV3TestError::Expiry)
+    );
+    assert_production_auth_v3_server_rejected(
+        &encoded,
+        &client,
+        &hard_after_credential,
+        AuthV3Error::Expiry,
     );
 
     let mut cases = vec![
@@ -1001,6 +1189,37 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
             verify_auth_v3_server_confirmation(&candidate, &client, &inputs),
             Err(expected)
         );
+        let production_expected = if expected == AuthV3TestError::Expiry
+            && (read_u64(&candidate, 40) == inputs.server_now_unix + 1_801
+                || read_u64(&candidate, 48) == inputs.server_now_unix + 86_401)
+        {
+            AuthV3Error::Mac
+        } else {
+            production_error_for(expected)
+        };
+        assert_production_auth_v3_server_rejected(
+            &candidate,
+            &client,
+            &inputs,
+            production_expected,
+        );
+        if matches!(
+            expected,
+            AuthV3TestError::Header
+                | AuthV3TestError::Reserved
+                | AuthV3TestError::Policy
+                | AuthV3TestError::Binding
+                | AuthV3TestError::Kex
+                | AuthV3TestError::Capabilities
+                | AuthV3TestError::ResourceClass
+                | AuthV3TestError::Nonce
+                | AuthV3TestError::Sentinel
+        ) {
+            assert_eq!(
+                parse_production_auth_v3_server_confirmation(&candidate).unwrap_err(),
+                production_error_for(expected)
+            );
+        }
     }
 
     let mut truncated = encoded.clone();
@@ -1009,12 +1228,14 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
         verify_auth_v3_server_confirmation(&truncated, &client, &inputs),
         Err(AuthV3TestError::Shape)
     );
+    assert_production_auth_v3_server_rejected(&truncated, &client, &inputs, AuthV3Error::Shape);
     let mut trailing = encoded;
     trailing.push(0);
     assert_eq!(
         verify_auth_v3_server_confirmation(&trailing, &client, &inputs),
         Err(AuthV3TestError::Shape)
     );
+    assert_production_auth_v3_server_rejected(&trailing, &client, &inputs, AuthV3Error::Shape);
 
     let mut client_clock_rejects = inputs.clone();
     client_clock_rejects.client_now_unix = client_clock_rejects.admission_expiry_unix;
@@ -1027,6 +1248,14 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
             &client_clock_rejects,
         ),
         Err(AuthV3TestError::Expiry)
+    );
+    assert_production_auth_v3_server_rejected(
+        &generate_auth_v3_server_confirmation(&client_clock_rejects, &client)
+            .unwrap()
+            .encoded,
+        &client,
+        &client_clock_rejects,
+        AuthV3Error::Time,
     );
 
     let mut overflow = auth_v3_test_inputs(AUTH_V3_H2_CARRIER);
@@ -1041,6 +1270,144 @@ fn auth_v3_direct_server_rejects_malformed_and_unsafe_inputs() {
         generate_auth_v3_server_confirmation(&overflow, &overflow_client),
         Err(AuthV3TestError::Expiry)
     ));
+    let production_overflow_client = build_production_auth_v3_client_control(&overflow).unwrap();
+    assert_eq!(
+        build_production_auth_v3_server_confirmation(&overflow, &production_overflow_client),
+        Err(AuthV3Error::Expiry)
+    );
+}
+
+#[test]
+fn auth_v3_production_enforces_server_and_client_lifetime_caps_directly() {
+    let base = auth_v3_test_inputs(AUTH_V3_H2_CARRIER);
+    let client = build_production_auth_v3_client_control(&base).unwrap();
+
+    let mut admission_1801 = base.clone();
+    admission_1801.admission_expiry_unix = admission_1801.server_now_unix + 1_801;
+    assert_eq!(
+        build_production_auth_v3_server_confirmation(&admission_1801, &client),
+        Err(AuthV3Error::Expiry)
+    );
+
+    let mut hard_86401 = base.clone();
+    hard_86401.hard_expiry_unix = hard_86401.server_now_unix + 86_401;
+    assert_eq!(
+        build_production_auth_v3_server_confirmation(&hard_86401, &client),
+        Err(AuthV3Error::Expiry)
+    );
+
+    let mut admission_2101_at_client = base.clone();
+    admission_2101_at_client.client_now_unix = admission_2101_at_client.server_now_unix - 301;
+    admission_2101_at_client.client_time_unix = admission_2101_at_client.server_now_unix - 1;
+    admission_2101_at_client.admission_expiry_unix =
+        admission_2101_at_client.server_now_unix + 1_800;
+    admission_2101_at_client.hard_expiry_unix = admission_2101_at_client.server_now_unix + 86_399;
+    let admission_client =
+        build_production_auth_v3_client_control(&admission_2101_at_client).unwrap();
+    let admission_server =
+        build_production_auth_v3_server_confirmation(&admission_2101_at_client, &admission_client)
+            .unwrap();
+    assert_production_auth_v3_server_rejected(
+        &admission_server,
+        &admission_client,
+        &admission_2101_at_client,
+        AuthV3Error::Expiry,
+    );
+
+    let mut hard_86701_at_client = base;
+    hard_86701_at_client.client_now_unix = hard_86701_at_client.server_now_unix - 301;
+    hard_86701_at_client.client_time_unix = hard_86701_at_client.server_now_unix - 1;
+    hard_86701_at_client.admission_expiry_unix = hard_86701_at_client.server_now_unix + 1_799;
+    hard_86701_at_client.hard_expiry_unix = hard_86701_at_client.server_now_unix + 86_400;
+    let hard_client = build_production_auth_v3_client_control(&hard_86701_at_client).unwrap();
+    let hard_server =
+        build_production_auth_v3_server_confirmation(&hard_86701_at_client, &hard_client).unwrap();
+    assert_production_auth_v3_server_rejected(
+        &hard_server,
+        &hard_client,
+        &hard_86701_at_client,
+        AuthV3Error::Expiry,
+    );
+}
+
+#[test]
+fn auth_v3_production_verified_client_binds_psk_and_profile_mapping() {
+    let inputs = auth_v3_test_inputs(AUTH_V3_H2_CARRIER);
+    let client = build_production_auth_v3_client_control(&inputs).unwrap();
+    let profile = production_auth_v3_profile(&inputs);
+    let connection = production_auth_v3_connection(&inputs);
+    let verified = verify_production_auth_v3_client_control(
+        &client,
+        &profile,
+        &connection,
+        inputs.server_now_unix,
+    )
+    .unwrap();
+    let production_server = encode_auth_v3_server_confirmation(
+        verified,
+        &connection,
+        &production_auth_v3_server_input(&inputs),
+    )
+    .unwrap();
+    let oracle_server_a = generate_auth_v3_server_confirmation(&inputs, &client)
+        .unwrap()
+        .encoded;
+    assert_eq!(production_server, oracle_server_a);
+
+    let mut same_tuple_other_psk = inputs.clone();
+    same_tuple_other_psk.secret = SecretString::new(ALT_TEST_SECRET).unwrap();
+    let oracle_server_b = generate_auth_v3_server_confirmation(&same_tuple_other_psk, &client)
+        .unwrap()
+        .encoded;
+    assert_ne!(production_server, oracle_server_b);
+    assert_eq!(
+        verify_production_auth_v3_client(&client, &same_tuple_other_psk,),
+        Err(AuthV3Error::Mac)
+    );
+
+    let mut unmatched_profile = inputs.clone();
+    unmatched_profile.principal_id[0] ^= 1;
+    unmatched_profile.secret = SecretString::new(ALT_TEST_SECRET).unwrap();
+    assert_eq!(
+        verify_production_auth_v3_client(&client, &unmatched_profile),
+        Err(AuthV3Error::Identity)
+    );
+
+    let verified_for_server_mismatch = verify_production_auth_v3_client_control(
+        &client,
+        &profile,
+        &connection,
+        inputs.server_now_unix,
+    )
+    .unwrap();
+    let mut wrong_server = inputs.clone();
+    wrong_server.connection.server_identity_id[0] ^= 1;
+    assert_eq!(
+        encode_auth_v3_server_confirmation(
+            verified_for_server_mismatch,
+            &production_auth_v3_connection(&wrong_server),
+            &production_auth_v3_server_input(&inputs),
+        ),
+        Err(AuthV3Error::Context)
+    );
+
+    let verified_for_path_mismatch = verify_production_auth_v3_client_control(
+        &client,
+        &profile,
+        &connection,
+        inputs.server_now_unix,
+    )
+    .unwrap();
+    let mut wrong_path = inputs.clone();
+    wrong_path.connection.control_path = "/replacement-test-control".to_owned();
+    assert_eq!(
+        encode_auth_v3_server_confirmation(
+            verified_for_path_mismatch,
+            &production_auth_v3_connection(&wrong_path),
+            &production_auth_v3_server_input(&inputs),
+        ),
+        Err(AuthV3Error::Context)
+    );
 }
 
 #[test]
@@ -1058,9 +1425,16 @@ fn auth_v3_direct_exporter_generation_and_legacy_isolation() {
         verify_auth_v3_client_control(&h2_client, &h3_exporter_on_h2),
         Err(AuthV3TestError::Mac)
     );
+    assert_production_auth_v3_client_rejected(&h2_client, &h3_exporter_on_h2, AuthV3TestError::Mac);
     assert_eq!(
         verify_auth_v3_server_confirmation(&h2_server, &h2_client, &h3_exporter_on_h2),
         Err(AuthV3TestError::Mac)
+    );
+    assert_production_auth_v3_server_rejected(
+        &h2_server,
+        &h2_client,
+        &h3_exporter_on_h2,
+        AuthV3Error::Mac,
     );
 
     let mut replacement_generation = h2.clone();
@@ -1068,6 +1442,11 @@ fn auth_v3_direct_exporter_generation_and_legacy_isolation() {
     assert_eq!(
         verify_auth_v3_client_control(&h2_client, &replacement_generation),
         Err(AuthV3TestError::Mac)
+    );
+    assert_production_auth_v3_client_rejected(
+        &h2_client,
+        &replacement_generation,
+        AuthV3TestError::Mac,
     );
 
     let mut changed_client_tag = h2_client;
@@ -1093,6 +1472,14 @@ fn auth_v3_direct_exporter_generation_and_legacy_isolation() {
         assert_eq!(
             verify_auth_v3_client_control(&legacy, &h2),
             Err(AuthV3TestError::Shape)
+        );
+        assert_eq!(
+            parse_production_auth_v3_client_control(&legacy).unwrap_err(),
+            AuthV3Error::Shape
+        );
+        assert_eq!(
+            parse_production_auth_v3_server_confirmation(&legacy).unwrap_err(),
+            AuthV3Error::Shape
         );
     }
 
@@ -1160,7 +1547,7 @@ fn different_known_mode(mode: Mode) -> Mode {
 
 #[derive(Clone)]
 struct AuthV3TestInputs {
-    secret: String,
+    secret: SecretString,
     wire_carrier: u8,
     connection: AuthV3TrustedConnectionContext,
     principal_id: [u8; 16],
@@ -1192,6 +1579,7 @@ struct AuthV3TrustedConnectionContext {
     actual_trust_route: u8,
     early_data: bool,
     tls_exporter: [u8; 32],
+    exporter_from_same_generation: bool,
     exporter_context: Option<Vec<u8>>,
     deployment_profile_id: [u8; 16],
     server_identity_id: [u8; 16],
@@ -1349,7 +1737,7 @@ fn auth_v3_test_inputs(carrier: u8) -> AuthV3TestInputs {
     let server_identity_id = seq_array::<16>(0x50);
     let control_path = "/maverick-test-control".to_owned();
     AuthV3TestInputs {
-        secret: TEST_SECRET.to_owned(),
+        secret: SecretString::new(TEST_SECRET).unwrap(),
         wire_carrier: carrier,
         connection: AuthV3TrustedConnectionContext {
             actual_carrier: carrier,
@@ -1357,6 +1745,7 @@ fn auth_v3_test_inputs(carrier: u8) -> AuthV3TestInputs {
             actual_trust_route: AUTH_V3_DIRECT_TRUST_ROUTE,
             early_data: false,
             tls_exporter,
+            exporter_from_same_generation: true,
             exporter_context: Some(Vec::new()),
             deployment_profile_id,
             server_identity_id,
@@ -1383,6 +1772,203 @@ fn auth_v3_test_inputs(carrier: u8) -> AuthV3TestInputs {
         client_max_frame_size_cap: 131_072,
         client_max_concurrent_flows_cap: 256,
     }
+}
+
+fn production_auth_v3_carrier(carrier: u8) -> AuthV3Carrier {
+    match carrier {
+        AUTH_V3_H2_CARRIER => AuthV3Carrier::H2,
+        AUTH_V3_H3_CARRIER => AuthV3Carrier::H3,
+        _ => panic!("unsupported production-test carrier"),
+    }
+}
+
+fn production_auth_v3_profile(inputs: &AuthV3TestInputs) -> AuthV3TrustedProfile<'_> {
+    AuthV3TrustedProfile::new(
+        &inputs.principal_id,
+        &inputs.deployment_profile_id,
+        &inputs.credential_namespace_id,
+        &inputs.expected_server_identity_id,
+        inputs.expected_trust_route == AUTH_V3_DIRECT_TRUST_ROUTE,
+        &inputs.expected_control_path,
+        inputs.credential_epoch,
+        inputs.credential_not_after_unix,
+        &inputs.secret,
+    )
+}
+
+fn production_auth_v3_connection(
+    inputs: &AuthV3TestInputs,
+) -> ProductionAuthV3TrustedConnectionContext<'_> {
+    ProductionAuthV3TrustedConnectionContext::new(
+        production_auth_v3_carrier(inputs.connection.actual_carrier),
+        match inputs.connection.actual_tls_version {
+            AuthV3TestTlsVersion::Tls13 => AuthV3TlsVersion::Tls13,
+            AuthV3TestTlsVersion::Tls12 => AuthV3TlsVersion::Other,
+        },
+        inputs.connection.actual_trust_route == AUTH_V3_DIRECT_TRUST_ROUTE,
+        inputs.connection.early_data,
+        &inputs.connection.tls_exporter,
+        inputs.connection.exporter_from_same_generation,
+        inputs.connection.exporter_context.as_deref(),
+        &inputs.connection.deployment_profile_id,
+        &inputs.connection.server_identity_id,
+        &inputs.connection.control_path,
+    )
+}
+
+fn production_auth_v3_client_input(inputs: &AuthV3TestInputs) -> AuthV3ClientControlInput {
+    AuthV3ClientControlInput::new(
+        production_auth_v3_carrier(inputs.wire_carrier),
+        inputs.client_time_unix,
+        inputs.client_nonce,
+    )
+}
+
+fn production_auth_v3_server_input(inputs: &AuthV3TestInputs) -> AuthV3ServerConfirmationInput {
+    AuthV3ServerConfirmationInput::new(
+        inputs.server_now_unix,
+        inputs.admission_expiry_unix,
+        inputs.hard_expiry_unix,
+        inputs.server_nonce,
+        inputs.session_id,
+        inputs.max_frame_size,
+        inputs.max_concurrent_flows,
+    )
+}
+
+fn production_auth_v3_receipt(inputs: &AuthV3TestInputs) -> AuthV3ClientReceipt {
+    AuthV3ClientReceipt::new(
+        inputs.client_now_unix,
+        inputs.client_max_frame_size_cap,
+        inputs.client_max_concurrent_flows_cap,
+    )
+}
+
+fn build_production_auth_v3_client_control(
+    inputs: &AuthV3TestInputs,
+) -> Result<[u8; AUTH_V3_CLIENT_CONTROL_LEN], AuthV3Error> {
+    encode_auth_v3_client_control(
+        &production_auth_v3_profile(inputs),
+        &production_auth_v3_connection(inputs),
+        &production_auth_v3_client_input(inputs),
+    )
+}
+
+fn verify_production_auth_v3_client(
+    input: &[u8],
+    inputs: &AuthV3TestInputs,
+) -> Result<(), AuthV3Error> {
+    verify_production_auth_v3_client_control(
+        input,
+        &production_auth_v3_profile(inputs),
+        &production_auth_v3_connection(inputs),
+        inputs.server_now_unix,
+    )
+    .map(|_| ())
+}
+
+fn build_production_auth_v3_server_confirmation(
+    inputs: &AuthV3TestInputs,
+    client_control: &[u8],
+) -> Result<[u8; AUTH_V3_SERVER_CONFIRMATION_LEN], AuthV3Error> {
+    let profile = production_auth_v3_profile(inputs);
+    let connection = production_auth_v3_connection(inputs);
+    let verified_client = verify_production_auth_v3_client_control(
+        client_control,
+        &profile,
+        &connection,
+        inputs.server_now_unix,
+    )?;
+    encode_auth_v3_server_confirmation(
+        verified_client,
+        &connection,
+        &production_auth_v3_server_input(inputs),
+    )
+}
+
+fn verify_production_auth_v3_server(
+    input: &[u8],
+    client_control: &[u8],
+    inputs: &AuthV3TestInputs,
+) -> Result<(), AuthV3Error> {
+    verify_production_auth_v3_server_confirmation(
+        input,
+        client_control,
+        &production_auth_v3_profile(inputs),
+        &production_auth_v3_connection(inputs),
+        &production_auth_v3_receipt(inputs),
+    )
+    .map(|_| ())
+}
+
+fn production_error_for(test_error: AuthV3TestError) -> AuthV3Error {
+    match test_error {
+        AuthV3TestError::Shape => AuthV3Error::Shape,
+        AuthV3TestError::Header => AuthV3Error::Header,
+        AuthV3TestError::Reserved => AuthV3Error::Reserved,
+        AuthV3TestError::Policy => AuthV3Error::Policy,
+        AuthV3TestError::Binding => AuthV3Error::Binding,
+        AuthV3TestError::Kex => AuthV3Error::KeyExchange,
+        AuthV3TestError::Capabilities => AuthV3Error::Capabilities,
+        AuthV3TestError::ResourceClass => AuthV3Error::ResourceClass,
+        AuthV3TestError::Context => AuthV3Error::Context,
+        AuthV3TestError::Credential => AuthV3Error::Credential,
+        AuthV3TestError::Epoch => AuthV3Error::Epoch,
+        AuthV3TestError::Time => AuthV3Error::Time,
+        AuthV3TestError::Identity => AuthV3Error::Identity,
+        AuthV3TestError::Nonce => AuthV3Error::Nonce,
+        AuthV3TestError::Sentinel => AuthV3Error::Sentinel,
+        AuthV3TestError::Expiry => AuthV3Error::Expiry,
+        AuthV3TestError::Echo => AuthV3Error::Echo,
+        AuthV3TestError::Limits => AuthV3Error::Limits,
+        AuthV3TestError::Commitment => AuthV3Error::Commitment,
+        AuthV3TestError::Mac => AuthV3Error::Mac,
+        AuthV3TestError::Duplicate | AuthV3TestError::Closed => {
+            panic!("test-only state error has no production primitive variant")
+        }
+    }
+}
+
+fn assert_production_auth_v3_client_rejected(
+    input: &[u8],
+    inputs: &AuthV3TestInputs,
+    expected: AuthV3TestError,
+) {
+    assert_eq!(
+        verify_production_auth_v3_client(input, inputs),
+        Err(production_error_for(expected))
+    );
+    if matches!(
+        expected,
+        AuthV3TestError::Shape
+            | AuthV3TestError::Header
+            | AuthV3TestError::Reserved
+            | AuthV3TestError::Policy
+            | AuthV3TestError::Binding
+            | AuthV3TestError::Kex
+            | AuthV3TestError::Capabilities
+            | AuthV3TestError::ResourceClass
+            | AuthV3TestError::Epoch
+            | AuthV3TestError::Nonce
+            | AuthV3TestError::Sentinel
+    ) {
+        assert_eq!(
+            parse_production_auth_v3_client_control(input).unwrap_err(),
+            production_error_for(expected)
+        );
+    }
+}
+
+fn assert_production_auth_v3_server_rejected(
+    input: &[u8],
+    client_control: &[u8],
+    inputs: &AuthV3TestInputs,
+    expected: AuthV3Error,
+) {
+    assert_eq!(
+        verify_production_auth_v3_server(input, client_control, inputs),
+        Err(expected)
+    );
 }
 
 fn build_auth_v3_client_control(inputs: &AuthV3TestInputs) -> AuthV3ClientMaterial {
@@ -1784,6 +2370,7 @@ fn validate_auth_v3_trusted_context(
         || inputs.expected_trust_route != AUTH_V3_DIRECT_TRUST_ROUTE
         || context.actual_trust_route != AUTH_V3_DIRECT_TRUST_ROUTE
         || context.early_data
+        || !context.exporter_from_same_generation
         || !matches!(&context.exporter_context, Some(value) if value.is_empty())
         || context.deployment_profile_id != inputs.deployment_profile_id
         || context.server_identity_id != inputs.expected_server_identity_id
@@ -1820,7 +2407,8 @@ fn validate_auth_v3_provisioning_registry(
             }
             let same_tuple =
                 auth_v3_trusted_credential_tuple(entry) == auth_v3_trusted_credential_tuple(other);
-            let same_psk = entry.secret.as_bytes() == other.secret.as_bytes();
+            let same_psk =
+                entry.secret.expose_secret().as_bytes() == other.secret.expose_secret().as_bytes();
             if same_tuple || same_psk {
                 return Err(AuthV3TestError::Credential);
             }
@@ -1923,7 +2511,7 @@ fn auth_v3_mac_key(
     let mut salt = Vec::with_capacity(AUTH_V3_HKDF_SALT_LABEL.len() + 8);
     salt.extend_from_slice(AUTH_V3_HKDF_SALT_LABEL);
     salt.extend_from_slice(&inputs.credential_epoch.to_be_bytes());
-    let hkdf = Hkdf::<Sha256>::new(Some(&salt), inputs.secret.as_bytes());
+    let hkdf = Hkdf::<Sha256>::new(Some(&salt), inputs.secret.expose_secret().as_bytes());
     let mut info = Vec::with_capacity(info_label.len() + 96);
     info.extend_from_slice(info_label);
     info.extend_from_slice(principal_commitment);
@@ -1993,25 +2581,16 @@ fn auth_v3_client_control_commitment(input: &[u8]) -> [u8; 32] {
     digest.finalize().into()
 }
 
-fn verify_auth_v3_client_vector(vector: &AuthV3ClientControlVector) {
+fn auth_v3_inputs_from_client_vector(vector: &AuthV3ClientControlVector) -> AuthV3TestInputs {
     let carrier = auth_v3_carrier_id(&vector.carrier);
-    let actual_carrier = auth_v3_carrier_id(&vector.actual_carrier);
-    assert_eq!(carrier, actual_carrier, "{}", vector.id);
-    assert_auth_v3_exporter_metadata(
-        &vector.id,
-        &vector.exporter_label_ascii,
-        vector.exporter_context_present,
-        &vector.exporter_context_hex,
-        vector.exporter_length,
-    );
     let mut inputs = auth_v3_test_inputs(carrier);
     inputs.wire_carrier = carrier;
-    inputs.connection.actual_carrier = actual_carrier;
+    inputs.connection.actual_carrier = auth_v3_carrier_id(&vector.actual_carrier);
     inputs.connection.actual_tls_version = auth_v3_tls_version(&vector.actual_tls_version);
     inputs.expected_trust_route = auth_v3_trust_route(&vector.expected_trust_route);
     inputs.connection.actual_trust_route = auth_v3_trust_route(&vector.actual_trust_route);
     inputs.connection.early_data = vector.early_data;
-    inputs.secret.clone_from(&vector.secret_test_only);
+    inputs.secret = SecretString::new(vector.secret_test_only.clone()).unwrap();
     inputs.connection.exporter_context = vector
         .exporter_context_present
         .then(|| hex_decode(&vector.exporter_context_hex));
@@ -2035,6 +2614,64 @@ fn verify_auth_v3_client_vector(vector: &AuthV3ClientControlVector) {
     inputs.client_time_unix = vector.client_time_unix;
     inputs.server_now_unix = vector.server_now_unix;
     inputs.client_nonce = hex_array(&vector.client_nonce_hex);
+    inputs
+}
+
+fn auth_v3_inputs_from_server_vector(vector: &AuthV3ServerConfirmationVector) -> AuthV3TestInputs {
+    let carrier = auth_v3_carrier_id(&vector.carrier);
+    let mut inputs = auth_v3_test_inputs(carrier);
+    inputs.wire_carrier = carrier;
+    inputs.connection.actual_carrier = auth_v3_carrier_id(&vector.actual_carrier);
+    inputs.connection.actual_tls_version = auth_v3_tls_version(&vector.actual_tls_version);
+    inputs.expected_trust_route = auth_v3_trust_route(&vector.expected_trust_route);
+    inputs.connection.actual_trust_route = auth_v3_trust_route(&vector.actual_trust_route);
+    inputs.connection.early_data = vector.early_data;
+    inputs.secret = SecretString::new(vector.secret_test_only.clone()).unwrap();
+    inputs.connection.exporter_context = vector
+        .exporter_context_present
+        .then(|| hex_decode(&vector.exporter_context_hex));
+    inputs.connection.tls_exporter = hex_array(&vector.tls_exporter_hex);
+    inputs.principal_id = hex_array(&vector.principal_id_hex);
+    inputs.deployment_profile_id = hex_array(&vector.deployment_profile_id_hex);
+    inputs.credential_namespace_id = hex_array(&vector.credential_namespace_id_hex);
+    inputs.connection.deployment_profile_id =
+        hex_array(&vector.connection_deployment_profile_id_hex);
+    inputs.expected_server_identity_id = hex_array(&vector.expected_server_identity_id_hex);
+    inputs.connection.server_identity_id = hex_array(&vector.actual_server_identity_id_hex);
+    inputs
+        .expected_control_path
+        .clone_from(&vector.expected_control_path);
+    inputs
+        .connection
+        .control_path
+        .clone_from(&vector.actual_control_path);
+    inputs.credential_epoch = vector.credential_epoch;
+    inputs.credential_not_after_unix = vector.credential_not_after_unix;
+    inputs.server_now_unix = vector.server_now_unix;
+    inputs.client_now_unix = vector.client_now_unix;
+    inputs.admission_expiry_unix = vector.admission_expiry_unix;
+    inputs.hard_expiry_unix = vector.hard_expiry_unix;
+    inputs.server_nonce = hex_array(&vector.server_nonce_hex);
+    inputs.session_id = hex_array(&vector.session_id_hex);
+    inputs.max_frame_size = vector.max_frame_size;
+    inputs.max_concurrent_flows = vector.max_concurrent_flows;
+    inputs.client_max_frame_size_cap = vector.client_max_frame_size_cap;
+    inputs.client_max_concurrent_flows_cap = vector.client_max_concurrent_flows_cap;
+    inputs
+}
+
+fn verify_auth_v3_client_vector(vector: &AuthV3ClientControlVector) {
+    let carrier = auth_v3_carrier_id(&vector.carrier);
+    let actual_carrier = auth_v3_carrier_id(&vector.actual_carrier);
+    assert_eq!(carrier, actual_carrier, "{}", vector.id);
+    assert_auth_v3_exporter_metadata(
+        &vector.id,
+        &vector.exporter_label_ascii,
+        vector.exporter_context_present,
+        &vector.exporter_context_hex,
+        vector.exporter_length,
+    );
+    let inputs = auth_v3_inputs_from_client_vector(vector);
 
     let material = build_auth_v3_client_control(&inputs);
     assert_eq!(
@@ -2086,6 +2723,22 @@ fn verify_auth_v3_client_vector(vector: &AuthV3ClientControlVector) {
         vector.id
     );
     verify_auth_v3_client_control(&material.encoded, &inputs).unwrap();
+    let production_encoded = build_production_auth_v3_client_control(&inputs).unwrap();
+    assert_eq!(
+        hex_decode(&vector.encoded_hex),
+        production_encoded,
+        "production {}",
+        vector.id
+    );
+    assert_eq!(
+        parse_production_auth_v3_client_control(&production_encoded)
+            .unwrap()
+            .carrier(),
+        production_auth_v3_carrier(carrier),
+        "production {}",
+        vector.id
+    );
+    verify_production_auth_v3_client(&production_encoded, &inputs).unwrap();
 }
 
 fn verify_auth_v3_server_vector(vector: &AuthV3ServerConfirmationVector) {
@@ -2099,44 +2752,7 @@ fn verify_auth_v3_server_vector(vector: &AuthV3ServerConfirmationVector) {
         &vector.exporter_context_hex,
         vector.exporter_length,
     );
-    let mut inputs = auth_v3_test_inputs(carrier);
-    inputs.wire_carrier = carrier;
-    inputs.connection.actual_carrier = actual_carrier;
-    inputs.connection.actual_tls_version = auth_v3_tls_version(&vector.actual_tls_version);
-    inputs.expected_trust_route = auth_v3_trust_route(&vector.expected_trust_route);
-    inputs.connection.actual_trust_route = auth_v3_trust_route(&vector.actual_trust_route);
-    inputs.connection.early_data = vector.early_data;
-    inputs.secret.clone_from(&vector.secret_test_only);
-    inputs.connection.exporter_context = vector
-        .exporter_context_present
-        .then(|| hex_decode(&vector.exporter_context_hex));
-    inputs.connection.tls_exporter = hex_array(&vector.tls_exporter_hex);
-    inputs.principal_id = hex_array(&vector.principal_id_hex);
-    inputs.deployment_profile_id = hex_array(&vector.deployment_profile_id_hex);
-    inputs.credential_namespace_id = hex_array(&vector.credential_namespace_id_hex);
-    inputs.connection.deployment_profile_id =
-        hex_array(&vector.connection_deployment_profile_id_hex);
-    inputs.expected_server_identity_id = hex_array(&vector.expected_server_identity_id_hex);
-    inputs.connection.server_identity_id = hex_array(&vector.actual_server_identity_id_hex);
-    inputs
-        .expected_control_path
-        .clone_from(&vector.expected_control_path);
-    inputs
-        .connection
-        .control_path
-        .clone_from(&vector.actual_control_path);
-    inputs.credential_epoch = vector.credential_epoch;
-    inputs.credential_not_after_unix = vector.credential_not_after_unix;
-    inputs.server_now_unix = vector.server_now_unix;
-    inputs.client_now_unix = vector.client_now_unix;
-    inputs.admission_expiry_unix = vector.admission_expiry_unix;
-    inputs.hard_expiry_unix = vector.hard_expiry_unix;
-    inputs.server_nonce = hex_array(&vector.server_nonce_hex);
-    inputs.session_id = hex_array(&vector.session_id_hex);
-    inputs.max_frame_size = vector.max_frame_size;
-    inputs.max_concurrent_flows = vector.max_concurrent_flows;
-    inputs.client_max_frame_size_cap = vector.client_max_frame_size_cap;
-    inputs.client_max_concurrent_flows_cap = vector.client_max_concurrent_flows_cap;
+    let inputs = auth_v3_inputs_from_server_vector(vector);
 
     let client_control = hex_array(&vector.client_control_encoded_hex);
     let material = generate_auth_v3_server_confirmation(&inputs, &client_control).unwrap();
@@ -2195,6 +2811,23 @@ fn verify_auth_v3_server_vector(vector: &AuthV3ServerConfirmationVector) {
         vector.id
     );
     verify_auth_v3_server_confirmation(&material.encoded, &client_control, &inputs).unwrap();
+    let production_encoded =
+        build_production_auth_v3_server_confirmation(&inputs, &client_control).unwrap();
+    assert_eq!(
+        hex_decode(&vector.encoded_hex),
+        production_encoded,
+        "production {}",
+        vector.id
+    );
+    assert_eq!(
+        parse_production_auth_v3_server_confirmation(&production_encoded)
+            .unwrap()
+            .carrier(),
+        production_auth_v3_carrier(carrier),
+        "production {}",
+        vector.id
+    );
+    verify_production_auth_v3_server(&production_encoded, &client_control, &inputs).unwrap();
 }
 
 fn assert_auth_v3_exporter_metadata(
@@ -2596,7 +3229,7 @@ fn generated_auth_v3_client_control(carrier: u8) -> (&'static str, String) {
   "encoded_hex": "{}"
 }}
 "#,
-            inputs.secret,
+            inputs.secret.expose_secret(),
             hex_encode(inputs.connection.tls_exporter),
             hex_encode(inputs.principal_id),
             hex_encode(inputs.deployment_profile_id),
@@ -2679,7 +3312,7 @@ fn generated_auth_v3_server_confirmation(carrier: u8) -> (&'static str, String) 
   "encoded_hex": "{}"
 }}
 "#,
-            inputs.secret,
+            inputs.secret.expose_secret(),
             hex_encode(inputs.connection.tls_exporter),
             hex_encode(inputs.principal_id),
             hex_encode(inputs.deployment_profile_id),

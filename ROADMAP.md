@@ -17,42 +17,49 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013b-1 — direct auth-v3 canonical docs and executable vectors
+### T013b-2 — production direct auth-v3 core primitive
 
-- **User result:** Freeze one byte-exact, independently reproducible contract
-  for direct H2/H3 connection authentication before any runtime implementation,
-  so later client and server work cannot silently choose different layouts,
-  identities, policy meanings, exporter inputs, or downgrade behavior.
-- **Scope:** Add one direct auth-v3 specification, four neutral canonical H2/H3
-  ClientControl/ServerConfirmation vectors, and strict test-only
-  encoder/parser/verifier coverage. The tests reuse the existing conformance
-  framework and existing SHA-256, HMAC-SHA256, HKDF-SHA256, and Serde
-  dependencies. They check the exact four-part credential tuple against local
-  provisioning and an independent trusted connection context, atomically model
-  the one-control auth slot, and reject unknown values, reserved bits,
-  malformed lengths, transcript or commitment changes, carrier/TLS/profile/path
-  or exporter/generation mismatch, early data, unsafe clock/expiry/limits,
-  legacy bytes, PSK reuse, and duplicate control messages.
-- **Acceptance:** The test-side oracle independently rebuilds and verifies all
-  four fixed messages; H2 and H3 positive vectors and the complete negative
-  matrix pass locked and offline. Existing v1/v2 vector bytes and legacy
-  exporter label remain unchanged. The repository format, core tests, strict
-  core lint, user smoke, and local harness pass; the diff is privacy-safe,
-  changes exactly the authorized seven files, leaves `STATUS.md` unchanged,
-  and ends as one clean local commit.
-- **Out of scope:** Production parser or runtime auth-v3; changes to the current
-  product auth, config, frame, wire, stored-profile, or public API versions;
-  peer-confirmed product results; reconnect/state-transfer proof; server
-  admission or H3 data plane; TLS-terminating-front application sessions or
-  per-flow MACs; PQ/hybrid guarantees; release, publication, CI, or real-network
-  work. These docs and vectors are not a product result and do not define a
-  v1.3 release scope. T015/PQ remains `DEFER`.
-- **Stop conditions:** Stop if this needs an eighth file, a Cargo or lockfile
-  change, a new dependency, production parser/runtime/public API work, a legacy
-  byte or label reinterpretation, fronted/PQ/reconnect/admission/H3-data-plane
-  implementation, a protocol contradiction that cannot be resolved entirely
-  inside docs/tests, an oracle that cannot independently reproduce the golden
-  bytes, or any private data in the diff.
+- **User result:** Give future client, server, H2, and H3 runtime slices one
+  shared production core primitive for the frozen 256-byte `ClientControl` and
+  320-byte `ServerConfirmation`, so they cannot grow separate codecs or treat
+  wire claims as trusted connection facts.
+- **Scope:** Add one stateless `maverick-core` auth-v3 module with fixed-length
+  encoding, strict parsing, and verification against an independent trusted
+  direct-connection context and exact locally provisioned credential tuple.
+  Export the minimal additive API from `maverick-core`; its input structs use
+  constructors instead of public field literals, and its public enums are
+  non-exhaustive so callers keep a fallback match arm as trusted facts and
+  fixed categories evolve. Extend the existing conformance test so its
+  independent T013b-1 oracle remains the external ruler for all four golden
+  vectors and the complete negative matrix. Change exactly `ROADMAP.md`,
+  `crates/maverick-core/src/auth_v3.rs`,
+  `crates/maverick-core/src/lib.rs`, and
+  `crates/maverick-core/tests/conformance_vectors.rs`.
+- **Acceptance:** The production encoder equals all four checked-in JSON
+  messages byte for byte; production parse/verify passes all four positives and
+  rejects malformed, unknown, mismatched-context, wrong-credential, unsafe
+  time/expiry/limit, changed-transcript, replacement-exporter, and legacy
+  inputs. The independent oracle remains separate. Existing v1/v2 bytes and
+  their legacy exporter label remain unchanged. Locked offline core tests,
+  formatting, strict core lint, warning-free core docs, user smoke, local
+  harness, final file audit, and privacy gates pass; `STATUS.md`, Cargo files,
+  the frozen specification, and all four auth-v3 JSON files remain unchanged.
+- **Out of scope:** Runtime enablement or dispatch; atomic generation slots;
+  duplicate-control, close, no-state-transfer, or no-fallback enforcement;
+  connection/admission expiry timers; revocation; session, reconnect, target,
+  flow, or data-plane work; credential provisioning, registry construction, or
+  trusted local exact-profile selection; fronted authentication; release scope;
+  CI, publication, remote, or real-network work. Wire-driven profile selection
+  and trying multiple PSKs are forbidden. Direct H2/H3 runtime integration
+  remains blocked until the later T013c-1 trusted provisioning/selection slice
+  is complete. A production core primitive is not runtime enablement, a
+  peer-confirmed product result, release scope, or PQ proof. T015/PQ remains
+  `DEFER`.
+- **Stop conditions:** Stop if this needs a fifth file, Cargo or lockfile change,
+  new dependency, specification or vector change, v1/v2 reinterpretation,
+  runtime wiring/state, a second client/server codec, loss of the independent
+  test oracle, a protocol contradiction that cannot be resolved inside the
+  four-file slice, or private data in the diff.
 
 This slice is not tied to a release version and does not define release scope.
 

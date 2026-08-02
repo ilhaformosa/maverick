@@ -17,10 +17,25 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No product-code or release slice is queued. Current publication facts live only
-in `STATUS.md`; this queue does not keep a completion ledger. A future slice
-requires either a reproduced Beta failure or a newly owner-defined minimal
-task, and must be placed here before execution.
+### P0-B1 — Reject Private + experimental H3
+
+- **User result:** A configuration cannot promise Private mode while selecting
+  the experimental private POST+DATA H3 carrier.
+- **Scope:** Add symmetric canonical client/server configuration rejection and
+  regression coverage in `crates/maverick-core/src/config.rs`.
+- **Acceptance:** Client `mode: private` and server `mode_default: private`
+  reject `advanced.experimental_h3: true` with the same fixed, privacy-safe
+  error; Private + H2 remains valid; Auto + H3 remains experimental and valid;
+  the existing server Stable + H3 rejection and broader configuration gates
+  continue to pass.
+- **Out of scope:** Dependency upgrades; standard CONNECT or CONNECT-UDP;
+  transport runtime, wire, auth, frame, config-version, stored-schema, release,
+  deployment, or real-network changes; enabling Auto/H3 by default.
+- **Stop conditions:** Stop if either unsafe combination does not reproduce
+  through an otherwise valid canonical fixture, if the fix requires a third
+  file, or if compatibility or repository-local validation cannot be preserved.
+
+This slice is not tied to a release version and does not define release scope.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

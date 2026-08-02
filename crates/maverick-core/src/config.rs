@@ -1225,6 +1225,11 @@ impl ClientAdvancedConfig {
     }
 
     fn validate(&self, mode: Mode) -> Result<()> {
+        if mode == Mode::Private && self.experimental_h3 {
+            return Err(Error::Config(
+                "advanced.experimental_h3 is not allowed in private mode".into(),
+            ));
+        }
         if mode == Mode::Private && self.ech_fallback_policy == EchFallbackPolicy::AllowPlainSni {
             return Err(Error::Config(
                 "advanced.ech_fallback_policy=allow_plain_sni is not allowed in private mode"
@@ -1368,6 +1373,11 @@ impl ServerAdvancedConfig {
     }
 
     fn validate(&self, mode: Mode) -> Result<()> {
+        if mode == Mode::Private && self.experimental_h3 {
+            return Err(Error::Config(
+                "advanced.experimental_h3 is not allowed in private mode".into(),
+            ));
+        }
         if self.max_concurrent_connections == 0 {
             return Err(Error::Config(
                 "advanced.max_concurrent_connections must be greater than zero".into(),
@@ -3841,7 +3851,102 @@ advanced:
             secret.expose_secret()
         );
         let err = ServerConfig::from_yaml_str(&input).unwrap_err();
-        assert!(err.to_string().contains("experimental_h3"));
+        assert_eq!(
+            err.to_string(),
+            "configuration error: advanced.experimental_h3 is not allowed in stable mode"
+        );
+    }
+
+    #[cfg(all(
+        feature = "browser-tls",
+        any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )
+    ))]
+    #[test]
+    fn client_private_mode_rejects_experimental_h3() {
+        let secret = SecretString::generate();
+        let input = canonical_client_yaml(&secret)
+            .replacen("mode: auto", "mode: private", 1)
+            .replacen("advanced:\n", "advanced:\n  experimental_h3: true\n", 1);
+
+        assert_eq!(
+            ClientConfig::from_yaml_str(&input).unwrap_err().to_string(),
+            "configuration error: advanced.experimental_h3 is not allowed in private mode"
+        );
+    }
+
+    #[test]
+    fn server_private_mode_rejects_experimental_h3() {
+        let secret = SecretString::generate();
+        let input = canonical_server_yaml(&secret)
+            .replacen("mode_default: auto", "mode_default: private", 1)
+            .replacen("advanced:\n", "advanced:\n  experimental_h3: true\n", 1);
+
+        assert_eq!(
+            ServerConfig::from_yaml_str(&input).unwrap_err().to_string(),
+            "configuration error: advanced.experimental_h3 is not allowed in private mode"
+        );
+    }
+
+    #[cfg(all(
+        feature = "browser-tls",
+        any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )
+    ))]
+    #[test]
+    fn private_mode_keeps_h2_valid() {
+        let secret = SecretString::generate();
+        let client = canonical_client_yaml(&secret).replacen("mode: auto", "mode: private", 1);
+        let server = canonical_server_yaml(&secret).replacen(
+            "mode_default: auto",
+            "mode_default: private",
+            1,
+        );
+
+        assert!(
+            !ClientConfig::from_yaml_str(&client)
+                .unwrap()
+                .advanced
+                .experimental_h3
+        );
+        assert!(
+            !ServerConfig::from_yaml_str(&server)
+                .unwrap()
+                .advanced
+                .experimental_h3
+        );
+    }
+
+    #[test]
+    fn auto_mode_keeps_experimental_h3_valid() {
+        let secret = SecretString::generate();
+        let client = canonical_client_yaml(&secret).replacen(
+            "advanced:\n",
+            "advanced:\n  experimental_h3: true\n",
+            1,
+        );
+        let server = canonical_server_yaml(&secret).replacen(
+            "advanced:\n",
+            "advanced:\n  experimental_h3: true\n",
+            1,
+        );
+
+        assert!(
+            ClientConfig::from_yaml_str(&client)
+                .unwrap()
+                .advanced
+                .experimental_h3
+        );
+        assert!(
+            ServerConfig::from_yaml_str(&server)
+                .unwrap()
+                .advanced
+                .experimental_h3
+        );
     }
 
     #[test]

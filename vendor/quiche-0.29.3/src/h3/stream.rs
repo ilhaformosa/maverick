@@ -152,8 +152,8 @@ pub struct Stream {
     /// Whether the stream was created locally, or by the peer.
     is_local: bool,
 
-    /// Whether peer-controlled details should be omitted from trace logs.
-    suppress_peer_input_logging: bool,
+    /// Whether trace logging should be suppressed for this H3 stream.
+    suppress_trace_logging: bool,
 
     /// Whether the stream has been remotely initialized.
     remote_initialized: bool,
@@ -234,7 +234,7 @@ impl Stream {
 
             is_local,
 
-            suppress_peer_input_logging: false,
+            suppress_trace_logging: false,
 
             remote_initialized: false,
 
@@ -265,10 +265,8 @@ impl Stream {
         self.state
     }
 
-    pub(super) fn with_peer_input_logging_suppressed(
-        mut self, enabled: bool,
-    ) -> Self {
-        self.suppress_peer_input_logging = enabled;
+    pub(super) fn with_trace_logging_suppressed(mut self, enabled: bool) -> Self {
+        self.suppress_trace_logging = enabled;
         self
     }
 
@@ -609,7 +607,7 @@ impl Stream {
                         super::close_conn_critical_stream(conn)?;
                     }
 
-                    if !self.suppress_peer_input_logging {
+                    if !self.suppress_trace_logging {
                         trace!(
                             "{} read {} bytes on stream {}",
                             conn.trace_id(),
@@ -699,7 +697,7 @@ impl Stream {
             },
         };
 
-        if !self.suppress_peer_input_logging {
+        if !self.suppress_trace_logging {
             trace!(
                 "{} discarded {} bytes on stream {}",
                 conn.trace_id(),

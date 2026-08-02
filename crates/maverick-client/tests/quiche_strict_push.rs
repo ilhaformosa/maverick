@@ -1,6 +1,7 @@
 #![cfg(feature = "unstable-quiche-strict-push-test-support")]
 #![forbid(unsafe_code)]
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, Once};
 
 use quiche::h3;
@@ -9,11 +10,16 @@ use quiche::h3::testing::Session;
 use tempfile::TempDir;
 
 const FRAME_UNEXPECTED_WIRE_CODE: u64 = 0x105;
+const TRACE_SAFE_SENTINEL: &str = "tx frm SETTINGS";
+const TRACE_REQUEST_MARKER: &str = "rq-026b2-marker";
+const TRACE_REQUEST_DEBUG_MARKER: &str =
+    "[114, 113, 45, 48, 50, 54, 98, 50, 45, 109, 97, 114, 107, 101, 114]";
+const TRACE_RESPONSE_MARKER: &str = "rs-026b2-marker";
+const TRACE_RESPONSE_DEBUG_MARKER: &str =
+    "[114, 115, 45, 48, 50, 54, 98, 50, 45, 109, 97, 114, 107, 101, 114]";
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-struct CaptureLogger {
-    lines: Mutex<Vec<String>>,
-}
+struct CaptureLogger;
 
 impl log::Log for CaptureLogger {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
@@ -21,22 +27,36 @@ impl log::Log for CaptureLogger {
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        if self.enabled(record.metadata())
-            && record
-                .module_path()
-                .is_some_and(|path| path.starts_with("quiche::h3"))
-        {
-            self.lines.lock().unwrap().push(record.args().to_string());
+        if !self.enabled(record.metadata()) || !record.target().starts_with("quiche::h3") {
+            return;
         }
+
+        let message = record.args().to_string();
+        H3_TRACE_RECORDS.fetch_add(1, Ordering::Relaxed);
+        if record.target().contains("::qpack") {
+            QPACK_TRACE_RECORDS.fetch_add(1, Ordering::Relaxed);
+        }
+        SAW_TRACE_SAFE_SENTINEL.fetch_or(message.contains(TRACE_SAFE_SENTINEL), Ordering::Relaxed);
+        SAW_TRACE_REQUEST_MARKER.fetch_or(
+            message.contains(TRACE_REQUEST_DEBUG_MARKER),
+            Ordering::Relaxed,
+        );
+        SAW_TRACE_RESPONSE_MARKER.fetch_or(
+            message.contains(TRACE_RESPONSE_DEBUG_MARKER),
+            Ordering::Relaxed,
+        );
     }
 
     fn flush(&self) {}
 }
 
-static CAPTURE_LOGGER: CaptureLogger = CaptureLogger {
-    lines: Mutex::new(Vec::new()),
-};
+static CAPTURE_LOGGER: CaptureLogger = CaptureLogger;
 static LOGGER_INIT: Once = Once::new();
+static H3_TRACE_RECORDS: AtomicUsize = AtomicUsize::new(0);
+static QPACK_TRACE_RECORDS: AtomicUsize = AtomicUsize::new(0);
+static SAW_TRACE_SAFE_SENTINEL: AtomicBool = AtomicBool::new(false);
+static SAW_TRACE_REQUEST_MARKER: AtomicBool = AtomicBool::new(false);
+static SAW_TRACE_RESPONSE_MARKER: AtomicBool = AtomicBool::new(false);
 
 fn serial_test() -> MutexGuard<'static, ()> {
     TEST_LOCK
@@ -49,7 +69,15 @@ fn reset_capture_logger() {
         log::set_logger(&CAPTURE_LOGGER).unwrap();
         log::set_max_level(log::LevelFilter::Trace);
     });
-    CAPTURE_LOGGER.lines.lock().unwrap().clear();
+    clear_capture_logger();
+}
+
+fn clear_capture_logger() {
+    H3_TRACE_RECORDS.store(0, Ordering::Relaxed);
+    QPACK_TRACE_RECORDS.store(0, Ordering::Relaxed);
+    SAW_TRACE_SAFE_SENTINEL.store(false, Ordering::Relaxed);
+    SAW_TRACE_REQUEST_MARKER.store(false, Ordering::Relaxed);
+    SAW_TRACE_RESPONSE_MARKER.store(false, Ordering::Relaxed);
 }
 
 fn session_with_h3_config(h3_config: &h3::Config) -> (TempDir, Session) {
@@ -89,6 +117,73 @@ fn strict_session() -> (TempDir, Session) {
     let mut h3_config = h3::Config::new().unwrap();
     h3_config.set_reject_peer_push_activity(true);
     session_with_h3_config(&h3_config)
+}
+
+fn exercise_bidirectional_trace_path(session: &mut Session) {
+    let request = vec![
+        h3::Header::new(b":method", b"POST"),
+        h3::Header::new(b":scheme", b"https"),
+        h3::Header::new(b":authority", b"synthetic-trace.invalid"),
+        h3::Header::new(b":path", b"/synthetic-trace-path"),
+        h3::Header::new(b"x-synthetic-request", TRACE_REQUEST_MARKER.as_bytes()),
+    ];
+    session.handshake().unwrap();
+    let stream_id = session
+        .client
+        .send_request(&mut session.pipe.client, &request, false)
+        .unwrap();
+    session.advance().unwrap();
+    assert_eq!(
+        session.poll_server(),
+        Ok((
+            stream_id,
+            h3::Event::Headers {
+                list: request,
+                more_frames: true,
+            },
+        ))
+    );
+
+    session
+        .send_arbitrary_stream_data_client(&[0x00], stream_id, false)
+        .unwrap();
+    assert_eq!(session.poll_server(), Err(h3::Error::Done));
+    session
+        .send_arbitrary_stream_data_client(&[0x06], stream_id, false)
+        .unwrap();
+    assert_eq!(session.poll_server(), Ok((stream_id, h3::Event::Data)));
+
+    session
+        .send_arbitrary_stream_data_client(b"abc", stream_id, false)
+        .unwrap();
+    let mut body = [0_u8; 6];
+    assert_eq!(session.recv_body_server(stream_id, &mut body[..3]), Ok(3));
+    session
+        .send_arbitrary_stream_data_client(b"def", stream_id, true)
+        .unwrap();
+    assert_eq!(session.recv_body_server(stream_id, &mut body[3..]), Ok(3));
+    assert_eq!(&body, b"abcdef");
+    assert_eq!(session.poll_server(), Ok((stream_id, h3::Event::Finished)));
+
+    let response = vec![
+        h3::Header::new(b":status", b"200"),
+        h3::Header::new(b"x-synthetic-response", TRACE_RESPONSE_MARKER.as_bytes()),
+    ];
+    session
+        .server
+        .send_response(&mut session.pipe.server, stream_id, &response, true)
+        .unwrap();
+    session.advance().unwrap();
+    assert_eq!(
+        session.poll_client(),
+        Ok((
+            stream_id,
+            h3::Event::Headers {
+                list: response,
+                more_frames: false,
+            },
+        ))
+    );
 }
 
 fn assert_fixed_empty_rejection(error: &quiche::ConnectionError) {
@@ -156,6 +251,30 @@ fn default_false_keeps_existing_push_stream_rejection() {
     session.advance().unwrap();
 
     assert_eq!(session.poll_client(), Err(h3::Error::StreamCreationError));
+}
+
+#[test]
+fn connection_local_trace_gate_is_default_false_and_suppresses_both_roles() {
+    let _guard = serial_test();
+    let default_config = h3::Config::new().unwrap();
+    reset_capture_logger();
+    let (_default_temp, mut default_session) = session_with_h3_config(&default_config);
+    exercise_bidirectional_trace_path(&mut default_session);
+
+    assert!(H3_TRACE_RECORDS.load(Ordering::Relaxed) > 0);
+    assert!(QPACK_TRACE_RECORDS.load(Ordering::Relaxed) > 0);
+    assert!(SAW_TRACE_SAFE_SENTINEL.load(Ordering::Relaxed));
+    assert!(SAW_TRACE_REQUEST_MARKER.load(Ordering::Relaxed));
+    assert!(SAW_TRACE_RESPONSE_MARKER.load(Ordering::Relaxed));
+
+    let mut suppressed_config = h3::Config::new().unwrap();
+    suppressed_config.set_suppress_trace_logging(true);
+    clear_capture_logger();
+    let (_suppressed_temp, mut suppressed_session) = session_with_h3_config(&suppressed_config);
+    exercise_bidirectional_trace_path(&mut suppressed_session);
+
+    assert_eq!(H3_TRACE_RECORDS.load(Ordering::Relaxed), 0);
+    assert_eq!(QPACK_TRACE_RECORDS.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -356,12 +475,11 @@ fn strict_rejection_surfaces_do_not_expose_peer_input() {
             false,
         )
         .unwrap();
-    CAPTURE_LOGGER.lines.lock().unwrap().clear();
+    clear_capture_logger();
 
     let error = session.poll_client().unwrap_err();
     let error_debug = format!("{error:?}");
     let local_error = session.pipe.client.local_error().unwrap();
-    let logs = CAPTURE_LOGGER.lines.lock().unwrap().join("\n");
     let raw_id_decimal = raw_push_id.to_string();
 
     assert_eq!(error, h3::Error::FrameUnexpected);
@@ -376,7 +494,6 @@ fn strict_rejection_surfaces_do_not_expose_peer_input() {
         .reason
         .windows(marker.len())
         .any(|v| v == marker));
-    assert!(!logs.as_bytes().windows(marker.len()).any(|v| v == marker));
-    assert!(!logs.contains(&raw_id_decimal));
-    assert!(logs.is_empty(), "strict rejection emitted an H3 trace");
+    assert_eq!(H3_TRACE_RECORDS.load(Ordering::Relaxed), 0);
+    assert_eq!(QPACK_TRACE_RECORDS.load(Ordering::Relaxed), 0);
 }

@@ -586,6 +586,8 @@ pub struct Config {
     max_priority_update_size: u64,
 
     reject_peer_push_activity: bool,
+
+    suppress_trace_logging: bool,
 }
 
 impl Config {
@@ -600,6 +602,7 @@ impl Config {
             max_priority_update_size:
                 PRIORITY_UPDATE_FRAME_PAYLOAD_MAX_SIZE_DEFAULT,
             reject_peer_push_activity: false,
+            suppress_trace_logging: false,
         })
     }
 
@@ -716,6 +719,17 @@ impl Config {
     /// The default value is `false`.
     pub fn set_reject_peer_push_activity(&mut self, enabled: bool) {
         self.reject_peer_push_activity = enabled;
+    }
+
+    /// Suppresses trace logging for H3 connections created with this
+    /// configuration.
+    ///
+    /// This covers H3 frame, stream, and QPACK trace records. It does not
+    /// suppress QUIC transport logging or qlog output.
+    ///
+    /// The default value is `false`.
+    pub fn set_suppress_trace_logging(&mut self, enabled: bool) {
+        self.suppress_trace_logging = enabled;
     }
 }
 
@@ -1063,6 +1077,8 @@ pub struct Connection {
     max_priority_update_size: u64,
 
     reject_peer_push_activity: bool,
+
+    suppress_trace_logging: bool,
 }
 
 impl Connection {
@@ -1071,6 +1087,9 @@ impl Connection {
     ) -> Result<Connection> {
         let initial_uni_stream_id = if is_server { 0x3 } else { 0x2 };
         let h3_datagram = if enable_dgram { Some(1) } else { None };
+
+        let mut qpack_decoder = qpack::Decoder::new();
+        qpack_decoder.set_suppress_trace_logging(config.suppress_trace_logging);
 
         Ok(Connection {
             is_server,
@@ -1105,7 +1124,7 @@ impl Connection {
             peer_control_stream_id: None,
 
             qpack_encoder: qpack::Encoder::new(),
-            qpack_decoder: qpack::Decoder::new(),
+            qpack_decoder,
 
             local_qpack_streams: Default::default(),
             peer_qpack_streams: Default::default(),
@@ -1122,6 +1141,8 @@ impl Connection {
             max_priority_update_size: config.max_priority_update_size,
 
             reject_peer_push_activity: config.reject_peer_push_activity,
+
+            suppress_trace_logging: config.suppress_trace_logging,
         })
     }
 
@@ -1146,7 +1167,9 @@ impl Connection {
     ) -> Result<Connection> {
         let is_client = !conn.is_server;
         if is_client && !(conn.is_established() || conn.is_in_early_data()) {
-            trace!("{} QUIC connection must be established or in early data before creating an HTTP/3 connection", conn.trace_id());
+            if !config.suppress_trace_logging {
+                trace!("{} QUIC connection must be established or in early data before creating an HTTP/3 connection", conn.trace_id());
+            }
             return Err(Error::InternalError);
         }
 
@@ -1215,8 +1238,8 @@ impl Connection {
                     .unwrap_or(SETTINGS_MAX_FIELD_SECTION_SIZE_DEFAULT),
                 self.max_priority_update_size,
             )
-            .with_peer_input_logging_suppressed(
-                self.reject_peer_push_activity,
+            .with_trace_logging_suppressed(
+                self.reject_peer_push_activity || self.suppress_trace_logging,
             ),
         );
 
@@ -1559,13 +1582,15 @@ impl Connection {
         // Sending header block separately avoids unnecessary copy.
         conn.stream_send(stream_id, &header_block, fin)?;
 
-        trace!(
-            "{} tx frm HEADERS stream={} len={} fin={}",
-            conn.trace_id(),
-            stream_id,
-            header_block.len(),
-            fin
-        );
+        if !self.suppress_trace_logging {
+            trace!(
+                "{} tx frm HEADERS stream={} len={} fin={}",
+                conn.trace_id(),
+                stream_id,
+                header_block.len(),
+                fin
+            );
+        }
 
         qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
             let qlog_headers = headers
@@ -1807,13 +1832,15 @@ impl Connection {
             return Err(Error::InternalError);
         }
 
-        trace!(
-            "{} tx frm DATA stream={} len={} fin={}",
-            conn.trace_id(),
-            stream_id,
-            written,
-            fin
-        );
+        if !self.suppress_trace_logging {
+            trace!(
+                "{} tx frm DATA stream={} len={} fin={}",
+                conn.trace_id(),
+                stream_id,
+                written,
+                fin
+            );
+        }
 
         qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
             let frame = Http3Frame::Data { raw: None };
@@ -2060,12 +2087,14 @@ impl Connection {
         // Sending field value separately avoids unnecessary copy.
         conn.stream_send(control_stream_id, priority_field_value, false)?;
 
-        trace!(
-            "{} tx frm PRIORITY_UPDATE request_stream={} priority_field_value={}",
-            conn.trace_id(),
-            stream_id,
-            field_value,
-        );
+        if !self.suppress_trace_logging {
+            trace!(
+                "{} tx frm PRIORITY_UPDATE request_stream={} priority_field_value={}",
+                conn.trace_id(),
+                stream_id,
+                field_value,
+            );
+        }
 
         qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
             let frame = Http3Frame::PriorityUpdate {
@@ -2197,7 +2226,7 @@ impl Connection {
 
         // Process HTTP/3 data from readable streams.
         for s in conn.readable() {
-            if !self.reject_peer_push_activity {
+            if !self.reject_peer_push_activity && !self.suppress_trace_logging {
                 trace!("{} stream id {} is readable", conn.trace_id(), s);
             }
 
@@ -2283,7 +2312,9 @@ impl Connection {
                 return Err(Error::StreamBlocked);
             }
 
-            trace!("{} tx frm {:?}", conn.trace_id(), frame);
+            if !self.suppress_trace_logging {
+                trace!("{} tx frm {:?}", conn.trace_id(), frame);
+            }
 
             qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
                 let ev_data = EventData::Http3FrameCreated(FrameCreated {
@@ -2434,11 +2465,13 @@ impl Connection {
         let mut b = octets::OctetsMut::with_slice(&mut d);
         conn.stream_send(stream_id, b.put_varint(0)?, false)?;
 
-        trace!(
-            "{} tx frm GREASE stream={} len=0",
-            conn.trace_id(),
-            stream_id
-        );
+        if !self.suppress_trace_logging {
+            trace!(
+                "{} tx frm GREASE stream={} len=0",
+                conn.trace_id(),
+                stream_id
+            );
+        }
 
         qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
             let frame = Http3Frame::Reserved {
@@ -2464,12 +2497,14 @@ impl Connection {
 
         conn.stream_send(stream_id, grease_payload, false)?;
 
-        trace!(
-            "{} tx frm GREASE stream={} len={}",
-            conn.trace_id(),
-            stream_id,
-            grease_payload.len()
-        );
+        if !self.suppress_trace_logging {
+            trace!(
+                "{} tx frm GREASE stream={} len={}",
+                conn.trace_id(),
+                stream_id,
+                grease_payload.len()
+            );
+        }
 
         qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
             let frame = Http3Frame::Reserved {
@@ -2499,7 +2534,9 @@ impl Connection {
             Ok(stream_id) => {
                 conn.stream_send(stream_id, b"GREASE is the word", true)?;
 
-                trace!("{} open GREASE stream {}", conn.trace_id(), stream_id);
+                if !self.suppress_trace_logging {
+                    trace!("{} open GREASE stream {}", conn.trace_id(), stream_id);
+                }
 
                 qlog_with_type!(QLOG_STREAM_TYPE_SET, conn.qlog, q, {
                     let ev_data = EventData::Http3StreamTypeSet(StreamTypeSet {
@@ -2515,7 +2552,9 @@ impl Connection {
             },
 
             Err(Error::IdError) => {
-                trace!("{} GREASE stream blocked", conn.trace_id(),);
+                if !self.suppress_trace_logging {
+                    trace!("{} GREASE stream blocked", conn.trace_id(),);
+                }
 
                 return Ok(());
             },
@@ -2536,7 +2575,9 @@ impl Connection {
             Ok(v) => v,
 
             Err(e) => {
-                trace!("{} Control stream blocked", conn.trace_id(),);
+                if !self.suppress_trace_logging {
+                    trace!("{} Control stream blocked", conn.trace_id(),);
+                }
 
                 if e == Error::Done {
                     return Err(Error::InternalError);
@@ -2590,12 +2631,14 @@ impl Connection {
         if let Some(id) = self.control_stream_id {
             conn.stream_send(id, &d[..off], false)?;
 
-            trace!(
-                "{} tx frm SETTINGS stream={} len={}",
-                conn.trace_id(),
-                id,
-                off
-            );
+            if !self.suppress_trace_logging {
+                trace!(
+                    "{} tx frm SETTINGS stream={} len={}",
+                    conn.trace_id(),
+                    id,
+                    off
+                );
+            }
 
             qlog_with_type!(QLOG_FRAME_CREATED, conn.qlog, q, {
                 let frame = frame.to_qlog();
@@ -2647,8 +2690,8 @@ impl Connection {
                     .unwrap_or(SETTINGS_MAX_FIELD_SECTION_SIZE_DEFAULT),
                 self.max_priority_update_size,
             )
-            .with_peer_input_logging_suppressed(
-                self.reject_peer_push_activity,
+            .with_trace_logging_suppressed(
+                self.reject_peer_push_activity || self.suppress_trace_logging,
             )
         });
 
@@ -2712,11 +2755,13 @@ impl Connection {
                                 return Err(Error::StreamCreationError);
                             }
 
-                            trace!(
-                                "{} open peer's control stream {}",
-                                conn.trace_id(),
-                                stream_id
-                            );
+                            if !self.suppress_trace_logging {
+                                trace!(
+                                    "{} open peer's control stream {}",
+                                    conn.trace_id(),
+                                    stream_id
+                                );
+                            }
 
                             close_conn_if_critical_stream_finished(
                                 conn, stream_id,
@@ -2858,12 +2903,14 @@ impl Connection {
                     // DATA frames are handled uniquely. After this point we lose
                     // visibility of DATA framing, so just log here.
                     if Some(frame::DATA_FRAME_TYPE_ID) == stream.frame_type() {
-                        trace!(
-                            "{} rx frm DATA stream={} wire_payload_len={}",
-                            conn.trace_id(),
-                            stream_id,
-                            payload_len
-                        );
+                        if !self.suppress_trace_logging {
+                            trace!(
+                                "{} rx frm DATA stream={} wire_payload_len={}",
+                                conn.trace_id(),
+                                stream_id,
+                                payload_len
+                            );
+                        }
 
                         qlog_with_type!(QLOG_FRAME_PARSED, conn.qlog, q, {
                             let frame = Http3Frame::Data { raw: None };
@@ -3072,13 +3119,15 @@ impl Connection {
         &mut self, conn: &mut super::Connection<F>, stream_id: u64,
         frame: frame::Frame, payload_len: u64,
     ) -> Result<(u64, Event)> {
-        trace!(
-            "{} rx frm {:?} stream={} payload_len={}",
-            conn.trace_id(),
-            frame,
-            stream_id,
-            payload_len
-        );
+        if !self.suppress_trace_logging {
+            trace!(
+                "{} rx frm {:?} stream={} payload_len={}",
+                conn.trace_id(),
+                frame,
+                stream_id,
+                payload_len
+            );
+        }
 
         qlog_with_type!(QLOG_FRAME_PARSED, conn.qlog, q, {
             // HEADERS frames are special case and will be logged below.
@@ -3349,8 +3398,8 @@ impl Connection {
                             ),
                             self.max_priority_update_size,
                         )
-                        .with_peer_input_logging_suppressed(
-                            self.reject_peer_push_activity,
+                        .with_trace_logging_suppressed(
+                            self.reject_peer_push_activity || self.suppress_trace_logging,
                         )
                     });
 

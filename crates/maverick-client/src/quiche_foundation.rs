@@ -745,6 +745,7 @@ fn bounded_h3_config() -> Result<quiche::h3::Config, FoundationError> {
     // private foundation. It must be enabled before H3 connection creation or
     // any H3 I/O; there is no configuration fallback to quiche's default.
     config.set_reject_peer_push_activity(true);
+    config.set_suppress_trace_logging(true);
     // This bounds the decoded field section at 16 KiB. quiche 0.29.3 allows
     // an encoded temporary header block up to 24 KiB before ExcessiveLoad.
     config.set_max_field_section_size(MAX_FIELD_SECTION_BYTES);
@@ -799,7 +800,9 @@ fn peer_setting(settings: &[(u64, u64)], id: u64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::Once;
 
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, encode_auth_v3_server_confirmation,
@@ -818,8 +821,85 @@ mod tests {
     const T022A_CONTROL_PATH: &str = "/synthetic-h3-auth-v3";
     const T022A_NOW: u64 = 1_800_000_000;
     const T022A_NOT_AFTER: u64 = T022A_NOW + 172_800;
+    const TRACE_SAFE_SENTINEL: &str = "tx frm SETTINGS";
+    const TRACE_REQUEST_MARKER: &str = "rq-026b2-marker";
+    const TRACE_REQUEST_DEBUG_MARKER: &str =
+        "[114, 113, 45, 48, 50, 54, 98, 50, 45, 109, 97, 114, 107, 101, 114]";
+    const TRACE_RESPONSE_MARKER: &str = "rs-026b2-marker";
+    const TRACE_RESPONSE_DEBUG_MARKER: &str =
+        "[114, 115, 45, 48, 50, 54, 98, 50, 45, 109, 97, 114, 107, 101, 114]";
     const LOOPBACK_TEST_LOCK_TIMEOUT: Duration = CONNECTION_RUN_TIMEOUT;
     static LOOPBACK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static TRACE_LOGGER_INIT: Once = Once::new();
+    static H3_TRACE_RECORDS: AtomicUsize = AtomicUsize::new(0);
+    static QPACK_TRACE_RECORDS: AtomicUsize = AtomicUsize::new(0);
+    static SAW_TRACE_SAFE_SENTINEL: AtomicBool = AtomicBool::new(false);
+    static SAW_TRACE_REQUEST_MARKER: AtomicBool = AtomicBool::new(false);
+    static SAW_TRACE_RESPONSE_MARKER: AtomicBool = AtomicBool::new(false);
+
+    thread_local! {
+        static CAPTURE_H3_TRACE_ON_THIS_THREAD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    struct H3TraceLogger;
+
+    impl log::Log for H3TraceLogger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() == log::Level::Trace && metadata.target().starts_with("quiche::h3")
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            let capture = CAPTURE_H3_TRACE_ON_THIS_THREAD.with(Cell::get);
+            if !capture || !self.enabled(record.metadata()) {
+                return;
+            }
+
+            let message = record.args().to_string();
+            H3_TRACE_RECORDS.fetch_add(1, Ordering::Relaxed);
+            if record.target().contains("::qpack") {
+                QPACK_TRACE_RECORDS.fetch_add(1, Ordering::Relaxed);
+            }
+            SAW_TRACE_SAFE_SENTINEL
+                .fetch_or(message.contains(TRACE_SAFE_SENTINEL), Ordering::Relaxed);
+            SAW_TRACE_REQUEST_MARKER.fetch_or(
+                message.contains(TRACE_REQUEST_DEBUG_MARKER),
+                Ordering::Relaxed,
+            );
+            SAW_TRACE_RESPONSE_MARKER.fetch_or(
+                message.contains(TRACE_RESPONSE_DEBUG_MARKER),
+                Ordering::Relaxed,
+            );
+        }
+
+        fn flush(&self) {}
+    }
+
+    static H3_TRACE_LOGGER: H3TraceLogger = H3TraceLogger;
+
+    struct H3TraceCaptureGuard;
+
+    impl Drop for H3TraceCaptureGuard {
+        fn drop(&mut self) {
+            CAPTURE_H3_TRACE_ON_THIS_THREAD.set(false);
+        }
+    }
+
+    fn begin_h3_trace_capture() -> H3TraceCaptureGuard {
+        TRACE_LOGGER_INIT.call_once(|| {
+            assert!(
+                log::set_logger(&H3_TRACE_LOGGER).is_ok(),
+                "install H3 trace capture logger"
+            );
+            log::set_max_level(log::LevelFilter::Trace);
+        });
+        H3_TRACE_RECORDS.store(0, Ordering::Relaxed);
+        QPACK_TRACE_RECORDS.store(0, Ordering::Relaxed);
+        SAW_TRACE_SAFE_SENTINEL.store(false, Ordering::Relaxed);
+        SAW_TRACE_REQUEST_MARKER.store(false, Ordering::Relaxed);
+        SAW_TRACE_RESPONSE_MARKER.store(false, Ordering::Relaxed);
+        CAPTURE_H3_TRACE_ON_THIS_THREAD.set(true);
+        H3TraceCaptureGuard
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum TestStageError {
@@ -870,7 +950,9 @@ mod tests {
     }
 
     #[cfg(feature = "unstable-quiche-strict-push-test-support")]
-    fn foundation_strict_test_session() -> (TempDir, quiche::h3::testing::Session) {
+    fn foundation_test_session_with_h3_config(
+        h3_config: &quiche::h3::Config,
+    ) -> (TempDir, quiche::h3::testing::Session) {
         let temp = fixed_ok(
             TempDir::new(),
             "create strict-gate temporary certificate directory",
@@ -907,12 +989,76 @@ mod tests {
             )),
             "load strict-gate temporary key",
         );
-        let h3_config = fixed_ok(bounded_h3_config(), "build strict H3 configuration");
         let session = fixed_ok(
-            quiche::h3::testing::Session::with_configs(&mut transport, &h3_config),
+            quiche::h3::testing::Session::with_configs(&mut transport, h3_config),
             "build strict-gate paired-role session",
         );
         (temp, session)
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    fn foundation_strict_test_session() -> (TempDir, quiche::h3::testing::Session) {
+        let h3_config = fixed_ok(bounded_h3_config(), "build strict H3 configuration");
+        foundation_test_session_with_h3_config(&h3_config)
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    fn exercise_bidirectional_synthetic_headers(session: &mut quiche::h3::testing::Session) {
+        use quiche::h3::{self, Header};
+
+        fixed_ok(session.handshake(), "handshake trace-gate session");
+        let request = vec![
+            Header::new(b":method", b"POST"),
+            Header::new(b":scheme", b"https"),
+            Header::new(b":authority", b"synthetic-foundation.invalid"),
+            Header::new(b":path", b"/synthetic-foundation-trace"),
+            Header::new(b"x-synthetic-request", TRACE_REQUEST_MARKER.as_bytes()),
+        ];
+        let stream_id = fixed_ok(
+            session
+                .client
+                .send_request(&mut session.pipe.client, &request, true),
+            "send synthetic request headers",
+        );
+        fixed_ok(session.advance(), "advance synthetic request headers");
+        match fixed_ok(session.poll_server(), "poll synthetic request headers") {
+            (
+                received_stream_id,
+                h3::Event::Headers {
+                    list,
+                    more_frames: false,
+                },
+            ) => {
+                assert_eq!(received_stream_id, stream_id);
+                assert_eq!(list, request);
+            }
+            _ => panic!("unexpected synthetic request event"),
+        }
+
+        let response = vec![
+            Header::new(b":status", b"200"),
+            Header::new(b"x-synthetic-response", TRACE_RESPONSE_MARKER.as_bytes()),
+        ];
+        fixed_ok(
+            session
+                .server
+                .send_response(&mut session.pipe.server, stream_id, &response, true),
+            "send synthetic response headers",
+        );
+        fixed_ok(session.advance(), "advance synthetic response headers");
+        match fixed_ok(session.poll_client(), "poll synthetic response headers") {
+            (
+                received_stream_id,
+                h3::Event::Headers {
+                    list,
+                    more_frames: false,
+                },
+            ) => {
+                assert_eq!(received_stream_id, stream_id);
+                assert_eq!(list, response);
+            }
+            _ => panic!("unexpected synthetic response event"),
+        }
     }
 
     async fn bounded_test_lock<'lock>(
@@ -1367,6 +1513,31 @@ mod tests {
             client_rejects.poll_client(),
             Err(h3::Error::FrameUnexpected)
         );
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    #[test]
+    fn foundation_h3_builder_suppresses_all_h3_trace_for_both_roles() {
+        let default_config = fixed_ok(quiche::h3::Config::new(), "build default H3 config");
+        let (_default_temp, mut default_session) =
+            foundation_test_session_with_h3_config(&default_config);
+        let default_capture = begin_h3_trace_capture();
+        exercise_bidirectional_synthetic_headers(&mut default_session);
+        drop(default_capture);
+
+        assert!(H3_TRACE_RECORDS.load(Ordering::Relaxed) > 0);
+        assert!(QPACK_TRACE_RECORDS.load(Ordering::Relaxed) > 0);
+        assert!(SAW_TRACE_SAFE_SENTINEL.load(Ordering::Relaxed));
+        assert!(SAW_TRACE_REQUEST_MARKER.load(Ordering::Relaxed));
+        assert!(SAW_TRACE_RESPONSE_MARKER.load(Ordering::Relaxed));
+
+        let (_foundation_temp, mut foundation_session) = foundation_strict_test_session();
+        let foundation_capture = begin_h3_trace_capture();
+        exercise_bidirectional_synthetic_headers(&mut foundation_session);
+        drop(foundation_capture);
+
+        assert_eq!(H3_TRACE_RECORDS.load(Ordering::Relaxed), 0);
+        assert_eq!(QPACK_TRACE_RECORDS.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

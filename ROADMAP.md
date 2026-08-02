@@ -17,65 +17,55 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T026b-1 — adopt a repository-internal quiche strict peer-push gate
+### T026b-2 — gate vendored quiche H3 trace logging before auth runtime
 
-- **User result:** Maverick's private direct-quiche foundation always enables a
-  reviewed fail-closed H3 setting, so known peer `MAX_PUSH_ID`, `PUSH_PROMISE`,
-  `CANCEL_PUSH`, push-form `PRIORITY_UPDATE`, and push-stream activity cannot
-  stay hidden during later pre-auth direct-H3 runtime work. This removes one
-  foundation blocker only; it does not implement the T026 auth-v3 runtime.
-- **Source, license, and maintenance:** Use a repository-internal, version-pinned
-  library copy under `vendor/quiche-0.29.3`, derived from the exact crates.io
-  archive and its BSD-2-Clause license. Retain the archive checksum, upstream
-  VCS commit, license digest, narrow maintained patches, omissions, and date in
-  the vendor provenance. Do not use a public fork. Maverick maintainers own
-  review, rebasing, and security maintenance of this copy. Keep it excluded
-  from workspace membership so root all-targets do not build upstream examples;
-  sample keys, examples, the FFI build feature, qlog, and unrelated tools stay
-  absent.
-- **Scope:** Change only `ROADMAP.md`, root and client Cargo manifests,
-  `Cargo.lock`, the private `quiche_foundation.rs`, one focused client
-  integration test, and `vendor/quiche-0.29.3/**`. Keep exact quiche 0.29.3 as
-  a repository path dependency and preserve one `boring`/`boring-sys` 4.22.0
-  graph. A clearly named unstable test-support feature may expose quiche's
-  internal in-memory session only to the focused test. `STATUS.md`, public APIs,
-  config, schemas, stored profiles, protocol/auth/frame versions, core, SDK,
-  server crate, and legacy H2 stay byte for byte unchanged.
-- **Acceptance:** Re-hash the source, license, POC patch, and vendor inventory;
-  first reproduce that crates.io 0.29.3 lacks the setter and hides the known
-  push frames. Then prove through real in-memory QUIC/H3 receive paths that
-  strict mode rejects each listed frame or stream before state, QPACK, or TODO
-  acceptance with fixed `FrameUnexpected`, wire code `0x105`, and an empty
-  reason. Cover both peer directions, malformed QPACK input, fragmented
-  non-shortest varint input before SETTINGS, and close propagation. Preserve
-  default-false behavior, existing push-stream behavior, SETTINGS and QPACK
-  request handling, request-form `PRIORITY_UPDATE`, GOAWAY, and unknown/reserved
-  frames. Generate loopback certificates only at test runtime. Prove the one
-  shared foundation H3 builder enables strict mode for both client and server
-  roles before connection creation or H3 I/O, with no configuration fallback.
-  Strict errors, sources, and H3 trace output must not expose peer-controlled
-  values. Offline metadata/tree, lock review, tests, formatting, lint, rustdoc,
-  smoke, harness, dependency inventory, deny, audit, exact-file, privacy, and
-  `STATUS.md` blob gates must pass before one local commit.
-- **Runtime and truth boundary:** This gate does not handle GOAWAY,
-  request-form `PRIORITY_UPDATE`, Datagrams, or other pre-auth events and state.
-  T026 runtime must still inspect quiche's separate bounded Datagram receive
-  queue before any final authentication state transition. qlog remains disabled,
-  and the outer quiche logging/privacy boundary remains in force. This queue is
-  execution order, not a completion ledger; `STATUS.md` remains the only
-  current product truth and authorization source.
-- **Out of scope:** T026 auth-v3 runtime, CONNECT or Extended CONNECT, authority,
-  target, DNS, egress, relay, user DATA or Datagram payload, fallback, public
-  API or configuration, new protocol/framework work, user-visible H3, release,
-  CI, remote, deployment, real-network, and system-network changes remain
-  deferred.
-- **Stop conditions:** Stop if exact source or license provenance cannot be
-  proven; the patch needs QUIC/TLS core, dependencies, unsafe code, a second
-  quiche/BoringSSL, qlog, string parsing, public API, config/schema/version, or
-  another repository file; the path source fails the existing deny policy; any
-  known push activity still returns `Done`; compatibility, unknown/reserved,
-  privacy, dependency, or full local gates regress; tests need a committed key;
-  or target/DNS/CONNECT/relay/user-data capability is introduced.
+- **User result:** Before Maverick creates either role of an H3 connection or
+  performs H3 I/O, its private shared quiche foundation enables a reviewed,
+  connection-local, fail-closed privacy gate. For that connection, quiche H3
+  and QPACK trace calls are not reached, so trace formatting cannot expose peer
+  or local header names and values, encoded header blocks, or H3 stream and
+  connection identifiers. This closes one foundation blocker only; it does not
+  complete T026c or any product H3 runtime.
+- **Scope:** Change only this queue, the private client quiche foundation, its
+  existing strict-push integration proof, the three vendored H3 sources that
+  contain trace calls, the one maintained T026b-2 patch, and vendor provenance.
+  Add one clearly named H3 `Config` boolean and setter that default to `false`,
+  copy the value into each H3 connection, and suppress every H3/QPACK trace
+  before its arguments are formatted. The foundation unconditionally enables
+  both the new privacy gate and the independent T026b-1 peer-push gate. Keep
+  exact quiche 0.29.3, one `boring`/`boring-sys` 4.22.0 graph, and the current
+  Cargo, lock, manifest, API, config, version, protocol, and unsafe boundaries.
+- **Acceptance:** First reproduce with a real in-memory or `127.0.0.1` H3
+  request that the current foundation emits QPACK literal header material to a
+  trace logger. Then use the same real request/response path, SETTINGS/QPACK,
+  and fragmented DATA handling to prove the gate yields zero records for all
+  `quiche::h3` and QPACK trace targets, while default `false` still emits an H3
+  sentinel and neutral synthetic peer markers. Prove both foundation roles use
+  the shared builder by behavior, retain all fourteen strict-push controls and
+  their empty `0x105` rejection, and rebuild the three final vendor source bytes
+  by replaying the maintained patch against the accepted T026b-1 tree. All
+  focused, package, formatting, lint, rustdoc, smoke, harness, dependency,
+  exact-file, privacy, and `STATUS.md` gates must pass before one local commit.
+- **Runtime and truth boundary:** Default `false` preserves quiche 0.29.3 trace
+  behavior outside Maverick's foundation. The gate covers vendored H3 log
+  records only. qlog is disabled and absent from the current dependency graph;
+  explicitly enabling it later would reopen a separate review boundary. Outer
+  QUIC transport logging is also separate. Public H3 header or event values may
+  still be inspected by their caller, so later Maverick runtime must not log
+  peer events with `Debug`. This queue is execution order, not a completion
+  ledger; `STATUS.md` remains the only current product truth and authorization.
+- **Out of scope:** T026c auth-v3 runtime, auth POST state, CONNECT or Extended
+  CONNECT, authority/target/DNS/egress, UDP, relay or user data, fallback,
+  public API/config/schema/version work, qlog, QUIC/TLS core changes, product or
+  release claims, CI, push, PR, tag, publication, remote, deployment,
+  real-network, and system-network work remain deferred. T026c restarts only
+  after this prerequisite is accepted.
+- **Stop conditions:** Stop if complete pre-format suppression needs a fourth
+  vendored source, Cargo/dependency/public API/config/version/unsafe work, qlog,
+  a QUIC transport redesign, real network or private data; if default
+  compatibility, the independent T026b-1 gate, or any full local gate regresses;
+  or if the maintained patch cannot reconstruct the exact authorized three-file
+  vendored delta.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

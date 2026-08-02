@@ -122,12 +122,18 @@ impl FieldListSizeTracker {
 
 /// A QPACK decoder.
 #[derive(Default)]
-pub struct Decoder {}
+pub struct Decoder {
+    suppress_trace_logging: bool,
+}
 
 impl Decoder {
     /// Creates a new QPACK decoder.
     pub fn new() -> Decoder {
         Decoder::default()
+    }
+
+    pub(crate) fn set_suppress_trace_logging(&mut self, enabled: bool) {
+        self.suppress_trace_logging = enabled;
     }
 
     /// Processes control instructions from the encoder.
@@ -147,7 +153,9 @@ impl Decoder {
         let req_insert_count = decode_int(&mut b, 8)?;
         let base = decode_int(&mut b, 7)?;
 
-        trace!("Header count={req_insert_count} base={base}");
+        if !self.suppress_trace_logging {
+            trace!("Header count={req_insert_count} base={base}");
+        }
 
         while b.cap() > 0 {
             let first = b.peek_u8()?;
@@ -161,7 +169,9 @@ impl Decoder {
                     let s = first & STATIC == STATIC;
                     let index = decode_int(&mut b, 6)?;
 
-                    trace!("Indexed index={index} static={s}");
+                    if !self.suppress_trace_logging {
+                        trace!("Indexed index={index} static={s}");
+                    }
 
                     if !s {
                         // TODO: implement dynamic table
@@ -181,7 +191,9 @@ impl Decoder {
                 Representation::IndexedWithPostBase => {
                     let index = decode_int(&mut b, 4)?;
 
-                    trace!("Indexed With Post Base index={index}");
+                    if !self.suppress_trace_logging {
+                        trace!("Indexed With Post Base index={index}");
+                    }
 
                     // TODO: implement dynamic table
                     return Err(Error::InvalidHeaderValue);
@@ -209,9 +221,11 @@ impl Decoder {
 
                     let value = decode_str(&mut b, size_tracker.left() as usize)?;
 
-                    trace!(
-                        "Literal Without Name Reference name={name:?} value={value:?}",
-                    );
+                    if !self.suppress_trace_logging {
+                        trace!(
+                            "Literal Without Name Reference name={name:?} value={value:?}",
+                        );
+                    }
 
                     size_tracker.on_field_part_decoded(value.len() as u64)?;
 
@@ -239,9 +253,11 @@ impl Decoder {
 
                     let value = decode_str(&mut b, size_tracker.left() as usize)?;
 
-                    trace!(
-                        "Literal name_idx={name_idx} static={s} value={value:?}"
-                    );
+                    if !self.suppress_trace_logging {
+                        trace!(
+                            "Literal name_idx={name_idx} static={s} value={value:?}"
+                        );
+                    }
 
                     size_tracker.on_field_part_decoded(value.len() as u64)?;
 
@@ -252,7 +268,9 @@ impl Decoder {
                 },
 
                 Representation::LiteralWithPostBase => {
-                    trace!("Literal With Post Base");
+                    if !self.suppress_trace_logging {
+                        trace!("Literal With Post Base");
+                    }
 
                     // TODO: implement dynamic table
                     return Err(Error::InvalidHeaderValue);

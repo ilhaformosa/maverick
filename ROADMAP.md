@@ -17,51 +17,68 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013c-3c — client-side rustls direct-H2 auth-v3 connection control reference gate
+### T013c-3d — paired rustls direct-H2 auth-v3 loopback reference
 
-- **User result:** One dormant client-only reference seam demonstrates one
-  strict frozen auth-v3 control exchange on one real loopback rustls/TLS 1.3
-  and H2 physical generation, without enabling a product server, user flow, or
+- **User result:** One dormant local reference composes the accepted real
+  client and server gates on one `127.0.0.1` plus ephemeral-port physical
+  generation, so the frozen 256-byte ClientControl and 320-byte
+  ServerConfirmation are mutually verified without enabling a user flow or
   data plane.
-- **Scope:** Add one crate-private client module that accepts only a config-v3
-  H2 client role through rustls, validates the exact raw control carrier before
-  I/O, observes same-generation TLS facts and the RFC 9266 exporter, sends the
-  exact 256-byte control, strictly verifies the exact 320-byte confirmation,
-  and then closes the physical generation. Extract only the narrow rustls
-  CA/pin/WebPKI helper needed to share the legacy client trust logic. Keep every
-  legacy/default client entry point and behavior unchanged and leave
-  `STATUS.md` byte for byte unchanged.
-- **Acceptance:** Real `127.0.0.1` plus ephemeral-port tests cover the positive
-  rustls/H2 exchange, exact request and response mapping, same-generation
-  exporter binding, no early data, the `Fresh -> Authenticating ->
-  Authenticated -> Closed` reference gate, fixed whole-control deadline, and
-  generation-wide physical close after success or every failure. Pre-I/O tests
-  reject H3, non-rustls selection, raw `?` or `#`, a path that cannot round
-  trip byte for byte, and an invalid server name before connect work. Response
-  tests reject wrong metadata, truncated/trailing bodies, trailers, invalid
-  confirmation fields, wrong exporter provenance, and peer stalls. Fixed
-  diagnostics reveal no address, server name, CA path, pin, control path,
-  opaque identity, secret, exporter, nonce, session, or backend error.
-- **Runtime and truth boundary:** The seam is dormant and client-only. It is
-  not called by `run_client`, existing listeners, the legacy H2 connector,
-  connection pool, CLI, SDK, or the default runtime. Loopback evidence is a
-  local reference result, not a working product, production, multi-flow,
-  user-flow, data-plane, or release result. `STATUS.md` remains the sole
-  current-truth and authorization source. This queue is not a completed ledger
-  and does not define v1.3 release scope.
-- **Out of scope:** Product server, pooling, user-flow or data-plane mapping,
-  DNS, egress, targets, relay, fallback, multi-profile or shared connection
-  management, H3/quiche, BrowserMimic/BoringSSL, Auto, fronted routes,
-  revocation, hard-expiry enforcement, CLI, SDK, stored profiles, release,
-  remote, and real-network work remain deferred.
+- **Scope:** Add one empty, non-default client feature named
+  `unstable-direct-v3-reference-test-support` and expose through
+  `maverick-client` only under that feature one public, unstable wrapper around
+  the existing client gate. This slice's design adjudication explicitly
+  accepts that SemVer-observable cross-crate test-support surface as public but
+  outside the stable compatibility promise. The wrapper fixes rustls, accepts
+  the existing
+  `DirectV3ClientRoleConfig`, returns only a fixed success or failure, and
+  returns success only after confirmation verification and physical teardown.
+  Enable that feature only from the server's dev-dependencies. In the existing
+  server direct-H2 test module, bind the real server gate first and pass its
+  actual loopback port into a matching client role. Do not duplicate TLS, H2,
+  auth-v3, or process-coordination machinery.
+- **Acceptance:** The positive paired test uses matching singleton config-v3
+  profile data, opaque identifiers, epoch, synthetic secret, raw path, CA, and
+  certificate pin. One fresh TCP/rustls TLS 1.3/H2 generation carries exactly
+  one control and one confirmation; mutual verification demonstrates the
+  same-generation exporter binding. The server observes no second request and
+  ends `Closed`, while the client wrapper returns success only after teardown.
+  A bounded mismatched synthetic-secret control makes both real gates fail and
+  close without authentication, fallback, retry, target, relay, or data-plane
+  work. Preserve the existing fourteen focused server tests and eight focused
+  client tests. Default and no-default-feature builds must not enable the test
+  feature, and all ordinary local gates remain green.
+- **Runtime and truth boundary:** This is dormant local interoperability
+  evidence only. The fresh TLS no-early-data observation is not resumed-session
+  0-RTT evidence. Immediate physical close is not a graceful-drain result. The
+  opt-in symbol is an acknowledged public API surface, but it is unstable
+  repository test support and is absent from default and no-default-feature
+  product builds. There is no new default or stable product API. Source
+  compatibility risk is limited to downstream code that explicitly enables
+  this unstable feature, and such code is outside the compatibility promise.
+  The wrapper exposes no `SendRequest`, stream, connection, session, receipt,
+  secret, exporter, or capability. This does not establish multi-flow,
+  listener, scheduler, pool, fallback, relay, runtime, user-flow, data-plane,
+  production, release, or real-network results. `STATUS.md` remains byte for
+  byte unchanged and is the sole current-truth and authorization source. This
+  queue is not a completed ledger and does not define v1.3 release scope.
+- **Out of scope:** `run_client`, `run_server`, listeners, schedulers, pools,
+  fallback, relay, targets, DNS, egress, user-flow and data-plane mapping,
+  multi-profile or shared-connection management, H3/quiche,
+  BrowserMimic/BoringSSL, Auto, fronted routes, revocation, hard-expiry
+  enforcement, CLI, SDK, stored profiles, release, remote, system-network, and
+  real-network work remain deferred.
 - **Stop conditions:** The exact changed-file boundary is `ROADMAP.md`,
   `Cargo.lock`, `crates/maverick-client/Cargo.toml`,
-  `crates/maverick-client/src/lib.rs`,
-  `crates/maverick-client/src/h2_transport.rs`, and new
-  `crates/maverick-client/src/direct_v3_h2.rs`; stop and re-adjudicate before
-  changing any other file. Also stop rather than add a stable public runtime
-  API, product-server dependency, wire/vector/schema/version change, legacy
-  behavior change, runtime enablement, remote action, or private data.
+  `crates/maverick-client/src/lib.rs`, `crates/maverick-server/Cargo.toml`, and
+  `crates/maverick-server/src/direct_v3_h2.rs`; stop and re-adjudicate before
+  changing any other file. Also stop rather than change the frozen carrier
+  mapping, wire format, vector, core auth, config schema, or accepted client or
+  server gate implementation; widen the single accepted unstable public seam,
+  promise compatibility for it, add a stable public API, or enable the test
+  seam by default; connect product runtime, data-plane, or fallback work; use
+  developer-sensitive data; or perform any remote, CI, system-network, or
+  real-network action.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

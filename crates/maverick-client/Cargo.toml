@@ -13,6 +13,7 @@ browser-tls = [
   "dep:brotli",
   "dep:tokio-boring",
 ]
+unstable-direct-v3-reference-test-support = []
 ech = ["maverick-core/ech"]
 h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn"]
 quiche-foundation = ["dep:boring", "dep:quiche"]

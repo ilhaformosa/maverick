@@ -662,31 +662,39 @@ async fn send_confirmation(
 mod tests {
     use super::*;
 
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use anyhow::{Context, Result};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
     use h2::client::{ResponseFuture, SendRequest};
     use http::{HeaderMap, HeaderValue};
+    use maverick_client::run_direct_v3_reference_test_support;
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, verify_auth_v3_server_confirmation,
         AuthV3ClientControlInput, AuthV3ClientReceipt,
     };
-    use maverick_core::config::ServerRoleConfig;
+    use maverick_core::config::{ClientRoleConfig, ServerRoleConfig};
     use rustls::pki_types::ServerName;
     use rustls::{ClientConfig, RootCertStore};
+    use sha2::{Digest, Sha256};
     use tempfile::TempDir;
     use tokio::task::JoinHandle;
     use tokio_rustls::TlsConnector;
 
     const TEST_SECRET: &str = "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const ALTERNATE_TEST_SECRET: &str = "mv1_AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
     const TEST_PATH: &str = "/reference-auth-v3";
+    const PAIRED_TEST_TIMEOUT: Duration = Duration::from_secs(7);
     const STALL_TEST_TIMEOUT: Duration = Duration::from_secs(5);
     static TEST_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct TestRole {
         _directory: TempDir,
         role: ServerRoleConfig,
+        cert_path: PathBuf,
         certificate: CertificateDer<'static>,
+        credential_not_after: u64,
     }
 
     struct ClientGeneration {
@@ -716,19 +724,17 @@ mod tests {
         std::fs::write(&key_path, certified.key_pair.serialize_pem())
             .expect("write loopback private key");
         let now = trusted_now().expect("read test clock");
-        let yaml = server_yaml(
-            strategy,
-            path,
-            &cert_path,
-            &key_path,
-            now.checked_add(credential_lifetime)
-                .expect("test credential expiry"),
-        );
+        let credential_not_after = now
+            .checked_add(credential_lifetime)
+            .expect("test credential expiry");
+        let yaml = server_yaml(strategy, path, &cert_path, &key_path, credential_not_after);
         let role = ServerRoleConfig::from_yaml_str(&yaml).expect("parse test server role");
         TestRole {
             _directory: directory,
             role,
+            cert_path,
             certificate: certified.cert.der().clone(),
+            credential_not_after,
         }
     }
 
@@ -780,6 +786,56 @@ auth:
         role.role
             .direct_v3()
             .expect("test role must be config schema 3")
+    }
+
+    fn paired_client_role(
+        server: &TestRole,
+        address: std::net::SocketAddr,
+        secret: &str,
+    ) -> ClientRoleConfig {
+        let cert_pin = format!(
+            "sha256/{}",
+            URL_SAFE_NO_PAD.encode(Sha256::digest(server.certificate.as_ref()))
+        );
+        let yaml = format!(
+            r#"version: 3
+role: client
+security:
+  posture: standard
+transport:
+  strategy: h2
+trust:
+  route: direct_to_maverick
+name_privacy:
+  minimum: plain_sni
+traffic_shaping:
+  policy: disabled
+local:
+  socks5:
+    listen: "127.0.0.1:0"
+server:
+  address: "{address}"
+  server_name: "localhost"
+  tunnel_path: "{TEST_PATH}"
+  ca_cert: "{}"
+  cert_pin: "{cert_pin}"
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding:
+      provisioning_handle: "EREREREREREREREREREREQ"
+      principal_id: "IiIiIiIiIiIiIiIiIiIiIg"
+      deployment_profile_id: "MzMzMzMzMzMzMzMzMzMzMw"
+      credential_namespace_id: "RERERERERERERERERERERA"
+      server_identity_id: "VVVVVVVVVVVVVVVVVVVVVQ"
+      credential_epoch: 7
+      credential_not_after_unix: {}
+      secret: "{secret}"
+"#,
+            server.cert_path.display(),
+            server.credential_not_after,
+        );
+        ClientRoleConfig::from_yaml_str(&yaml).expect("parse paired client role")
     }
 
     async fn connect_client(
@@ -1056,6 +1112,104 @@ auth:
             })
             .sum();
         assert_eq!(total, AUTH_V3_SERVER_CONFIRMATION_LEN);
+    }
+
+    #[tokio::test]
+    async fn paired_real_gates_authenticate_once_then_close_generation() {
+        let _network = TEST_NETWORK_LOCK.lock().await;
+        let role = test_role("h2", TEST_PATH, 3_600);
+        let config = direct_config(&role);
+        let reference = bind_direct_v3_h2_reference(config, DirectV3H2Backend::Rustls)
+            .await
+            .expect("bind paired reference");
+        assert_eq!(reference.tls_config.alpn_protocols, vec![b"h2".to_vec()]);
+        assert_eq!(reference.tls_config.max_early_data_size, 0);
+        assert!(!reference.tls_config.send_half_rtt_data);
+        let address = reference.local_addr().expect("paired reference address");
+        let client_role = paired_client_role(&role, address, TEST_SECRET);
+        let client_config = client_role
+            .direct_v3()
+            .expect("paired client role must be config schema 3");
+
+        let (server, client) = timeout(PAIRED_TEST_TIMEOUT, async {
+            tokio::join!(
+                reference.run_once(),
+                run_direct_v3_reference_test_support(client_config),
+            )
+        })
+        .await
+        .expect("paired real gates exceeded test bound");
+
+        assert_eq!(client, Ok(()));
+        assert_eq!(server.result, Ok(()));
+        assert_eq!(server.state, GenerationState::Closed);
+        assert!(server.observed_exporter.is_some());
+        assert_eq!(
+            server
+                .events
+                .iter()
+                .filter(|event| **event == GenerationEvent::ResponseHeadersAccepted)
+                .count(),
+            1
+        );
+        assert_eq!(
+            server
+                .events
+                .iter()
+                .filter(|event| **event == GenerationEvent::Authenticated)
+                .count(),
+            1
+        );
+        assert_eq!(server.events.last(), Some(&GenerationEvent::Closed));
+        let confirmed_bytes: usize = server
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                GenerationEvent::ResponseDataAccepted { bytes, .. } => Some(bytes.to_owned()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(confirmed_bytes, AUTH_V3_SERVER_CONFIRMATION_LEN);
+    }
+
+    #[tokio::test]
+    async fn paired_real_gates_reject_mismatched_secret_and_close_generation() {
+        let _network = TEST_NETWORK_LOCK.lock().await;
+        let role = test_role("h2", TEST_PATH, 3_600);
+        let config = direct_config(&role);
+        let reference = bind_direct_v3_h2_reference(config, DirectV3H2Backend::Rustls)
+            .await
+            .expect("bind mismatched paired reference");
+        let address = reference
+            .local_addr()
+            .expect("mismatched paired reference address");
+        let client_role = paired_client_role(&role, address, ALTERNATE_TEST_SECRET);
+        let client_config = client_role
+            .direct_v3()
+            .expect("mismatched client role must be config schema 3");
+
+        let (server, client) = timeout(PAIRED_TEST_TIMEOUT, async {
+            tokio::join!(
+                reference.run_once(),
+                run_direct_v3_reference_test_support(client_config),
+            )
+        })
+        .await
+        .expect("mismatched real gates exceeded test bound");
+
+        assert!(client.is_err());
+        assert_eq!(server.result, Err(DirectV3H2Error::Control));
+        assert_eq!(server.state, GenerationState::Closed);
+        assert!(!server.events.contains(&GenerationEvent::Authenticated));
+        assert_eq!(server.events.last(), Some(&GenerationEvent::Closed));
+        assert_eq!(
+            server
+                .events
+                .iter()
+                .filter(|event| **event == GenerationEvent::ResponseHeadersAccepted)
+                .count(),
+            0
+        );
     }
 
     #[tokio::test]

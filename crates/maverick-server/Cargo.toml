@@ -32,6 +32,9 @@ tokio-tungstenite.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
+maverick-client = { path = "../maverick-client", default-features = false, features = ["unstable-direct-v3-reference-test-support"] }
 rcgen.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

@@ -38,6 +38,40 @@ use tracing::{debug, info, warn};
 
 use connection_manager::{ClientTunnelPool, H2ConnectionPoolSnapshot, H2PoolShutdownSnapshot};
 
+/// Fixed failure from opt-in cross-crate direct-v3 reference verification.
+///
+/// This public type is SemVer-observable when the explicitly unstable
+/// `unstable-direct-v3-reference-test-support` feature is enabled. It exists
+/// only for repository cross-crate verification, is outside Maverick's stable
+/// compatibility promise, and must not be used by downstream products.
+/// Default and `--no-default-features` product builds do not enable the
+/// feature. The type carries no capability, secret, exporter, or connection.
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectV3ReferenceTestSupportError;
+
+/// Run opt-in, unstable cross-crate direct-v3 reference verification.
+///
+/// This function is public only so another repository crate can call the real
+/// client gate during verification. Enabling
+/// `unstable-direct-v3-reference-test-support` makes the symbol
+/// SemVer-observable, but it is not a stable compatibility commitment and
+/// downstream products must not depend on it. Default and
+/// `--no-default-features` product builds do not enable the feature.
+///
+/// Success is returned only after confirmation verification and physical
+/// teardown. The fixed result exposes no capability, secret, exporter,
+/// connection, stream, session, or receipt.
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+pub async fn run_direct_v3_reference_test_support(
+    config: &maverick_core::config::DirectV3ClientRoleConfig,
+) -> Result<(), DirectV3ReferenceTestSupportError> {
+    direct_v3_h2::run_direct_v3_h2_reference(config, direct_v3_h2::DirectV3H2Backend::Rustls)
+        .await
+        .result()
+        .map_err(|_| DirectV3ReferenceTestSupportError)
+}
+
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
 fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {

@@ -17,60 +17,70 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T023a-1 — reject pre-auth H3 application activity under bounded admission
+### T026a — freeze direct-H3 auth-v3 connection-control mapping (docs only)
 
-- **User result:** While the auth-v3 product runtime still does not exist, a
-  peer that exchanges only ordinary QUIC/H3 control streams and acceptable
-  SETTINGS can produce one foundation fact observation. Any later
-  application-visible H3 event is rejected with one fixed privacy-safe error
-  and tears down that same connection generation; it cannot produce a second
-  observation, authentication capability, target work, or automatic
-  replacement.
-- **Scope:** Keep admission inside the existing feature-gated
-  `FoundationDriver` H3 polling path. Poll throughout the managed foundation
-  generation, map any successful quiche application event to a fixed
-  `FoundationError`, and never inspect, format, log, or preserve the event,
-  headers, stream ID, path, address, connection ID, backend error, or payload.
-  Reuse the existing task, command, observation, Datagram, QUIC stream/data,
-  connection-ID, path, QPACK/header, socket, handshake, run, response, idle,
-  and join bounds. The focused negative fixture waits for the ordinary fact
-  observation, then uses one bounded test-only trigger to send one headers-only
-  `GET` to the reserved neutral `.invalid` authority solely as a local attack
-  input; it is not a product request seam or capability.
-- **Acceptance:** Preserve the normal same-generation foundation and every
-  T022a exporter-binding test. Record the receiving server generation after
-  its single normal observation. In a strict local timeout, the later malicious
-  event must make that driver return the fixed pre-auth error, close its
-  observation channel without a second observation, refuse later manager
-  acquisition, leave the real server accept count at one, and reclaim its task
-  and socket resources. Repeat the negative test at least three times. Keep all
-  current task/queue, stream/data, QPACK/header, Datagram, connection-ID/path,
-  and timeout bounds unchanged, and retain fixed error `Display`, `Debug`,
-  source-chain, and log privacy checks.
-- **Runtime and truth boundary:** This is crate-private, non-default,
-  loopback-only rejection evidence in a foundation that still has no product
-  auth state, authenticated marker, target, DNS, CONNECT handling, relay, flow,
-  or data plane. Ordinary H3 control streams and SETTINGS are not application
-  activity, and `FoundationObservation` records TLS/H3 facts only; it is not an
-  authenticated marker, capability, or state transition. The synthetic request
-  exists only to attack the rejection gate and must not be described as product
-  request support. This closes only the pre-auth application-event gap and does
-  not complete T023a. `STATUS.md` remains byte for byte unchanged and is the
-  sole current-truth and authorization source. This queue is not a completed
+- **User result:** Freeze one unambiguous, carrier-specific exception to the
+  current fail-closed pre-auth H3 event gate: exactly one ordinary HTTP/3 POST
+  request stream carries the existing 256-byte `ClientControl` and exact
+  320-byte `ServerConfirmation` on the same physical QUIC/TLS generation. The
+  freeze keeps CONNECT, Extended CONNECT, Datagram payload, targets, and every
+  user flow forbidden before complete mutual confirmation.
+- **Scope:** Change only `ROADMAP.md` and `docs/AUTH_V3_DIRECT_SPEC.md`. Specify
+  the exact ordered request and response field sections, byte-for-byte scheme,
+  locally trusted authority, path, content type and content length rules,
+  DATA/FIN completion, atomic generation slot, quiche 0.29.3 event handling,
+  the separate bounded QUIC Datagram receive-queue gate, known push activity
+  that quiche does not expose as distinct public events, same-stream
+  blocked/partial-send retry, generation-wide close, no-fallback behavior,
+  privacy-safe diagnostics, and reuse of the existing T023a resource
+  framework. Record the later smallest
+  runtime-reference file and test boundary, but write no Rust and create no
+  product H3 seam.
+- **Acceptance:** The direct-H3 mapping has one answer for every request and
+  response field, duplicate or unknown field, partial or excessive body,
+  trailer, timeout, reset, QPACK/header failure, concurrent stream, Datagram,
+  GOAWAY, PRIORITY_UPDATE, and unknown application event. Cross-check known
+  non-event `PUSH_PROMISE`, `CANCEL_PUSH`, `MAX_PUSH_ID`, push-form
+  `PRIORITY_UPDATE`, and the push-stream boundary separately from genuinely
+  unknown or reserved frames. Prove that every blocked or partial write remains
+  the same attempt, same bound stream, exact remaining bytes, and existing
+  deadline. Cross-check the
+  frozen direct-H3 carrier ID, 256/320 lengths, RFC 9266 label with
+  present-empty context, exact control path policy, connection generation, and
+  no-0-RTT rule against T013b/T013c/T022a/T023a-1. Preserve the existing
+  direct-H2 mapping byte for byte. Markdown structure, exact-file diff, privacy
+  scan, and `STATUS.md` blob checks must pass.
+- **Runtime and truth boundary:** This slice freezes documentation and work
+  order only. `FoundationObservation` remains a collection of same-connection
+  TLS/H3 facts, not an authentication capability or state transition. The
+  current implementation still rejects every application-visible pre-auth H3
+  event, but quiche Datagrams use a separate connection receive queue and
+  T023a-1 did not prove a Datagram admission gate. The public quiche event API
+  also does not independently surface every known push-related frame or stream
+  activity, so T023a-1 did not prove their strict policy rejection. The current
+  server role also
+  has no independently trusted textual authority input and MUST NOT learn one
+  from request bytes or peer SNI. Until those prerequisites and the sole
+  exception are implemented and tested in separately reviewed work, product H3
+  remains unavailable. `STATUS.md` remains byte for byte unchanged and is the
+  only current-truth and authorization source. This queue is not a completion
   ledger and does not define v1.3 release scope.
-- **Out of scope:** Stateless Retry, multi-connection admission, post-auth
-  quotas, expiry, revocation, auth runtime integration, authenticated state
-  transitions, request handling, CONNECT, target, DNS, egress, relay, fallback,
-  user flow, data plane, Datagram payload, resumed sessions, core/SDK/public
-  API, config, wire, frame, schema, version, release, CI, remote,
-  system-network, and real-network work remain deferred.
-- **Stop conditions:** The exact changed-file boundary is `ROADMAP.md` and
-  `crates/maverick-client/src/quiche_foundation.rs`; stop before changing any
-  third file. Also stop if legal H3 control/SETTINGS cannot be distinguished
-  from application events, a new dependency or public seam is required, the
-  frozen core/wire/config/schema/version must change, or success would require
-  implementing auth runtime, CONNECT, target, DNS, relay, user data, private
-  data, remote action, CI, real networking, or a host-network change.
+- **Out of scope:** Rust, tests, vectors, config, schema, core, public API,
+  protocol/auth/frame versions, legacy H2 behavior, CONNECT, Extended CONNECT,
+  target, DNS, egress, relay, fallback, user flow, data plane, Datagram payload,
+  resumed sessions, T023a-2 Stateless Retry or multi-connection admission,
+  T023b post-auth quota/expiry/revocation, release, CI, remote, system-network,
+  and real-network work remain deferred.
+- **Stop conditions:** Stop before changing a third file or `STATUS.md`; before
+  changing the frozen 256/320 wire bytes, vectors, labels, context, carrier ID,
+  config/schema/auth/frame/protocol version, core primitive, or H2 mapping; or
+  if quiche cannot express the one strict mapping without accepting pre-auth
+  CONNECT, target, user DATA/Datagram, a second resource framework, private
+  data, remote action, CI, real networking, or a host-network change. Also stop
+  if the public API or a separately reviewed narrow observable/reject seam
+  cannot reject every forbidden known push activity hidden from public H3
+  events; do not classify those known activities as ignorable unknown or
+  reserved frames.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

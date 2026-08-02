@@ -583,6 +583,376 @@ canonical vectors, auth/config/frame/stored schemas, legacy exporter label,
 legacy `None` exporter context, or legacy behavior. Legacy `application/grpc`
 plus framed ClientHello/ServerHello retains its current meaning.
 
+### 11.3 Frozen direct-H3 control carrier mapping
+
+This subsection freezes the only future direct-H3 auth-v3 application-event
+exception. It does not implement that exception. The current T023a-1
+foundation still rejects every application-visible pre-auth H3 `Event`.
+quiche's H3 `poll()` does not report QUIC Datagrams: they arrive through the
+separate `quiche::Connection::dgram_recv` queue, and T023a-1 did not prove a
+pre-auth Datagram queue gate. Product H3 remains unavailable until a
+separately reviewed runtime slice implements and tests both this complete
+mapping and that bounded queue check.
+
+#### 11.3.1 Terminology and same-generation facts
+
+The terms are deliberately distinct:
+
+- An **HTTP/3 control stream** is the per-endpoint unidirectional stream that
+  begins with SETTINGS and carries connection-level HTTP/3 frames. It never
+  carries `ClientControl`, `ServerConfirmation`, or user traffic.
+- The **auth control request stream** is one ordinary client-initiated
+  bidirectional HTTP/3 request stream. It carries one POST request and its one
+  final response. Calling it a QUIC control stream is incorrect.
+- A **QUIC stream** is the transport byte-stream abstraction beneath HTTP/3.
+  The auth control request stream is one QUIC stream, but not every QUIC stream
+  is an HTTP/3 request stream.
+
+Each new physical QUIC/TLS generation has exactly one auth-v3 mechanism
+instance. Before the client sends the request HEADERS and before the server
+accepts them, the existing foundation driver MUST have obtained all of these
+facts from that same generation:
+
+- the manager's exact `ConnectionGeneration`;
+- actual TLS 1.3 from the live BoringSSL `SslRef`;
+- negotiated ALPN exactly `h3`;
+- no early data or 0-RTT use;
+- the exact 32-byte RFC 9266 exporter using
+  `EXPORTER-Channel-Binding` and present-empty context `Some(&[])`;
+- the peer QUIC transport parameters; and
+- the peer HTTP/3 SETTINGS accepted under the existing bounded foundation
+  policy.
+
+These facts MUST NOT be assembled from different connections, copied to a
+replacement generation, or inferred from configured or offered values.
+`FoundationObservation` records these TLS/H3 facts only. It is not an
+authenticated marker, capability, state transition, peer authorization, or
+permission to start a flow.
+
+#### 11.3.2 Exact control request
+
+The client sends the request with `quiche::h3::Connection::send_request` on one
+new request stream with `fin = false`. The decoded initial request field list
+MUST contain exactly these six entries, in this exact order, with no seventh
+entry:
+
+| Order | Name | Exact value and source |
+| ---: | --- | --- |
+| 1 | `:method` | exact case-sensitive ASCII `POST` |
+| 2 | `:scheme` | exact case-sensitive ASCII `https`; fixed by this direct QUIC/TLS mapping |
+| 3 | `:authority` | the exact pre-I/O validated client `server.server_name` bytes described below |
+| 4 | `:path` | the exact pre-I/O validated direct-v3 control path |
+| 5 | `content-type` | exact case-sensitive ASCII `application/maverick-auth-v3` |
+| 6 | `content-length` | exact ASCII `256`, with no sign, whitespace, comma, or leading zero |
+
+Every name is exact lowercase ASCII. Every pseudo-header precedes every regular
+field. Each entry occurs exactly once. Reordering, duplication, omission, an
+unknown pseudo-header or regular field, `host`, a CONNECT pseudo-header shape,
+`:protocol`, or any other field makes the control invalid. In particular,
+CONNECT and Extended CONNECT MUST NOT be used as authentication camouflage.
+
+Before any I/O, both peers MUST independently possess the same byte-exact
+trusted expected authority; peer or wire bytes never create or select it. On
+the client, its exact source is the validated
+`DirectV3ClientRoleConfig::server_name()` value. That value MUST round-trip byte
+for byte as a nonempty ASCII HTTPS authority containing only the SNI host, with
+no user information, port, percent encoding, path, query, or fragment. The
+client emits those bytes without case folding, IDNA conversion, trailing-dot
+changes, or any other normalization. It also supplies the same bytes as TLS
+SNI and performs ordinary certificate and identity verification for that name.
+
+On the server, validation requires an independently configured trusted textual
+authority already bound to the locally selected direct-v3 deployment and TLS
+identity. The request and peer SNI are comparison inputs only: neither may
+create, select, or update that local authority. The server requires exact
+byte-for-byte equality of `:authority` to the server-local expected value and,
+separately, exact equality of the raw SNI bytes from the same server-side
+`SslRef` to that server-local expected value. The current product
+config-schema-3 server role does not contain `server_name` or an expected
+textual authority, so the existing schema does not satisfy this rule.
+Supplying that value through a separately reviewed local
+configuration/provisioning boundary is a prerequisite for product runtime
+integration; until then, that integration MUST stop. It MUST NOT guess from
+the listen address, certificate path, certificate contents, request, SNI, DNS,
+or dial endpoint. A test-private reference input may use one neutral authority
+fixed locally before the connection, but it is not a product authority source
+or authorization to change config/schema/version. Missing trusted authority,
+missing SNI, a backend that cannot expose raw SNI, a non-representable
+configured value, or any mismatch fails closed before a `ClientControl` body
+byte is accepted. The dial address and UDP port are transport inputs and MUST
+NOT replace or be appended to the authority.
+
+The two local expected-authority values and the same-generation SNI comparison
+MUST also remain consistent with the trusted server identity/origin mapping of
+the already preselected singleton deployment profile. Authority or SNI bytes
+MUST NOT select or switch a profile, PSK, credential tuple, target, route, or
+backend.
+
+The raw `:path` value MUST equal the pre-I/O validated config-schema-3 tunnel
+path byte for byte. As in Section 11.1, a query component MUST be completely
+absent and a trailing empty query delimiter `?` is invalid. Neither peer may
+normalize, percent-decode, resolve dot segments, parse and rebuild, or otherwise
+transform a value to obtain an equivalent form. This H3 freeze does not change
+the config-schema-3 parser; the later runtime entry point owns the same
+fail-closed raw-path representability gate already frozen for direct H2.
+
+`content-length` is mandatory even though HTTP/3 stream FIN remains the final
+message delimiter. Requiring the one exact declared length gives both peers an
+early, canonical metadata check and prevents two accepted encodings for the
+same fixed-size control. It never substitutes for counting DATA bytes or
+observing `Finished`.
+
+The request `Headers` event MUST report `more_frames = true`. The body is
+semantically exactly 256 bytes containing the unchanged `ClientControl`, and it
+MAY span multiple HTTP/3 DATA frames. On each `Data` event the server repeatedly
+calls `recv_body` until quiche returns `Done`, while keeping a hard cumulative
+cap of 256 bytes. The next byte is oversize and closes the generation. Exactly
+256 accumulated bytes are still incomplete until quiche reports `Finished` for
+that same request stream. `Finished` below 256 is underflow. A second `Headers`
+event on the stream is a forbidden trailer section. The raw body MUST NOT enter
+the legacy frame decoder.
+
+Immediately before its first `send_request` call, the client MUST atomically
+change its unique generation auth slot from `Fresh` to `Authenticating`. That
+slot is already consumed even if the call returns `StreamBlocked`. Because
+quiche 0.29.3 rolls back the failed whole call, the client MAY retry the exact
+same call within the existing foundation deadline, but every such retry belongs
+to the same occupied auth attempt. It MUST NOT release the slot, construct a
+second candidate, open another request stream, or select another carrier,
+profile, PSK, or legacy auth version. Any other error permanently consumes the
+slot and closes the generation. Once `send_request` succeeds, no second request
+call is permitted. Body writes use `send_body`; partial successful writes
+advance only by the returned byte count. The final successful call carries the
+remaining bytes with `fin = true`, and the sum of all successful return values
+MUST be exactly 256. A blocked or partial write is never treated as a completed
+request or as permission to open another request stream. On quiche `Done`, the
+client retries the identical still-unwritten slice on the same bound stream;
+after `Ok(n)` with `n` smaller than that slice, it retries only the identical
+unwritten suffix. Each retry keeps the same `fin` decision for that remaining
+slice and stays inside the already-running foundation deadline. `Done` means
+zero body-write progress and is not a successful write. Deadline expiry or any
+other error closes the generation without releasing or resetting the slot,
+opening another stream, or constructing a second request.
+
+#### 11.3.3 Exact success response
+
+There is no interim response. The only successful final response field list
+contains exactly these three entries, in this exact order, with no fourth
+entry:
+
+| Order | Name | Exact value |
+| ---: | --- | --- |
+| 1 | `:status` | exact ASCII `200` |
+| 2 | `content-type` | exact case-sensitive ASCII `application/maverick-auth-v3` |
+| 3 | `content-length` | exact ASCII `320`, with no sign, whitespace, comma, or leading zero |
+
+The response names are exact lowercase ASCII. Reordering, duplication,
+omission, an unknown field or pseudo-header, any 1xx response, any status other
+than `200`, a parameterized or differently cased content type, or another
+content length is invalid. The initial response `Headers` event MUST report
+`more_frames = true`.
+
+The body is semantically exactly 320 bytes containing the unchanged
+`ServerConfirmation`, MAY span multiple HTTP/3 DATA frames, and MUST end with
+FIN. The client drains each `Data` event to quiche `Done`, enforces a hard
+cumulative cap of 320 bytes, rejects the next byte, rejects `Finished` below
+320, and rejects a second `Headers` event as trailers. It creates or exposes an
+authenticated connection capability only after `Finished` on the exact auth
+control request stream and complete verification of all 320 bytes under
+Section 11 step 8.
+
+On the server, constructing or encoding `ServerConfirmation`, successfully
+sending response HEADERS, or queueing only part of the response body is
+insufficient. `send_response` uses `fin = false`. One or more successful
+`send_body` calls MAY carry the body, and partial calls advance only by their
+returned byte count. The server may transition its local gate from
+`Authenticating` to `Authenticated` only when the final call is made with the
+remaining bytes and `fin = true`, returns that complete remaining length, and
+the cumulative successfully accepted body length is exactly 320. This is a
+local quiche send-queue boundary only; it does not prove that the client
+received or verified the confirmation. A `Done` result makes no progress, and
+an `Ok` that accepts fewer than the supplied remaining bytes is only a partial
+write; neither is the success boundary. If `send_response` returns
+`StreamBlocked`, the server MAY retry only that exact response field list with
+`fin = false` on the same bound request stream and within the existing
+deadline. It MUST NOT create a second response, change any field, use another
+stream, or reset the auth slot. On `send_body` `Done`, it retries the identical
+still-unwritten slice on that same stream; after partial `Ok(n)`, it retries
+only the identical unwritten suffix, with `fin = true` exactly when that suffix
+is the final body remainder. Those retries remain inside the same deadline.
+Deadline expiry or any other send error closes the generation without a new
+stream, response, slot, or fallback.
+
+#### 11.3.4 Atomic event admission and generation closure
+
+The server's first quiche `Event::Headers` on any peer request stream is the
+generation's only auth candidate. Before inspecting the list, stream ID,
+method, authority, path, content type, content length, or any body byte, the
+driver MUST atomically change the unique auth slot from `Fresh` to
+`Authenticating` and bind it to that request stream. Invalid metadata still
+consumes the slot. No other task, queue, or stream may race to claim it.
+
+While the slot is `Authenticating`, the only accepted application-event
+sequence is:
+
+1. the one exact initial request `Headers` event on the bound stream;
+2. zero or more `Data` events on that stream, drained under the 256-byte cap;
+3. one `Finished` event on that stream at exactly 256 bytes;
+4. the server's complete verification and bounded confirmation send; and
+5. on the client, the one exact final response `Headers`, zero or more bounded
+   `Data` events, `Finished` at exactly 320 bytes, and complete verification.
+
+Everything else fails closed for the whole physical generation:
+
+- `Headers` on another request stream is concurrent or duplicate application
+  activity; another `Headers` on the bound stream is trailers or a duplicate;
+- `Data` or `Finished` before the initial field section, on another stream, or
+  in any order or length not allowed above is invalid;
+- `Reset` on the auth stream or any other stream, `GoAway`, `PriorityUpdate`,
+  or any future/unknown application event is invalid before authentication;
+- any readable QUIC Datagram before authentication is invalid, regardless of
+  flow ID or payload, and its bytes MUST NOT be parsed, retained, or logged;
+- `PUSH_PROMISE`, `CANCEL_PUSH`, `MAX_PUSH_ID`, push-form
+  `PRIORITY_UPDATE`, and any peer push stream are forbidden by this Maverick
+  pre-auth policy, including when quiche validates, records, ignores, or
+  rejects them internally without returning a distinct public `Event`;
+- timeout, cancellation, stream closure, oversize, underflow, trailers, wrong
+  method/scheme/authority/path/type/length/status, a header ordering or
+  duplication failure, a QPACK/header violation, or any quiche H3 error other
+  than the ordinary no-event result `Done` is invalid; and
+- an auth-v3 shape, registry, context, exporter, credential, time, nonce,
+  sentinel, policy, commitment, echo, expiry, limit, or MAC failure is invalid.
+
+quiche's public 0.29.3 `Event` enum does not distinguish `PUSH_PROMISE`,
+`CANCEL_PUSH`, `MAX_PUSH_ID`, push-form `PRIORITY_UPDATE`, or the complete
+boundary around push streams. Some of those known frame or stream types are
+processed or ignored internally, while others produce only a library error.
+They are not unknown extensions and MUST NOT be grouped with reserved frames.
+The later runtime MUST prove that every one is rejected while pre-auth through
+the public API or through a separately reviewed, narrow, bounded
+observable/reject seam. If it cannot, the strict POST-only gate is not
+implementable and the runtime slice MUST stop rather than claim success.
+
+By contrast, quiche's internal processing of the mandatory HTTP/3 control
+stream, SETTINGS, QPACK streams, and genuinely unknown extension or reserved
+frames that RFC 9114 requires or permits the endpoint/library to ignore is not
+an auth application event and does not carry authentication bytes. Such frames
+remain subject to the RFC and bounded library policy; ignoring one does not
+make it an accepted auth message. If processing produces a public application
+event or error, the other fail-closed rules above apply. This distinction is
+why the auth POST is called a request stream rather than an HTTP/3 or QUIC
+control stream.
+
+QUIC Datagrams are not members of quiche's H3 `Event` enum. The later runtime
+MUST inspect their independent receive queue under the existing queue and
+payload bounds before and after H3 event processing and before either auth
+transition. Any available Datagram while pre-auth closes the generation
+without parsing or logging it. This is a future requirement, not a claim about
+T023a-1's current implementation.
+
+RFC 9114 and negotiated extensions can permit GOAWAY, PRIORITY_UPDATE, and
+other elements that this first Maverick auth admission policy does not accept
+before authentication. Their generation-wide rejection here is an intentional
+narrower Maverick policy choice; the document does not call an otherwise legal
+HTTP/3 element malformed. Independently malformed HTTP/3 or QPACK input still
+follows the library/protocol error path and also fails the generation closed.
+
+Fail closed means: send no canonical success response, stop accepting or
+emitting application activity, close the entire QUIC/TLS generation, consume
+the auth slot permanently, close its observation/capability path, and reclaim
+the existing bounded driver resources. An application-detected close uses one
+fixed generic code and an empty reason; a library-detected HTTP/3 or QPACK
+protocol error may already have closed with its required protocol code. No
+close code is an auth protocol signal, and no cause-specific text is sent.
+
+Failure MUST NOT retry auth-v3 on that generation, decode the control as legacy
+v2/v1, try another profile or PSK, rescue the failure with H2 or another
+carrier, create a replacement connection automatically, or copy the request,
+confirmation, exporter, slot, observation, or authenticated state to a new
+generation. A separately created replacement generation starts `Fresh` and
+constructs a new `ClientControl` from the beginning under its own exporter.
+
+#### 11.3.5 Data-plane barrier, resources, and diagnostics
+
+Before the complete confirmation-send boundary above, the server MUST NOT
+resolve a target or DNS name, apply target egress work, connect to a target,
+open or queue a relay or flow, send user DATA or a Datagram, invoke fallback,
+or expose an authenticated connection capability. Before receiving `Finished`
+and completely verifying the 320-byte confirmation, the client MUST NOT enter
+the generation into a user pool or send or queue Extended CONNECT, CONNECT,
+user DATA, a Datagram, or any other flow. Control-message DATA on the one bound
+request stream is the sole narrowly permitted pre-auth DATA.
+
+The later runtime MUST extend the existing T023a `FoundationDriver` state
+machine and reuse its current task budget, manager command and observation
+queues, Datagram queues, QUIC stream/data limits, connection-ID/path limits,
+QPACK table and blocked-stream limits, decoded/encoded header bounds, socket
+buffers, and handshake/run/response/idle/join deadlines. The fixed 256-byte and
+320-byte accumulators fit inside that framework. It MUST NOT add a second
+manager, admission registry, unbounded queue, parallel timeout framework, or
+independent resource-accounting layer.
+
+Every local failure category, `Display`, `Debug`, tracing event, and source
+chain MUST be fixed, bounded, and value-free. Diagnostics MUST NOT include or
+echo any header name or value, method, scheme, authority, path, stream ID,
+connection ID, address, SNI, payload byte, exporter, nonce, session ID, secret,
+credential or commitment, target, backend error, or raw quiche error. Error
+sources are absent. The driver compares required bytes only to decide accept or
+close. It MAY hold at most the fixed 256-byte or 320-byte authentication buffer
+and current bounded field metadata for the duration of that one verification
+lifecycle. It MUST NOT format or log those values or retain them across that
+lifecycle. On failure it immediately clears and discards the owned
+authentication buffer and all current field metadata before closing the
+generation.
+
+#### 11.3.6 Compatibility, later runtime slice, and stop conditions
+
+This H3 carrier mapping changes none of the frozen 256-byte or 320-byte wire
+bytes, canonical vectors, registry values, carrier ID `0x02`, policy block,
+labels, transcript domains, RFC 9266 context, path binding, config or stored
+schema, public API, auth/frame/protocol version, or direct-H2 mapping. The H3
+request and response field sections are carrier framing and are not added to
+the authenticated 256/320-byte transcripts.
+
+The smallest later **test-private runtime-reference** slice SHOULD change only
+`ROADMAP.md` and `crates/maverick-client/src/quiche_foundation.rs`, keep both
+loopback roles and focused tests inside the existing private feature-gated
+foundation, and take one neutral expected authority as a private local test
+input before I/O. It should first prove one positive split-DATA exchange and
+then prove exact field order/value rejection, missing/duplicate/unknown fields,
+concurrent and duplicate requests, oversize, underflow, timeout, trailers,
+reset, GOAWAY, PRIORITY_UPDATE, the independent Datagram receive-queue gate,
+each known non-`Event` push activity named above, unknown/reserved-frame
+separation, H3/QPACK failure, partial/blocked sends on the same stream and
+deadline, replacement generation
+reauthentication, no legacy/carrier retry, no target or flow work, fixed
+diagnostics, and complete resource reclamation. All existing T022a and T023a-1
+tests remain controls. That reference still would not be product H3, CONNECT
+support, a data plane, a product authority source, or a release result.
+
+Product integration is a separate later decision and is not promised to fit
+the two-file reference boundary. It remains blocked until an explicitly
+authorized local configuration or provisioning design gives the server its
+independent trusted textual authority. That future decision MUST NOT infer the
+value from a request, peer SNI, listen address, certificate, DNS, or other
+runtime input and MUST decide any config/schema compatibility impact before
+code changes. This T026a docs slice changes none of those domains.
+
+Stop that runtime slice before changing a third file; any wire byte, vector,
+label, exporter context, carrier ID, core primitive, config/schema/auth/frame/
+protocol version, public API, or direct-H2 behavior; or before permitting a
+pre-auth CONNECT, target, flow, user DATA, or Datagram. Also stop if quiche
+cannot expose the raw ordered fields, same-generation SNI/exporter facts,
+bounded body/FIN progress, or event distinctions needed above; if the existing
+resource framework cannot contain the work; if neither the public API nor a
+separately reviewed narrow seam can observe or reject every forbidden known H3
+activity hidden from `Event`; or if success requires private data, a remote
+action, CI, real networking, or a host-network change. T023a-2
+Stateless Retry and multi-connection admission and T023b post-auth quotas,
+expiry, and revocation remain deferred. Product integration must additionally
+stop while the server lacks the independent trusted textual authority
+prerequisite.
+
 ## 12. Downgrade resistance and failure handling
 
 The exact 16-byte sentinel is:

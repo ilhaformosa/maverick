@@ -86,7 +86,7 @@ pub enum AuthV3Error {
     /// A local opaque provisioning handle is all zero.
     #[error("invalid auth-v3 provisioning handle")]
     ProvisioningHandle,
-    /// A direct server/listener binding does not contain exactly one profile.
+    /// A local direct client/server role binding does not contain exactly one profile.
     #[error("invalid auth-v3 singleton provisioning cardinality")]
     ProvisioningCardinality,
     /// The message does not have its one exact fixed length.
@@ -308,11 +308,11 @@ impl fmt::Debug for AuthV3OwnedProvisioningProfile {
     }
 }
 
-/// One direct server/listener binding containing exactly one owned profile.
+/// One local direct client/server role binding containing exactly one owned profile.
 ///
 /// A shared listener with multiple v3 profiles is deliberately blocked. Use
-/// independent singleton bindings for independent listeners; this type is not
-/// a wire selector or a request-path registry.
+/// independent singleton bindings for independent local client/server roles;
+/// this type is not a wire selector or a request-path registry.
 pub struct AuthV3SingletonBinding {
     handle: AuthV3ProvisioningHandle,
     profile: AuthV3OwnedProvisioningProfile,
@@ -970,7 +970,8 @@ pub fn parse_auth_v3_client_control(
 ///
 /// `profile` must already have been selected by a non-wire, trusted local
 /// mechanism. T013c-1 supplies [`AuthV3SingletonBinding`] and
-/// [`AuthV3PreselectedProfile`] for the exact-one-profile server/listener case.
+/// [`AuthV3PreselectedProfile`] for the exact-one-profile local client/server
+/// role case.
 /// Wire commitments only prove equality with that exact tuple; they never
 /// select or replace a profile, identity, epoch, or PSK. Runtime integration
 /// remains deferred, so this API must not be wired into H2/H3 in this slice.

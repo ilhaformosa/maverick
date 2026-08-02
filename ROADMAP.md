@@ -17,50 +17,52 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013c-1 — singleton direct-v3 trusted provisioning binding
+### T013c-2 — strict direct-v3 role configuration and projection
 
-- **User result:** Give each future direct-v3 server/listener binding one
-  explicit locally provisioned profile selected before any wire message is
-  read, so frozen wire commitments can prove equality only and can never choose
-  an identity, epoch, profile, path, or PSK.
-- **Scope:** Add owned `maverick-core` provisioning data for the three opaque
-  IDs, expected server identity, direct mapping and path, nonzero epoch,
-  credential expiry, and `SecretString`; one fixed-size nonzero opaque local
-  handle; an exact-one-profile binding construction gate; and an opaque
-  preselected capability that provides a temporary view to the existing T013b-2
-  verifier without exposing or copying the secret. A startup/reload-only helper
-  may check multiple independent singleton bindings by reusing the existing
-  O(n²) trusted-profile validator and rejecting duplicate handles. Change
-  exactly `ROADMAP.md`, `crates/maverick-core/src/auth_v3.rs`, and the new
-  `crates/maverick-core/tests/auth_v3_provisioning.rs`.
-- **Acceptance:** Zero handles and zero/multiple profile cardinality fail
-  closed. Owned profile construction reuses the existing validator for opaque
-  IDs, direct mapping/path, epoch, expiry, and secret validity. One valid
-  singleton produces a preselected capability whose temporary profile view
-  passes the production encode/verify flow. After profile A is preselected, a
-  correctly signed profile-B control or a wire-changed commitment/epoch is
-  rejected without switching profiles or trying B. Startup consistency rejects
-  duplicate handles, tuples, PSK reuse, and deployment-mapping conflicts.
-  Debug and errors are fixed, bounded, value-free, and source-free; owned secret
-  state has no Clone, Default, or Serde API. All four frozen auth-v3 vectors,
-  legacy v1/v2 conformance, locked offline core and SDK tests, formatting,
-  strict core lint, warning-free core docs, both local product gates, final
-  three-file audit, and privacy gates pass.
-- **Binding rule:** Every direct-v3 server/listener binding has exactly one
-  explicit profile. Multiple independent singleton bindings may use independent
-  opaque local handles. Shared-listener multi-profile dispatch is `BLOCK` and
-  requires a future protocol/dispatch design. Wire tuple, commitment, epoch,
-  credential hint, path, Host, SNI, or PSK trials must never select a profile.
-- **Out of scope:** Client/server role config; SDK or stored-profile schema;
-  real H2/H3 exporter and runtime wiring; generation slots; duplicate control,
-  close, no-state-transfer, no-fallback, timers, or revocation enforcement;
-  sessions, reconnects, targets, flows, or data-plane work; fronted
-  authentication; and PQ/hybrid policy. Those remain deferred. This slice does
-  not enable runtime, change product facts, or modify `STATUS.md`.
-- **Stop conditions:** Stop if this needs a fourth file, Cargo or lockfile
-  change, new dependency, config/schema/SDK/runtime work, shared-listener
-  multi-profile behavior, wire selection or PSK trial, specification/vector or
-  version change, or private data in the diff.
+- **User result:** Let a future local direct-v3 client or server role load one
+  explicit, strict provisioning document and project it into the T013c-1 owned
+  singleton/preselected capability without exposing secrets or using wire data
+  to select a profile.
+- **Scope:** Add config schema 3 as an intentionally forward-incompatible,
+  pre-runtime client/server role schema. It requires the five explicit direct
+  policy axes, auth minimum `direct_v3_only`, one singular provisioning binding,
+  canonical nonzero opaque 16-byte values, nonzero epoch and credential expiry,
+  and the existing full-UTF-8 `SecretString`. Client role data reuses the local
+  SOCKS listener plus server address, name, path, CA, and pin settings. Server
+  role data reuses its listener, TLS paths, and tunnel path. A version-first
+  public role reader delegates v1 to the unchanged canonical reader, rejects v2
+  as policy-only, strictly parses v3, and rejects every other version.
+- **Acceptance:** Unknown, duplicate, missing, null, mixed-legacy, multi-document,
+  malformed role/version, noncanonical ID, zero ID, zero epoch/expiry, and bad
+  secret inputs fail closed through fixed privacy-safe errors. H2 and H3 role
+  documents produce locally preselected capabilities that can drive the frozen
+  pure auth-v3 encode/verify primitives without I/O. Full v3 documents remain
+  rejected by the old canonical v1 readers and by direct generic v1 Serde.
+  Config v2 remains strict five-axis policy-only. The new direct-v3 role and
+  projection types expose no v3 secret, opaque ID, handle, or raw YAML and have
+  no Clone, Default, Serialize, or generic Deserialize surface. The versioned
+  role readers intentionally preserve `legacy_v1()` access to the unchanged v1
+  public fields and `SecretString`; this slice does not close that legacy API.
+- **Opaque-value rule:** Each provisioning handle and semantic ID must be
+  independently nonzero and canonical base64url-no-pad. A handle and the four
+  semantically distinct IDs may contain the same nonzero bytes; fixed positions
+  and commitment domains already separate their meanings. Across independent
+  bindings, T013c-1 continues to enforce unique handles, tuple-to-PSK and
+  PSK-to-tuple uniqueness, and consistent deployment mappings.
+- **Runtime boundary:** Schema 1 remains the only runnable CLI/client/server
+  config. Schema 2 remains policy-only. Schema 3 is parsed and projected only;
+  CLI, SDK, client, server, H2, and H3 runtime entry points do not accept it.
+  No trusted connection context, exporter observation, wire input, clock read,
+  secret-store access, fallback, or runtime authentication state is created.
+- **Out of scope:** Stored profiles and SDK; auth wire/spec/vector changes;
+  shared-listener multi-profile dispatch; fronted, Auto, WebSocket, rotation,
+  legacy-auth mixing, fallback, PSK trials, runtime connection state, data-plane
+  behavior, and PQ/hybrid policy. This slice changes no current product-runtime
+  fact and does not modify `STATUS.md`.
+- **Stop conditions:** Stop if this needs an eighth file, Cargo or lockfile
+  change, a dependency, v1 public-shape/Serde change, runnable v2 or v3 config,
+  SDK/CLI/client/server integration, auth-v3 security-logic or wire change,
+  fronted/Auto/multi-profile support, remote work, or private data in the diff.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

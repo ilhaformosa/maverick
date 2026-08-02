@@ -34,7 +34,7 @@ impl Policy {
     pub fn from_yaml_str(input: &str) -> Result<Self> {
         match config_version(input).map_err(|_| rejection(PolicyRejection::InvalidDocument))? {
             ConfigVersion::V2 => {}
-            ConfigVersion::V1 | ConfigVersion::Unsupported => {
+            ConfigVersion::V1 | ConfigVersion::V3 | ConfigVersion::Unsupported => {
                 return Err(rejection(PolicyRejection::UnsupportedVersion));
             }
         }

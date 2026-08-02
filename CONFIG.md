@@ -2,6 +2,194 @@
 
 All currently runnable client and server config files use YAML and `version: 1`.
 
+## Independent version domains
+
+Maverick has separate compatibility domains. Auth wire v3, config schema 3,
+and stored-client-profile schema 1 are not numerically coupled. Changing or
+supporting one does not change, migrate, or enable another.
+
+- Config schema 1 is the only runnable CLI/client/server configuration. Its
+  canonical readers and public Serde shapes retain their existing behavior.
+- Config schema 2 is permanently policy-only at its current public parser. It
+  is not a complete client or server configuration.
+- Config schema 3 is a strict pre-runtime direct-v3 client/server role and
+  provisioning schema. T013c-2 parses and projects it only inside
+  `maverick-core`; the CLI, SDK, client, server, H2, and H3 runtime entry points
+  still reject it.
+- Stored-client-profile schema 1 remains unchanged and does not store config
+  schema 3.
+
+This separation is intentionally forward-incompatible. A config-v1 reader
+rejects schema 3 at its version-first gate. Direct generic deserialization into
+the public v1 `ClientConfig` or `ServerConfig` also cannot construct those v1
+types from the complete v3 shape because required legacy fields are absent.
+
+## Config v3 strict direct-role schema
+
+The public `ClientRoleConfig::from_yaml_str` and
+`ServerRoleConfig::from_yaml_str` readers dispatch by config schema version
+before role deserialization:
+
+- v1 delegates to the unchanged canonical role reader;
+- v2 returns a fixed policy-only rejection;
+- v3 invokes the strict role-specific parser; and
+- every other integer version is unsupported.
+
+Missing, duplicate, null, non-integer, non-mapping, and multi-document version
+metadata fail closed. V3 then rejects unknown or duplicate keys at every
+mapping layer. Its errors are fixed, bounded, source-free, and never echo YAML,
+a key or value, endpoint, path, opaque ID, PSK, or lower-level parser error.
+
+Every v3 role requires these exact first-version policy values:
+
+```yaml
+version: 3
+role: client # or server
+security:
+  posture: standard
+transport:
+  strategy: h2 # or explicit h3; auto is invalid
+trust:
+  route: direct_to_maverick
+name_privacy:
+  minimum: plain_sni
+traffic_shaping:
+  policy: disabled
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding: {} # the singular required binding described below
+```
+
+`h3` is only a pre-runtime carrier choice in this schema. T013c-2 performs no
+I/O and does not make H3 runnable. A future runtime without the required H3
+capability must reject it before sending any auth-v3 byte. Config v3 has no
+Auto fallback; a future carrier change before authentication would require its
+own trusted local policy, and an auth failure must never select legacy auth or
+another carrier.
+
+### Singular direct-v3 provisioning binding
+
+`auth.direct_v3.binding` is one object, not an array. It requires exactly:
+
+```yaml
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding:
+      provisioning_handle: "EREREREREREREREREREREQ"
+      principal_id: "IiIiIiIiIiIiIiIiIiIiIg"
+      deployment_profile_id: "MzMzMzMzMzMzMzMzMzMzMw"
+      credential_namespace_id: "RERERERERERERERERERERA"
+      server_identity_id: "VVVVVVVVVVVVVVVVVVVVVQ"
+      credential_epoch: 7
+      credential_not_after_unix: 1800172800
+      secret: "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+```
+
+The five 16-byte fields use canonical, case-sensitive base64url without
+padding. Each value is exactly 22 ASCII characters from
+`A-Z`, `a-z`, `0-9`, `_`, and `-`; decoding must produce exactly 16 bytes and
+re-encoding must reproduce the input byte for byte. Padding, whitespace,
+Unicode, control characters, malformed encoding, a different length, and the
+all-zero value are invalid.
+
+Each field is checked independently for nonzero canonical bytes. The handle
+and four semantic IDs are deliberately **not** required to be pairwise
+different. The same nonzero bytes may appear in fields with different fixed
+positions and meanings. Existing T013c-1 validation still enforces unique
+handles across independent bindings, a one-to-one credential tuple/PSK
+relation in both directions, rejection of duplicate entries, and consistent
+deployment-profile mappings.
+
+Both `credential_epoch` and `credential_not_after_unix` are nonzero `u64`
+values. Parsing reads no clock. The complete UTF-8 value accepted by the
+existing `SecretString` is the PSK; it is not generated, guessed, decoded,
+copied from a legacy field, or derived by this parser. Provisioning remains
+responsible for fresh random IDs, handles, and secrets and for selecting a
+valid future expiry.
+
+The validated role projection constructs
+`AuthV3ProvisioningHandle`, `AuthV3OwnedProvisioningProfile`, and
+`AuthV3SingletonBinding`, then exposes only the opaque preselected capability.
+The new direct-v3 role and projection types have no Clone, Default, Serialize,
+generic Deserialize, value-bearing Debug, builder, or raw-YAML API. They do not
+expose the v3 secret, opaque IDs, or handle. The versioned
+`ClientRoleConfig`/`ServerRoleConfig` readers intentionally retain
+`legacy_v1()` access to the unchanged v1 public fields and `SecretString`; this
+schema does not seal or otherwise change that legacy exposure.
+
+### Client role
+
+The client role reuses the v1 locations for its local SOCKS5 listener and
+server connection settings, without repeating endpoint, SNI, or path data
+under `auth`:
+
+```yaml
+version: 3
+role: client
+security: { posture: standard }
+transport: { strategy: h2 }
+trust: { route: direct_to_maverick }
+name_privacy: { minimum: plain_sni }
+traffic_shaping: { policy: disabled }
+local:
+  socks5:
+    listen: "127.0.0.1:1080"
+server:
+  address: "origin.invalid:443"
+  server_name: "origin.invalid"
+  tunnel_path: "/direct-v3"
+  ca_cert: null
+  cert_pin: null
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding: # exact fields from the binding example above
+```
+
+The SOCKS5 listener must be loopback. `server.tunnel_path` is the exact path
+bound into the owned DeploymentProfile together with the provisioned server
+identity and literal direct route. The address, server name, path, CA, and pin
+remain configuration inputs; they are not runtime observations.
+
+### Server role
+
+The server role reuses its listener, TLS paths, and Maverick tunnel path:
+
+```yaml
+version: 3
+role: server
+security: { posture: standard }
+transport: { strategy: h3 }
+trust: { route: direct_to_maverick }
+name_privacy: { minimum: plain_sni }
+traffic_shaping: { policy: disabled }
+listen: "127.0.0.1:8443"
+tls:
+  cert_path: "./cert.pem"
+  key_path: "./key.pem"
+maverick:
+  tunnel_path: "/direct-v3"
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding: # exact fields from the binding example above
+```
+
+The provisioned server identity, literal direct route, and exact tunnel path
+form the trusted DeploymentProfile mapping. Actual TLS version, physical H2/H3
+carrier, exporter provenance, authenticated server identity, route, and path
+are future runtime observations. Configuration cannot manufacture or substitute
+those facts, and T013c-2 does not construct a trusted connection context.
+
+Config v3 rejects `mode`, `users`, legacy `credential_id`/`secret` placement,
+`auth.v2`, channel-binding toggles, rotation, TLS-terminating fronting, CDN or
+WebSocket fields, Auto, fallback, multiple bindings, and mixed v1/v2 fields.
+Stored profiles, SDK materialization, secret stores, generation state, wire
+parsing, runtime auth, timers, revocation, flows, targets, and data-plane work
+remain outside this schema slice.
+
 ## Config v2 policy semantic contract
 
 > **Policy parser only:** `maverick_core::config::v2::Policy::from_yaml_str`

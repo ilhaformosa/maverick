@@ -17,7 +17,12 @@ use crate::auth::AUTH_V2_MAX_CREDENTIAL_HINT_LEN;
 use crate::crypto::CryptoPolicyConfig;
 use crate::error::{Error, Result};
 
+mod direct_v3;
 pub mod v2;
+
+pub use direct_v3::{
+    DirectV3ClientRoleConfig, DirectV3ServerRoleConfig, DirectV3TransportStrategy,
+};
 
 /// User-facing product mode. This is a policy label, not a transport selector.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -139,6 +144,7 @@ impl Drop for SecretString {
 enum ConfigVersion {
     V1,
     V2,
+    V3,
     Unsupported,
 }
 
@@ -217,6 +223,7 @@ impl<'de> Visitor<'de> for ConfigVersionValueVisitor {
         Ok(match value {
             1 => ConfigVersion::V1,
             2 => ConfigVersion::V2,
+            3 => ConfigVersion::V3,
             _ => ConfigVersion::Unsupported,
         })
     }
@@ -225,6 +232,7 @@ impl<'de> Visitor<'de> for ConfigVersionValueVisitor {
         Ok(match value {
             1 => ConfigVersion::V1,
             2 => ConfigVersion::V2,
+            3 => ConfigVersion::V3,
             _ => ConfigVersion::Unsupported,
         })
     }
@@ -233,6 +241,7 @@ impl<'de> Visitor<'de> for ConfigVersionValueVisitor {
         Ok(match value {
             1 => ConfigVersion::V1,
             2 => ConfigVersion::V2,
+            3 => ConfigVersion::V3,
             _ => ConfigVersion::Unsupported,
         })
     }
@@ -241,6 +250,7 @@ impl<'de> Visitor<'de> for ConfigVersionValueVisitor {
         Ok(match value {
             1 => ConfigVersion::V1,
             2 => ConfigVersion::V2,
+            3 => ConfigVersion::V3,
             _ => ConfigVersion::Unsupported,
         })
     }
@@ -250,6 +260,201 @@ fn config_version(input: &str) -> Result<ConfigVersion> {
     ConfigVersionDocument::deserialize(serde_yaml_ng::Deserializer::from_str(input))
         .map(|document| document.0)
         .map_err(|_| Error::Config("invalid configuration version metadata".into()))
+}
+
+/// Version-first client-role configuration entry point.
+///
+/// Config v1 delegates to [`ClientConfig::from_yaml_str`]. Config v2 remains
+/// policy-only and is rejected here. Config v3 parses the strict pre-runtime
+/// direct-v3 client role without enabling any CLI, SDK, client, server, H2, or
+/// H3 runtime path.
+///
+/// This secret-bearing value deliberately implements neither `Clone`,
+/// `Default`, Serde traits, nor value-bearing `Debug`.
+///
+/// ```compile_fail
+/// use maverick_core::config::ClientRoleConfig;
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<ClientRoleConfig>();
+/// ```
+///
+/// ```compile_fail
+/// use maverick_core::config::ClientRoleConfig;
+/// fn require_default<T: Default>() {}
+/// require_default::<ClientRoleConfig>();
+/// ```
+///
+/// ```compile_fail
+/// use maverick_core::config::ClientRoleConfig;
+/// fn require_deserialize<T: for<'de> serde::Deserialize<'de>>() {}
+/// require_deserialize::<ClientRoleConfig>();
+/// ```
+///
+/// ```compile_fail
+/// use maverick_core::config::ClientRoleConfig;
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<ClientRoleConfig>();
+/// ```
+#[non_exhaustive]
+pub struct ClientRoleConfig {
+    kind: ClientRoleConfigKind,
+}
+
+enum ClientRoleConfigKind {
+    LegacyV1(Box<ClientConfig>),
+    DirectV3(Box<DirectV3ClientRoleConfig>),
+}
+
+impl ClientRoleConfig {
+    /// Parse one client-role YAML document through a duplicate-safe,
+    /// version-first compatibility gate.
+    pub fn from_yaml_str(input: &str) -> Result<Self> {
+        let kind = match config_version(input)? {
+            ConfigVersion::V1 => {
+                ClientRoleConfigKind::LegacyV1(Box::new(ClientConfig::from_yaml_str(input)?))
+            }
+            ConfigVersion::V2 => {
+                return Err(Error::Config("config version 2 is policy-only".into()));
+            }
+            ConfigVersion::V3 => ClientRoleConfigKind::DirectV3(Box::new(
+                direct_v3::parse_client_role_config(input)?,
+            )),
+            ConfigVersion::Unsupported => {
+                return Err(Error::Config(
+                    "unsupported client role configuration version".into(),
+                ));
+            }
+        };
+        Ok(Self { kind })
+    }
+
+    /// Return the independently versioned config schema number.
+    pub const fn version(&self) -> u16 {
+        match self.kind {
+            ClientRoleConfigKind::LegacyV1(_) => 1,
+            ClientRoleConfigKind::DirectV3(_) => 3,
+        }
+    }
+
+    /// Borrow the unchanged canonical config-v1 client when this document is
+    /// legacy v1.
+    pub const fn legacy_v1(&self) -> Option<&ClientConfig> {
+        match &self.kind {
+            ClientRoleConfigKind::LegacyV1(config) => Some(config),
+            ClientRoleConfigKind::DirectV3(_) => None,
+        }
+    }
+
+    /// Borrow the validated pre-runtime direct-v3 client role when present.
+    pub const fn direct_v3(&self) -> Option<&DirectV3ClientRoleConfig> {
+        match &self.kind {
+            ClientRoleConfigKind::LegacyV1(_) => None,
+            ClientRoleConfigKind::DirectV3(config) => Some(config),
+        }
+    }
+}
+
+impl fmt::Debug for ClientRoleConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("validated client role configuration")
+    }
+}
+
+/// Version-first server-role configuration entry point.
+///
+/// Config v1 delegates to [`ServerConfig::from_yaml_str`]. Config v2 remains
+/// policy-only and is rejected here. Config v3 parses only the strict
+/// pre-runtime direct-v3 server role.
+///
+/// This secret-bearing value deliberately implements neither `Clone`,
+/// `Default`, nor Serde traits.
+///
+/// ```compile_fail
+/// use maverick_core::config::ServerRoleConfig;
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<ServerRoleConfig>();
+/// ```
+///
+/// ```compile_fail
+/// use maverick_core::config::ServerRoleConfig;
+/// fn require_default<T: Default>() {}
+/// require_default::<ServerRoleConfig>();
+/// ```
+///
+/// ```compile_fail
+/// use maverick_core::config::ServerRoleConfig;
+/// fn require_deserialize<T: for<'de> serde::Deserialize<'de>>() {}
+/// require_deserialize::<ServerRoleConfig>();
+/// ```
+///
+/// ```compile_fail
+/// use maverick_core::config::ServerRoleConfig;
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<ServerRoleConfig>();
+/// ```
+#[non_exhaustive]
+pub struct ServerRoleConfig {
+    kind: ServerRoleConfigKind,
+}
+
+enum ServerRoleConfigKind {
+    LegacyV1(Box<ServerConfig>),
+    DirectV3(Box<DirectV3ServerRoleConfig>),
+}
+
+impl ServerRoleConfig {
+    /// Parse one server-role YAML document through a duplicate-safe,
+    /// version-first compatibility gate.
+    pub fn from_yaml_str(input: &str) -> Result<Self> {
+        let kind = match config_version(input)? {
+            ConfigVersion::V1 => {
+                ServerRoleConfigKind::LegacyV1(Box::new(ServerConfig::from_yaml_str(input)?))
+            }
+            ConfigVersion::V2 => {
+                return Err(Error::Config("config version 2 is policy-only".into()));
+            }
+            ConfigVersion::V3 => ServerRoleConfigKind::DirectV3(Box::new(
+                direct_v3::parse_server_role_config(input)?,
+            )),
+            ConfigVersion::Unsupported => {
+                return Err(Error::Config(
+                    "unsupported server role configuration version".into(),
+                ));
+            }
+        };
+        Ok(Self { kind })
+    }
+
+    /// Return the independently versioned config schema number.
+    pub const fn version(&self) -> u16 {
+        match self.kind {
+            ServerRoleConfigKind::LegacyV1(_) => 1,
+            ServerRoleConfigKind::DirectV3(_) => 3,
+        }
+    }
+
+    /// Borrow the unchanged canonical config-v1 server when this document is
+    /// legacy v1.
+    pub const fn legacy_v1(&self) -> Option<&ServerConfig> {
+        match &self.kind {
+            ServerRoleConfigKind::LegacyV1(config) => Some(config),
+            ServerRoleConfigKind::DirectV3(_) => None,
+        }
+    }
+
+    /// Borrow the validated pre-runtime direct-v3 server role when present.
+    pub const fn direct_v3(&self) -> Option<&DirectV3ServerRoleConfig> {
+        match &self.kind {
+            ServerRoleConfigKind::LegacyV1(_) => None,
+            ServerRoleConfigKind::DirectV3(config) => Some(config),
+        }
+    }
+}
+
+impl fmt::Debug for ServerRoleConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("validated server role configuration")
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -832,7 +1037,7 @@ where
 {
     match config_version(input)? {
         ConfigVersion::V1 => from_yaml_str_rejecting_unknown_fields(input),
-        ConfigVersion::V2 | ConfigVersion::Unsupported => {
+        ConfigVersion::V2 | ConfigVersion::V3 | ConfigVersion::Unsupported => {
             Err(Error::Config("unsupported configuration version".into()))
         }
     }

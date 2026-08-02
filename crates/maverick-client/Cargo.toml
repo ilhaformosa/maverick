@@ -33,6 +33,7 @@ maverick-core = { path = "../maverick-core", default-features = false }
 maverick-tun = { path = "../maverick-tun", optional = true }
 quinn = { workspace = true, optional = true }
 quiche = { workspace = true, optional = true }
+rand.workspace = true
 rustls.workspace = true
 sha2.workspace = true
 subtle.workspace = true

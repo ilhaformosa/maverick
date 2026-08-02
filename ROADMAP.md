@@ -17,47 +17,51 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013c-3b — server-side rustls direct-H2 auth-v3 connection control reference gate
+### T013c-3c — client-side rustls direct-H2 auth-v3 connection control reference gate
 
-- **User result:** One dormant server-only reference seam demonstrates the
-  frozen auth-v3 control gate on one real loopback rustls/TLS 1.3 and H2
-  physical generation, without enabling a product client or data plane.
-- **Scope:** Add one crate-private server module that accepts only a config-v3
-  H2 server role through rustls, validates the exact raw control carrier,
-  observes same-generation TLS facts and the RFC 9266 exporter, consumes one
-  pre-auth slot, verifies the frozen 256-byte control, and locally queues the
-  exact 320-byte confirmation before recording authentication. Add only the
-  narrow core bridge needed to bind actual runtime facts to the already
-  preselected singleton profile. Keep the legacy/default server entry points
-  unchanged and leave `STATUS.md` byte for byte unchanged.
+- **User result:** One dormant client-only reference seam demonstrates one
+  strict frozen auth-v3 control exchange on one real loopback rustls/TLS 1.3
+  and H2 physical generation, without enabling a product server, user flow, or
+  data plane.
+- **Scope:** Add one crate-private client module that accepts only a config-v3
+  H2 client role through rustls, validates the exact raw control carrier before
+  I/O, observes same-generation TLS facts and the RFC 9266 exporter, sends the
+  exact 256-byte control, strictly verifies the exact 320-byte confirmation,
+  and then closes the physical generation. Extract only the narrow rustls
+  CA/pin/WebPKI helper needed to share the legacy client trust logic. Keep every
+  legacy/default client entry point and behavior unchanged and leave
+  `STATUS.md` byte for byte unchanged.
 - **Acceptance:** Real `127.0.0.1` plus ephemeral-port tests cover the positive
   rustls/H2 exchange, exact request and response mapping, same-generation
   exporter binding, no early data, the `Fresh -> Authenticating ->
-  Authenticated | Closed` gate, unique-slot consumption, generation-wide close
-  on every failure or duplicate, and the final 320-byte `END_STREAM` local h2
-  acceptance boundary. Pre-I/O tests reject H3, non-rustls selection, raw `?`
-  or `#`, and a path that cannot round-trip byte for byte before listener or
-  connection work. Fixed diagnostics reveal no peer, path, opaque identity,
-  secret, exporter, nonce, session, endpoint, or backend error.
-- **Runtime and truth boundary:** The seam is dormant and server-only. It is
-  not called by `run_server`, `start_server`, CLI, SDK, or the default runtime.
-  Loopback evidence is a local reference result, not a working product,
-  production, multi-flow, user-flow, or release result. `STATUS.md` remains the
-  sole current-truth and authorization source. This queue is not a completed
-  ledger and does not define v1.3 release scope.
-- **Out of scope:** Product client, pooling, user-flow or data-plane mapping,
-  DNS, egress, targets, relay, fallback, multi-profile or shared-listener
-  dispatch, H3, BrowserMimic/BoringSSL, Auto, fronted routes, revocation,
-  hard-expiry enforcement, CLI, SDK, stored profiles, release, remote, and real
-  network work remain deferred.
+  Authenticated -> Closed` reference gate, fixed whole-control deadline, and
+  generation-wide physical close after success or every failure. Pre-I/O tests
+  reject H3, non-rustls selection, raw `?` or `#`, a path that cannot round
+  trip byte for byte, and an invalid server name before connect work. Response
+  tests reject wrong metadata, truncated/trailing bodies, trailers, invalid
+  confirmation fields, wrong exporter provenance, and peer stalls. Fixed
+  diagnostics reveal no address, server name, CA path, pin, control path,
+  opaque identity, secret, exporter, nonce, session, or backend error.
+- **Runtime and truth boundary:** The seam is dormant and client-only. It is
+  not called by `run_client`, existing listeners, the legacy H2 connector,
+  connection pool, CLI, SDK, or the default runtime. Loopback evidence is a
+  local reference result, not a working product, production, multi-flow,
+  user-flow, data-plane, or release result. `STATUS.md` remains the sole
+  current-truth and authorization source. This queue is not a completed ledger
+  and does not define v1.3 release scope.
+- **Out of scope:** Product server, pooling, user-flow or data-plane mapping,
+  DNS, egress, targets, relay, fallback, multi-profile or shared connection
+  management, H3/quiche, BrowserMimic/BoringSSL, Auto, fronted routes,
+  revocation, hard-expiry enforcement, CLI, SDK, stored profiles, release,
+  remote, and real-network work remain deferred.
 - **Stop conditions:** The exact changed-file boundary is `ROADMAP.md`,
-  `Cargo.lock`, `crates/maverick-core/src/auth_v3.rs`,
-  `crates/maverick-server/Cargo.toml`,
-  `crates/maverick-server/src/direct_v3_h2.rs`, and
-  `crates/maverick-server/src/lib.rs`; stop and re-adjudicate before changing
-  any other file. Also stop rather than add a stable public runtime API, a
-  wire/vector/schema/version change, a legacy behavior change, runtime
-  enablement, remote action, or private data.
+  `Cargo.lock`, `crates/maverick-client/Cargo.toml`,
+  `crates/maverick-client/src/lib.rs`,
+  `crates/maverick-client/src/h2_transport.rs`, and new
+  `crates/maverick-client/src/direct_v3_h2.rs`; stop and re-adjudicate before
+  changing any other file. Also stop rather than add a stable public runtime
+  API, product-server dependency, wire/vector/schema/version change, legacy
+  behavior change, runtime enablement, remote action, or private data.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

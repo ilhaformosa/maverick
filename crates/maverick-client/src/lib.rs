@@ -3,6 +3,9 @@
 #![forbid(unsafe_code)]
 
 pub mod connection_manager;
+// Dormant control-only reference; product integration is a later authorized slice.
+#[allow(dead_code)]
+mod direct_v3_h2;
 pub mod dns;
 pub mod h2_transport;
 #[cfg(feature = "h3")]

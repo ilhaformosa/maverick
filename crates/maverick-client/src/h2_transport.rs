@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -344,8 +345,18 @@ where
 }
 
 pub(crate) fn rustls_client_config(config: &ClientConfig) -> Result<rustls::ClientConfig> {
+    rustls_client_config_from_trust(
+        config.server.ca_cert.as_deref(),
+        config.server.cert_pin.as_deref(),
+    )
+}
+
+pub(crate) fn rustls_client_config_from_trust(
+    ca_cert: Option<&Path>,
+    cert_pin: Option<&str>,
+) -> Result<rustls::ClientConfig> {
     let mut roots = RootCertStore::empty();
-    if let Some(path) = &config.server.ca_cert {
+    if let Some(path) = ca_cert {
         let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
             .with_context(|| format!("open CA cert {}", path.display()))?
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -358,7 +369,7 @@ pub(crate) fn rustls_client_config(config: &ClientConfig) -> Result<rustls::Clie
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
     let builder = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
-    if let Some(pin) = &config.server.cert_pin {
+    if let Some(pin) = cert_pin {
         let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
             .build()
             .context("build WebPKI verifier")?;

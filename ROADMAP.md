@@ -17,55 +17,44 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T026b-2 — gate vendored quiche H3 trace logging before auth runtime
+### T026c — test-private direct-H3 auth-v3 runtime reference
 
-- **User result:** Before Maverick creates either role of an H3 connection or
-  performs H3 I/O, its private shared quiche foundation enables a reviewed,
-  connection-local, fail-closed privacy gate. For that connection, quiche H3
-  and QPACK trace calls are not reached, so trace formatting cannot expose peer
-  or local header names and values, encoded header blocks, or H3 stream and
-  connection identifiers. This closes one foundation blocker only; it does not
-  complete T026c or any product H3 runtime.
-- **Scope:** Change only this queue, the private client quiche foundation, its
-  existing strict-push integration proof, the three vendored H3 sources that
-  contain trace calls, the one maintained T026b-2 patch, and vendor provenance.
-  Add one clearly named H3 `Config` boolean and setter that default to `false`,
-  copy the value into each H3 connection, and suppress every H3/QPACK trace
-  before its arguments are formatted. The foundation unconditionally enables
-  both the new privacy gate and the independent T026b-1 peer-push gate. Keep
-  exact quiche 0.29.3, one `boring`/`boring-sys` 4.22.0 graph, and the current
-  Cargo, lock, manifest, API, config, version, protocol, and unsafe boundaries.
-- **Acceptance:** First reproduce with a real in-memory or `127.0.0.1` H3
-  request that the current foundation emits QPACK literal header material to a
-  trace logger. Then use the same real request/response path, SETTINGS/QPACK,
-  and fragmented DATA handling to prove the gate yields zero records for all
-  `quiche::h3` and QPACK trace targets, while default `false` still emits an H3
-  sentinel and neutral synthetic peer markers. Prove both foundation roles use
-  the shared builder by behavior, retain all fourteen strict-push controls and
-  their empty `0x105` rejection, and rebuild the three final vendor source bytes
-  by replaying the maintained patch against the accepted T026b-1 tree. All
-  focused, package, formatting, lint, rustdoc, smoke, harness, dependency,
-  exact-file, privacy, and `STATUS.md` gates must pass before one local commit.
-- **Runtime and truth boundary:** Default `false` preserves quiche 0.29.3 trace
-  behavior outside Maverick's foundation. The gate covers vendored H3 log
-  records only. qlog is disabled and absent from the current dependency graph;
-  explicitly enabling it later would reopen a separate review boundary. Outer
-  QUIC transport logging is also separate. Public H3 header or event values may
-  still be inspected by their caller, so later Maverick runtime must not log
-  peer events with `Debug`. This queue is execution order, not a completion
-  ledger; `STATUS.md` remains the only current product truth and authorization.
-- **Out of scope:** T026c auth-v3 runtime, auth POST state, CONNECT or Extended
-  CONNECT, authority/target/DNS/egress, UDP, relay or user data, fallback,
-  public API/config/schema/version work, qlog, QUIC/TLS core changes, product or
-  release claims, CI, push, PR, tag, publication, remote, deployment,
-  real-network, and system-network work remain deferred. T026c restarts only
-  after this prerequisite is accepted.
-- **Stop conditions:** Stop if complete pre-format suppression needs a fourth
-  vendored source, Cargo/dependency/public API/config/version/unsafe work, qlog,
-  a QUIC transport redesign, real network or private data; if default
-  compatibility, the independent T026b-1 gate, or any full local gate regresses;
-  or if the maintained patch cannot reconstruct the exact authorized three-file
-  vendored delta.
+- **User result:** Inside the private feature-gated quiche foundation, one real
+  `127.0.0.1` QUIC/H3 generation performs exactly one frozen auth-v3 POST: the
+  client sends the canonical 256-byte control, the server verifies it with the
+  same-generation exporter and sends the canonical 320-byte confirmation, the
+  client completely verifies it, and both roles close. This is a test-private
+  runtime reference, not product H3 or a release result.
+- **Scope:** Change only this queue and
+  `crates/maverick-client/src/quiche_foundation.rs`. Extend the existing private
+  driver and its bounded resources; reuse the canonical auth-v3 core primitive,
+  singleton preselection, live TLS/H3 facts, strict peer-push gate, Datagram
+  gate, and connection-local zero-trace gate. Keep `FoundationObservation`
+  limited to TLS/H3 facts and place test-private auth results in a separate
+  fixed, non-sensitive result.
+- **Acceptance:** Prove red on the accepted T026b-2 baseline with a real exact
+  six-field H3 POST rejected as pre-auth activity, then green for one split-DATA
+  256/320 exchange, complete verification, same-generation binding, exact-once
+  admission, server closure after its final response send is queued, client
+  closure after complete response verification, a private call graph with no
+  target/DNS/egress work, bounded cleanup, and zero H3/QPACK trace records.
+  Cover malformed fields, ordering, lengths, DATA/event sequencing, duplicate
+  control, Datagram and strict-push rejection, malformed or cross-generation
+  auth bytes, fixed diagnostics, and unchanged observation semantics. All
+  focused and full local gates must pass before one local commit.
+- **Out of scope:** Product H3, CONNECT or Extended CONNECT, target or DNS work,
+  egress, relay, user flows or DATA, UDP tunneling, fallback, public API,
+  product config/schema/version, auth wire/core changes, qlog, outer QUIC log
+  claims, exhaustive forced coverage of every partial-write, `Done`,
+  `StreamBlocked`, or deadline branch, CI, push, PR, tag, release, remote,
+  deployment, real-network, and system-network work remain deferred.
+  `STATUS.md` is unchanged.
+- **Stop conditions:** Stop if this needs a third file, dependency/vendor/Cargo
+  work, a public item, product configuration, a wire/core change, raw peer data
+  in diagnostics, a second resource framework, wire-driven profile selection,
+  H3/QPACK formatting before suppression, target/data-plane work, fallback, or
+  facts copied from another physical generation; also stop on any T023a,
+  T026b-1, T026b-2, or full local gate regression.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

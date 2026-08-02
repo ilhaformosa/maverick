@@ -17,52 +17,51 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013c-2 — strict direct-v3 role configuration and projection
+### T013c-3a1 — freeze direct-H2 auth-v3 control mapping and rustls trust
 
-- **User result:** Let a future local direct-v3 client or server role load one
-  explicit, strict provisioning document and project it into the T013c-1 owned
-  singleton/preselected capability without exposing secrets or using wire data
-  to select a profile.
-- **Scope:** Add config schema 3 as an intentionally forward-incompatible,
-  pre-runtime client/server role schema. It requires the five explicit direct
-  policy axes, auth minimum `direct_v3_only`, one singular provisioning binding,
-  canonical nonzero opaque 16-byte values, nonzero epoch and credential expiry,
-  and the existing full-UTF-8 `SecretString`. Client role data reuses the local
-  SOCKS listener plus server address, name, path, CA, and pin settings. Server
-  role data reuses its listener, TLS paths, and tunnel path. A version-first
-  public role reader delegates v1 to the unchanged canonical reader, rejects v2
-  as policy-only, strictly parses v3, and rejects every other version.
-- **Acceptance:** Unknown, duplicate, missing, null, mixed-legacy, multi-document,
-  malformed role/version, noncanonical ID, zero ID, zero epoch/expiry, and bad
-  secret inputs fail closed through fixed privacy-safe errors. H2 and H3 role
-  documents produce locally preselected capabilities that can drive the frozen
-  pure auth-v3 encode/verify primitives without I/O. Full v3 documents remain
-  rejected by the old canonical v1 readers and by direct generic v1 Serde.
-  Config v2 remains strict five-axis policy-only. The new direct-v3 role and
-  projection types expose no v3 secret, opaque ID, handle, or raw YAML and have
-  no Clone, Default, Serialize, or generic Deserialize surface. The versioned
-  role readers intentionally preserve `legacy_v1()` access to the unchanged v1
-  public fields and `SecretString`; this slice does not close that legacy API.
-- **Opaque-value rule:** Each provisioning handle and semantic ID must be
-  independently nonzero and canonical base64url-no-pad. A handle and the four
-  semantically distinct IDs may contain the same nonzero bytes; fixed positions
-  and commitment domains already separate their meanings. Across independent
-  bindings, T013c-1 continues to enforce unique handles, tuple-to-PSK and
-  PSK-to-tuple uniqueness, and consistent deployment mappings.
-- **Runtime boundary:** Schema 1 remains the only runnable CLI/client/server
-  config. Schema 2 remains policy-only. Schema 3 is parsed and projected only;
-  CLI, SDK, client, server, H2, and H3 runtime entry points do not accept it.
-  No trusted connection context, exporter observation, wire input, clock read,
-  secret-store access, fallback, or runtime authentication state is created.
-- **Out of scope:** Stored profiles and SDK; auth wire/spec/vector changes;
-  shared-listener multi-profile dispatch; fronted, Auto, WebSocket, rotation,
-  legacy-auth mixing, fallback, PSK trials, runtime connection state, data-plane
-  behavior, and PQ/hybrid policy. This slice changes no current product-runtime
-  fact and does not modify `STATUS.md`.
-- **Stop conditions:** Stop if this needs an eighth file, Cargo or lockfile
-  change, a dependency, v1 public-shape/Serde change, runnable v2 or v3 config,
-  SDK/CLI/client/server integration, auth-v3 security-logic or wire change,
-  fronted/Auto/multi-profile support, remote work, or private data in the diff.
+- **User result:** A future direct-H2 client and server can implement the same
+  auth-v3 control exchange without guessing how HTTP/2 carries it or which TLS
+  facts are trusted.
+- **Scope:** Documentation only. Freeze the request and success-response
+  method, a canonical raw path-and-query with the query completely absent,
+  exact content types, body lengths, stream endings, trailer rejection,
+  generation-wide failure behavior, connection ordering, and the first
+  rustls-only direct-H2 trust observations. Freeze a fixed privacy-safe pre-I/O
+  gate that rejects a configured tunnel path containing raw `?` or `#`, or any
+  path that cannot round-trip byte for byte as a legal HTTP/2 path component.
+  Only `ROADMAP.md` and `docs/AUTH_V3_DIRECT_SPEC.md` may change.
+- **Acceptance:** The canonical contract gives one unambiguous mapping for the
+  256-byte `ClientControl` and 320-byte `ServerConfirmation`; closes the whole
+  physical TLS/H2 generation on every pre-auth, duplicate, carrier-shape, or
+  auth failure without legacy fallback; requires the raw HTTP/2 path-and-query
+  to equal the validated tunnel path byte for byte with no query component and
+  rejects even a trailing empty `?`; requires complete confirmation before
+  exposing an authenticated capability; and distinguishes actual rustls TLS
+  1.3, H2 ALPN, exporter, and no-early-data observations from configured or
+  offered values. The future rustls reference entry point rejects an
+  unrepresentable configured path or a non-rustls/non-H2 selection before any
+  I/O, without changing the current config-schema-3 parser or any existing
+  legacy backend/carrier path. The server's only `Authenticating` to
+  `Authenticated` transition point is after local h2 acceptance of the response
+  headers and all 320 response bytes, with the final send carrying `END_STREAM`
+  and returning success. One or more `send_data` operations may carry the body;
+  construction, headers alone, capacity reservation, any partial DATA prefix,
+  or a cumulative length below or above 320 bytes is insufficient. This is only
+  a local h2 acceptance/queueing boundary, not proof of peer receipt. The
+  mapping remains only a future control seam, not a user-flow/data-plane or
+  multi-flow implementation.
+- **Runtime and truth boundary:** This slice enables no runtime, changes no
+  current product fact, and leaves `STATUS.md` byte for byte unchanged.
+  `STATUS.md` remains the sole current-truth and authorization source. This
+  queue remains planning, not a completed-work ledger or a v1.3 release scope.
+- **Out of scope:** User-flow HTTP/data-plane mapping, multi-flow capability,
+  runtime generation state, CLI, SDK, client, server, H3, BrowserMimic/BoringSSL,
+  fronted routes, Auto, multi-profile selection, PSK trials, legacy fallback,
+  config-schema-3 parser tightening, stored profiles, rotation, and PQ/hybrid
+  policy remain deferred.
+- **Stop conditions:** Stop if a third file, Cargo or lockfile change, Rust
+  source, test or vector change, wire/schema change, runtime enablement, remote
+  work, real-network action, release action, or private data is required.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

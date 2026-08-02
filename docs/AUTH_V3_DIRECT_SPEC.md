@@ -421,8 +421,14 @@ The required lifecycle is:
    nonce/replay, sentinel, policy hash, exporter binding, and client MAC. All
    three commitments MUST match before PSK lookup/MAC acceptance.
 6. Generate a ServerConfirmation only after all validation succeeds.
-7. Mark the server generation authenticated only after the confirmation bytes
-   are successfully committed to the control response on the same connection.
+7. For the frozen direct-H2 reference, keep the local server gate in
+   `Authenticating` until the response headers have been accepted by the local
+   h2 API, all response DATA totaling exactly 320 bytes has been successfully
+   accepted into this generation's response `SendStream` after obtaining the
+   necessary send capacity, and the final `send_data` carrying the remaining
+   bytes with `END_STREAM` returns success. One or more `send_data` operations
+   may carry the body. Only that exact cumulative event transitions the gate to
+   `Authenticated`; Section 11.1 freezes the boundary and failure behavior.
 8. Independently validate on the client: shape, registry values, trusted
    connection/profile context, every exact
    selected/minimum equality and echo, expiry relation, limits, nonces/session
@@ -435,13 +441,147 @@ flow. Before the server generation is authenticated, the server MUST reject a
 flow immediately; it MUST NOT queue it, resolve a target or DNS name, run egress
 resolution, or connect to a target.
 
-When direct H2/H3 dispatch is later implemented, the control request uses
-`POST` to the configured tunnel path with content type
-`application/maverick-auth-v3`. The request body is exactly one 256-byte
-ClientControl and the success response body is exactly one 320-byte
-ServerConfirmation. The raw v3 body MUST NOT enter the legacy frame decoder.
-Legacy `application/grpc` plus framed ClientHello/ServerHello retains its
-current meaning.
+### 11.1 Frozen direct-H2 control carrier mapping
+
+This subsection freezes a future direct-H2 control seam. It does not enable a
+runtime or claim that the client or server currently enforces the mapping.
+
+The control request has exactly this HTTP/2 mapping:
+
+- The method is the exact, case-sensitive value `POST`.
+- The raw HTTP/2 `:path` path-and-query value MUST equal the pre-I/O validated
+  config-schema-3 tunnel path byte for byte. The query component MUST be
+  completely absent; a trailing empty query delimiter `?` is invalid. An
+  implementation MUST NOT normalize, percent-decode, parse and rebuild, or
+  otherwise transform either value to obtain an equivalent form.
+- There is exactly one request `content-type` field. Its value is the exact,
+  case-sensitive ASCII string `application/maverick-auth-v3`. Parameters,
+  duplicates, and every other value are invalid.
+- The request body is semantically exactly 256 bytes containing one
+  `ClientControl`. Those bytes may span multiple HTTP/2 DATA frames, but the
+  accumulated body length MUST be exactly 256 bytes and the request MUST then
+  end with `END_STREAM`. Request trailers are forbidden.
+- The raw 256 bytes MUST NOT enter the legacy frame decoder.
+
+The only successful control response has exactly this HTTP/2 mapping:
+
+- The status is exactly `200`.
+- There is exactly one response `content-type` field. Its value is the exact,
+  case-sensitive ASCII string `application/maverick-auth-v3`. Parameters,
+  duplicates, and every other value are invalid.
+- The response body is semantically exactly 320 bytes containing one
+  `ServerConfirmation`. Those bytes may span multiple HTTP/2 DATA frames, but
+  the accumulated body length MUST be exactly 320 bytes and the response MUST
+  then end with `END_STREAM`. Response trailers are forbidden.
+- The client MUST completely validate all 320 bytes before it creates or
+  exposes an authenticated capability for the generation.
+
+The first pre-auth request is the generation's only control candidate and
+atomically consumes the physical generation's unique auth slot before the
+server reads or parses any request-body byte. It remains the only candidate
+even when its metadata, body, or authentication is invalid. A concurrent or
+duplicate control, any pre-auth non-control request, a wrong method, path,
+query, or content type, a truncated or trailing body, trailers, or any invalid
+shape, registry value, MAC, trusted context, expiry, policy, commitment, echo,
+nonce, sentinel, or limit consumes the slot and closes the entire physical
+TLS/H2 generation. A malformed or failed success response and every client-side
+confirmation failure have the same generation-wide result.
+
+Failure MUST NOT produce the canonical success response or any HTTP response
+that a peer could mistake for it. A v3 failure MUST NOT enter legacy fallback,
+be offered to a v2 or v1 decoder, retry another carrier, profile, or PSK, or
+start relay or target work. Local diagnostics may record only fixed,
+privacy-safe categories. The particular HTTP/2 or TLS close frame, error code,
+or ordering is not a stable application-protocol signal. The only result a peer
+may rely on is that the physical generation closed without an authenticated
+capability or target work.
+
+Connection ordering is strict:
+
+- The client MUST finish the control request and validate the complete
+  confirmation before the generation enters any pool or exposes a user-flow
+  sender.
+- The server gate starts in `Authenticating`. It may transition to
+  `Authenticated` only after the local h2 API has accepted the response
+  headers and the response `SendStream` belonging to this generation has
+  successfully accepted all response DATA totaling exactly 320 bytes after the
+  necessary send capacity was obtained. The final `send_data` MUST carry the
+  remaining bytes, set `END_STREAM`, and return `Ok`. One or more `send_data`
+  operations may carry the 320-byte body. With h2 0.4, the final boundary is
+  `send_data(remaining_confirmation_bytes, true) == Ok(())` when the bytes
+  accepted by that final call plus all preceding successful calls, if any,
+  total exactly 320.
+- Constructing `ServerConfirmation`, a successful `send_response` or headers
+  operation, reserving or polling send capacity, or successfully queueing only
+  part of the DATA is insufficient. A cumulative accepted length below or above
+  320 bytes is invalid and MUST NOT authenticate the generation. The final
+  success above means only that the local h2 API accepted or queued the complete
+  response; it does not prove that the peer received or validated it.
+- Any error or cancellation while reserving or polling capacity, any
+  `send_response` or `send_data` error, or any reset before that transition
+  keeps the auth slot consumed, closes the generation, and creates no
+  authenticated capability. A reset or connection error after the local
+  transition still closes the generation, and authenticated state does not
+  transfer. No particular transport error or reset code is frozen here.
+- Before confirmation, the client MUST NOT create or queue a flow. The server
+  MUST NOT read a flow body, query the legacy `UserStore`, resolve DNS, apply
+  target egress resolution, connect to a target, relay bytes, or invoke
+  fallback.
+- One physical generation has exactly one authentication-mechanism instance.
+  Every replacement generation MUST authenticate from the beginning, and
+  authenticated state MUST NOT transfer between generations.
+
+### 11.2 First rustls direct-H2 reference trust contract
+
+The first future runtime reference slice defines one new rustls-only direct-H2
+entry point. Before DNS resolution, a TCP connection, a TLS handshake, or any
+other I/O, that entry point MUST:
+
+- reject a BrowserMimic/BoringSSL backend selection, an H3 carrier selection,
+  or any other selection that is not rustls direct H2 through one fixed,
+  privacy-safe local category, without routing it into this reference path; and
+- reject the configured tunnel path through one fixed, privacy-safe local
+  category unless it can be represented byte for byte as a legal HTTP/2 path
+  component. At minimum, a raw query delimiter `?` and a raw fragment delimiter
+  `#` are invalid.
+
+This path-representability check is a future runtime-reference pre-I/O gate.
+This docs-only slice does not tighten the current config-schema-3 parser and
+does not claim that its `valid_tunnel_path` validation already rejects these
+values. These entry-point requirements do not change any existing legacy
+BrowserMimic/BoringSSL, H3, or other backend/carrier path; their current
+behavior remains unchanged.
+
+After the TLS handshake completes and before starting HTTP/2, the client and
+server MUST obtain the following actual observations from the same rustls
+`ClientConnection` or `ServerConnection` that owns the generation:
+
+- `protocol_version() == Some(ProtocolVersion::TLSv1_3)`;
+- `alpn_protocol() == Some(b"h2")`; and
+- exactly 32 RFC 9266 exporter bytes from
+  `export_keying_material` with label
+  `b"EXPORTER-Channel-Binding"` and context `Some(&[])`.
+
+The exporter MUST come from that same generation. The client configuration
+MUST set `enable_early_data = false`, and after the handshake the
+`ClientConnection` MUST report `is_early_data_accepted() == false`. The server
+configuration MUST set `max_early_data_size = 0` and
+`send_half_rtt_data = false`, and the `ServerConnection` MUST report no
+accepted or delivered early application data through `early_data()`. A client
+that cannot prove every required fact MUST fail closed before sending any
+`ClientControl`; a server that cannot prove them MUST fail closed before
+accepting its body. Configured versions, offered ALPN values, or other policy
+inputs MUST NOT be substituted for these actual connection observations.
+
+This slice deliberately does not freeze user-flow HTTP or data-plane mapping.
+A later runtime reference built from it owns only the control seam and MUST NOT
+be described as multi-flow support, completed runtime generation state, or a
+working direct-v3 runtime.
+
+This carrier freeze changes none of the 256-byte or 320-byte wire bytes,
+canonical vectors, auth/config/frame/stored schemas, legacy exporter label,
+legacy `None` exporter context, or legacy behavior. Legacy `application/grpc`
+plus framed ClientHello/ServerHello retains its current meaning.
 
 ## 12. Downgrade resistance and failure handling
 

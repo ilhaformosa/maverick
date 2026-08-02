@@ -17,68 +17,56 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013c-3d — paired rustls direct-H2 auth-v3 loopback reference
+### T022a — private same-generation QUIC auth-v3 exporter binding gate
 
-- **User result:** One dormant local reference composes the accepted real
-  client and server gates on one `127.0.0.1` plus ephemeral-port physical
-  generation, so the frozen 256-byte ClientControl and 320-byte
-  ServerConfirmation are mutually verified without enabling a user flow or
-  data plane.
-- **Scope:** Add one empty, non-default client feature named
-  `unstable-direct-v3-reference-test-support` and expose through
-  `maverick-client` only under that feature one public, unstable wrapper around
-  the existing client gate. This slice's design adjudication explicitly
-  accepts that SemVer-observable cross-crate test-support surface as public but
-  outside the stable compatibility promise. The wrapper fixes rustls, accepts
-  the existing
-  `DirectV3ClientRoleConfig`, returns only a fixed success or failure, and
-  returns success only after confirmation verification and physical teardown.
-  Enable that feature only from the server's dev-dependencies. In the existing
-  server direct-H2 test module, bind the real server gate first and pass its
-  actual loopback port into a matching client role. Do not duplicate TLS, H2,
-  auth-v3, or process-coordination machinery.
-- **Acceptance:** The positive paired test uses matching singleton config-v3
-  profile data, opaque identifiers, epoch, synthetic secret, raw path, CA, and
-  certificate pin. One fresh TCP/rustls TLS 1.3/H2 generation carries exactly
-  one control and one confirmation; mutual verification demonstrates the
-  same-generation exporter binding. The server observes no second request and
-  ends `Closed`, while the client wrapper returns success only after teardown.
-  A bounded mismatched synthetic-secret control makes both real gates fail and
-  close without authentication, fallback, retry, target, relay, or data-plane
-  work. Preserve the existing fourteen focused server tests and eight focused
-  client tests. Default and no-default-feature builds must not enable the test
-  feature, and all ordinary local gates remain green.
-- **Runtime and truth boundary:** This is dormant local interoperability
-  evidence only. The fresh TLS no-early-data observation is not resumed-session
-  0-RTT evidence. Immediate physical close is not a graceful-drain result. The
-  opt-in symbol is an acknowledged public API surface, but it is unstable
-  repository test support and is absent from default and no-default-feature
-  product builds. There is no new default or stable product API. Source
-  compatibility risk is limited to downstream code that explicitly enables
-  this unstable feature, and such code is outside the compatibility promise.
-  The wrapper exposes no `SendRequest`, stream, connection, session, receipt,
-  secret, exporter, or capability. This does not establish multi-flow,
-  listener, scheduler, pool, fallback, relay, runtime, user-flow, data-plane,
+- **User result:** One crate-private, feature-gated loopback proof shows that
+  both ends of the same real quiche QUIC/TLS generation derive the frozen RFC
+  9266 auth-v3 exporter and use it to mutually verify the existing 256-byte
+  ClientControl and 320-byte ServerConfirmation. A replacement generation must
+  authenticate from the beginning and cannot verify the old generation's
+  control or inherit authenticated state.
+- **Scope:** Extend only the existing T021b single-identity manager and driver
+  observation. Bind each observation to its local `ConnectionGeneration`,
+  confirm TLS 1.3 from the live BoringSSL `SslRef`, preserve the legacy channel
+  binding label with absent context, and additionally derive exactly 32 bytes
+  with `AUTH_V3_EXPORTER_LABEL` and present-empty context. Keep exporter bytes
+  in a private redacted wrapper. Compose the existing auth-v3 core primitive
+  only in focused loopback tests using one synthetic singleton profile and a
+  neutral exact control path; do not add a manager, registry, or public seam.
+- **Acceptance:** Client and server observations from one real physical
+  generation have byte-identical auth-v3 exporters, actual TLS 1.3 and ALPN
+  `h3`, no early data, peer QUIC transport parameters, and peer H3 SETTINGS.
+  Each observation token matches a lease from its own manager. The client
+  control verifies with the server's same-generation context, and the server
+  confirmation verifies with the client's. After both managers close, a
+  second real loopback generation has fresh tokens, rejects the first
+  generation's control and exporter provenance, and completes a new auth-v3
+  primitive from the beginning. Tests also reject the legacy-label exporter,
+  a changed or other-generation exporter, and absent RFC 9266 context while
+  explicitly accepting `Some(&[])`. Preserve all Q1/T021b resource,
+  observation, peer-fact, group, ALPN, legacy-exporter, and shutdown tests.
+- **Runtime and truth boundary:** This is crate-private, non-default,
+  loopback-only foundation evidence. H3 control streams and SETTINGS exist only
+  because quiche establishes H3; no auth control, request, CONNECT, DATA, or
+  Datagram payload is sent. Fresh-handshake no-early-data evidence is not a
+  resumed-session 0-RTT test. Manager close proves bounded reclamation, not
+  graceful drain. This does not establish product runtime, user-visible H3,
+  authentication state transition, target or flow handling, relay, fallback,
   production, release, or real-network results. `STATUS.md` remains byte for
   byte unchanged and is the sole current-truth and authorization source. This
   queue is not a completed ledger and does not define v1.3 release scope.
-- **Out of scope:** `run_client`, `run_server`, listeners, schedulers, pools,
-  fallback, relay, targets, DNS, egress, user-flow and data-plane mapping,
-  multi-profile or shared-connection management, H3/quiche,
-  BrowserMimic/BoringSSL, Auto, fronted routes, revocation, hard-expiry
-  enforcement, CLI, SDK, stored profiles, release, remote, system-network, and
-  real-network work remain deferred.
-- **Stop conditions:** The exact changed-file boundary is `ROADMAP.md`,
-  `Cargo.lock`, `crates/maverick-client/Cargo.toml`,
-  `crates/maverick-client/src/lib.rs`, `crates/maverick-server/Cargo.toml`, and
-  `crates/maverick-server/src/direct_v3_h2.rs`; stop and re-adjudicate before
-  changing any other file. Also stop rather than change the frozen carrier
-  mapping, wire format, vector, core auth, config schema, or accepted client or
-  server gate implementation; widen the single accepted unstable public seam,
-  promise compatibility for it, add a stable public API, or enable the test
-  seam by default; connect product runtime, data-plane, or fallback work; use
-  developer-sensitive data; or perform any remote, CI, system-network, or
-  real-network action.
+- **Out of scope:** H3 request/control payload, CONNECT, target, DNS, egress,
+  relay, fallback, user flow, data plane, Datagram payload, resumed sessions,
+  state transfer, multi-profile or shared-identity management, core/SDK/public
+  API, config, wire, frame, vector, schema, version, release, CI, remote,
+  system-network, and real-network work remain deferred.
+- **Stop conditions:** The exact changed-file boundary is `ROADMAP.md` and
+  `crates/maverick-client/src/quiche_foundation.rs`; stop before changing any
+  third file. Also stop if TLS 1.3 cannot be proven from the live `SslRef`, the
+  exporter cannot be tied to the exact manager generation, raw TLS/quiche types
+  or secrets would cross a public boundary, the frozen core/wire/config must
+  change, or success would require an H3 request, CONNECT, target, flow, auth
+  runtime, private data, remote action, or host-network change.
 
 This slice is not tied to a release version, does not define v1.3 release scope,
 and does not authorize CI, publication, push, deployment, or real-network work.

@@ -12,8 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use boring::ssl::SslRef;
+use boring::ssl::{SslRef, SslVersion};
 use maverick_core::auth::{TlsChannelBinding, TLS_CHANNEL_BINDING_EXPORTER_LABEL};
+use maverick_core::auth_v3::{AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot, Barrier, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
@@ -115,14 +116,81 @@ struct PeerQuicLimits {
     max_datagram_frame_bytes: Option<u64>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct AuthV3Exporter([u8; AUTH_V3_EXPORTER_LEN]);
+
+impl AuthV3Exporter {
+    const fn new(value: [u8; AUTH_V3_EXPORTER_LEN]) -> Self {
+        Self(value)
+    }
+
+    const fn as_bytes(&self) -> &[u8; AUTH_V3_EXPORTER_LEN] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for AuthV3Exporter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("redacted auth-v3 exporter")
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct LegacyExporter([u8; AUTH_V3_EXPORTER_LEN]);
+
+#[cfg(test)]
+impl LegacyExporter {
+    const fn new(value: [u8; AUTH_V3_EXPORTER_LEN]) -> Self {
+        Self(value)
+    }
+
+    const fn as_bytes(&self) -> &[u8; AUTH_V3_EXPORTER_LEN] {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl fmt::Debug for LegacyExporter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("redacted legacy exporter")
+    }
+}
+
+struct TlsObservation {
+    channel_binding: TlsChannelBinding,
+    auth_v3_exporter: AuthV3Exporter,
+    negotiated_group: NegotiatedGroup,
+    peer_quic: PeerQuicLimits,
+    #[cfg(test)]
+    legacy_exporter: LegacyExporter,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FoundationObservation {
+    generation: ConnectionGeneration,
     channel_binding: TlsChannelBinding,
+    auth_v3_exporter: AuthV3Exporter,
+    #[cfg(test)]
+    legacy_exporter: LegacyExporter,
     negotiated_group: NegotiatedGroup,
+    actual_tls13: bool,
     alpn_h3: bool,
     early_data: bool,
     peer_quic: PeerQuicLimits,
     peer_h3: PeerH3Settings,
+}
+
+impl FoundationObservation {
+    fn auth_v3_exporter_for<'observation, 'manager>(
+        &'observation self,
+        lease: &'observation ConnectionLease<'manager>,
+    ) -> Result<&'observation AuthV3Exporter, FoundationError> {
+        if self.generation != lease.generation() {
+            return Err(FoundationError::GenerationMismatch);
+        }
+        Ok(&self.auth_v3_exporter)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +202,7 @@ enum FoundationError {
     DriverTimeout,
     EarlyDataRejected,
     ExporterUnavailable,
+    GenerationMismatch,
     H3Unavailable,
     LeaseUnavailable,
     ManagerClosed,
@@ -141,6 +210,7 @@ enum FoundationError {
     PacketUnavailable,
     SocketUnavailable,
     TaskBudgetUnavailable,
+    TlsVersionMismatch,
 }
 
 impl fmt::Display for FoundationError {
@@ -153,6 +223,7 @@ impl fmt::Display for FoundationError {
             Self::DriverTimeout => "native H3 driver timeout",
             Self::EarlyDataRejected => "native H3 early data rejected",
             Self::ExporterUnavailable => "native H3 TLS exporter unavailable",
+            Self::GenerationMismatch => "native H3 generation mismatch",
             Self::H3Unavailable => "native H3 connection unavailable",
             Self::LeaseUnavailable => "native H3 lease unavailable",
             Self::ManagerClosed => "native H3 manager closed",
@@ -160,6 +231,7 @@ impl fmt::Display for FoundationError {
             Self::PacketUnavailable => "native H3 packet unavailable",
             Self::SocketUnavailable => "native H3 socket unavailable",
             Self::TaskBudgetUnavailable => "native H3 task budget unavailable",
+            Self::TlsVersionMismatch => "native H3 TLS version mismatch",
         })
     }
 }
@@ -306,7 +378,7 @@ struct FoundationDriver {
     connection: quiche::Connection,
     h3_config: Option<quiche::h3::Config>,
     h3_connection: Option<quiche::h3::Connection>,
-    tls_observation: Option<(TlsChannelBinding, NegotiatedGroup, PeerQuicLimits)>,
+    tls_observation: Option<TlsObservation>,
     observation_tx: mpsc::Sender<FoundationObservation>,
     ready_barrier: Arc<Barrier>,
 }
@@ -359,7 +431,7 @@ impl FoundationDriver {
 
         loop {
             self.initialize_h3()?;
-            if !foundation_ready && self.process_h3()? {
+            if !foundation_ready && self.process_h3(generation)? {
                 self.flush_packets(&mut send_buffer).await?;
                 timeout(HANDSHAKE_TIMEOUT, self.ready_barrier.wait())
                     .await
@@ -459,19 +531,37 @@ impl FoundationDriver {
         }
 
         let tls: &mut SslRef = self.connection.as_mut();
-        let label = std::str::from_utf8(TLS_CHANNEL_BINDING_EXPORTER_LABEL)
+        if tls.version2() != Some(SslVersion::TLS1_3) {
+            return Err(FoundationError::TlsVersionMismatch);
+        }
+
+        let legacy_label = std::str::from_utf8(TLS_CHANNEL_BINDING_EXPORTER_LABEL)
             .map_err(|_| FoundationError::ExporterUnavailable)?;
-        let mut output = [0_u8; 32];
-        tls.export_keying_material(&mut output, label, None)
+        let mut legacy_output = [0_u8; AUTH_V3_EXPORTER_LEN];
+        tls.export_keying_material(&mut legacy_output, legacy_label, None)
             .map_err(|_| FoundationError::ExporterUnavailable)?;
-        let channel_binding = TlsChannelBinding::new(output);
+        let channel_binding = TlsChannelBinding::new(legacy_output);
+
+        let auth_v3_label = std::str::from_utf8(AUTH_V3_EXPORTER_LABEL)
+            .map_err(|_| FoundationError::ExporterUnavailable)?;
+        let mut auth_v3_output = [0_u8; AUTH_V3_EXPORTER_LEN];
+        tls.export_keying_material(&mut auth_v3_output, auth_v3_label, Some(&[]))
+            .map_err(|_| FoundationError::ExporterUnavailable)?;
+        let auth_v3_exporter = AuthV3Exporter::new(auth_v3_output);
         let negotiated_group = negotiated_group(tls.curve_name());
         let peer_quic = peer_quic_limits(
             self.connection
                 .peer_transport_params()
                 .ok_or(FoundationError::ConnectionUnavailable)?,
         );
-        self.tls_observation = Some((channel_binding, negotiated_group, peer_quic));
+        self.tls_observation = Some(TlsObservation {
+            channel_binding,
+            auth_v3_exporter,
+            negotiated_group,
+            peer_quic,
+            #[cfg(test)]
+            legacy_exporter: LegacyExporter::new(legacy_output),
+        });
 
         let h3_config = self
             .h3_config
@@ -484,7 +574,7 @@ impl FoundationDriver {
         Ok(())
     }
 
-    fn process_h3(&mut self) -> Result<bool, FoundationError> {
+    fn process_h3(&mut self, generation: ConnectionGeneration) -> Result<bool, FoundationError> {
         let Some(h3_connection) = self.h3_connection.as_mut() else {
             return Ok(false);
         };
@@ -510,17 +600,22 @@ impl FoundationDriver {
             return Ok(false);
         }
 
-        let (channel_binding, negotiated_group, peer_quic) = self
+        let tls_observation = self
             .tls_observation
             .take()
             .ok_or(FoundationError::ExporterUnavailable)?;
         self.observation_tx
             .try_send(FoundationObservation {
-                channel_binding,
-                negotiated_group,
+                generation,
+                channel_binding: tls_observation.channel_binding,
+                auth_v3_exporter: tls_observation.auth_v3_exporter,
+                #[cfg(test)]
+                legacy_exporter: tls_observation.legacy_exporter,
+                negotiated_group: tls_observation.negotiated_group,
+                actual_tls13: true,
                 alpn_h3: true,
                 early_data: false,
-                peer_quic,
+                peer_quic: tls_observation.peer_quic,
                 peer_h3,
             })
             .map_err(|_| FoundationError::ObservationQueueUnavailable)?;
@@ -663,9 +758,42 @@ fn peer_setting(settings: &[(u64, u64)], id: u64) -> Option<u64> {
 mod tests {
     use std::sync::atomic::AtomicUsize;
 
+    use maverick_core::auth_v3::{
+        encode_auth_v3_client_control, encode_auth_v3_server_confirmation,
+        verify_auth_v3_client_control, verify_auth_v3_server_confirmation, AuthV3Carrier,
+        AuthV3ClientControlInput, AuthV3ClientReceipt, AuthV3Error, AuthV3OwnedProvisioningProfile,
+        AuthV3PreselectedProfile, AuthV3ProvisioningHandle, AuthV3ServerConfirmationInput,
+        AuthV3SingletonBinding, AuthV3TlsVersion, AUTH_V3_CLIENT_CONTROL_LEN,
+        AUTH_V3_SERVER_CONFIRMATION_LEN,
+    };
+    use maverick_core::SecretString;
     use tempfile::TempDir;
 
     use super::*;
+
+    const T022A_SECRET: &str = "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const T022A_CONTROL_PATH: &str = "/synthetic-h3-auth-v3";
+    const T022A_NOW: u64 = 1_800_000_000;
+    const T022A_NOT_AFTER: u64 = T022A_NOW + 172_800;
+    const LOOPBACK_TEST_LOCK_TIMEOUT: Duration = CONNECTION_RUN_TIMEOUT;
+    static LOOPBACK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TestStageError {
+        DeadlineExceeded,
+        SocketUnavailable,
+    }
+
+    impl fmt::Display for TestStageError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(match self {
+                Self::DeadlineExceeded => "loopback test stage deadline exceeded",
+                Self::SocketUnavailable => "loopback test socket unavailable",
+            })
+        }
+    }
+
+    impl std::error::Error for TestStageError {}
 
     struct LoopbackPair {
         _temp: TempDir,
@@ -690,6 +818,170 @@ mod tests {
             Some(value) => value,
             None => panic!("{message}"),
         }
+    }
+
+    async fn bounded_test_lock<'lock>(
+        lock: &'lock tokio::sync::Mutex<()>,
+        bound: Duration,
+    ) -> Result<tokio::sync::MutexGuard<'lock, ()>, TestStageError> {
+        timeout(bound, lock.lock())
+            .await
+            .map_err(|_| TestStageError::DeadlineExceeded)
+    }
+
+    async fn bind_bounded_loopback_socket(
+        address: SocketAddr,
+    ) -> Result<UdpSocket, TestStageError> {
+        timeout(SOCKET_IO_TIMEOUT, UdpSocket::bind(address))
+            .await
+            .map_err(|_| TestStageError::DeadlineExceeded)?
+            .map_err(|_| TestStageError::SocketUnavailable)
+    }
+
+    fn t022a_binding() -> AuthV3SingletonBinding {
+        let profile = fixed_ok(
+            AuthV3OwnedProvisioningProfile::new(
+                [0x11; 16],
+                [0x22; 16],
+                [0x33; 16],
+                [0x44; 16],
+                true,
+                T022A_CONTROL_PATH.to_owned(),
+                7,
+                T022A_NOT_AFTER,
+                fixed_ok(
+                    SecretString::new(T022A_SECRET),
+                    "construct synthetic auth-v3 secret",
+                ),
+            ),
+            "construct synthetic auth-v3 profile",
+        );
+        fixed_ok(
+            AuthV3SingletonBinding::new(
+                fixed_ok(
+                    AuthV3ProvisioningHandle::new([0x55; 16]),
+                    "construct synthetic provisioning handle",
+                ),
+                vec![profile],
+            ),
+            "construct synthetic singleton auth-v3 binding",
+        )
+    }
+
+    fn assert_t022a_live_facts(observation: &FoundationObservation) {
+        assert!(observation.actual_tls13);
+        assert!(observation.alpn_h3);
+        assert!(!observation.early_data);
+        assert_ne!(
+            observation.negotiated_group,
+            NegotiatedGroup::OtherOrUnknown
+        );
+        assert_eq!(
+            observation.peer_quic,
+            PeerQuicLimits {
+                max_idle_timeout_ms: MAX_IDLE_TIMEOUT.as_millis() as u64,
+                max_udp_payload_bytes: MAX_UDP_PAYLOAD_BYTES as u64,
+                initial_max_data: INITIAL_CONNECTION_WINDOW_BYTES,
+                initial_max_stream_data_bidi_local: INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                initial_max_stream_data_bidi_remote: INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                initial_max_stream_data_uni: INITIAL_UNI_STREAM_WINDOW_BYTES,
+                initial_max_streams_bidi: MAX_BIDI_STREAMS,
+                initial_max_streams_uni: MAX_UNI_STREAMS,
+                disable_active_migration: true,
+                active_connection_id_limit: ACTIVE_CONNECTION_ID_LIMIT,
+                max_datagram_frame_bytes: Some(MAX_DATAGRAM_FRAME_BYTES),
+            }
+        );
+        assert_eq!(
+            observation.peer_h3,
+            PeerH3Settings {
+                max_field_section_size: Some(MAX_FIELD_SECTION_BYTES),
+                qpack_max_table_capacity: Some(QPACK_MAX_TABLE_CAPACITY),
+                qpack_blocked_streams: Some(QPACK_BLOCKED_STREAMS),
+                extended_connect: true,
+                datagram: true,
+            }
+        );
+    }
+
+    fn complete_t022a_auth_v3_round_trip(
+        preselected: &AuthV3PreselectedProfile<'_>,
+        client_observation: &FoundationObservation,
+        client_exporter: &[u8; AUTH_V3_EXPORTER_LEN],
+        server_observation: &FoundationObservation,
+        server_exporter: &[u8; AUTH_V3_EXPORTER_LEN],
+        nonce_byte: u8,
+    ) -> [u8; AUTH_V3_CLIENT_CONTROL_LEN] {
+        assert_t022a_live_facts(client_observation);
+        assert_t022a_live_facts(server_observation);
+
+        let client_context = preselected.trusted_connection_context(
+            AuthV3Carrier::H3,
+            AuthV3TlsVersion::Tls13,
+            true,
+            client_observation.early_data,
+            client_exporter,
+            true,
+            Some(&[]),
+            T022A_CONTROL_PATH,
+        );
+        let server_context = preselected.trusted_connection_context(
+            AuthV3Carrier::H3,
+            AuthV3TlsVersion::Tls13,
+            true,
+            server_observation.early_data,
+            server_exporter,
+            true,
+            Some(&[]),
+            T022A_CONTROL_PATH,
+        );
+        let profile = preselected.trusted_profile();
+        let control = fixed_ok(
+            encode_auth_v3_client_control(
+                &profile,
+                &client_context,
+                &AuthV3ClientControlInput::new(AuthV3Carrier::H3, T022A_NOW, [nonce_byte; 32]),
+            ),
+            "encode same-generation H3 auth-v3 control",
+        );
+        assert_eq!(control.len(), AUTH_V3_CLIENT_CONTROL_LEN);
+        let verified = fixed_ok(
+            verify_auth_v3_client_control(
+                &control,
+                &preselected.trusted_profile(),
+                &server_context,
+                T022A_NOW,
+            ),
+            "verify same-generation H3 auth-v3 control",
+        );
+        let confirmation = fixed_ok(
+            encode_auth_v3_server_confirmation(
+                verified,
+                &server_context,
+                &AuthV3ServerConfirmationInput::new(
+                    T022A_NOW,
+                    T022A_NOW + 1_800,
+                    T022A_NOW + 86_400,
+                    [nonce_byte.wrapping_add(1); 32],
+                    [nonce_byte.wrapping_add(2); 16],
+                    65_536,
+                    128,
+                ),
+            ),
+            "encode same-generation H3 auth-v3 confirmation",
+        );
+        assert_eq!(confirmation.len(), AUTH_V3_SERVER_CONFIRMATION_LEN);
+        fixed_ok(
+            verify_auth_v3_server_confirmation(
+                &confirmation,
+                &control,
+                &preselected.trusted_profile(),
+                &client_context,
+                &AuthV3ClientReceipt::new(T022A_NOW, 131_072, 256),
+            ),
+            "verify same-generation H3 auth-v3 confirmation",
+        );
+        control
     }
 
     async fn start_server(
@@ -815,13 +1107,13 @@ mod tests {
         );
 
         let server_socket = fixed_ok(
-            UdpSocket::bind("127.0.0.1:0").await,
-            "bind loopback H3 server",
+            bind_bounded_loopback_socket(SocketAddr::from(([127, 0, 0, 1], 0))).await,
+            "bind bounded loopback H3 server",
         );
         let server_address = fixed_ok(server_socket.local_addr(), "read loopback H3 address");
         let client_socket = fixed_ok(
-            UdpSocket::bind("127.0.0.1:0").await,
-            "bind loopback H3 client",
+            bind_bounded_loopback_socket(SocketAddr::from(([127, 0, 0, 1], 0))).await,
+            "bind bounded loopback H3 client",
         );
         let client_address = fixed_ok(client_socket.local_addr(), "read loopback client address");
 
@@ -877,10 +1169,9 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn native_h3_loopback_proves_tls_settings_bounds_and_shutdown() {
-        let task_budget = ConnectionTaskBudget::new();
-        let mut pair = start_loopback_pair(&task_budget, &task_budget).await;
+    async fn receive_loopback_observations(
+        pair: &mut LoopbackPair,
+    ) -> (FoundationObservation, FoundationObservation) {
         let client_observation = fixed_some(
             fixed_ok(
                 timeout(CONNECTION_RUN_TIMEOUT, pair.client_observation_rx.recv()).await,
@@ -895,11 +1186,60 @@ mod tests {
             ),
             "receive loopback H3 server observation",
         );
+        (client_observation, server_observation)
+    }
+
+    async fn close_loopback_pair(pair: &mut LoopbackPair) {
+        let (client_close, server_close) = tokio::join!(pair.client.close(), pair.server.close());
+        fixed_ok(client_close, "close managed loopback H3 client");
+        fixed_ok(server_close, "close managed loopback H3 server");
+    }
+
+    #[tokio::test]
+    async fn bounded_loopback_lock_fails_within_short_local_deadline() {
+        let lock = tokio::sync::Mutex::new(());
+        let held_guard = fixed_ok(
+            bounded_test_lock(&lock, Duration::from_millis(50)).await,
+            "acquire synthetic loopback test lock",
+        );
+        let bounded_attempt = timeout(
+            Duration::from_millis(500),
+            bounded_test_lock(&lock, Duration::from_millis(20)),
+        )
+        .await;
+        let error = match bounded_attempt {
+            Ok(Err(error)) => error,
+            Ok(Ok(_)) | Err(_) => panic!("bounded loopback test lock did not fail closed"),
+        };
+        let message_is_fixed = error.to_string() == "loopback test stage deadline exceeded";
+        assert!(
+            message_is_fixed,
+            "bounded loopback lock error was not fixed"
+        );
+        assert!(std::error::Error::source(&error).is_none());
+        drop(held_guard);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_h3_loopback_proves_tls_settings_bounds_and_shutdown() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_loopback_pair(&task_budget, &task_budget).await;
+        let (client_observation, server_observation) =
+            receive_loopback_observations(&mut pair).await;
         let first_lease = fixed_ok(
             pair.client.acquire().await,
             "acquire first single-identity H3 lease",
         );
         let generation = first_lease.generation();
+        assert_eq!(client_observation.generation, generation);
+        fixed_ok(
+            client_observation.auth_v3_exporter_for(&first_lease),
+            "bind client exporter observation to first lease",
+        );
         assert_eq!(
             pair.client.acquire().await.err(),
             Some(FoundationError::LeaseUnavailable)
@@ -912,6 +1252,16 @@ mod tests {
         assert_eq!(second_lease.generation(), generation);
         assert_eq!(pair.client_connections_created.load(Ordering::Relaxed), 1);
         second_lease.release();
+        let server_lease = fixed_ok(
+            pair.server.acquire().await,
+            "acquire single-identity H3 server lease",
+        );
+        assert_eq!(server_observation.generation, server_lease.generation());
+        fixed_ok(
+            server_observation.auth_v3_exporter_for(&server_lease),
+            "bind server exporter observation to lease",
+        );
+        server_lease.release();
 
         let client_sender = fixed_some(
             pair.client.command_tx.as_ref(),
@@ -923,9 +1273,7 @@ mod tests {
             "read managed server command sender",
         )
         .downgrade();
-        let (client_close, server_close) = tokio::join!(pair.client.close(), pair.server.close());
-        fixed_ok(client_close, "close managed loopback H3 client");
-        fixed_ok(server_close, "close managed loopback H3 server");
+        close_loopback_pair(&mut pair).await;
 
         assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
         assert!(client_sender.upgrade().is_none());
@@ -935,18 +1283,36 @@ mod tests {
             Some(FoundationError::ManagerClosed)
         );
         drop(fixed_ok(
-            UdpSocket::bind(pair.client_address).await,
+            bind_bounded_loopback_socket(pair.client_address).await,
             "reclaim managed loopback H3 client socket",
         ));
         drop(fixed_ok(
-            UdpSocket::bind(pair.server_address).await,
+            bind_bounded_loopback_socket(pair.server_address).await,
             "reclaim managed loopback H3 server socket",
         ));
 
-        assert_eq!(
-            client_observation.channel_binding,
-            server_observation.channel_binding
+        let legacy_bindings_match =
+            client_observation.channel_binding == server_observation.channel_binding;
+        assert!(legacy_bindings_match, "loopback legacy exporter mismatch");
+        let auth_v3_exporters_match =
+            client_observation.auth_v3_exporter == server_observation.auth_v3_exporter;
+        assert!(
+            auth_v3_exporters_match,
+            "loopback auth-v3 exporter mismatch"
         );
+        let legacy_exporters_match =
+            client_observation.legacy_exporter == server_observation.legacy_exporter;
+        assert!(
+            legacy_exporters_match,
+            "loopback legacy exporter provenance mismatch"
+        );
+        let exporter_labels_are_separated = client_observation.auth_v3_exporter.as_bytes()
+            != client_observation.legacy_exporter.as_bytes();
+        assert!(
+            exporter_labels_are_separated,
+            "loopback exporter labels were not separated"
+        );
+        assert!(client_observation.actual_tls13 && server_observation.actual_tls13);
         assert!(client_observation.alpn_h3 && server_observation.alpn_h3);
         assert!(!client_observation.early_data && !server_observation.early_data);
         assert_ne!(
@@ -1000,6 +1366,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn manager_drop_cancels_driver_and_reclaims_owned_resources() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
         let client_task_budget = ConnectionTaskBudget::new();
         let server_task_budget = ConnectionTaskBudget::new();
         let mut pair = start_loopback_pair(&client_task_budget, &server_task_budget).await;
@@ -1044,7 +1414,7 @@ mod tests {
         let reclaimed_permit = fixed_ok(reclaimed_permit, "hold reclaimed manager task permit");
         assert!(client_sender.upgrade().is_none());
         drop(fixed_ok(
-            UdpSocket::bind(client_address).await,
+            bind_bounded_loopback_socket(client_address).await,
             "reclaim dropped manager socket",
         ));
 
@@ -1061,11 +1431,362 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t022a_live_auth_v3_round_trip_is_bound_to_manager_generation() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_loopback_pair(&task_budget, &task_budget).await;
+        let (client_observation, server_observation) =
+            receive_loopback_observations(&mut pair).await;
+        let client_lease = fixed_ok(
+            pair.client.acquire().await,
+            "acquire T022a client generation lease",
+        );
+        let server_lease = fixed_ok(
+            pair.server.acquire().await,
+            "acquire T022a server generation lease",
+        );
+        assert_eq!(client_observation.generation, client_lease.generation());
+        assert_eq!(server_observation.generation, server_lease.generation());
+        assert_ne!(client_lease.generation(), server_lease.generation());
+        let auth_v3_exporters_match =
+            client_observation.auth_v3_exporter == server_observation.auth_v3_exporter;
+        assert!(
+            auth_v3_exporters_match,
+            "T022a same-generation exporter mismatch"
+        );
+        assert_eq!(pair.client_connections_created.load(Ordering::Relaxed), 1);
+
+        let binding = t022a_binding();
+        let preselected = binding.preselected_profile();
+        {
+            let client_exporter = fixed_ok(
+                client_observation.auth_v3_exporter_for(&client_lease),
+                "bind T022a client exporter to manager generation",
+            );
+            let server_exporter = fixed_ok(
+                server_observation.auth_v3_exporter_for(&server_lease),
+                "bind T022a server exporter to manager generation",
+            );
+            complete_t022a_auth_v3_round_trip(
+                &preselected,
+                &client_observation,
+                client_exporter.as_bytes(),
+                &server_observation,
+                server_exporter.as_bytes(),
+                0x41,
+            );
+        }
+        client_lease.release();
+        server_lease.release();
+        close_loopback_pair(&mut pair).await;
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t022a_replacement_generation_reauthenticates_and_rejects_old_control() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let binding = t022a_binding();
+        let preselected = binding.preselected_profile();
+
+        let mut first_pair = start_loopback_pair(&task_budget, &task_budget).await;
+        let (first_client_observation, first_server_observation) =
+            receive_loopback_observations(&mut first_pair).await;
+        let first_client_lease = fixed_ok(
+            first_pair.client.acquire().await,
+            "acquire first T022a client generation",
+        );
+        let first_server_lease = fixed_ok(
+            first_pair.server.acquire().await,
+            "acquire first T022a server generation",
+        );
+        let first_client_generation = first_client_lease.generation();
+        let first_server_generation = first_server_lease.generation();
+        let first_control = {
+            let client_exporter = fixed_ok(
+                first_client_observation.auth_v3_exporter_for(&first_client_lease),
+                "bind first T022a client exporter",
+            );
+            let server_exporter = fixed_ok(
+                first_server_observation.auth_v3_exporter_for(&first_server_lease),
+                "bind first T022a server exporter",
+            );
+            complete_t022a_auth_v3_round_trip(
+                &preselected,
+                &first_client_observation,
+                client_exporter.as_bytes(),
+                &first_server_observation,
+                server_exporter.as_bytes(),
+                0x51,
+            )
+        };
+        first_client_lease.release();
+        first_server_lease.release();
+        close_loopback_pair(&mut first_pair).await;
+
+        let mut second_pair = start_loopback_pair(&task_budget, &task_budget).await;
+        let (second_client_observation, second_server_observation) =
+            receive_loopback_observations(&mut second_pair).await;
+        let second_client_lease = fixed_ok(
+            second_pair.client.acquire().await,
+            "acquire replacement T022a client generation",
+        );
+        let second_server_lease = fixed_ok(
+            second_pair.server.acquire().await,
+            "acquire replacement T022a server generation",
+        );
+        assert_ne!(second_client_lease.generation(), first_client_generation);
+        assert_ne!(second_server_lease.generation(), first_server_generation);
+        let wrong_client_generation_rejected = matches!(
+            first_client_observation.auth_v3_exporter_for(&second_client_lease),
+            Err(FoundationError::GenerationMismatch)
+        );
+        assert!(
+            wrong_client_generation_rejected,
+            "replacement client generation accepted an old exporter observation"
+        );
+        let wrong_server_generation_rejected = matches!(
+            first_server_observation.auth_v3_exporter_for(&second_server_lease),
+            Err(FoundationError::GenerationMismatch)
+        );
+        assert!(
+            wrong_server_generation_rejected,
+            "replacement server generation accepted an old exporter observation"
+        );
+
+        {
+            let second_client_exporter = fixed_ok(
+                second_client_observation.auth_v3_exporter_for(&second_client_lease),
+                "bind replacement T022a client exporter",
+            );
+            let second_server_exporter = fixed_ok(
+                second_server_observation.auth_v3_exporter_for(&second_server_lease),
+                "bind replacement T022a server exporter",
+            );
+            let replacement_server_context = preselected.trusted_connection_context(
+                AuthV3Carrier::H3,
+                AuthV3TlsVersion::Tls13,
+                true,
+                second_server_observation.early_data,
+                second_server_exporter.as_bytes(),
+                true,
+                Some(&[]),
+                T022A_CONTROL_PATH,
+            );
+            assert_eq!(
+                verify_auth_v3_client_control(
+                    &first_control,
+                    &preselected.trusted_profile(),
+                    &replacement_server_context,
+                    T022A_NOW,
+                )
+                .err(),
+                Some(AuthV3Error::Mac)
+            );
+            complete_t022a_auth_v3_round_trip(
+                &preselected,
+                &second_client_observation,
+                second_client_exporter.as_bytes(),
+                &second_server_observation,
+                second_server_exporter.as_bytes(),
+                0x61,
+            );
+        }
+        assert_eq!(
+            first_pair
+                .client_connections_created
+                .load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            second_pair
+                .client_connections_created
+                .load(Ordering::Relaxed),
+            1
+        );
+        second_client_lease.release();
+        second_server_lease.release();
+        close_loopback_pair(&mut second_pair).await;
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t022a_exporter_provenance_context_and_debug_fail_closed() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_loopback_pair(&task_budget, &task_budget).await;
+        let (client_observation, server_observation) =
+            receive_loopback_observations(&mut pair).await;
+        let client_lease = fixed_ok(
+            pair.client.acquire().await,
+            "acquire provenance-test T022a client generation",
+        );
+        let server_lease = fixed_ok(
+            pair.server.acquire().await,
+            "acquire provenance-test T022a server generation",
+        );
+        let binding = t022a_binding();
+        let preselected = binding.preselected_profile();
+
+        {
+            let client_exporter = fixed_ok(
+                client_observation.auth_v3_exporter_for(&client_lease),
+                "bind provenance-test T022a client exporter",
+            );
+            let server_exporter = fixed_ok(
+                server_observation.auth_v3_exporter_for(&server_lease),
+                "bind provenance-test T022a server exporter",
+            );
+            let control = complete_t022a_auth_v3_round_trip(
+                &preselected,
+                &client_observation,
+                client_exporter.as_bytes(),
+                &server_observation,
+                server_exporter.as_bytes(),
+                0x71,
+            );
+
+            let exporter_labels_differ =
+                TLS_CHANNEL_BINDING_EXPORTER_LABEL != AUTH_V3_EXPORTER_LABEL;
+            assert!(
+                exporter_labels_differ,
+                "T022a exporter labels unexpectedly match"
+            );
+            let legacy_exporters_match =
+                client_observation.legacy_exporter == server_observation.legacy_exporter;
+            assert!(legacy_exporters_match, "T022a legacy exporter mismatch");
+            let legacy_and_auth_v3_differ =
+                server_observation.legacy_exporter.as_bytes() != server_exporter.as_bytes();
+            assert!(
+                legacy_and_auth_v3_differ,
+                "T022a legacy and auth-v3 exporters unexpectedly match"
+            );
+            let legacy_context = preselected.trusted_connection_context(
+                AuthV3Carrier::H3,
+                AuthV3TlsVersion::Tls13,
+                true,
+                false,
+                server_observation.legacy_exporter.as_bytes(),
+                true,
+                Some(&[]),
+                T022A_CONTROL_PATH,
+            );
+            assert_eq!(
+                verify_auth_v3_client_control(
+                    &control,
+                    &preselected.trusted_profile(),
+                    &legacy_context,
+                    T022A_NOW,
+                )
+                .err(),
+                Some(AuthV3Error::Mac)
+            );
+
+            let mut wrong_exporter = *server_exporter.as_bytes();
+            wrong_exporter[0] ^= 0x80;
+            let wrong_exporter_context = preselected.trusted_connection_context(
+                AuthV3Carrier::H3,
+                AuthV3TlsVersion::Tls13,
+                true,
+                false,
+                &wrong_exporter,
+                true,
+                Some(&[]),
+                T022A_CONTROL_PATH,
+            );
+            assert_eq!(
+                verify_auth_v3_client_control(
+                    &control,
+                    &preselected.trusted_profile(),
+                    &wrong_exporter_context,
+                    T022A_NOW,
+                )
+                .err(),
+                Some(AuthV3Error::Mac)
+            );
+
+            let wrong_generation_context = preselected.trusted_connection_context(
+                AuthV3Carrier::H3,
+                AuthV3TlsVersion::Tls13,
+                true,
+                false,
+                server_exporter.as_bytes(),
+                false,
+                Some(&[]),
+                T022A_CONTROL_PATH,
+            );
+            assert_eq!(
+                verify_auth_v3_client_control(
+                    &control,
+                    &preselected.trusted_profile(),
+                    &wrong_generation_context,
+                    T022A_NOW,
+                )
+                .err(),
+                Some(AuthV3Error::Context)
+            );
+
+            let absent_context = preselected.trusted_connection_context(
+                AuthV3Carrier::H3,
+                AuthV3TlsVersion::Tls13,
+                true,
+                false,
+                server_exporter.as_bytes(),
+                true,
+                None,
+                T022A_CONTROL_PATH,
+            );
+            assert_eq!(
+                verify_auth_v3_client_control(
+                    &control,
+                    &preselected.trusted_profile(),
+                    &absent_context,
+                    T022A_NOW,
+                )
+                .err(),
+                Some(AuthV3Error::Context)
+            );
+        }
+
+        let first_auth_debug = format!("{:?}", AuthV3Exporter::new([0x81; AUTH_V3_EXPORTER_LEN]));
+        let second_auth_debug = format!("{:?}", AuthV3Exporter::new([0x82; AUTH_V3_EXPORTER_LEN]));
+        let auth_debug_is_fixed_and_redacted = first_auth_debug == "redacted auth-v3 exporter"
+            && second_auth_debug == "redacted auth-v3 exporter"
+            && first_auth_debug == second_auth_debug;
+        assert!(
+            auth_debug_is_fixed_and_redacted,
+            "auth-v3 exporter Debug was not fixed and redacted"
+        );
+        let legacy_debug = format!("{:?}", LegacyExporter::new([0x83; AUTH_V3_EXPORTER_LEN]));
+        assert!(
+            legacy_debug == "redacted legacy exporter",
+            "legacy exporter Debug was not fixed and redacted"
+        );
+        client_lease.release();
+        server_lease.release();
+        close_loopback_pair(&mut pair).await;
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
     #[tokio::test]
     async fn observation_channel_and_task_budget_fail_closed_at_capacity() {
         let observation = FoundationObservation {
+            generation: ConnectionGeneration(1),
             channel_binding: TlsChannelBinding::new([0_u8; 32]),
+            auth_v3_exporter: AuthV3Exporter::new([0_u8; AUTH_V3_EXPORTER_LEN]),
+            legacy_exporter: LegacyExporter::new([0_u8; AUTH_V3_EXPORTER_LEN]),
             negotiated_group: NegotiatedGroup::X25519,
+            actual_tls13: true,
             alpn_h3: true,
             early_data: false,
             peer_quic: PeerQuicLimits {
@@ -1095,7 +1816,11 @@ mod tests {
             tx.try_send(observation),
             Err(mpsc::error::TrySendError::Full(_))
         ));
-        assert_eq!(rx.recv().await, Some(observation));
+        let received_observation_matches = rx.recv().await == Some(observation);
+        assert!(
+            received_observation_matches,
+            "bounded observation contents mismatch"
+        );
 
         let (command_tx, _command_rx) = mpsc::channel(COMMAND_QUEUE_LIMIT);
         fixed_ok(
@@ -1146,6 +1871,10 @@ mod tests {
                 "native H3 TLS exporter unavailable",
             ),
             (
+                FoundationError::GenerationMismatch,
+                "native H3 generation mismatch",
+            ),
+            (
                 FoundationError::H3Unavailable,
                 "native H3 connection unavailable",
             ),
@@ -1170,11 +1899,16 @@ mod tests {
                 FoundationError::TaskBudgetUnavailable,
                 "native H3 task budget unavailable",
             ),
+            (
+                FoundationError::TlsVersionMismatch,
+                "native H3 TLS version mismatch",
+            ),
         ];
 
         for (error, expected) in cases {
             let message = error.to_string();
             assert_eq!(message, expected);
+            assert!(std::error::Error::source(&error).is_none());
             assert!(message.len() <= 48);
             assert!(!message.contains("127.0.0.1"));
             assert!(!message.contains("localhost"));

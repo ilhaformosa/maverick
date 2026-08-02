@@ -17,51 +17,53 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T013b-2 — production direct auth-v3 core primitive
+### T013c-1 — singleton direct-v3 trusted provisioning binding
 
-- **User result:** Give future client, server, H2, and H3 runtime slices one
-  shared production core primitive for the frozen 256-byte `ClientControl` and
-  320-byte `ServerConfirmation`, so they cannot grow separate codecs or treat
-  wire claims as trusted connection facts.
-- **Scope:** Add one stateless `maverick-core` auth-v3 module with fixed-length
-  encoding, strict parsing, and verification against an independent trusted
-  direct-connection context and exact locally provisioned credential tuple.
-  Export the minimal additive API from `maverick-core`; its input structs use
-  constructors instead of public field literals, and its public enums are
-  non-exhaustive so callers keep a fallback match arm as trusted facts and
-  fixed categories evolve. Extend the existing conformance test so its
-  independent T013b-1 oracle remains the external ruler for all four golden
-  vectors and the complete negative matrix. Change exactly `ROADMAP.md`,
-  `crates/maverick-core/src/auth_v3.rs`,
-  `crates/maverick-core/src/lib.rs`, and
-  `crates/maverick-core/tests/conformance_vectors.rs`.
-- **Acceptance:** The production encoder equals all four checked-in JSON
-  messages byte for byte; production parse/verify passes all four positives and
-  rejects malformed, unknown, mismatched-context, wrong-credential, unsafe
-  time/expiry/limit, changed-transcript, replacement-exporter, and legacy
-  inputs. The independent oracle remains separate. Existing v1/v2 bytes and
-  their legacy exporter label remain unchanged. Locked offline core tests,
-  formatting, strict core lint, warning-free core docs, user smoke, local
-  harness, final file audit, and privacy gates pass; `STATUS.md`, Cargo files,
-  the frozen specification, and all four auth-v3 JSON files remain unchanged.
-- **Out of scope:** Runtime enablement or dispatch; atomic generation slots;
-  duplicate-control, close, no-state-transfer, or no-fallback enforcement;
-  connection/admission expiry timers; revocation; session, reconnect, target,
-  flow, or data-plane work; credential provisioning, registry construction, or
-  trusted local exact-profile selection; fronted authentication; release scope;
-  CI, publication, remote, or real-network work. Wire-driven profile selection
-  and trying multiple PSKs are forbidden. Direct H2/H3 runtime integration
-  remains blocked until the later T013c-1 trusted provisioning/selection slice
-  is complete. A production core primitive is not runtime enablement, a
-  peer-confirmed product result, release scope, or PQ proof. T015/PQ remains
-  `DEFER`.
-- **Stop conditions:** Stop if this needs a fifth file, Cargo or lockfile change,
-  new dependency, specification or vector change, v1/v2 reinterpretation,
-  runtime wiring/state, a second client/server codec, loss of the independent
-  test oracle, a protocol contradiction that cannot be resolved inside the
-  four-file slice, or private data in the diff.
+- **User result:** Give each future direct-v3 server/listener binding one
+  explicit locally provisioned profile selected before any wire message is
+  read, so frozen wire commitments can prove equality only and can never choose
+  an identity, epoch, profile, path, or PSK.
+- **Scope:** Add owned `maverick-core` provisioning data for the three opaque
+  IDs, expected server identity, direct mapping and path, nonzero epoch,
+  credential expiry, and `SecretString`; one fixed-size nonzero opaque local
+  handle; an exact-one-profile binding construction gate; and an opaque
+  preselected capability that provides a temporary view to the existing T013b-2
+  verifier without exposing or copying the secret. A startup/reload-only helper
+  may check multiple independent singleton bindings by reusing the existing
+  O(n²) trusted-profile validator and rejecting duplicate handles. Change
+  exactly `ROADMAP.md`, `crates/maverick-core/src/auth_v3.rs`, and the new
+  `crates/maverick-core/tests/auth_v3_provisioning.rs`.
+- **Acceptance:** Zero handles and zero/multiple profile cardinality fail
+  closed. Owned profile construction reuses the existing validator for opaque
+  IDs, direct mapping/path, epoch, expiry, and secret validity. One valid
+  singleton produces a preselected capability whose temporary profile view
+  passes the production encode/verify flow. After profile A is preselected, a
+  correctly signed profile-B control or a wire-changed commitment/epoch is
+  rejected without switching profiles or trying B. Startup consistency rejects
+  duplicate handles, tuples, PSK reuse, and deployment-mapping conflicts.
+  Debug and errors are fixed, bounded, value-free, and source-free; owned secret
+  state has no Clone, Default, or Serde API. All four frozen auth-v3 vectors,
+  legacy v1/v2 conformance, locked offline core and SDK tests, formatting,
+  strict core lint, warning-free core docs, both local product gates, final
+  three-file audit, and privacy gates pass.
+- **Binding rule:** Every direct-v3 server/listener binding has exactly one
+  explicit profile. Multiple independent singleton bindings may use independent
+  opaque local handles. Shared-listener multi-profile dispatch is `BLOCK` and
+  requires a future protocol/dispatch design. Wire tuple, commitment, epoch,
+  credential hint, path, Host, SNI, or PSK trials must never select a profile.
+- **Out of scope:** Client/server role config; SDK or stored-profile schema;
+  real H2/H3 exporter and runtime wiring; generation slots; duplicate control,
+  close, no-state-transfer, no-fallback, timers, or revocation enforcement;
+  sessions, reconnects, targets, flows, or data-plane work; fronted
+  authentication; and PQ/hybrid policy. Those remain deferred. This slice does
+  not enable runtime, change product facts, or modify `STATUS.md`.
+- **Stop conditions:** Stop if this needs a fourth file, Cargo or lockfile
+  change, new dependency, config/schema/SDK/runtime work, shared-listener
+  multi-profile behavior, wire selection or PSK trial, specification/vector or
+  version change, or private data in the diff.
 
-This slice is not tied to a release version and does not define release scope.
+This slice is not tied to a release version, does not define v1.3 release scope,
+and does not authorize CI, publication, push, deployment, or real-network work.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

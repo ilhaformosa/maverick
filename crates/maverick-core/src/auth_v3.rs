@@ -1,9 +1,10 @@
-//! Stateless direct auth-v3 encoding, parsing, and verification primitives.
+//! Direct auth-v3 provisioning, encoding, parsing, and verification primitives.
 //!
-//! This module implements the fixed direct H2/H3 byte contract. It does not
-//! enable auth-v3 in any runtime and does not manage connection generations,
-//! duplicate controls, connection closure, fallback, expiry timers,
-//! revocation, reconnects, flows, targets, or data-plane state.
+//! This module implements the fixed direct H2/H3 byte contract and a
+//! startup-only singleton provisioning binding. It does not enable auth-v3 in
+//! any runtime and does not manage connection generations, duplicate controls,
+//! connection closure, fallback, expiry timers, revocation, reconnects, flows,
+//! targets, or data-plane state.
 //!
 //! A parsed or verified value is metadata only. It does not prove that a
 //! runtime connection has been marked authenticated. Runtime code must supply
@@ -82,6 +83,12 @@ const MAX_CLIENT_HARD_SECONDS: u64 = 86_700;
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AuthV3Error {
+    /// A local opaque provisioning handle is all zero.
+    #[error("invalid auth-v3 provisioning handle")]
+    ProvisioningHandle,
+    /// A direct server/listener binding does not contain exactly one profile.
+    #[error("invalid auth-v3 singleton provisioning cardinality")]
+    ProvisioningCardinality,
     /// The message does not have its one exact fixed length.
     #[error("invalid auth-v3 message shape")]
     Shape,
@@ -181,6 +188,188 @@ pub enum AuthV3TlsVersion {
     Tls13,
     /// Any version other than TLS 1.3.
     Other,
+}
+
+/// Fixed-size opaque handle for one local direct auth-v3 provisioning binding.
+///
+/// The handle is not a wire value and is never derived from a wire claim,
+/// readable legacy field, identity, path, or PSK. Construction rejects the
+/// all-zero value. Its formatter intentionally reveals no bytes.
+#[repr(transparent)]
+#[derive(PartialEq, Eq)]
+pub struct AuthV3ProvisioningHandle([u8; 16]);
+
+impl AuthV3ProvisioningHandle {
+    /// Construct a caller-provisioned opaque local handle.
+    ///
+    /// This function validates but does not generate the handle.
+    pub fn new(value: [u8; 16]) -> Result<Self, AuthV3Error> {
+        if all_zero(&value) {
+            return Err(AuthV3Error::ProvisioningHandle);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl fmt::Debug for AuthV3ProvisioningHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("opaque auth-v3 provisioning handle")
+    }
+}
+
+/// Owned local provisioning data for one direct auth-v3 profile.
+///
+/// This type deliberately implements neither `Clone`, `Default`, nor Serde
+/// traits: cloning the value would clone its [`SecretString`], defaults cannot
+/// safely invent identity or credential material, and stored/config schemas
+/// remain outside this repository-local slice.
+///
+/// ```compile_fail
+/// use maverick_core::auth_v3::AuthV3OwnedProvisioningProfile;
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<AuthV3OwnedProvisioningProfile>();
+/// ```
+///
+/// ```compile_fail
+/// use maverick_core::auth_v3::AuthV3OwnedProvisioningProfile;
+/// fn require_default<T: Default>() {}
+/// require_default::<AuthV3OwnedProvisioningProfile>();
+/// ```
+///
+/// ```compile_fail
+/// use maverick_core::auth_v3::AuthV3OwnedProvisioningProfile;
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<AuthV3OwnedProvisioningProfile>();
+/// ```
+pub struct AuthV3OwnedProvisioningProfile {
+    principal_id: [u8; 16],
+    deployment_profile_id: [u8; 16],
+    credential_namespace_id: [u8; 16],
+    expected_server_identity_id: [u8; 16],
+    expected_direct_route: bool,
+    expected_control_path: String,
+    credential_epoch: u64,
+    credential_not_after_unix: u64,
+    secret: SecretString,
+}
+
+impl AuthV3OwnedProvisioningProfile {
+    /// Construct and validate one caller-provisioned owned direct profile.
+    ///
+    /// The caller supplies every opaque ID and the PSK. This constructor does
+    /// not generate or derive them, and it reuses
+    /// [`validate_auth_v3_trusted_profiles`] for the frozen tuple, mapping,
+    /// path, epoch, expiry, and credential rules.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        principal_id: [u8; 16],
+        deployment_profile_id: [u8; 16],
+        credential_namespace_id: [u8; 16],
+        expected_server_identity_id: [u8; 16],
+        expected_direct_route: bool,
+        expected_control_path: String,
+        credential_epoch: u64,
+        credential_not_after_unix: u64,
+        secret: SecretString,
+    ) -> Result<Self, AuthV3Error> {
+        let profile = Self {
+            principal_id,
+            deployment_profile_id,
+            credential_namespace_id,
+            expected_server_identity_id,
+            expected_direct_route,
+            expected_control_path,
+            credential_epoch,
+            credential_not_after_unix,
+            secret,
+        };
+        validate_auth_v3_trusted_profiles(&[profile.trusted_profile()])?;
+        Ok(profile)
+    }
+
+    fn trusted_profile(&self) -> AuthV3TrustedProfile<'_> {
+        AuthV3TrustedProfile::new(
+            &self.principal_id,
+            &self.deployment_profile_id,
+            &self.credential_namespace_id,
+            &self.expected_server_identity_id,
+            self.expected_direct_route,
+            &self.expected_control_path,
+            self.credential_epoch,
+            self.credential_not_after_unix,
+            &self.secret,
+        )
+    }
+}
+
+impl fmt::Debug for AuthV3OwnedProvisioningProfile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("owned auth-v3 provisioning profile")
+    }
+}
+
+/// One direct server/listener binding containing exactly one owned profile.
+///
+/// A shared listener with multiple v3 profiles is deliberately blocked. Use
+/// independent singleton bindings for independent listeners; this type is not
+/// a wire selector or a request-path registry.
+pub struct AuthV3SingletonBinding {
+    handle: AuthV3ProvisioningHandle,
+    profile: AuthV3OwnedProvisioningProfile,
+}
+
+impl AuthV3SingletonBinding {
+    /// Validate the exact-one-profile startup cardinality and construct a
+    /// singleton binding.
+    pub fn new(
+        handle: AuthV3ProvisioningHandle,
+        mut profiles: Vec<AuthV3OwnedProvisioningProfile>,
+    ) -> Result<Self, AuthV3Error> {
+        if profiles.len() != 1 {
+            return Err(AuthV3Error::ProvisioningCardinality);
+        }
+        let profile = profiles
+            .pop()
+            .expect("exact singleton provisioning cardinality was checked");
+        validate_auth_v3_trusted_profiles(&[profile.trusted_profile()])?;
+        Ok(Self { handle, profile })
+    }
+
+    /// Produce the opaque capability for the profile already selected by this
+    /// validated singleton binding.
+    ///
+    /// This operation accepts no peer bytes, commitment, epoch, credential
+    /// hint, path, SNI, Host, PSK, or other selection input. The returned value
+    /// cannot switch profiles or try multiple credentials.
+    pub fn preselected_profile(&self) -> AuthV3PreselectedProfile<'_> {
+        AuthV3PreselectedProfile { binding: self }
+    }
+}
+
+impl fmt::Debug for AuthV3SingletonBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("singleton auth-v3 provisioning binding")
+    }
+}
+
+/// Opaque proof that a validated singleton binding selected its only profile
+/// before any auth-v3 wire message is read.
+pub struct AuthV3PreselectedProfile<'a> {
+    binding: &'a AuthV3SingletonBinding,
+}
+
+impl AuthV3PreselectedProfile<'_> {
+    /// Borrow a temporary view accepted by the existing production
+    /// encode/verify primitive without copying or exposing the secret.
+    pub fn trusted_profile(&self) -> AuthV3TrustedProfile<'_> {
+        self.binding.profile.trusted_profile()
+    }
+}
+
+impl fmt::Debug for AuthV3PreselectedProfile<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("preselected auth-v3 provisioning capability")
+    }
 }
 
 /// One trusted local direct-auth profile and credential entry.
@@ -613,6 +802,32 @@ impl fmt::Debug for VerifiedAuthV3ServerConfirmation {
     }
 }
 
+/// Validate consistency across independent singleton bindings at startup or
+/// config reload.
+///
+/// This bounded O(n²) helper rejects duplicate local handles, then delegates
+/// tuple, PSK, and deployment-mapping consistency to
+/// [`validate_auth_v3_trusted_profiles`]. It is not a shared-listener selector,
+/// provisioning registry, wire lookup, PSK trial loop, or request hot path.
+pub fn validate_auth_v3_singleton_bindings(
+    bindings: &[AuthV3SingletonBinding],
+) -> Result<(), AuthV3Error> {
+    for (index, binding) in bindings.iter().enumerate() {
+        if bindings[index + 1..]
+            .iter()
+            .any(|other| binding.handle == other.handle)
+        {
+            return Err(AuthV3Error::ProvisioningHandle);
+        }
+    }
+
+    let profiles: Vec<_> = bindings
+        .iter()
+        .map(|binding| binding.profile.trusted_profile())
+        .collect();
+    validate_auth_v3_trusted_profiles(&profiles)
+}
+
 /// Validate a bounded caller-owned set of trusted direct-auth profile entries.
 ///
 /// This pure O(n²) helper is a one-time startup/config-reload consistency gate,
@@ -754,12 +969,11 @@ pub fn parse_auth_v3_client_control(
 /// Verify one `ClientControl` against independent trusted local facts.
 ///
 /// `profile` must already have been selected by a non-wire, trusted local
-/// mechanism from a registry previously checked with
-/// [`validate_auth_v3_trusted_profiles`]. Wire commitments only prove equality
-/// with that exact tuple; they never select or replace a profile, identity,
-/// epoch, or PSK. Credential provisioning and trusted selection remain deferred
-/// to T013c-1, so this API must not be wired into H2/H3 runtime before that
-/// boundary exists.
+/// mechanism. T013c-1 supplies [`AuthV3SingletonBinding`] and
+/// [`AuthV3PreselectedProfile`] for the exact-one-profile server/listener case.
+/// Wire commitments only prove equality with that exact tuple; they never
+/// select or replace a profile, identity, epoch, or PSK. Runtime integration
+/// remains deferred, so this API must not be wired into H2/H3 in this slice.
 ///
 /// `trusted_server_now_unix` is the verifier's clock, not a wire value. Success
 /// returns metadata for confirmation construction; it does not change runtime

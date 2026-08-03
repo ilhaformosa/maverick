@@ -23,8 +23,8 @@ use tokio::sync::mpsc;
 use tokio::task::Id;
 
 use crate::quiche_runtime::{
-    ConnectionLifecycle, PacketMeta, ServerConnection, ServerConnectionConfig, ServerCredentials,
-    ServerSourceConnectionId, MAX_PACKET_BYTES,
+    ConnectionLifecycle, FrozenDirectV3ServerRole, PacketMeta, ServerConnection,
+    ServerConnectionConfig, ServerSourceConnectionId, MAX_PACKET_BYTES,
 };
 
 pub(super) const MAX_ACTIVE_CONNECTIONS: usize = 8;
@@ -101,17 +101,14 @@ pub(super) struct ConnectionRegistry<G = OsConnectionIdGenerator> {
 }
 
 impl ConnectionRegistry<OsConnectionIdGenerator> {
-    pub(super) fn new(credentials: ServerCredentials<'_>) -> Result<Self, RegistryError> {
-        Self::with_generator(credentials, OsConnectionIdGenerator)
+    pub(super) fn new(role: FrozenDirectV3ServerRole) -> Result<Self, RegistryError> {
+        Self::with_generator(role, OsConnectionIdGenerator)
     }
 }
 
 impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
-    fn with_generator(
-        credentials: ServerCredentials<'_>,
-        generator: G,
-    ) -> Result<Self, RegistryError> {
-        let config = ServerConnectionConfig::new(credentials)
+    fn with_generator(role: FrozenDirectV3ServerRole, generator: G) -> Result<Self, RegistryError> {
+        let config = ServerConnectionConfig::new(role)
             .map_err(|_| RegistryError::ConfigurationUnavailable)?;
         Ok(Self {
             config,
@@ -559,6 +556,14 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
         self.connection_count()
     }
 
+    #[cfg(test)]
+    pub(super) fn test_has_role_owner(
+        &self,
+        expected: &std::sync::Arc<maverick_core::config::ServerRoleConfig>,
+    ) -> bool {
+        self.config.has_role_owner(expected)
+    }
+
     pub(super) fn reclaim_all_joined_actors(&mut self) {
         for entry in &mut self.entries {
             if entry
@@ -602,7 +607,7 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
                         server_source_id,
                     } if connection.has_stable_source_connection_id(server_source_id)
                             && connection.is_established()
-                            && connection.h3_is_ready()
+                            && connection.pre_auth_foundation_ready()
                 )
             })
     }
@@ -752,7 +757,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use crate::quiche_runtime::{
-        bounded_h3_config, bounded_transport_config, PacketMeta, ServerCredentials,
+        bounded_h3_config, bounded_transport_config, FrozenDirectV3ServerRole, PacketMeta,
         MAX_PACKET_BYTES,
     };
 
@@ -902,14 +907,43 @@ mod tests {
             .expect("write synthetic test certificate");
         std::fs::write(&key_path, certified.key_pair.serialize_pem())
             .expect("write synthetic test key");
-        ConnectionRegistry::with_generator(
-            ServerCredentials {
-                certificate_chain: &certificate_path,
-                private_key: &key_path,
-            },
-            generator,
-        )
-        .expect("construct bounded registry")
+        let yaml = format!(
+            r#"version: 3
+role: server
+security: {{ posture: standard }}
+transport: {{ strategy: h3 }}
+trust: {{ route: direct_to_maverick }}
+name_privacy: {{ minimum: plain_sni }}
+traffic_shaping: {{ policy: disabled }}
+listen: "127.0.0.1:0"
+tls:
+  cert_path: "{}"
+  key_path: "{}"
+maverick:
+  tunnel_path: "/direct-v3"
+  expected_authority: "localhost"
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding:
+      provisioning_handle: "EREREREREREREREREREREQ"
+      principal_id: "IiIiIiIiIiIiIiIiIiIiIg"
+      deployment_profile_id: "MzMzMzMzMzMzMzMzMzMzMw"
+      credential_namespace_id: "RERERERERERERERERERERA"
+      server_identity_id: "VVVVVVVVVVVVVVVVVVVVVQ"
+      credential_epoch: 7
+      credential_not_after_unix: 1800172800
+      secret: "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+"#,
+            certificate_path.display(),
+            key_path.display(),
+        );
+        let owner = std::sync::Arc::new(
+            maverick_core::config::ServerRoleConfig::from_yaml_str(&yaml)
+                .expect("parse synthetic server role"),
+        );
+        let role = FrozenDirectV3ServerRole::new(owner).expect("freeze synthetic server role");
+        ConnectionRegistry::with_generator(role, generator).expect("construct bounded registry")
     }
 
     fn first_packet(client: &mut SyntheticClient) -> TestPacket {

@@ -8,14 +8,13 @@
 #![forbid(unsafe_code)]
 
 use std::fmt;
-#[cfg(test)]
-use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use maverick_core::config::ServerRoleConfig;
 use tokio::net::UdpSocket;
 #[cfg(test)]
 use tokio::sync::Notify;
@@ -26,10 +25,9 @@ use tokio::time::{timeout_at, Instant};
 use crate::quiche_registry::{
     ActorInboundDisposition, ActorPacket, ConnectionRegistry, RegistryError,
 };
-use crate::quiche_runtime::ConnectionLifecycle;
-#[cfg(test)]
-use crate::quiche_runtime::ServerCredentials;
-use crate::quiche_runtime::{PacketMeta, ServerConnection, MAX_PACKET_BYTES};
+use crate::quiche_runtime::{
+    ConnectionLifecycle, FrozenDirectV3ServerRole, PacketMeta, ServerConnection, MAX_PACKET_BYTES,
+};
 
 const ACTOR_INBOX_CAPACITY: usize = 4;
 const SOCKET_RECV_BYTES: usize = MAX_PACKET_BYTES + 1;
@@ -57,34 +55,45 @@ struct Endpoint {
 }
 
 impl Endpoint {
-    #[cfg(test)]
-    async fn bind_test(
-        credentials: ServerCredentials<'_>,
-    ) -> Result<(Self, watch::Sender<bool>), EndpointError> {
-        let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+    async fn bind(owner: Arc<ServerRoleConfig>) -> Result<Self, EndpointError> {
+        let role = FrozenDirectV3ServerRole::new(owner).map_err(|_| EndpointError::Role)?;
+        let listen = role.listen();
+        if !listen.ip().is_loopback() {
+            return Err(EndpointError::Bind);
+        }
+        let registry = ConnectionRegistry::new(role).map_err(|_| EndpointError::Registry)?;
+        let socket = UdpSocket::bind(listen)
             .await
             .map_err(|_| EndpointError::Bind)?;
         let local_address = socket.local_addr().map_err(|_| EndpointError::Bind)?;
-        if local_address.ip() != Ipv4Addr::LOCALHOST || local_address.port() == 0 {
+        if !local_address.ip().is_loopback() || local_address.port() == 0 {
             return Err(EndpointError::Bind);
         }
-        let registry = ConnectionRegistry::new(credentials).map_err(|_| EndpointError::Registry)?;
         let (cancel_tx, cancel_rx) = watch::channel(false);
-        Ok((
-            Self {
-                socket: Arc::new(socket),
-                local_address,
-                registry,
-                actors: JoinSet::new(),
-                unregistered_actor: None,
-                cancel_tx: cancel_tx.clone(),
-                cancel_rx,
-                fail_next_activation: false,
-                next_actor_fault: ActorFault::None,
-                next_actor_test_gate: None,
-            },
+        Ok(Self {
+            socket: Arc::new(socket),
+            local_address,
+            registry,
+            actors: JoinSet::new(),
+            unregistered_actor: None,
             cancel_tx,
-        ))
+            cancel_rx,
+            #[cfg(test)]
+            fail_next_activation: false,
+            #[cfg(test)]
+            next_actor_fault: ActorFault::None,
+            #[cfg(test)]
+            next_actor_test_gate: None,
+        })
+    }
+
+    #[cfg(test)]
+    async fn bind_test(
+        owner: Arc<ServerRoleConfig>,
+    ) -> Result<(Self, watch::Sender<bool>), EndpointError> {
+        let endpoint = Self::bind(owner).await?;
+        let cancel = endpoint.cancel_tx.clone();
+        Ok((endpoint, cancel))
     }
 
     async fn run(&mut self) -> Result<(), EndpointError> {
@@ -317,6 +326,13 @@ async fn run_connection_actor(
     let mut termination_deadline = None;
     loop {
         verify_stable_source_id(&connection, &expected_server_source_id)?;
+        #[cfg(test)]
+        if let Some(test_gate) = test_gate.as_deref() {
+            test_gate.observe_pre_auth_foundation(
+                connection.is_established(),
+                connection.pre_auth_foundation_ready(),
+            );
+        }
         if connection.lifecycle() == ConnectionLifecycle::Closed {
             return terminal_error.map_or(Ok(()), Err);
         }
@@ -329,7 +345,8 @@ async fn run_connection_actor(
             );
         }
 
-        let handshake_complete = connection.is_established() && connection.h3_is_ready();
+        let handshake_complete =
+            connection.is_established() && connection.pre_auth_foundation_ready();
         if termination_deadline.is_none()
             && !handshake_complete
             && Instant::now() >= handshake_deadline
@@ -469,7 +486,8 @@ async fn run_connection_actor(
             .unwrap_or(MAX_IDLE_TIMEOUT)
             .min(MAX_IDLE_TIMEOUT);
         let protocol_deadline = Instant::now() + protocol_wait;
-        let handshake_complete = connection.is_established() && connection.h3_is_ready();
+        let handshake_complete =
+            connection.is_established() && connection.pre_auth_foundation_ready();
         let (actor_deadline, actor_deadline_kind) = earliest_actor_deadline(
             protocol_deadline,
             (termination_deadline.is_none() && !handshake_complete).then_some(handshake_deadline),
@@ -569,14 +587,22 @@ fn begin_actor_termination(
     termination_deadline: &mut Option<Instant>,
     error: Option<ActorError>,
 ) {
+    let handshake_timed_out = error == Some(ActorError::HandshakeTimeout);
     if let Some(error) = error {
         terminal_error.get_or_insert(error);
     }
     if termination_deadline.is_none() {
         *termination_deadline = Some(Instant::now() + ACTOR_TERMINATION_BUDGET);
     }
-    if connection.lifecycle() == ConnectionLifecycle::Active && connection.close().is_err() {
-        terminal_error.get_or_insert(ActorError::ConnectionUnavailable);
+    if connection.lifecycle() == ConnectionLifecycle::Active {
+        let close = if handshake_timed_out {
+            connection.reject_pre_auth()
+        } else {
+            connection.close()
+        };
+        if close.is_err() {
+            terminal_error.get_or_insert(ActorError::ConnectionUnavailable);
+        }
     }
 }
 
@@ -716,6 +742,7 @@ struct ActorTestGate {
     draining_wait_armed: AtomicBool,
     draining_wait_started: Notify,
     release_draining_wait: Notify,
+    established_without_foundation: AtomicBool,
 }
 
 #[cfg(test)]
@@ -752,6 +779,17 @@ impl ActorTestGate {
 
     fn release_draining_wait(&self) {
         self.release_draining_wait.notify_one();
+    }
+
+    fn observe_pre_auth_foundation(&self, established: bool, foundation_ready: bool) {
+        if established && !foundation_ready {
+            self.established_without_foundation
+                .store(true, Ordering::Release);
+        }
+    }
+
+    fn saw_established_without_foundation(&self) -> bool {
+        self.established_without_foundation.load(Ordering::Acquire)
     }
 }
 
@@ -812,6 +850,7 @@ fn verify_stable_source_id(
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum EndpointError {
+    Role,
     Bind,
     Receive,
     Registry,
@@ -822,6 +861,7 @@ enum EndpointError {
 impl fmt::Display for EndpointError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
+            Self::Role => "server endpoint role unavailable",
             Self::Bind => "server endpoint bind unavailable",
             Self::Receive => "server endpoint receive unavailable",
             Self::Registry => "server endpoint registry unavailable",
@@ -889,7 +929,7 @@ mod tests {
         ActorAdmission, ActorInboundDisposition, ConnectionRegistry, RegistryError,
     };
     use crate::quiche_runtime::{
-        bounded_h3_config, bounded_transport_config, PacketMeta, ServerCredentials,
+        bounded_h3_config, bounded_transport_config, FrozenDirectV3ServerRole, PacketMeta,
         MAX_PACKET_BYTES,
     };
 
@@ -929,11 +969,79 @@ mod tests {
             }
         }
 
-        fn as_server_credentials(&self) -> ServerCredentials<'_> {
-            ServerCredentials {
-                certificate_chain: &self.certificate_path,
-                private_key: &self.key_path,
-            }
+        fn server_role(&self) -> Arc<ServerRoleConfig> {
+            self.server_role_with("h3", "localhost", &self.certificate_path, &self.key_path)
+        }
+
+        fn server_role_with(
+            &self,
+            transport_strategy: &str,
+            expected_authority: &str,
+            certificate_path: &std::path::Path,
+            key_path: &std::path::Path,
+        ) -> Arc<ServerRoleConfig> {
+            let yaml = format!(
+                r#"version: 3
+role: server
+security: {{ posture: standard }}
+transport: {{ strategy: {transport_strategy} }}
+trust: {{ route: direct_to_maverick }}
+name_privacy: {{ minimum: plain_sni }}
+traffic_shaping: {{ policy: disabled }}
+listen: "127.0.0.1:0"
+tls:
+  cert_path: "{}"
+  key_path: "{}"
+maverick:
+  tunnel_path: "/direct-v3"
+  expected_authority: "{expected_authority}"
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding:
+      provisioning_handle: "EREREREREREREREREREREQ"
+      principal_id: "IiIiIiIiIiIiIiIiIiIiIg"
+      deployment_profile_id: "MzMzMzMzMzMzMzMzMzMzMw"
+      credential_namespace_id: "RERERERERERERERERERERA"
+      server_identity_id: "VVVVVVVVVVVVVVVVVVVVVQ"
+      credential_epoch: 7
+      credential_not_after_unix: 1800172800
+      secret: "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+"#,
+                certificate_path.display(),
+                key_path.display(),
+            );
+            Arc::new(ServerRoleConfig::from_yaml_str(&yaml).expect("parse synthetic server role"))
+        }
+
+        fn frozen_role(&self) -> FrozenDirectV3ServerRole {
+            FrozenDirectV3ServerRole::new(self.server_role()).expect("freeze synthetic server role")
+        }
+
+        fn legacy_server_role(
+            &self,
+            certificate_path: &std::path::Path,
+            key_path: &std::path::Path,
+        ) -> Arc<ServerRoleConfig> {
+            let yaml = format!(
+                r#"version: 1
+listen: "127.0.0.1:0"
+tls:
+  cert_path: "{}"
+  key_path: "{}"
+maverick:
+  tunnel_path: "/legacy"
+users:
+  - id: "legacy-user"
+    secret: "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+fallback:
+  type: static
+  static_dir: "./public"
+"#,
+                certificate_path.display(),
+                key_path.display(),
+            );
+            Arc::new(ServerRoleConfig::from_yaml_str(&yaml).expect("parse synthetic legacy role"))
         }
     }
 
@@ -1236,6 +1344,49 @@ mod tests {
         assert_eq!(SHUTDOWN_JOIN_BUDGET.as_secs(), 2);
     }
 
+    #[tokio::test]
+    async fn t027b2b2_1_role_gate_precedes_certificate_read_and_udp_bind() {
+        let credentials = TestCredentials::new();
+        let missing_certificate = credentials._directory.path().join("missing-cert.pem");
+        let missing_key = credentials._directory.path().join("missing-key.pem");
+        let legacy = credentials.legacy_server_role(&missing_certificate, &missing_key);
+        let direct_h2 =
+            credentials.server_role_with("h2", "localhost", &missing_certificate, &missing_key);
+
+        for owner in [legacy, direct_h2] {
+            let error = match Endpoint::bind(owner).await {
+                Ok(_) => panic!("non-H3 server role must be rejected before I/O"),
+                Err(error) => error,
+            };
+            assert_eq!(error, EndpointError::Role);
+            assert_eq!(error.to_string(), "server endpoint role unavailable");
+        }
+
+        let valid_h3 = credentials.server_role();
+        let endpoint = Endpoint::bind(valid_h3)
+            .await
+            .expect("validated config-v3 H3 role enters local foundation");
+        assert!(endpoint.local_address.ip().is_loopback());
+        assert_ne!(endpoint.local_address.port(), 0);
+    }
+
+    #[tokio::test]
+    async fn t027b2b2_1_same_arc_owner_reaches_registry_and_admitted_connection() {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role();
+        let mut endpoint = Endpoint::bind(Arc::clone(&owner))
+            .await
+            .expect("bind local endpoint from frozen role");
+        assert!(endpoint.registry.test_has_role_owner(&owner));
+
+        let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 42_201);
+        let packet = initial_packet(source, endpoint.local_address, 0x2a);
+        let (_pending, connection, _expected) =
+            actor_admission(&mut endpoint.registry, packet).into_parts();
+        assert!(connection.has_role_owner(&owner));
+        assert!(endpoint.registry.test_has_role_owner(&owner));
+    }
+
     #[test]
     fn pending_local_close_is_flushed_before_any_immediate_transport_timeout() {
         assert!(!timeout_may_precede_flush(
@@ -1266,8 +1417,8 @@ mod tests {
     #[test]
     fn admitted_quiche_idle_timer_is_present_and_capped_at_five_seconds() {
         let credentials = TestCredentials::new();
-        let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct actor registry");
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct actor registry");
         let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 42_101);
         let server = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 42_102);
         let (_pending, connection, expected) =
@@ -1281,7 +1432,7 @@ mod tests {
     #[tokio::test]
     async fn real_loopback_udp_routes_two_clients_to_distinct_h3_connections_after_oversize() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
             .await
             .expect("bind local endpoint");
         let server_address = endpoint.local_address;
@@ -1329,8 +1480,8 @@ mod tests {
     #[tokio::test]
     async fn actor_dispatch_requires_exact_address_and_fifth_packet_is_queue_full() {
         let credentials = TestCredentials::new();
-        let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct actor registry");
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct actor registry");
         let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 43_001);
         let server = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 43_002);
         let initial = initial_packet(source, server, 0x41);
@@ -1390,8 +1541,8 @@ mod tests {
     #[tokio::test]
     async fn ended_actor_holds_source_capacity_until_join_then_slot_is_reusable() {
         let credentials = TestCredentials::new();
-        let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct actor registry");
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct actor registry");
         let server = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 44_002);
         let source_one = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 44_011);
         let source_two = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 44_012);
@@ -1446,10 +1597,9 @@ mod tests {
     #[tokio::test]
     async fn run_activation_error_finishes_cleanup() {
         let credentials = TestCredentials::new();
-        let (mut activation_endpoint, _cancel) =
-            Endpoint::bind_test(credentials.as_server_credentials())
-                .await
-                .expect("bind activation-error endpoint");
+        let (mut activation_endpoint, _cancel) = Endpoint::bind_test(credentials.server_role())
+            .await
+            .expect("bind activation-error endpoint");
         activation_endpoint.fail_next_activation = true;
         let server_address = activation_endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0x61).await;
@@ -1464,10 +1614,9 @@ mod tests {
     #[tokio::test]
     async fn run_joins_actor_panic_before_shutdown_finishes() {
         let credentials = TestCredentials::new();
-        let (mut panic_endpoint, panic_cancel) =
-            Endpoint::bind_test(credentials.as_server_credentials())
-                .await
-                .expect("bind panic endpoint");
+        let (mut panic_endpoint, panic_cancel) = Endpoint::bind_test(credentials.server_role())
+            .await
+            .expect("bind panic endpoint");
         panic_endpoint.next_actor_fault = ActorFault::Panic;
         let panic_address = panic_endpoint.local_address;
         let mut panic_client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, panic_address, 0x62).await;
@@ -1487,7 +1636,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn shutdown_deadline_aborts_stuck_actor_then_drains_and_reclaims() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
             .await
             .expect("bind stuck-actor endpoint");
         endpoint.next_actor_fault = ActorFault::Stall;
@@ -1510,8 +1659,8 @@ mod tests {
     #[tokio::test]
     async fn global_actor_cap_is_eight_and_joined_cleanup_restores_all_slots() {
         let credentials = TestCredentials::new();
-        let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct actor registry");
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct actor registry");
         let server = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 46_002);
         let mut actors = JoinSet::new();
         let mut aborts = Vec::with_capacity(crate::quiche_registry::MAX_ACTIVE_CONNECTIONS);
@@ -1554,8 +1703,8 @@ mod tests {
     #[tokio::test]
     async fn panicked_actor_keeps_route_until_join_error_id_is_reclaimed() {
         let credentials = TestCredentials::new();
-        let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct actor registry");
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct actor registry");
         let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 47_001);
         let server = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 47_002);
         let (pending, connection, expected) =
@@ -1598,8 +1747,8 @@ mod tests {
         let source = client_socket
             .local_addr()
             .expect("read actor client address");
-        let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct actor registry");
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct actor registry");
         let (_pending, connection, expected) =
             actor_admission(&mut registry, initial_packet(source, server, 0xa1)).into_parts();
         let (_sender, receiver) = mpsc::channel(ACTOR_INBOX_CAPACITY);
@@ -1632,9 +1781,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn t027b2b2_1_established_quic_without_peer_settings_hits_five_second_deadline() {
+        let credentials = TestCredentials::new();
+        let server_socket = Arc::new(
+            UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .await
+                .expect("bind actor server socket"),
+        );
+        let server_address = server_socket
+            .local_addr()
+            .expect("read actor server address");
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xa9).await;
+
+        let mut initial_bytes = [0_u8; MAX_PACKET_BYTES];
+        let (initial_length, initial_info) = client
+            .connection
+            .send(&mut initial_bytes)
+            .expect("create live client Initial");
+        let initial = TestPacket {
+            bytes: initial_bytes,
+            length: initial_length,
+            meta: PacketMeta {
+                from: initial_info.from,
+                to: initial_info.to,
+            },
+        };
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct actor registry");
+        let (_pending, connection, expected) = actor_admission(&mut registry, initial).into_parts();
+        let (sender, receiver) = mpsc::channel(ACTOR_INBOX_CAPACITY);
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let test_gate = Arc::new(ActorTestGate::default());
+        let started = Instant::now();
+        let actor = tokio::spawn(run_connection_actor(
+            connection,
+            expected,
+            receiver,
+            Arc::clone(&server_socket),
+            cancel_rx,
+            Some(Arc::clone(&test_gate)),
+        ));
+
+        let mut close_observed_at = None;
+        let mut client_established = false;
+        let actor_result = timeout(Duration::from_secs(8), async {
+            loop {
+                let mut routed = 0_usize;
+                loop {
+                    let mut bytes = [0_u8; MAX_PACKET_BYTES];
+                    match client.connection.send(&mut bytes) {
+                        Ok((length, info)) => {
+                            sender
+                                .send(ActorPacket {
+                                    bytes,
+                                    length,
+                                    meta: PacketMeta {
+                                        from: info.from,
+                                        to: info.to,
+                                    },
+                                })
+                                .await
+                                .expect("route live client packet into bounded actor inbox");
+                            routed += 1;
+                            assert!(routed <= 64, "client send work remains bounded");
+                        }
+                        Err(quiche::Error::Done) => break,
+                        Err(_) => panic!("live client packet unavailable"),
+                    }
+                }
+                client.receive_available().await;
+                if close_observed_at.is_none() && client.connection.peer_error().is_some() {
+                    close_observed_at = Some(Instant::now().duration_since(started));
+                }
+                client_established |= client.connection.is_established();
+                assert!(
+                    client.h3.is_none(),
+                    "client deliberately sends no HTTP/3 SETTINGS"
+                );
+                if actor.is_finished() {
+                    break actor.await.expect("join settings-wait actor");
+                }
+                if client_established
+                    && test_gate.saw_established_without_foundation()
+                    && client.connection.peer_error().is_none()
+                {
+                    client
+                        .connection
+                        .send_ack_eliciting()
+                        .expect("keep established QUIC live without H3 SETTINGS");
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("settings-wait actor remains bounded");
+        assert!(client_established, "live client QUIC reached established");
+        assert!(
+            test_gate.saw_established_without_foundation(),
+            "live server QUIC established while peer SETTINGS stayed absent"
+        );
+        assert!(matches!(
+            actor_result,
+            Ok(()) | Err(ActorError::HandshakeTimeout) | Err(ActorError::TerminationTimeout)
+        ));
+        let close_observed_at = close_observed_at.expect("deadline close reaches real peer");
+        assert!(close_observed_at >= HANDSHAKE_TIMEOUT);
+        assert!(close_observed_at < HANDSHAKE_TIMEOUT + ACTOR_TERMINATION_BUDGET);
+        assert!(Instant::now().duration_since(started) < Duration::from_secs(8));
+        let peer_error = client
+            .connection
+            .peer_error()
+            .expect("deadline close reaches real peer");
+        assert!(peer_error.is_app);
+        assert_eq!(peer_error.error_code, 0x105);
+        assert!(peer_error.reason.is_empty());
+    }
+
+    #[tokio::test]
     async fn cancel_flushes_close_to_established_real_peer_before_actor_reclaim() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
             .await
             .expect("bind cancel endpoint");
         let server_address = endpoint.local_address;
@@ -1677,7 +1943,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_during_in_flight_flush_restarts_close_flush_before_waiting() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
             .await
             .expect("bind in-flight cancel endpoint");
         let send_gate = Arc::new(ActorTestGate::default());
@@ -1754,8 +2020,8 @@ mod tests {
         let source = client_socket
             .local_addr()
             .expect("read pre-key client address");
-        let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct pre-key registry");
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct pre-key registry");
         let (_pending, connection, expected) =
             actor_admission(&mut registry, initial_packet(source, server, 0xa4)).into_parts();
         let (_sender, receiver) = mpsc::channel(ACTOR_INBOX_CAPACITY);
@@ -1789,7 +2055,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn endpoint_reports_pre_key_forced_reclaim_after_draining_joinset() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
             .await
             .expect("bind pre-key endpoint");
         let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 48_001);
@@ -1814,7 +2080,7 @@ mod tests {
     #[tokio::test]
     async fn peer_draining_holds_actor_routes_and_source_capacity_until_closed_join() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, _cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+        let (mut endpoint, _cancel) = Endpoint::bind_test(credentials.server_role())
             .await
             .expect("bind peer-draining endpoint");
         let test_gate = Arc::new(ActorTestGate::default());
@@ -1977,8 +2243,8 @@ mod tests {
         let source = client_socket
             .local_addr()
             .expect("read flush client address");
-        let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct actor registry");
+        let mut registry =
+            ConnectionRegistry::new(credentials.frozen_role()).expect("construct actor registry");
         let (_pending, mut connection, expected) =
             actor_admission(&mut registry, initial_packet(source, server, 0xa3)).into_parts();
         let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -2108,6 +2374,7 @@ mod tests {
     #[test]
     fn endpoint_and_actor_errors_are_fixed_private_and_source_free() {
         let endpoint_errors = [
+            EndpointError::Role,
             EndpointError::Bind,
             EndpointError::Receive,
             EndpointError::Registry,

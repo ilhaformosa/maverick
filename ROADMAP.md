@@ -17,33 +17,49 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2b2-0 — verified credential-expiry core prerequisite
+### T027b-2b2-1 — direct-H3 server role, SNI, and SETTINGS foundation
 
-- **User result:** Later server auth-v3 foundation work can read the exact
-  credential expiry ceiling already retained by successful core verification.
-  This is read-only core metadata, not runnable authentication, a connection or
-  capability, a data plane, or a user-visible product result.
-- **Scope:** Add one privacy-safe accessor to the already-public verified
-  `ClientControl` type. Cover the real core verifier with two distinct legal
-  expiry values, read the metadata before confirmation encoding consumes the
-  verified value, and preserve identical confirmation bytes and canonical
-  vectors when every wire input is unchanged.
-- **Acceptance:** Retain focused compile-failure-to-pass evidence for the
-  missing accessor; return each exact trusted not-after value without a default,
-  truncation, or cross-binding; keep parsed/unverified values outside the
-  verified API boundary; preserve malformed, expired, PSK, encoder, verifier,
-  and canonical-vector behavior; and pass the core, lint, rustdoc, and local
-  product gates.
-- **Out of scope:** No shared generation policy, server authentication runtime,
-  SETTINGS or transport integration, flow or data plane, config, stored schema,
-  protocol, frame, wire, version, `STATUS.md`, CI, remote, deployment, release,
-  real network, or system-network change.
-- **Stop conditions:** Stop on a fourth changed file, any manifest, lockfile,
-  dependency, public type, field, trait, or schema expansion, runtime wiring,
-  generation/deadline state, capability framework, wire change, or required
-  regression failure.
+- **User result:** The private native-quiche server foundation freezes one
+  trusted config-v3 direct-H3 server role before certificate access, UDP bind,
+  or other I/O. Every admitted connection retains that same role owner, checks
+  the live TLS SNI byte for byte, and becomes pre-auth foundation-ready only
+  after actual peer SETTINGS processing proves the fixed bounded H3 contract.
+- **Scope:** Keep one private `Arc<ServerRoleConfig>` owner across endpoint,
+  registry, connection config, and connection actor ownership. Require exact
+  live SNI, QUIC Datagram queues of 32/32, a 16-KiB field-section limit, zero
+  QPACK table and blocked streams, Extended CONNECT, H3 Datagram, and the peer
+  QUIC Datagram transport parameter. Poll mandatory H3 work while treating a
+  missing peer SETTINGS record as not ready, and reject every application H3
+  event or readable QUIC Datagram before authentication with fixed,
+  privacy-safe connection closure.
+- **Acceptance:** Retain red-to-green evidence for the former disabled
+  Datagram and Extended CONNECT settings and H3-object-only readiness; reject
+  legacy and direct-H2 roles before certificate or bind work; prove one Arc
+  owner reaches each connection; cover missing, case-mismatched, different, and
+  exact SNI; use live quiche peers to prove readiness waits for processed
+  SETTINGS and to reject every peer fault representable by the live API; drive
+  the production validator across every missing or mismatched required setting;
+  keep SETTINGS and QPACK handling internal; reject pre-auth Datagrams,
+  ordinary requests, and auth-shaped POST requests with code `0x105` and an
+  empty reason; retain the five-second handshake wall deadline while waiting;
+  and preserve all existing termination, CID, source/global-capacity, bounded
+  flush, actor-inbox, and `JoinSet` tests.
+- **Out of scope:** No ClientControl, ServerConfirmation, exporter, PSK, MAC,
+  expiry, capability, or authentication state; no request authority or path
+  authentication parser; no CONNECT, flow admission, target, DNS, egress,
+  opener, TCP, relay, metric, data plane, public runtime/config/SDK/CLI API,
+  schema, protocol, frame, wire, version, `STATUS.md`, CI, remote, deployment,
+  release, real network, or system-network change. This foundation is not user
+  H3, target connectivity, relay capability, or a product result.
+- **Stop conditions:** Stop on a fifth changed file, manifest, lockfile,
+  dependency, vendor, core, client, SDK, CLI, spec, config, or status change;
+  any need to make the public role cloneable or add a public extraction API;
+  a server dependency on the client; global auth state, an unbounded resource,
+  auth or data-plane work; unavailable live SNI or peer SETTINGS; or any legacy
+  H3, strict-push, privacy, lifecycle, CID, capacity, or `JoinSet` regression.
 
-This accessor remains a repository-local foundation prerequisite only.
+This remains a private repository-local role/SNI/peer-SETTINGS and pre-auth
+rejection foundation only.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

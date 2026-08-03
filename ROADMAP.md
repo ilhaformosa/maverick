@@ -17,52 +17,56 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2c4 — fixed-slot successful target-stream ownership
+### T027b-2c5 — wire production whole-attempt target opener into the fixed slot
 
-- **User result:** A future private direct-v3 target dispatch can return one
-  already-connected TCP target without losing it or creating a second socket
-  owner outside the existing fixed eight request slots.
-- **Scope:** Add one optional connected target socket to each existing
-  `PendingClassicConnect` slot. While work is admitted the slot owns target
-  metadata; while it is in flight the actor-owned future temporarily owns the
-  token and any connected socket; after synchronous completion checks pass, the
-  same originating slot alone owns that socket in `WaitingNextStage`. Update
-  only the registry's obsolete source-scan test so it continues to prohibit
-  registry network ownership while recognizing this explicit runtime slot
-  owner; registry production code and responsibility remain unchanged.
-- **Acceptance:** Keep exactly eight slots and no second socket map, array, or
-  queue; recheck generation, active and unrevoked state, hard and attempt
-  deadlines, stream, port, frame limit, in-flight state, consumed target, and
-  empty socket owner before handoff; drop a rejected or abandoned socket; prove
-  single and eight-socket completion, unchanged ninth-request rejection,
-  peer-half-close stability, fixed four-completion rounds, zero target-open
-  observations, and bounded socket closure on timeout, panic, cancellation,
-  expiry, revocation, peer or local close, inbox close, actor abort, connection
-  drop, and registry reclaim. Keep `ServerConnection: Send` and keep registry
-  ownership limited to its sender and task ID.
-- **Out of scope:** No production opener call, DNS, new connect policy, success
-  response, DATA read or write, relay, fallback, slot reuse, product-server
-  caller, public API, schema, wire or version change, metrics behavior or owner
-  change, `relay.rs`, registry production code, `runtime_metrics.rs`,
-  `server.rs`, config, manifest, lockfile, dependency, vendor, core, client,
-  SDK, CLI, `STATUS.md`, CI, remote, deployment, release, real-network,
-  credential, infrastructure, or system-network work.
+- **User result:** The private feature-gated endpoint can make its first
+  controlled real IP-literal target TCP connection and preserve that socket in
+  the same originating fixed request slot. This still produces no H3 success
+  response and proxies no application data.
+- **Scope:** Have the actor-owned production `TargetDispatchFuture` pass the
+  existing token's frozen target, port, absolute attempt deadline, and egress
+  policy directly to the existing whole-attempt opener with the same
+  `TargetOpenMetricSinks`. The direct-v3 production opener synchronously forms
+  one `SocketAddr` for an IPv4 or IPv6 literal. Earlier parsing and admission
+  still represent Domain targets, but this dispatch slice rejects them with a
+  fixed resolution failure before `lookup_host` or any system resolver work.
+  On IP-literal success, move the returned `TcpStream` only through the existing
+  completion into the T027b-2c4 fixed slot. Retain the controlled synthetic
+  dispatch seam only for tests of timeout, failure, panic, and teardown.
+- **Acceptance:** The production future directly awaits the opener without a
+  second deadline, timer, metric recorder, socket owner, task, or channel; all
+  opener errors become one fixed source-free unavailable result. Keep at most
+  eight actor-owned futures, eight runtime slots, and four ready completions per
+  round. Prove loopback success and original-slot ownership, exact resolution
+  and connect latency observations, egress rejection without a connection or
+  false failure metric, Domain rejection before system resolution or socket
+  handoff, whole-attempt deadline priority, prompt drop of injected pending
+  generic-helper resolver or connect futures, privacy-safe errors, and all
+  retained T027b-2c4 quota, fairness, teardown, EOF, join-before-reclaim, and
+  source-shape properties. The injected resolver test is not evidence that
+  blocking system DNS is cancellable.
+- **Out of scope:** No 2xx or other H3 success response, Headers or DATA read or
+  write, relay, half-close forwarding, slot reuse, fallback, product-server
+  startup caller, registry or runtime-metrics ownership change, public API,
+  config, schema, wire or version change, dependency, manifest, lockfile,
+  vendor, core, client, SDK, CLI, `STATUS.md`, CI, remote, deployment, release,
+  real-network, credential, infrastructure, or system-network work. A truly
+  cancellable production Domain resolver remains a separate later decision;
+  this interim restriction does not remove Domain parsing or admission.
 - **Stop conditions:** Stop before any file outside `ROADMAP.md`,
-  `crates/maverick-server/src/quiche_runtime.rs`, and
-  `crates/maverick-server/src/quiche_endpoint.rs` changes, except for the
-  architecture-only source-scan assertion in
-  `crates/maverick-server/src/quiche_registry.rs`. Any need for a ninth slot,
-  another socket collection, a production DNS/connect/opener call, a response
-  or data plane, metrics observation, registry production change or new
-  responsibility, public API, dependency, or `STATUS.md` change requires
-  re-adjudication.
+  `crates/maverick-server/src/quiche_endpoint.rs`, and
+  `crates/maverick-server/src/relay.rs` changes. Any need for another timer,
+  metric owner, socket collection, background task, response or data plane,
+  ninth slot, registry or runtime change, public API, dependency, or
+  `STATUS.md` change requires re-adjudication.
 
-This remains repository-local, private, feature-gated socket-ownership
-foundation. Production target dispatch is still fixed `Unavailable`, and the
-test-only dispatch seam uses loopback with OS-assigned ephemeral ports. Zero
-target-open observations and retained sockets do not establish H3 target
-connectivity, a data plane, runtime readiness, a release result, or a product
-result; the endpoint still has no product-server startup caller.
+This remains repository-local, private, feature-gated, and temporarily limited
+to IP-literal production dispatch. Domain admission still exists but fails
+closed here until a separately reviewed truly cancellable resolver is chosen.
+This slice first stores one controlled real target socket in the already
+verified ownership channel, but it does not make H3 successful, carry DATA, run
+a relay, create a product-server startup path, establish runtime readiness,
+authorize a release, or produce a product result.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

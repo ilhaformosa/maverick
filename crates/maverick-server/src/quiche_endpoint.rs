@@ -2,11 +2,13 @@
 //!
 //! The endpoint owns the only receive loop, CID registry, and actor `JoinSet`.
 //! Each actor receives one `ServerConnection` by value and never shares it.
-//! Production dispatch remains fixed-unavailable and performs no DNS, connect,
-//! response, DATA, or relay work. A test-only loopback seam may let one actor
-//! future temporarily own an already-connected target socket until it is
-//! synchronously handed into the originating `ServerConnection` slot. This
-//! module exposes no public API or non-loopback binding seam.
+//! Production dispatch may open one policy-approved IP-literal target before
+//! the token's whole-attempt deadline. Domain targets remain representable but
+//! fail closed before system resolution. The endpoint performs no response,
+//! DATA, or relay work. One actor future temporarily owns the attempt and any
+//! connected target socket until synchronous handoff into the originating
+//! `ServerConnection` slot. This module exposes no public API or non-loopback
+//! binding seam.
 
 #![forbid(unsafe_code)]
 
@@ -41,7 +43,7 @@ use crate::quiche_runtime::{
     ConnectionLifecycle, FrozenDirectV3ServerRole, PacketMeta, ServerConnection,
     TargetOpenDispatchToken, MAX_PACKET_BYTES, MAX_TARGET_DISPATCH_FUTURES,
 };
-use crate::relay::TargetOpenMetricSinks;
+use crate::relay::{self, TargetOpenMetricSinks};
 use crate::runtime_metrics::ServerRuntimeMetrics;
 
 const ACTOR_INBOX_CAPACITY: usize = 4;
@@ -890,26 +892,47 @@ async fn run_target_dispatch_future(
     if !token.is_structurally_valid() {
         return Err(TargetDispatchError::Unavailable);
     }
-    let deadline = Instant::from_std(token.attempt_deadline());
-    let attempt = synthetic_target_dispatch(
-        #[cfg(test)]
-        test_gate,
-    );
-    let result = timeout_at(deadline, attempt).await;
-    drop(target_open_sinks);
-    match result {
-        Ok(Ok(opened_target)) => Ok(TargetDispatchCompletion {
-            token,
-            opened_target,
-        }),
-        Ok(Err(error)) => Err(error),
-        Err(_) => Err(TargetDispatchError::Timeout),
-    }
-}
 
-#[cfg(not(test))]
-async fn synthetic_target_dispatch() -> Result<TcpStream, TargetDispatchError> {
-    Err(TargetDispatchError::Unavailable)
+    #[cfg(test)]
+    if test_gate
+        .as_deref()
+        .is_some_and(ActorTestGate::uses_synthetic_target_dispatch)
+    {
+        let deadline = Instant::from_std(token.attempt_deadline());
+        let result = timeout_at(deadline, synthetic_target_dispatch(test_gate)).await;
+        drop(target_open_sinks);
+        return match result {
+            Ok(Ok(opened_target)) => Ok(TargetDispatchCompletion {
+                token,
+                opened_target,
+            }),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(TargetDispatchError::Timeout),
+        };
+    }
+
+    #[cfg(test)]
+    if test_gate
+        .as_deref()
+        .is_some_and(ActorTestGate::waits_until_production_dispatch_deadline)
+    {
+        tokio::time::sleep_until(Instant::from_std(token.attempt_deadline())).await;
+    }
+
+    let egress_policy = token.egress_policy();
+    let opened_target = relay::open_target_addr_before_deadline_with_metrics(
+        token.target(),
+        token.port(),
+        token.attempt_deadline(),
+        &egress_policy,
+        &target_open_sinks,
+    )
+    .await
+    .map_err(|_| TargetDispatchError::Unavailable)?;
+    Ok(TargetDispatchCompletion {
+        token,
+        opened_target,
+    })
 }
 
 #[cfg(test)]
@@ -1157,6 +1180,7 @@ struct ActorTestGate {
     dispatch_release_permits: AtomicUsize,
     release_dispatch: Notify,
     dispatch_target: std::sync::Mutex<Option<SocketAddr>>,
+    wait_until_production_dispatch_deadline: AtomicBool,
     inbound_observed: AtomicUsize,
     inbound_while_dispatch_blocked: AtomicBool,
     flush_while_dispatch_blocked: AtomicBool,
@@ -1185,6 +1209,20 @@ impl ActorTestGate {
     const DISPATCH_BLOCK: u8 = 1;
     const DISPATCH_ERROR_FIRST: u8 = 2;
     const DISPATCH_PANIC_FIRST: u8 = 3;
+
+    fn uses_synthetic_target_dispatch(&self) -> bool {
+        self.dispatch_behavior.load(Ordering::Acquire) != 0
+    }
+
+    fn wait_until_production_dispatch_deadline(&self) {
+        self.wait_until_production_dispatch_deadline
+            .store(true, Ordering::Release);
+    }
+
+    fn waits_until_production_dispatch_deadline(&self) -> bool {
+        self.wait_until_production_dispatch_deadline
+            .load(Ordering::Acquire)
+    }
 
     fn arm_send(&self) {
         assert!(!self.send_armed.swap(true, Ordering::SeqCst));
@@ -1804,6 +1842,17 @@ mod tests {
             )
         }
 
+        fn server_role_with_loopback_target(&self, timeout_ms: u64) -> Arc<ServerRoleConfig> {
+            self.server_role_with_policy(
+                "h3",
+                "localhost",
+                &self.certificate_path,
+                &self.key_path,
+                timeout_ms,
+                true,
+            )
+        }
+
         fn server_role_with_timeout(
             &self,
             transport_strategy: &str,
@@ -1811,6 +1860,25 @@ mod tests {
             certificate_path: &std::path::Path,
             key_path: &std::path::Path,
             timeout_ms: u64,
+        ) -> Arc<ServerRoleConfig> {
+            self.server_role_with_policy(
+                transport_strategy,
+                expected_authority,
+                certificate_path,
+                key_path,
+                timeout_ms,
+                false,
+            )
+        }
+
+        fn server_role_with_policy(
+            &self,
+            transport_strategy: &str,
+            expected_authority: &str,
+            certificate_path: &std::path::Path,
+            key_path: &std::path::Path,
+            timeout_ms: u64,
+            allow_loopback: bool,
         ) -> Arc<ServerRoleConfig> {
             let yaml = format!(
                 r#"version: 3
@@ -1830,7 +1898,7 @@ maverick:
 target_open:
   timeout_ms: {timeout_ms}
   egress:
-    allow_loopback: false
+    allow_loopback: {allow_loopback}
     allow_private: false
     allow_link_local: false
     allow_multicast: false
@@ -2155,9 +2223,13 @@ fallback:
         }
 
         fn send_classic_connect(&mut self) -> Result<u64, quiche::h3::Error> {
+            self.send_classic_connect_to("synthetic.invalid:443")
+        }
+
+        fn send_classic_connect_to(&mut self, authority: &str) -> Result<u64, quiche::h3::Error> {
             let headers = [
                 quiche::h3::Header::new(b":method", b"CONNECT"),
-                quiche::h3::Header::new(b":authority", b"synthetic.invalid:443"),
+                quiche::h3::Header::new(b":authority", authority.as_bytes()),
             ];
             self.h3
                 .as_mut()
@@ -2228,6 +2300,271 @@ fallback:
         })
         .await
         .expect("drive manual endpoint client within wall bound");
+    }
+
+    #[tokio::test]
+    async fn t027b2c5_production_opener_hands_real_loopback_socket_to_originating_slot() {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role_with_loopback_target(1_000);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind production-opener endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind production-opener loopback target");
+        let authority = listener
+            .local_addr()
+            .expect("read production-opener target address")
+            .to_string();
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xc5).await;
+        let client_gate = Arc::clone(&gate);
+        let client_cancel = cancel.clone();
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            client
+                .send_classic_connect_to(&authority)
+                .expect("queue production-opener CONNECT");
+            client.send_pending().await;
+            let (mut target_peer, _) = timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .expect("production opener reaches loopback target")
+                .expect("accept production-opener target connection");
+            timeout(
+                Duration::from_secs(1),
+                client_gate.wait_for_target_completions(1),
+            )
+            .await
+            .expect("production opener returns socket to original slot");
+            assert_eq!(client_gate.completion_snapshot(), (1, 1, true, 1));
+            client.receive_available().await;
+            assert!(matches!(
+                client
+                    .h3
+                    .as_mut()
+                    .expect("production-opener H3 client exists")
+                    .poll(&mut client.connection),
+                Err(quiche::h3::Error::Done)
+            ));
+            assert!(timeout(Duration::from_millis(25), target_peer.read_u8())
+                .await
+                .is_err());
+            client_cancel
+                .send(true)
+                .expect("cancel endpoint after production opener completion");
+            assert_eq!(
+                timeout(Duration::from_secs(4), target_peer.read_u8())
+                    .await
+                    .expect("slot-owned production target closes within bound")
+                    .expect_err("cancel closes slot-owned production target")
+                    .kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("production-opener endpoint joins its actor");
+        let sinks = metrics_owner.target_open_sinks();
+        assert_eq!(sinks.resolution_latency.snapshot().count, 1);
+        assert_eq!(sinks.connect_latency.snapshot().count, 1);
+        assert_eq!(sinks.resolution_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn t027b2c5_real_opener_egress_rejects_before_connect_without_failure_metrics() {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role();
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind production-egress endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind rejected loopback target");
+        let authority = listener
+            .local_addr()
+            .expect("read rejected target address")
+            .to_string();
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xc6).await;
+        let client_cancel = cancel.clone();
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            client
+                .send_classic_connect_to(&authority)
+                .expect("queue policy-rejected CONNECT");
+            client.send_pending().await;
+            assert!(timeout(Duration::from_millis(150), listener.accept())
+                .await
+                .is_err());
+            timeout(Duration::from_secs(1), async {
+                loop {
+                    client.receive_available().await;
+                    if client.connection.peer_error().is_some() {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("policy rejection closes the generation");
+            let peer_error = client
+                .connection
+                .peer_error()
+                .expect("policy rejection reaches peer");
+            assert!(peer_error.is_app);
+            assert_eq!(peer_error.error_code, 0x105);
+            assert!(peer_error.reason.is_empty());
+            client_cancel
+                .send(true)
+                .expect("stop endpoint after policy rejection");
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("production-egress endpoint joins its actor");
+        assert_eq!(gate.completion_snapshot(), (0, 0, false, 1));
+        assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    #[tokio::test]
+    async fn t027b2c5_domain_dispatch_fails_before_connect_slot_handoff_or_late_metrics() {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role_with_loopback_target(1_000);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind production-Domain endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind production-Domain rejection target");
+        let authority = format!(
+            "localhost:{}",
+            listener
+                .local_addr()
+                .expect("read production-Domain target")
+                .port()
+        );
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xc8).await;
+        let client_cancel = cancel.clone();
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            client
+                .send_classic_connect_to(&authority)
+                .expect("queue production-Domain CONNECT");
+            client.send_pending().await;
+            assert!(timeout(Duration::from_millis(150), listener.accept())
+                .await
+                .is_err());
+            timeout(Duration::from_secs(1), async {
+                loop {
+                    client.receive_available().await;
+                    if client.connection.peer_error().is_some() {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("production-Domain rejection closes the generation");
+            client_cancel
+                .send(true)
+                .expect("stop endpoint after production-Domain rejection");
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("production-Domain endpoint joins its actor");
+        assert_eq!(gate.completion_snapshot(), (0, 0, false, 1));
+        let sinks = metrics_owner.target_open_sinks();
+        assert_eq!(sinks.resolution_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 1);
+        assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.resolution_latency.snapshot().count, 0);
+        assert_eq!(sinks.connect_latency.snapshot().count, 0);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 1);
+        assert_eq!(sinks.connect_latency.snapshot().count, 0);
+    }
+
+    #[tokio::test]
+    async fn t027b2c5_expired_token_deadline_is_classified_only_by_whole_attempt_opener() {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role_with_loopback_target(75);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind deadline-boundary endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        gate.wait_until_production_dispatch_deadline();
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind deadline-boundary loopback target");
+        let authority = listener
+            .local_addr()
+            .expect("read deadline-boundary target address")
+            .to_string();
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xc7).await;
+        let client_cancel = cancel.clone();
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            client
+                .send_classic_connect_to(&authority)
+                .expect("queue deadline-boundary CONNECT");
+            client.send_pending().await;
+            assert!(timeout(Duration::from_millis(250), listener.accept())
+                .await
+                .is_err());
+            timeout(Duration::from_secs(1), async {
+                loop {
+                    client.receive_available().await;
+                    if client.connection.peer_error().is_some() {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("whole-attempt timeout closes the generation");
+            client_cancel
+                .send(true)
+                .expect("stop endpoint after whole-attempt timeout");
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("deadline-boundary endpoint joins its actor");
+        let sinks = metrics_owner.target_open_sinks();
+        assert_eq!(sinks.resolution_timeouts.load(Ordering::Relaxed), 1);
+        assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.resolution_latency.snapshot().count, 0);
+        assert_eq!(sinks.connect_latency.snapshot().count, 0);
+        assert_eq!(gate.completion_snapshot(), (0, 0, false, 1));
     }
 
     async fn route_available_client_datagrams(endpoint: &mut Endpoint) {
@@ -4365,6 +4702,10 @@ fallback:
             .next()
             .expect("production endpoint source");
         let registry_source = include_str!("quiche_registry.rs");
+        let production_registry = registry_source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production registry source");
         let runtime_source = include_str!("quiche_runtime.rs");
         let production_runtime = runtime_source
             .split("#[cfg(test)]\nmod tests")
@@ -4408,7 +4749,7 @@ fallback:
         ] {
             assert!(!production_endpoint.contains(forbidden));
         }
-        for metrics_free_source in [registry_source, runtime_source] {
+        for metrics_free_source in [production_registry, production_runtime] {
             assert!(!metrics_free_source.contains("ServerRuntimeMetrics"));
             assert!(!metrics_free_source.contains("TargetOpenMetricSinks"));
         }
@@ -4416,14 +4757,11 @@ fallback:
         assert!(!production_endpoint.contains("run_target_dispatch_child"));
         assert!(!production_endpoint.contains(".spawn(run_target_dispatch_future"));
         assert!(production_endpoint.contains("MAX_TARGET_DISPATCH_FUTURES"));
-        assert!(
-            production_endpoint.contains("#[cfg(not(test))]\nasync fn synthetic_target_dispatch()")
-        );
+        assert!(production_endpoint.contains("#[cfg(test)]\nasync fn synthetic_target_dispatch("));
         assert!(production_endpoint.contains("Err(TargetDispatchError::Unavailable)"));
         assert!(production_endpoint.contains("for _ in 0..MAX_OUTBOUND_PACKETS_PER_ROUND"));
         assert!(production_endpoint.contains("tokio::task::yield_now().await"));
         for forbidden in [
-            ["open_target_addr", "_with_metrics"].concat(),
             ["lookup_", "host"].concat(),
             ["send_", "response"].concat(),
             ["recv_", "body"].concat(),
@@ -4449,12 +4787,30 @@ fallback:
             assert!(!production_endpoint.contains(socket_collection));
             assert!(!production_runtime.contains(socket_collection));
         }
-        for opener in [
-            ["open_target_addr_before_deadline", "_with_metrics"].concat(),
-            ["lookup_", "host"].concat(),
+        let opener = ["open_target_addr_before_deadline", "_with_metrics"].concat();
+        assert_eq!(production_endpoint.matches(&opener).count(), 1);
+        assert!(!production_runtime.contains(&opener));
+        assert!(!production_registry.contains(&opener));
+        let production_dispatch = production_endpoint
+            .split("let egress_policy = token.egress_policy();")
+            .nth(1)
+            .expect("production target dispatch begins with frozen egress policy")
+            .split("#[cfg(test)]\nasync fn synthetic_target_dispatch(")
+            .next()
+            .expect("production target dispatch source");
+        assert!(production_dispatch.contains(&opener));
+        for forbidden in [
+            "timeout_at(",
+            "sleep_until(",
+            "tokio::spawn",
+            "JoinSet",
+            "send_response",
+            "Headers",
+            "DATA",
+            "relay_target_and_tunnel",
+            "WaitingNextStage",
         ] {
-            assert!(!production_endpoint.contains(&opener));
-            assert!(!production_runtime.contains(&opener));
+            assert!(!production_dispatch.contains(forbidden));
         }
         assert!(registry_source.contains("sender.try_send(ActorPacket"));
     }

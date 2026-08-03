@@ -11,7 +11,7 @@ use maverick_core::padding::{RuntimeCoverTraffic, RuntimePadding};
 use std::collections::VecDeque;
 use std::error::Error as StdError;
 use std::fmt;
-use std::future::Future;
+use std::future::{ready, Future};
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -350,7 +350,7 @@ pub(crate) async fn open_target_addr_with_metrics(
     open_target_inner(target, port, timeout_ms, egress, Some(metrics)).await
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "quiche-foundation"), allow(dead_code))]
 pub(crate) async fn open_target_addr_before_deadline_with_metrics(
     target: &TargetAddr,
     port: u16,
@@ -358,16 +358,19 @@ pub(crate) async fn open_target_addr_before_deadline_with_metrics(
     egress: &ServerEgressPolicyConfig,
     metrics: &TargetOpenMetricSinks,
 ) -> std::result::Result<TcpStream, DirectV3TargetOpenError> {
-    let authority = target.to_authority(port);
+    let resolved = match target {
+        TargetAddr::Domain(_) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "direct-v3 Domain resolution unavailable",
+        )),
+        TargetAddr::Ipv4(addr) => Ok(vec![SocketAddr::from((*addr, port))]),
+        TargetAddr::Ipv6(addr) => Ok(vec![SocketAddr::from((*addr, port))]),
+    };
     open_target_addr_before_deadline_with_metrics_using(
         absolute_deadline,
         egress,
         metrics,
-        move || async move {
-            lookup_host(authority)
-                .await
-                .map(|resolved| resolved.collect::<Vec<_>>())
-        },
+        move || ready(resolved),
         |addrs| connect_target_addresses(addrs, TARGET_CONNECT_RACE_DELAY, connect_target_tcp),
     )
     .await
@@ -1123,6 +1126,7 @@ where
 mod tests {
     use super::{
         connect_target_addresses, connect_target_tcp, connect_with_timeout, open_target,
+        open_target_addr_before_deadline_with_metrics,
         open_target_addr_before_deadline_with_metrics_using, open_target_addr_with_metrics,
         open_target_with_metrics, relay_dns_query, relay_target_and_tunnel, relay_udp_packet,
         resolve_allowed_addresses, send_frame, write_all_with_idle_timeout,
@@ -1192,6 +1196,14 @@ mod tests {
         ServerEgressPolicyConfig {
             allow_loopback: true,
             ..ServerEgressPolicyConfig::default()
+        }
+    }
+
+    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
         }
     }
 
@@ -1490,6 +1502,172 @@ mod tests {
         assert_eq!(target_metric_values(&metrics), [0, 0, 1, 0]);
     }
 
+    #[tokio::test]
+    async fn direct_v3_production_domain_fails_closed_before_system_resolution_or_connect() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind direct-v3 Domain rejection target");
+        let port = listener.local_addr().expect("read loopback target").port();
+        let metrics = target_metric_sinks();
+        let result = open_target_addr_before_deadline_with_metrics(
+            &TargetAddr::Domain("localhost".to_owned()),
+            port,
+            (Instant::now() + Duration::from_secs(1)).into_std(),
+            &loopback_egress_policy(),
+            &metrics,
+        )
+        .await;
+
+        assert!(
+            timeout(Duration::from_millis(150), listener.accept())
+                .await
+                .is_err(),
+            "direct-v3 production Domain must not reach a resolved target"
+        );
+        let error = result.expect_err("direct-v3 production Domain must fail closed");
+        assert_eq!(
+            error.kind(),
+            DirectV3TargetOpenFailureKind::ResolutionFailure
+        );
+        assert_eq!(target_metric_values(&metrics), [0, 1, 0, 0]);
+        assert_eq!(metrics.resolution_latency.snapshot().count, 0);
+        assert_eq!(metrics.connect_latency.snapshot().count, 0);
+    }
+
+    #[tokio::test]
+    async fn direct_v3_production_ip_literals_connect_with_exact_latency_metrics() {
+        let ipv4_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind direct-v3 IPv4 target");
+        let ipv4_port = ipv4_listener
+            .local_addr()
+            .expect("read direct-v3 IPv4 target")
+            .port();
+        let ipv4_metrics = target_metric_sinks();
+        let ipv4_target = open_target_addr_before_deadline_with_metrics(
+            &TargetAddr::Ipv4(Ipv4Addr::LOCALHOST),
+            ipv4_port,
+            (Instant::now() + Duration::from_secs(1)).into_std(),
+            &loopback_egress_policy(),
+            &ipv4_metrics,
+        )
+        .await
+        .expect("direct-v3 IPv4 literal connects");
+        let (ipv4_peer, _) = ipv4_listener
+            .accept()
+            .await
+            .expect("accept direct-v3 IPv4 target");
+        assert_eq!(target_metric_values(&ipv4_metrics), [0, 0, 0, 0]);
+        assert_eq!(ipv4_metrics.resolution_latency.snapshot().count, 1);
+        assert_eq!(ipv4_metrics.connect_latency.snapshot().count, 1);
+        drop((ipv4_target, ipv4_peer));
+
+        let ipv6_listener = match TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await {
+            Ok(listener) => listener,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AddrNotAvailable | io::ErrorKind::Unsupported
+                ) =>
+            {
+                return;
+            }
+            Err(_) => panic!("bind direct-v3 IPv6 target"),
+        };
+        let ipv6_port = ipv6_listener
+            .local_addr()
+            .expect("read direct-v3 IPv6 target")
+            .port();
+        let ipv6_metrics = target_metric_sinks();
+        let ipv6_target = open_target_addr_before_deadline_with_metrics(
+            &TargetAddr::Ipv6(Ipv6Addr::LOCALHOST),
+            ipv6_port,
+            (Instant::now() + Duration::from_secs(1)).into_std(),
+            &loopback_egress_policy(),
+            &ipv6_metrics,
+        )
+        .await
+        .expect("direct-v3 IPv6 literal connects");
+        let (ipv6_peer, _) = ipv6_listener
+            .accept()
+            .await
+            .expect("accept direct-v3 IPv6 target");
+        assert_eq!(target_metric_values(&ipv6_metrics), [0, 0, 0, 0]);
+        assert_eq!(ipv6_metrics.resolution_latency.snapshot().count, 1);
+        assert_eq!(ipv6_metrics.connect_latency.snapshot().count, 1);
+        drop((ipv6_target, ipv6_peer));
+    }
+
+    #[tokio::test]
+    async fn direct_v3_production_expired_domain_preserves_timeout_priority() {
+        let metrics = target_metric_sinks();
+        let expired = Instant::now()
+            .checked_sub(Duration::from_nanos(1))
+            .expect("test clock permits a prior instant");
+        let error = open_target_addr_before_deadline_with_metrics(
+            &TargetAddr::Domain("unused.invalid".to_owned()),
+            443,
+            expired.into_std(),
+            &loopback_egress_policy(),
+            &metrics,
+        )
+        .await
+        .expect_err("expired Domain attempt must retain timeout priority");
+        assert_eq!(
+            error.kind(),
+            DirectV3TargetOpenFailureKind::ResolutionTimeout
+        );
+        assert_eq!(target_metric_values(&metrics), [1, 0, 0, 0]);
+        assert_eq!(metrics.resolution_latency.snapshot().count, 0);
+        assert_eq!(metrics.connect_latency.snapshot().count, 0);
+    }
+
+    #[tokio::test]
+    async fn direct_v3_generic_helper_drop_cancels_injected_pending_resolution_or_connect_future() {
+        let resolution_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let resolution_guard = Arc::clone(&resolution_dropped);
+        let resolution_metrics = target_metric_sinks();
+        let resolution_policy = loopback_egress_policy();
+        let mut resolution_attempt = Box::pin(open_target_addr_before_deadline_with_metrics_using(
+            (Instant::now() + Duration::from_secs(10)).into_std(),
+            &resolution_policy,
+            &resolution_metrics,
+            move || async move {
+                let _guard = DropFlag(resolution_guard);
+                pending::<io::Result<Vec<SocketAddr>>>().await
+            },
+            |_| ready(Ok::<_, io::Error>(())),
+        ));
+        assert!(poll!(resolution_attempt.as_mut()).is_pending());
+        drop(resolution_attempt);
+        assert!(resolution_dropped.load(Ordering::Acquire));
+        assert_eq!(target_metric_values(&resolution_metrics), [0, 0, 0, 0]);
+        assert_eq!(resolution_metrics.resolution_latency.snapshot().count, 0);
+        assert_eq!(resolution_metrics.connect_latency.snapshot().count, 0);
+
+        let connect_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let connect_guard = Arc::clone(&connect_dropped);
+        let connect_metrics = target_metric_sinks();
+        let connect_policy = loopback_egress_policy();
+        let mut connect_attempt = Box::pin(open_target_addr_before_deadline_with_metrics_using(
+            (Instant::now() + Duration::from_secs(10)).into_std(),
+            &connect_policy,
+            &connect_metrics,
+            || ready(Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))])),
+            move |_| async move {
+                let _guard = DropFlag(connect_guard);
+                pending::<io::Result<()>>().await
+            },
+        ));
+        assert!(poll!(connect_attempt.as_mut()).is_pending());
+        drop(connect_attempt);
+        assert!(connect_dropped.load(Ordering::Acquire));
+        tokio::task::yield_now().await;
+        assert_eq!(target_metric_values(&connect_metrics), [0, 0, 0, 0]);
+        assert_eq!(connect_metrics.resolution_latency.snapshot().count, 1);
+        assert_eq!(connect_metrics.connect_latency.snapshot().count, 0);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn direct_v3_resolution_at_deadline_counts_once_and_never_connects() {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1700,18 +1878,47 @@ mod tests {
     }
 
     #[test]
-    fn direct_v3_opener_remains_disconnected_from_quiche_production_source() {
+    fn direct_v3_production_source_has_one_endpoint_call_and_no_system_resolver() {
         let opener = ["open_target_addr_before_deadline", "_with_metrics"].concat();
-        for source in [
-            include_str!("quiche_endpoint.rs"),
-            include_str!("quiche_runtime.rs"),
+        let endpoint = include_str!("quiche_endpoint.rs");
+        let endpoint_production = endpoint
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("endpoint production source");
+        assert_eq!(endpoint_production.matches(&opener).count(), 1);
+
+        let runtime = include_str!("quiche_runtime.rs");
+        let runtime_production = runtime
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("runtime production source");
+        assert!(!runtime_production.contains(&opener));
+
+        let relay = include_str!("relay.rs");
+        let direct_opener = relay
+            .split("pub(crate) async fn open_target_addr_before_deadline_with_metrics(")
+            .nth(1)
+            .expect("direct-v3 production opener source")
+            .split("async fn open_target_addr_before_deadline_with_metrics_using<")
+            .next()
+            .expect("direct-v3 production opener body");
+        for forbidden in [
+            "lookup_host",
+            "to_authority",
+            "spawn_blocking",
+            "getaddrinfo",
         ] {
-            let production = source
-                .split("#[cfg(test)]\nmod tests")
-                .next()
-                .expect("production source");
-            assert!(!production.contains(&opener));
+            assert!(!direct_opener.contains(forbidden));
         }
+        for required in [
+            "TargetAddr::Domain(_)",
+            "TargetAddr::Ipv4(addr)",
+            "TargetAddr::Ipv6(addr)",
+            "move || ready(resolved)",
+        ] {
+            assert!(direct_opener.contains(required));
+        }
+        assert!(relay.contains("lookup_host(authority)"));
     }
 
     #[tokio::test]

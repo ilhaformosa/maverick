@@ -17,48 +17,42 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2c2 — whole-attempt target-open deadline and typed metrics contract
+### T027b-2c3 — single metrics-owner handoff into the private quiche actor lifecycle
 
-- **User result:** A future private direct-v3 target-open attempt can consume
-  one absolute deadline across hostname resolution and every TCP connect
-  attempt. Resolution cannot spend most of the budget and then silently grant
-  connect a fresh full timeout. Fixed aggregate resolution/connect failure
-  counters are recorded accurately once, without retaining a target or backend
-  error.
-- **Scope:** Add one crate-private direct-v3 opener API in `relay.rs` whose
-  production entry accepts a structured target, port, the T027b-2c1 absolute
-  attempt deadline, frozen egress policy, and the existing
-  `TargetOpenMetricSinks`. Keep the old H2 public and crate-private openers
-  unchanged. Use a private generic resolver/connector seam for paused-time,
-  socket-free tests; discard lower-level errors at the new typed boundary and
-  keep the existing `ServerRuntimeMetrics` owner and sink wiring unchanged.
-- **Acceptance:** Reject an already expired deadline before invoking either
-  seam; give connect only the time left after resolution; classify resolution
-  timeout/failure, egress rejection, and connect timeout/failure with fixed,
-  bounded, source-free errors; apply egress policy after resolution and before
-  connect; increment exactly one existing failure counter for each timeout or
-  backend failure and none for egress rejection; return a neutral synthetic
-  success before the deadline; retain existing resolution/connect latency
-  sinks; preserve every old H2 opener signature, two-stage timeout meaning,
-  error meaning, and regression; and keep quiche endpoint/runtime production
-  source free of any call to the new opener.
-- **Out of scope:** No quiche actor integration, real target test, retained,
-  transferred, or discarded real `TcpStream`, response, user DATA, relay,
-  fallback, flow recovery or reset, slot reuse, public API, schema, wire or
-  version change, new metrics owner or sink, `runtime_metrics.rs`, `server.rs`,
-  quiche endpoint/runtime, core/config, manifest, lockfile, dependency, vendor,
-  registry, client, SDK, CLI, `STATUS.md`, CI, remote, deployment, release,
-  real-network, credential, infrastructure, or system-network work.
-- **Stop conditions:** Stop before a fourth changed file; any need to change an
-  existing H2 signature or timeout/error behavior, reset or extend the absolute
-  deadline, call the opener from quiche production code, create a second metric
-  owner or default sink, perform real target I/O in a test, retain a real target
-  socket, emit target/policy/backend values, add a dependency, expose a public
-  API, or change `STATUS.md` or any file outside the three-file allowlist.
+- **User result:** A future private direct-v3 target dispatch can use the same
+  fixed aggregate target-open metrics already owned by the server, without a
+  hidden second owner or default sink.
+- **Scope:** Make the private quiche `Endpoint::bind` accept the caller's one
+  existing `Arc<ServerRuntimeMetrics>` beside the frozen server role. Retain
+  that exact owner, derive one `TargetOpenMetricSinks` through its existing
+  method, and clone only those sinks into each actor and its actor-owned target
+  dispatch futures.
+- **Acceptance:** Prove exact owner identity with `Arc::ptr_eq`; prove all four
+  failure counters and both latency metrics share the caller owner's underlying
+  storage; keep synthetic dispatch observations at zero; release future and
+  actor sink clones on normal completion, timeout, panic, cancellation, and
+  forced parent abort before joined actors are reclaimed; preserve the eight-
+  future ceiling, four-completion rounds, fairness, generation, deadline,
+  cancellation, panic, and registry-reclaim gates; and keep registry,
+  `ServerConnection`, and the frozen role metrics-free.
+- **Out of scope:** No opener call, DNS, `TcpStream`, target socket, response,
+  DATA, relay, fallback, product server caller, public API, schema, wire or
+  version change, new metrics owner or default sink, `runtime_metrics.rs`,
+  `server.rs`, `relay.rs`, quiche registry/runtime, core/config, manifest,
+  lockfile, dependency, vendor, client, SDK, CLI, `STATUS.md`, CI, remote,
+  deployment, release, real-network, credential, infrastructure, or system-
+  network work.
+- **Stop conditions:** Stop before any file outside `ROADMAP.md` and
+  `crates/maverick-server/src/quiche_endpoint.rs` changes; any need to construct
+  or default metrics inside endpoint/actor/registry, hand metrics to registry or
+  runtime connection state, call an opener, perform target I/O, retain a target
+  socket, record a target-open observation, expose a public API, add a
+  dependency, or change `STATUS.md` requires re-adjudication.
 
-This remains repository-local private opener API foundation only. Synthetic
-tests and local loopback evidence are not a sandbox, H3 target-connectivity
-result, product runtime, release result, or product result.
+This remains repository-local, private, feature-gated dependency-handoff
+foundation. Zero synthetic target-open observations do not establish H3 target
+connectivity, a metrics product result, runtime readiness, a release result, or
+a product result; the endpoint still has no product-server startup caller.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

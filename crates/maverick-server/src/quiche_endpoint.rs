@@ -36,6 +36,8 @@ use crate::quiche_runtime::{
     ConnectionLifecycle, FrozenDirectV3ServerRole, PacketMeta, ServerConnection,
     TargetOpenDispatchToken, MAX_PACKET_BYTES, MAX_TARGET_DISPATCH_FUTURES,
 };
+use crate::relay::TargetOpenMetricSinks;
+use crate::runtime_metrics::ServerRuntimeMetrics;
 
 const ACTOR_INBOX_CAPACITY: usize = 4;
 const SOCKET_RECV_BYTES: usize = MAX_PACKET_BYTES + 1;
@@ -50,6 +52,8 @@ const SHUTDOWN_JOIN_BUDGET: Duration = Duration::from_secs(2);
 struct Endpoint {
     socket: Arc<UdpSocket>,
     local_address: SocketAddr,
+    metrics_owner: Arc<ServerRuntimeMetrics>,
+    target_open_sinks: TargetOpenMetricSinks,
     registry: ConnectionRegistry,
     actors: JoinSet<Result<(), ActorError>>,
     unregistered_actor: Option<Id>,
@@ -66,8 +70,11 @@ struct Endpoint {
 }
 
 impl Endpoint {
-    async fn bind(owner: Arc<ServerRoleConfig>) -> Result<Self, EndpointError> {
-        let role = FrozenDirectV3ServerRole::new(owner).map_err(|_| EndpointError::Role)?;
+    async fn bind(
+        role_owner: Arc<ServerRoleConfig>,
+        metrics_owner: Arc<ServerRuntimeMetrics>,
+    ) -> Result<Self, EndpointError> {
+        let role = FrozenDirectV3ServerRole::new(role_owner).map_err(|_| EndpointError::Role)?;
         let listen = role.listen();
         if !listen.ip().is_loopback() {
             return Err(EndpointError::Bind);
@@ -81,9 +88,12 @@ impl Endpoint {
             return Err(EndpointError::Bind);
         }
         let (cancel_tx, cancel_rx) = watch::channel(false);
+        let target_open_sinks = metrics_owner.target_open_sinks();
         Ok(Self {
             socket: Arc::new(socket),
             local_address,
+            metrics_owner,
+            target_open_sinks,
             registry,
             actors: JoinSet::new(),
             unregistered_actor: None,
@@ -102,9 +112,10 @@ impl Endpoint {
 
     #[cfg(test)]
     async fn bind_test(
-        owner: Arc<ServerRoleConfig>,
+        role_owner: Arc<ServerRoleConfig>,
+        metrics_owner: Arc<ServerRuntimeMetrics>,
     ) -> Result<(Self, watch::Sender<bool>), EndpointError> {
-        let endpoint = Self::bind(owner).await?;
+        let endpoint = Self::bind(role_owner, metrics_owner).await?;
         let cancel = endpoint.cancel_tx.clone();
         Ok((endpoint, cancel))
     }
@@ -171,6 +182,7 @@ impl Endpoint {
                 let (sender, receiver) = mpsc::channel(ACTOR_INBOX_CAPACITY);
                 let actor_socket = Arc::clone(&self.socket);
                 let actor_cancel = self.cancel_rx.clone();
+                let actor_target_open_sinks = self.target_open_sinks.clone();
                 #[cfg(not(test))]
                 let abort = self.actors.spawn(run_connection_actor(
                     connection,
@@ -178,6 +190,7 @@ impl Endpoint {
                     receiver,
                     actor_socket,
                     actor_cancel,
+                    actor_target_open_sinks,
                 ));
                 #[cfg(test)]
                 let actor_test_gate = self.next_actor_test_gate.take();
@@ -191,14 +204,27 @@ impl Endpoint {
                         receiver,
                         actor_socket,
                         actor_cancel,
+                        actor_target_open_sinks,
                         actor_test_gate,
                     )),
                     ActorFault::Panic => self.actors.spawn(async move {
-                        let _owned = (connection, receiver, actor_socket, actor_cancel);
+                        let _owned = (
+                            connection,
+                            receiver,
+                            actor_socket,
+                            actor_cancel,
+                            actor_target_open_sinks,
+                        );
                         panic!("injected endpoint actor panic");
                     }),
                     ActorFault::Stall => self.actors.spawn(async move {
-                        let _owned = (connection, receiver, actor_socket, actor_cancel);
+                        let _owned = (
+                            connection,
+                            receiver,
+                            actor_socket,
+                            actor_cancel,
+                            actor_target_open_sinks,
+                        );
                         std::future::pending::<Result<(), ActorError>>().await
                     }),
                 };
@@ -357,12 +383,13 @@ async fn run_connection_actor(
     mut inbox: mpsc::Receiver<ActorPacket>,
     socket: Arc<UdpSocket>,
     mut cancel: watch::Receiver<bool>,
+    target_open_sinks: TargetOpenMetricSinks,
     #[cfg(test)] test_gate: Option<Arc<ActorTestGate>>,
 ) -> Result<(), ActorError> {
     let handshake_deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let mut terminal_error = None;
     let mut termination_deadline = None;
-    let mut target_futures = TargetDispatchFutures::empty();
+    let mut target_futures = TargetDispatchFutures::new(target_open_sinks);
     let result = async {
         loop {
             verify_stable_source_id(&connection, &expected_server_source_id)?;
@@ -777,12 +804,14 @@ type TargetDispatchFuture = Pin<
 
 struct TargetDispatchFutures {
     futures: FuturesUnordered<TargetDispatchFuture>,
+    target_open_sinks: TargetOpenMetricSinks,
 }
 
 impl TargetDispatchFutures {
-    fn empty() -> Self {
+    fn new(target_open_sinks: TargetOpenMetricSinks) -> Self {
         Self {
             futures: FuturesUnordered::new(),
+            target_open_sinks,
         }
     }
 
@@ -800,6 +829,7 @@ impl TargetDispatchFutures {
         }
         let dispatch = run_target_dispatch_future(
             token,
+            self.target_open_sinks.clone(),
             #[cfg(test)]
             test_gate,
         );
@@ -827,6 +857,7 @@ impl TargetDispatchFutures {
 
 async fn run_target_dispatch_future(
     token: TargetOpenDispatchToken,
+    target_open_sinks: TargetOpenMetricSinks,
     #[cfg(test)] test_gate: Option<Arc<ActorTestGate>>,
 ) -> Result<TargetOpenDispatchToken, TargetDispatchError> {
     if !token.is_structurally_valid() {
@@ -837,7 +868,9 @@ async fn run_target_dispatch_future(
         #[cfg(test)]
         test_gate,
     );
-    match timeout_at(deadline, attempt).await {
+    let result = timeout_at(deadline, attempt).await;
+    drop(target_open_sinks);
+    match result {
         Ok(Ok(())) => Ok(token),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(TargetDispatchError::Timeout),
@@ -1543,6 +1576,34 @@ mod tests {
         PacketMeta,
     ) -> Result<ActorInboundDisposition, RegistryError>;
 
+    fn test_metrics_owner() -> Arc<ServerRuntimeMetrics> {
+        Arc::new(ServerRuntimeMetrics::default())
+    }
+
+    fn target_sink_clone_count(metrics_owner: &ServerRuntimeMetrics) -> usize {
+        let probe = metrics_owner.target_open_sinks();
+        Arc::strong_count(&probe.resolution_timeouts) - 1
+    }
+
+    fn assert_zero_target_open_metrics(metrics_owner: &ServerRuntimeMetrics) {
+        let sinks = metrics_owner.target_open_sinks();
+        assert_eq!(sinks.resolution_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
+        for latency in [
+            sinks.resolution_latency.snapshot(),
+            sinks.connect_latency.snapshot(),
+        ] {
+            assert_eq!(latency.count, 0);
+            assert_eq!(latency.sum_ms, 0);
+            assert!(latency
+                .cumulative_buckets
+                .iter()
+                .all(|observation| *observation == 0));
+        }
+    }
+
     struct TestCredentials {
         _directory: tempfile::TempDir,
         certificate_path: PathBuf,
@@ -2031,9 +2092,11 @@ fallback:
     async fn assert_blocked_future_termination(case: BlockedFutureTermination) {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
-        let (mut endpoint, cancel) = Endpoint::bind_test(Arc::clone(&owner))
-            .await
-            .expect("bind termination-case endpoint");
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind termination-case endpoint");
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
@@ -2041,6 +2104,7 @@ fallback:
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xe1).await;
         let client_gate = Arc::clone(&gate);
         let client_cancel = cancel.clone();
+        let client_metrics = Arc::clone(&metrics_owner);
 
         let client_work = async move {
             drive_client_to_h3(&mut client).await;
@@ -2055,6 +2119,8 @@ fallback:
             )
             .await
             .expect("termination-case dispatch future starts");
+            assert_eq!(target_sink_clone_count(&client_metrics), 4);
+            assert_zero_target_open_metrics(&client_metrics);
 
             match case {
                 BlockedFutureTermination::EndpointCancel => {
@@ -2114,14 +2180,18 @@ fallback:
         assert_eq!(gate.dispatch_counts(), (1, 0, 1, 1));
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     async fn assert_dispatch_failure_drops_sibling(panic_first: bool) {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
-        let (mut endpoint, cancel) = Endpoint::bind_test(Arc::clone(&owner))
-            .await
-            .expect("bind dispatch-failure endpoint");
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind dispatch-failure endpoint");
         let gate = Arc::new(ActorTestGate::default());
         if panic_first {
             gate.panic_first_target_dispatch();
@@ -2132,6 +2202,7 @@ fallback:
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xe2).await;
         let client_gate = Arc::clone(&gate);
+        let client_metrics = Arc::clone(&metrics_owner);
 
         let client_work = async move {
             drive_client_to_h3(&mut client).await;
@@ -2150,6 +2221,8 @@ fallback:
                 client.receive_available().await;
             }
             assert_eq!(client_gate.dispatch_counts(), (2, 2, 2, 0));
+            assert_eq!(target_sink_clone_count(&client_metrics), 5);
+            assert_zero_target_open_metrics(&client_metrics);
             client_gate.trigger_first_dispatch_failure();
             timeout(
                 Duration::from_secs(2),
@@ -2184,11 +2257,14 @@ fallback:
         assert_eq!(gate.dispatch_counts(), (2, 0, 2, 2));
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     async fn assert_inbox_close_drops_dispatch_future() {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
+        let metrics_owner = test_metrics_owner();
         let server_socket = Arc::new(
             UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
                 .await
@@ -2251,6 +2327,7 @@ fallback:
             receiver,
             Arc::clone(&server_socket),
             cancel_rx,
+            metrics_owner.target_open_sinks(),
             Some(Arc::clone(&gate)),
         ));
 
@@ -2263,6 +2340,8 @@ fallback:
         timeout(Duration::from_secs(1), gate.wait_for_dispatch_started(1))
             .await
             .expect("inbox-close dispatch future starts");
+        assert_eq!(target_sink_clone_count(&metrics_owner), 3);
+        assert_zero_target_open_metrics(&metrics_owner);
 
         router.abort();
         assert!(router
@@ -2282,6 +2361,8 @@ fallback:
             Err(ActorError::InboxUnavailable) | Err(ActorError::TerminationTimeout)
         ));
         assert_eq!(gate.dispatch_counts(), (1, 0, 1, 1));
+        assert_eq!(target_sink_clone_count(&metrics_owner), 1);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     fn route_one_client_datagram(
@@ -2320,6 +2401,78 @@ fallback:
     }
 
     #[tokio::test]
+    async fn t027b2c3_endpoint_requires_caller_metrics_owner() {
+        let credentials = TestCredentials::new();
+        let metrics_owner = test_metrics_owner();
+        let endpoint = Endpoint::bind(credentials.server_role(), Arc::clone(&metrics_owner))
+            .await
+            .expect("bind endpoint with caller metrics owner");
+
+        assert!(Arc::ptr_eq(&endpoint.metrics_owner, &metrics_owner));
+        assert_eq!(Arc::strong_count(&metrics_owner), 2);
+
+        let owner_sinks = metrics_owner.target_open_sinks();
+        for (endpoint_counter, owner_counter) in [
+            (
+                &endpoint.target_open_sinks.resolution_timeouts,
+                &owner_sinks.resolution_timeouts,
+            ),
+            (
+                &endpoint.target_open_sinks.resolution_failures,
+                &owner_sinks.resolution_failures,
+            ),
+            (
+                &endpoint.target_open_sinks.connect_timeouts,
+                &owner_sinks.connect_timeouts,
+            ),
+            (
+                &endpoint.target_open_sinks.connect_failures,
+                &owner_sinks.connect_failures,
+            ),
+        ] {
+            assert!(Arc::ptr_eq(endpoint_counter, owner_counter));
+            assert_eq!(Arc::strong_count(endpoint_counter), 3);
+        }
+
+        endpoint
+            .target_open_sinks
+            .resolution_timeouts
+            .store(1, Ordering::Relaxed);
+        endpoint
+            .target_open_sinks
+            .resolution_failures
+            .store(2, Ordering::Relaxed);
+        endpoint
+            .target_open_sinks
+            .connect_timeouts
+            .store(3, Ordering::Relaxed);
+        endpoint
+            .target_open_sinks
+            .connect_failures
+            .store(4, Ordering::Relaxed);
+        assert_eq!(owner_sinks.resolution_timeouts.load(Ordering::Relaxed), 1);
+        assert_eq!(owner_sinks.resolution_failures.load(Ordering::Relaxed), 2);
+        assert_eq!(owner_sinks.connect_timeouts.load(Ordering::Relaxed), 3);
+        assert_eq!(owner_sinks.connect_failures.load(Ordering::Relaxed), 4);
+
+        endpoint
+            .target_open_sinks
+            .resolution_latency
+            .record(Duration::from_millis(10));
+        endpoint
+            .target_open_sinks
+            .connect_latency
+            .record(Duration::from_millis(25));
+        assert_eq!(owner_sinks.resolution_latency.snapshot().count, 1);
+        assert_eq!(owner_sinks.resolution_latency.snapshot().sum_ms, 10);
+        assert_eq!(owner_sinks.connect_latency.snapshot().count, 1);
+        assert_eq!(owner_sinks.connect_latency.snapshot().sum_ms, 25);
+
+        drop(owner_sinks);
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+    }
+
+    #[tokio::test]
     async fn t027b2b2_1_role_gate_precedes_certificate_read_and_udp_bind() {
         let credentials = TestCredentials::new();
         let missing_certificate = credentials._directory.path().join("missing-cert.pem");
@@ -2329,7 +2482,7 @@ fallback:
             credentials.server_role_with("h2", "localhost", &missing_certificate, &missing_key);
 
         for owner in [legacy, direct_h2] {
-            let error = match Endpoint::bind(owner).await {
+            let error = match Endpoint::bind(owner, test_metrics_owner()).await {
                 Ok(_) => panic!("non-H3 server role must be rejected before I/O"),
                 Err(error) => error,
             };
@@ -2338,7 +2491,7 @@ fallback:
         }
 
         let valid_h3 = credentials.server_role();
-        let endpoint = Endpoint::bind(valid_h3)
+        let endpoint = Endpoint::bind(valid_h3, test_metrics_owner())
             .await
             .expect("validated config-v3 H3 role enters local foundation");
         assert!(endpoint.local_address.ip().is_loopback());
@@ -2349,7 +2502,7 @@ fallback:
     async fn t027b2b2_1_same_arc_owner_reaches_registry_and_admitted_connection() {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
-        let mut endpoint = Endpoint::bind(Arc::clone(&owner))
+        let mut endpoint = Endpoint::bind(Arc::clone(&owner), test_metrics_owner())
             .await
             .expect("bind local endpoint from frozen role");
         assert!(endpoint.registry.test_has_role_owner(&owner));
@@ -2407,9 +2560,10 @@ fallback:
     #[tokio::test]
     async fn real_loopback_udp_routes_two_clients_to_distinct_h3_connections_after_oversize() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind local endpoint");
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(credentials.server_role(), test_metrics_owner())
+                .await
+                .expect("bind local endpoint");
         let server_address = endpoint.local_address;
         let mut first = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0x31).await;
         let mut second = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0x32).await;
@@ -2572,9 +2726,11 @@ fallback:
     #[tokio::test]
     async fn run_activation_error_finishes_cleanup() {
         let credentials = TestCredentials::new();
-        let (mut activation_endpoint, _cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind activation-error endpoint");
+        let metrics_owner = test_metrics_owner();
+        let (mut activation_endpoint, _cancel) =
+            Endpoint::bind_test(credentials.server_role(), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind activation-error endpoint");
         activation_endpoint.fail_next_activation = true;
         let server_address = activation_endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0x61).await;
@@ -2584,14 +2740,18 @@ fallback:
         assert_eq!(activation_endpoint.registry.actor_count(), 0);
         assert!(activation_endpoint.actors.is_empty());
         assert!(activation_endpoint.unregistered_actor.is_none());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     #[tokio::test]
     async fn run_joins_actor_panic_before_shutdown_finishes() {
         let credentials = TestCredentials::new();
-        let (mut panic_endpoint, panic_cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind panic endpoint");
+        let metrics_owner = test_metrics_owner();
+        let (mut panic_endpoint, panic_cancel) =
+            Endpoint::bind_test(credentials.server_role(), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind panic endpoint");
         panic_endpoint.next_actor_fault = ActorFault::Panic;
         let panic_address = panic_endpoint.local_address;
         let mut panic_client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, panic_address, 0x62).await;
@@ -2606,14 +2766,18 @@ fallback:
         result.expect("panic is joined and cleaned before endpoint shutdown");
         assert_eq!(panic_endpoint.registry.actor_count(), 0);
         assert!(panic_endpoint.actors.is_empty());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     #[tokio::test(start_paused = true)]
     async fn shutdown_deadline_aborts_stuck_actor_then_drains_and_reclaims() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind stuck-actor endpoint");
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(credentials.server_role(), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind stuck-actor endpoint");
         endpoint.next_actor_fault = ActorFault::Stall;
         let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 45_001);
         let packet = initial_packet(source, endpoint.local_address, 0x71);
@@ -2629,6 +2793,8 @@ fallback:
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
         assert!(endpoint.unregistered_actor.is_none());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     #[tokio::test]
@@ -2708,6 +2874,7 @@ fallback:
     #[tokio::test(start_paused = true)]
     async fn handshake_wall_deadline_is_live_at_4999ms_and_fires_at_5s() {
         let credentials = TestCredentials::new();
+        let metrics_owner = test_metrics_owner();
         let server_socket = Arc::new(
             UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
                 .await
@@ -2734,6 +2901,7 @@ fallback:
             receiver,
             server_socket,
             cancel_rx,
+            metrics_owner.target_open_sinks(),
             None,
         ));
         tokio::task::yield_now().await;
@@ -2758,6 +2926,7 @@ fallback:
     #[tokio::test]
     async fn t027b2b2_1_established_quic_without_peer_settings_hits_five_second_deadline() {
         let credentials = TestCredentials::new();
+        let metrics_owner = test_metrics_owner();
         let server_socket = Arc::new(
             UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
                 .await
@@ -2794,6 +2963,7 @@ fallback:
             receiver,
             Arc::clone(&server_socket),
             cancel_rx,
+            metrics_owner.target_open_sinks(),
             Some(Arc::clone(&test_gate)),
         ));
 
@@ -2875,9 +3045,10 @@ fallback:
     #[tokio::test]
     async fn cancel_flushes_close_to_established_real_peer_before_actor_reclaim() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind cancel endpoint");
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(credentials.server_role(), test_metrics_owner())
+                .await
+                .expect("bind cancel endpoint");
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xa2).await;
 
@@ -2918,9 +3089,10 @@ fallback:
     #[tokio::test]
     async fn t027b2b2_2_auth_wall_flushes_105_and_reclaims_real_actor() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind auth-wall endpoint");
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(credentials.server_role(), test_metrics_owner())
+                .await
+                .expect("bind auth-wall endpoint");
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xb2).await;
 
@@ -2967,15 +3139,18 @@ fallback:
     async fn t027b2c1_eight_blocked_futures_preserve_udp_timer_flush_and_drop_before_reclaim() {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
-        let (mut endpoint, cancel) = Endpoint::bind_test(Arc::clone(&owner))
-            .await
-            .expect("bind bounded-dispatch endpoint");
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind bounded-dispatch endpoint");
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd1).await;
         let client_gate = Arc::clone(&gate);
+        let client_metrics = Arc::clone(&metrics_owner);
 
         let client_work = async move {
             drive_client_to_h3(&mut client).await;
@@ -2995,6 +3170,8 @@ fallback:
             }
             assert!(client.send_classic_connect().is_err());
             assert_eq!(client_gate.dispatch_counts(), (8, 8, 8, 0));
+            assert_eq!(target_sink_clone_count(&client_metrics), 11);
+            assert_zero_target_open_metrics(&client_metrics);
 
             client
                 .connection
@@ -3029,6 +3206,7 @@ fallback:
                 .timer_while_dispatch_blocked
                 .load(Ordering::Acquire));
             assert_eq!(client_gate.dispatch_counts(), (8, 0, 8, 8));
+            assert_zero_target_open_metrics(&client_metrics);
             cancel.send(true).expect("stop bounded-dispatch endpoint");
         };
 
@@ -3037,21 +3215,26 @@ fallback:
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
         assert_eq!(gate.dispatch_counts(), (8, 0, 8, 8));
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     #[tokio::test]
     async fn t027b2c1_actor_accepts_synthetic_completions_in_bounded_rounds() {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
-        let (mut endpoint, cancel) = Endpoint::bind_test(Arc::clone(&owner))
-            .await
-            .expect("bind completion endpoint");
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind completion endpoint");
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd2).await;
         let client_gate = Arc::clone(&gate);
+        let client_metrics = Arc::clone(&metrics_owner);
 
         let client_work = async move {
             drive_client_to_h3(&mut client).await;
@@ -3069,6 +3252,8 @@ fallback:
                 .expect("actor starts each completion-case future");
                 client.receive_available().await;
             }
+            assert_eq!(target_sink_clone_count(&client_metrics), 11);
+            assert_zero_target_open_metrics(&client_metrics);
 
             client_gate.release_target_dispatches(MAX_TARGET_DISPATCH_FUTURES);
             timeout(
@@ -3078,6 +3263,8 @@ fallback:
             .await
             .expect("actor accepts every synthetic completion");
             assert_eq!(client_gate.dispatch_counts(), (8, 0, 8, 8));
+            assert_eq!(target_sink_clone_count(&client_metrics), 3);
+            assert_zero_target_open_metrics(&client_metrics);
             assert_eq!(
                 client_gate.completion_snapshot(),
                 (8, 8, true, MAX_READY_TARGET_COMPLETIONS_PER_ROUND),
@@ -3109,21 +3296,26 @@ fallback:
         assert_eq!(gate.parent_join_snapshot(), (true, true));
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     #[tokio::test]
     async fn t027b2c1_forced_parent_abort_drops_active_futures_before_reclaim() {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
-        let (mut endpoint, cancel) = Endpoint::bind_test(Arc::clone(&owner))
-            .await
-            .expect("bind forced-parent endpoint");
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind forced-parent endpoint");
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd3).await;
         let client_gate = Arc::clone(&gate);
+        let client_metrics = Arc::clone(&metrics_owner);
 
         let client_work = async move {
             drive_client_to_h3(&mut client).await;
@@ -3142,6 +3334,8 @@ fallback:
                 client.receive_available().await;
             }
             assert_eq!(client_gate.dispatch_counts(), (8, 8, 8, 0));
+            assert_eq!(target_sink_clone_count(&client_metrics), 11);
+            assert_zero_target_open_metrics(&client_metrics);
 
             client_gate.request_parent_stall();
             client
@@ -3170,6 +3364,8 @@ fallback:
         );
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
     }
 
     #[tokio::test]
@@ -3199,9 +3395,10 @@ fallback:
     #[tokio::test]
     async fn cancel_during_in_flight_flush_restarts_close_flush_before_waiting() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind in-flight cancel endpoint");
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(credentials.server_role(), test_metrics_owner())
+                .await
+                .expect("bind in-flight cancel endpoint");
         let send_gate = Arc::new(ActorTestGate::default());
         endpoint.next_actor_test_gate = Some(Arc::clone(&send_gate));
         let server_address = endpoint.local_address;
@@ -3262,6 +3459,7 @@ fallback:
     #[tokio::test(start_paused = true)]
     async fn pre_key_cancel_uses_hard_closing_deadline_without_hanging() {
         let credentials = TestCredentials::new();
+        let metrics_owner = test_metrics_owner();
         let server_socket = Arc::new(
             UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
                 .await
@@ -3289,6 +3487,7 @@ fallback:
             receiver,
             server_socket,
             cancel_rx,
+            metrics_owner.target_open_sinks(),
             None,
         ));
 
@@ -3311,9 +3510,10 @@ fallback:
     #[tokio::test(start_paused = true)]
     async fn endpoint_reports_pre_key_forced_reclaim_after_draining_joinset() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind pre-key endpoint");
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(credentials.server_role(), test_metrics_owner())
+                .await
+                .expect("bind pre-key endpoint");
         let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 48_001);
         let initial = initial_packet(source, endpoint.local_address, 0xa5);
         endpoint
@@ -3336,9 +3536,10 @@ fallback:
     #[tokio::test]
     async fn peer_draining_holds_actor_routes_and_source_capacity_until_closed_join() {
         let credentials = TestCredentials::new();
-        let (mut endpoint, _cancel) = Endpoint::bind_test(credentials.server_role())
-            .await
-            .expect("bind peer-draining endpoint");
+        let (mut endpoint, _cancel) =
+            Endpoint::bind_test(credentials.server_role(), test_metrics_owner())
+                .await
+                .expect("bind peer-draining endpoint");
         let test_gate = Arc::new(ActorTestGate::default());
         endpoint.next_actor_test_gate = Some(Arc::clone(&test_gate));
         let server_address = endpoint.local_address;
@@ -3683,6 +3884,7 @@ fallback:
             .next()
             .expect("production endpoint source");
         let registry_source = include_str!("quiche_registry.rs");
+        let runtime_source = include_str!("quiche_runtime.rs");
         for forbidden in [
             ["Arc<", "Mutex<ServerConnection"].concat(),
             ["Arc<", "Mutex<HashMap"].concat(),
@@ -3696,6 +3898,25 @@ fallback:
         assert!(production_endpoint.contains("JoinSet<Result<(), ActorError>>"));
         assert_eq!(production_endpoint.matches("JoinSet<").count(), 1);
         assert!(production_endpoint.contains("FuturesUnordered<TargetDispatchFuture>"));
+        assert!(production_endpoint.contains("metrics_owner: Arc<ServerRuntimeMetrics>"));
+        assert!(production_endpoint.contains("target_open_sinks: TargetOpenMetricSinks"));
+        assert_eq!(
+            production_endpoint
+                .matches("metrics_owner.target_open_sinks()")
+                .count(),
+            1
+        );
+        for forbidden in [
+            "ServerRuntimeMetrics::default()",
+            "Arc::new(ServerRuntimeMetrics",
+            "TargetOpenMetricSinks {",
+        ] {
+            assert!(!production_endpoint.contains(forbidden));
+        }
+        for metrics_free_source in [registry_source, runtime_source] {
+            assert!(!metrics_free_source.contains("ServerRuntimeMetrics"));
+            assert!(!metrics_free_source.contains("TargetOpenMetricSinks"));
+        }
         assert!(!production_endpoint.contains("TargetDispatchChildren"));
         assert!(!production_endpoint.contains("run_target_dispatch_child"));
         assert!(!production_endpoint.contains(".spawn(run_target_dispatch_future"));

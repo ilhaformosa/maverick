@@ -5,9 +5,10 @@
 //! Production dispatch may open one policy-approved IP-literal target before
 //! the token's whole-attempt deadline. Domain targets remain representable but
 //! fail closed before system resolution. After synchronous handoff into the
-//! originating `ServerConnection` slot, the actor can borrow that slot's target
-//! read readiness while the connection queues bounded response DATA. The actor
-//! creates no second socket owner, relay task, channel, or target collection.
+//! originating `ServerConnection` slot, the actor can borrow that slot's
+//! independent target read or write readiness while the connection moves
+//! bounded DATA in both directions. The actor creates no second socket owner,
+//! relay task, channel, or target collection.
 //! This module exposes no public API or non-loopback binding seam.
 
 #![forbid(unsafe_code)]
@@ -26,7 +27,7 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use maverick_core::config::ServerRoleConfig;
 #[cfg(test)]
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpSocket};
 use tokio::net::{TcpStream, UdpSocket};
 #[cfg(test)]
 use tokio::sync::Notify;
@@ -397,7 +398,7 @@ async fn run_connection_actor(
     let mut terminal_error = None;
     let mut termination_deadline = None;
     let mut target_futures = TargetDispatchFutures::new(target_open_sinks);
-    let mut target_readable_slot = None;
+    let mut target_io_signal = None;
     let result = async {
         loop {
             verify_stable_source_id(&connection, &expected_server_source_id)?;
@@ -545,13 +546,26 @@ async fn run_connection_actor(
                 }
             }
             if termination_deadline.is_none() && connection.is_authenticated() {
-                let readable_slot = target_readable_slot.take();
-                let target_data_round = connection.drive_target_to_client_round(readable_slot);
                 #[cfg(test)]
-                if let (Ok(operations), Some(test_gate)) =
-                    (&target_data_round, test_gate.as_deref())
-                {
-                    test_gate.observe_target_data_round(*operations);
+                if let Some(test_gate) = test_gate.as_deref() {
+                    if test_gate.take_target_write_saturation_request() {
+                        connection
+                            .saturate_pending_upload_target_for_test()
+                            .expect("saturate the original target socket to real WouldBlock");
+                        test_gate.observe_target_write_saturation();
+                    }
+                }
+                let ready_signal = target_io_signal.take();
+                let target_data_round = connection.drive_target_io_round(ready_signal);
+                #[cfg(test)]
+                if let (Ok(round), Some(test_gate)) = (&target_data_round, test_gate.as_deref()) {
+                    test_gate.observe_target_data_round(
+                        round.operations(),
+                        round.progress_operations(),
+                        round.upload_recv_progress_mask(),
+                        round.target_write_progress_mask(),
+                        round.target_write_blocked_mask(),
+                    );
                 }
                 if target_data_round.is_err() {
                     begin_actor_termination(
@@ -561,6 +575,10 @@ async fn run_connection_actor(
                         Some(ActorError::TargetDataUnavailable),
                     );
                     target_futures.clear();
+                }
+                #[cfg(test)]
+                if let Some(test_gate) = test_gate.as_deref() {
+                    test_gate.pause_target_data_round_once_if_armed().await;
                 }
             }
             let lifecycle_before_flush = connection.lifecycle();
@@ -765,10 +783,12 @@ async fn run_connection_actor(
                                 test_gate.observe_actor_inbound();
                             }
                             verify_stable_source_id(&connection, &expected_server_source_id)?;
-                            if connection
-                                .receive_packet(&mut inbound.bytes, inbound.length, inbound.meta)
-                                .is_err()
-                            {
+                            let received = connection.receive_packet(
+                                &mut inbound.bytes,
+                                inbound.length,
+                                inbound.meta,
+                            );
+                            if received.is_err() {
                                 begin_actor_termination(
                                     &mut connection,
                                     &mut terminal_error,
@@ -824,11 +844,11 @@ async fn run_connection_actor(
                         target_futures.clear();
                     }
                 }
-                readable = connection.wait_target_readable(),
+                ready = connection.wait_target_io_ready(),
                     if termination_deadline.is_none()
-                        && connection.has_target_read_waiter() => {
-                    match readable {
-                        Ok(slot_index) => target_readable_slot = Some(slot_index),
+                        && connection.has_target_io_waiter() => {
+                    match ready {
+                        Ok(signal) => target_io_signal = Some(signal),
                         Err(_) => {
                             begin_actor_termination(
                                 &mut connection,
@@ -838,6 +858,14 @@ async fn run_connection_actor(
                             );
                             target_futures.clear();
                         }
+                    }
+                }
+                _ = tokio::task::yield_now(),
+                    if termination_deadline.is_none()
+                        && connection.has_immediate_target_io_work() => {
+                    #[cfg(test)]
+                    if let Some(test_gate) = test_gate.as_deref() {
+                        test_gate.observe_immediate_target_io_yield();
                     }
                 }
             }
@@ -1231,8 +1259,21 @@ struct ActorTestGate {
     completion_round_peak: AtomicUsize,
     completion_queue_drained: AtomicBool,
     completion_accepted_notify: Notify,
+    target_data_zero_progress_operations: AtomicUsize,
     target_data_progress_operations: AtomicUsize,
     target_data_progress_inbound: AtomicUsize,
+    target_upload_recv_progress_mask: AtomicUsize,
+    target_upload_recv_progress_inbound: AtomicUsize,
+    target_write_progress_mask: AtomicUsize,
+    target_write_blocked_mask: AtomicUsize,
+    target_write_blocked_inbound: AtomicUsize,
+    target_write_progress_inbound: AtomicUsize,
+    immediate_target_io_yields: AtomicUsize,
+    target_data_round_pause_armed: AtomicBool,
+    target_data_round_paused: Notify,
+    release_target_data_round: Notify,
+    target_write_saturation_requested: AtomicBool,
+    target_write_saturation_count: AtomicUsize,
     fail_first_dispatch: Notify,
     revoke_requested: AtomicBool,
     hard_expiry_requested: AtomicBool,
@@ -1251,6 +1292,7 @@ impl ActorTestGate {
     const DISPATCH_BLOCK: u8 = 1;
     const DISPATCH_ERROR_FIRST: u8 = 2;
     const DISPATCH_PANIC_FIRST: u8 = 3;
+    const DISPATCH_PREFILLED: u8 = 4;
 
     fn uses_synthetic_target_dispatch(&self) -> bool {
         self.dispatch_behavior.load(Ordering::Acquire) != 0
@@ -1294,6 +1336,46 @@ impl ActorTestGate {
         self.release_send.notify_one();
     }
 
+    fn arm_target_data_round_pause(&self) {
+        assert!(!self
+            .target_data_round_pause_armed
+            .swap(true, Ordering::SeqCst));
+    }
+
+    async fn pause_target_data_round_once_if_armed(&self) {
+        if self
+            .target_data_round_pause_armed
+            .swap(false, Ordering::SeqCst)
+        {
+            self.target_data_round_paused.notify_one();
+            self.release_target_data_round.notified().await;
+        }
+    }
+
+    fn release_target_data_round(&self) {
+        self.release_target_data_round.notify_one();
+    }
+
+    fn request_target_write_saturation(&self) {
+        assert!(!self
+            .target_write_saturation_requested
+            .swap(true, Ordering::SeqCst));
+    }
+
+    fn take_target_write_saturation_request(&self) -> bool {
+        self.target_write_saturation_requested
+            .swap(false, Ordering::SeqCst)
+    }
+
+    fn observe_target_write_saturation(&self) {
+        self.target_write_saturation_count
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn target_write_saturation_count(&self) -> usize {
+        self.target_write_saturation_count.load(Ordering::Acquire)
+    }
+
     fn observe_pending_close_wait(&self) {
         self.pending_close_wait.notify_one();
     }
@@ -1327,6 +1409,11 @@ impl ActorTestGate {
     fn block_target_dispatches(&self) {
         self.dispatch_behavior
             .store(Self::DISPATCH_BLOCK, Ordering::Release);
+    }
+
+    fn prefill_target_dispatches(&self) {
+        self.dispatch_behavior
+            .store(Self::DISPATCH_PREFILLED, Ordering::Release);
     }
 
     fn set_target_dispatch_listener(&self, listener: &TcpListener) {
@@ -1467,11 +1554,49 @@ impl ActorTestGate {
         self.completion_queue_drained.load(Ordering::Acquire)
     }
 
-    fn observe_target_data_round(&self, operations: usize) {
-        // In the single-slot flood fixture, one operation can be only a
-        // WouldBlock probe. Two prove the read changed state and the same
-        // round continued into a Body or FIN attempt.
-        if operations < 2 {
+    fn observe_target_data_round(
+        &self,
+        operations: usize,
+        progress_operations: usize,
+        upload_recv_progress_mask: usize,
+        target_write_progress_mask: usize,
+        target_write_blocked_mask: usize,
+    ) {
+        assert!(operations <= 4);
+        assert!(progress_operations <= operations);
+        let previous_recv_progress = self
+            .target_upload_recv_progress_mask
+            .fetch_or(upload_recv_progress_mask, Ordering::AcqRel);
+        if upload_recv_progress_mask != 0 && previous_recv_progress == 0 {
+            self.target_upload_recv_progress_inbound.store(
+                self.inbound_observed.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+        }
+        let previous_write_progress = self
+            .target_write_progress_mask
+            .fetch_or(target_write_progress_mask, Ordering::AcqRel);
+        if target_write_progress_mask != 0 && previous_write_progress == 0 {
+            self.target_write_progress_inbound.store(
+                self.inbound_observed.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+        }
+        let previous_write_blocked = self
+            .target_write_blocked_mask
+            .fetch_or(target_write_blocked_mask, Ordering::AcqRel);
+        if target_write_blocked_mask != 0 && previous_write_blocked == 0 {
+            self.target_write_blocked_inbound.store(
+                self.inbound_observed.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+        }
+        if progress_operations == 0 {
+            if operations != 0 {
+                self.target_data_zero_progress_operations
+                    .compare_exchange(0, operations, Ordering::AcqRel, Ordering::Acquire)
+                    .ok();
+            }
             return;
         }
         if self
@@ -1494,6 +1619,48 @@ impl ActorTestGate {
                 self.target_data_progress_inbound.load(Ordering::Acquire),
             )
         })
+    }
+
+    fn observe_immediate_target_io_yield(&self) {
+        self.immediate_target_io_yields
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn target_upload_progress_snapshot(&self) -> (usize, usize, usize, usize, usize) {
+        (
+            self.target_upload_recv_progress_mask
+                .load(Ordering::Acquire),
+            self.target_write_progress_mask.load(Ordering::Acquire),
+            self.target_write_blocked_mask.load(Ordering::Acquire),
+            self.immediate_target_io_yields.load(Ordering::Acquire),
+            self.target_write_progress_inbound.load(Ordering::Acquire),
+        )
+    }
+
+    fn reset_target_upload_phase(&self) {
+        self.target_upload_recv_progress_mask
+            .store(0, Ordering::Release);
+        self.target_upload_recv_progress_inbound
+            .store(0, Ordering::Release);
+        self.target_write_progress_mask.store(0, Ordering::Release);
+        self.target_write_progress_inbound
+            .store(0, Ordering::Release);
+        self.target_write_blocked_mask.store(0, Ordering::Release);
+        self.target_write_blocked_inbound
+            .store(0, Ordering::Release);
+    }
+
+    fn target_upload_phase_snapshot(&self) -> (usize, usize, usize, usize, usize, usize) {
+        (
+            self.target_upload_recv_progress_mask
+                .load(Ordering::Acquire),
+            self.target_upload_recv_progress_inbound
+                .load(Ordering::Acquire),
+            self.target_write_progress_mask.load(Ordering::Acquire),
+            self.target_write_progress_inbound.load(Ordering::Acquire),
+            self.target_write_blocked_mask.load(Ordering::Acquire),
+            self.target_write_blocked_inbound.load(Ordering::Acquire),
+        )
     }
 
     fn request_parent_stall(&self) {
@@ -1586,10 +1753,50 @@ impl ActorTestGate {
             .lock()
             .map_err(|_| TargetDispatchError::Unavailable)?
             .ok_or(TargetDispatchError::Unavailable)?;
-        let opened_target = TcpStream::connect(address)
-            .await
-            .map_err(|_| TargetDispatchError::Unavailable)?;
-        match self.dispatch_behavior.load(Ordering::Acquire) {
+        let behavior = self.dispatch_behavior.load(Ordering::Acquire);
+        let opened_target = if behavior == Self::DISPATCH_PREFILLED {
+            let socket = TcpSocket::new_v4().map_err(|_| TargetDispatchError::Unavailable)?;
+            socket
+                .set_send_buffer_size(1_024)
+                .map_err(|_| TargetDispatchError::Unavailable)?;
+            socket
+                .connect(address)
+                .await
+                .map_err(|_| TargetDispatchError::Unavailable)?
+        } else {
+            TcpStream::connect(address)
+                .await
+                .map_err(|_| TargetDispatchError::Unavailable)?
+        };
+        if behavior == Self::DISPATCH_PREFILLED {
+            let filler = [0xa7_u8; 16 * 1024];
+            let mut filled = 0_usize;
+            let mut consecutive_blocked_turns = 0_usize;
+            for _ in 0..1_024 {
+                match opened_target.try_write(&filler) {
+                    Ok(0) => return Err(TargetDispatchError::Unavailable),
+                    Ok(written) if written <= filler.len() => {
+                        filled += written;
+                        consecutive_blocked_turns = 0;
+                    }
+                    Ok(_) => return Err(TargetDispatchError::Unavailable),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        consecutive_blocked_turns += 1;
+                        if consecutive_blocked_turns == 8 {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                    Err(_) => return Err(TargetDispatchError::Unavailable),
+                }
+            }
+            if filled == 0 || consecutive_blocked_turns != 8 {
+                return Err(TargetDispatchError::Unavailable);
+            }
+            guard.finish();
+            return Ok(opened_target);
+        }
+        match behavior {
             Self::DISPATCH_BLOCK => {
                 self.wait_for_dispatch_release().await;
                 guard.finish();
@@ -1838,6 +2045,43 @@ mod tests {
             .expect("bind loopback target listener");
         gate.set_target_dispatch_listener(&listener);
         listener
+    }
+
+    async fn loopback_small_receive_target_listener(gate: &ActorTestGate) -> TcpListener {
+        let socket = TcpSocket::new_v4().expect("create small-receive loopback listener socket");
+        socket
+            .set_recv_buffer_size(1_024)
+            .expect("set small target receive buffer");
+        socket
+            .bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("bind small-receive loopback target listener");
+        let listener = socket
+            .listen(1_024)
+            .expect("listen for bounded target peers");
+        gate.set_target_dispatch_listener(&listener);
+        listener
+    }
+
+    async fn drain_available_target_filler(target_peer: &TcpStream) -> usize {
+        timeout(Duration::from_secs(1), target_peer.readable())
+            .await
+            .expect("saturated target becomes readable")
+            .expect("saturated target readiness remains usable");
+        let mut drained = 0_usize;
+        let mut buffer = [0_u8; 16 * 1024];
+        loop {
+            match target_peer.try_read(&mut buffer) {
+                Ok(0) => panic!("saturated target must remain connected"),
+                Ok(length) => {
+                    assert!(buffer[..length].iter().all(|byte| *byte == 0xa7));
+                    drained += length;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => panic!("saturated target filler read remains available"),
+            }
+        }
+        assert_ne!(drained, 0);
+        drained
     }
 
     async fn accept_target_peers(listener: &TcpListener, count: usize) -> Vec<TcpStream> {
@@ -2137,8 +2381,9 @@ fallback:
             }
         }
 
-        async fn send_pending(&mut self) {
+        async fn send_pending(&mut self) -> usize {
             let mut packet = [0_u8; MAX_PACKET_BYTES];
+            let mut sent_packets = 0_usize;
             for _ in 0..64 {
                 match self.connection.send(&mut packet) {
                     Ok((length, info)) => {
@@ -2150,8 +2395,9 @@ fallback:
                             .await
                             .expect("send local QUIC packet");
                         assert_eq!(sent, length);
+                        sent_packets += 1;
                     }
-                    Err(quiche::Error::Done) => return,
+                    Err(quiche::Error::Done) => return sent_packets,
                     Err(_) => panic!("local QUIC packet unavailable"),
                 }
             }
@@ -2816,6 +3062,300 @@ fallback:
                 .await
                 .expect("cancel closes fairness target")
                 .expect_err("cancelled target peer reports EOF")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_real_actor_upload_progress_follows_inbound_and_real_would_block() {
+        const UPLOAD_MARKER: &[u8] = b"actor-upload-marker";
+
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role();
+        let metrics_owner = test_metrics_owner();
+        let server_socket = Arc::new(
+            UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .await
+                .expect("bind upload actor server socket"),
+        );
+        let server_address = server_socket
+            .local_addr()
+            .expect("read upload actor server address");
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd3).await;
+        let mut initial_bytes = [0_u8; MAX_PACKET_BYTES];
+        let (initial_length, initial_info) = client
+            .connection
+            .send(&mut initial_bytes)
+            .expect("create upload actor Initial");
+        let frozen_role =
+            FrozenDirectV3ServerRole::new(Arc::clone(&owner)).expect("freeze upload actor role");
+        let mut registry =
+            ConnectionRegistry::new(frozen_role).expect("construct upload actor registry");
+        let (_pending, connection, expected) = actor_admission(
+            &mut registry,
+            TestPacket {
+                bytes: initial_bytes,
+                length: initial_length,
+                meta: PacketMeta {
+                    from: initial_info.from,
+                    to: initial_info.to,
+                },
+            },
+        )
+        .into_parts();
+        let (sender, receiver) = mpsc::channel(ACTOR_INBOX_CAPACITY);
+        let router_sender = sender.clone();
+        let router_socket = Arc::clone(&server_socket);
+        let router = tokio::spawn(async move {
+            let mut packet = [0_u8; SOCKET_RECV_BYTES];
+            loop {
+                let Ok((length, source)) = router_socket.recv_from(&mut packet).await else {
+                    return;
+                };
+                let Some(bytes) = bounded_received_datagram(&packet, length) else {
+                    continue;
+                };
+                if router_sender
+                    .send(ActorPacket {
+                        bytes,
+                        length,
+                        meta: PacketMeta {
+                            from: source,
+                            to: server_address,
+                        },
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let gate = Arc::new(ActorTestGate::default());
+        gate.prefill_target_dispatches();
+        let listener = loopback_small_receive_target_listener(&gate).await;
+        let actor = tokio::spawn(run_connection_actor(
+            connection,
+            expected,
+            receiver,
+            Arc::clone(&server_socket),
+            cancel_rx,
+            metrics_owner.target_open_sinks(),
+            Some(Arc::clone(&gate)),
+        ));
+
+        drive_client_to_h3(&mut client).await;
+        client.authenticate_direct_v3(&owner).await;
+        let stream_id = client
+            .send_classic_connect()
+            .expect("queue upload actor CONNECT");
+        client.send_pending().await;
+        let (mut target_peer, _) = timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .expect("upload actor target connect reaches listener")
+            .expect("accept upload actor target");
+        timeout(Duration::from_secs(1), gate.wait_for_target_completions(1))
+            .await
+            .expect("prefilled target socket reaches original slot");
+        timeout(Duration::from_secs(1), async {
+            loop {
+                client.receive_available().await;
+                let h3 = client.h3.as_mut().expect("upload actor H3 exists");
+                match h3.poll(&mut client.connection) {
+                    Ok((response_stream, quiche::h3::Event::Headers { list, more_frames })) => {
+                        assert_eq!(response_stream, stream_id);
+                        assert_eq!(list.len(), 1);
+                        assert_eq!(list[0].name(), b":status");
+                        assert_eq!(list[0].value(), b"200");
+                        assert!(more_frames);
+                        return;
+                    }
+                    Err(quiche::h3::Error::Done) => {}
+                    other => panic!("unexpected upload actor response: {other:?}"),
+                }
+                client.send_pending().await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("observe exact upload actor response");
+
+        gate.arm_send();
+        client
+            .connection
+            .send_ack_eliciting()
+            .expect("queue upload actor pause PING");
+        client.send_pending().await;
+        timeout(Duration::from_secs(1), gate.send_started.notified())
+            .await
+            .expect("pause actor flush before upload fairness phase");
+        gate.reset_target_upload_phase();
+        let inbound_baseline = gate.inbound_observed.load(Ordering::Acquire);
+        assert_eq!(
+            client
+                .h3
+                .as_mut()
+                .expect("upload actor H3 exists")
+                .send_body(&mut client.connection, stream_id, UPLOAD_MARKER, false),
+            Ok(UPLOAD_MARKER.len())
+        );
+        client.send_pending().await;
+        timeout(Duration::from_secs(1), async {
+            while sender.capacity() != 0 {
+                client
+                    .connection
+                    .send_ack_eliciting()
+                    .expect("queue upload actor fairness PING");
+                client.send_pending().await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fill bounded actor inbox behind real upload DATA");
+        assert_eq!(sender.capacity(), 0);
+        gate.arm_target_data_round_pause();
+        gate.release();
+
+        timeout(
+            Duration::from_secs(1),
+            gate.target_data_round_paused.notified(),
+        )
+        .await
+        .expect("pause actor after the recv-progress target-data round");
+        let (recv_mask, recv_inbound, write_mask, _, blocked_mask, _) =
+            gate.target_upload_phase_snapshot();
+        assert_eq!(recv_mask, 1);
+        assert_eq!(recv_inbound, inbound_baseline + 1);
+        assert_eq!(write_mask, 0);
+        assert_eq!(blocked_mask, 0);
+
+        let mut blocked_snapshot = None;
+        let saturation_count_before = gate.target_write_saturation_count();
+        for _ in 0..2 {
+            gate.request_target_write_saturation();
+            gate.arm_target_data_round_pause();
+            gate.release_target_data_round();
+            timeout(
+                Duration::from_secs(1),
+                gate.target_data_round_paused.notified(),
+            )
+            .await
+            .expect("pause actor after one just-in-time saturated target-data round");
+            let snapshot = gate.target_upload_phase_snapshot();
+            assert_eq!(snapshot.2, 0);
+            if snapshot.4 == 1 {
+                blocked_snapshot = Some(snapshot);
+                break;
+            }
+        }
+        let (_, _, write_mask, _, blocked_mask, blocked_inbound) =
+            blocked_snapshot.expect("two bounded inbound turns observe real target WouldBlock");
+        assert_eq!(write_mask, 0);
+        assert_eq!(blocked_mask, 1);
+        assert!(gate.target_write_saturation_count() > saturation_count_before);
+        assert!(blocked_inbound > recv_inbound);
+        assert!(
+            blocked_inbound <= recv_inbound + 2,
+            "the shared direction cursor reaches the real write probe within two bounded inbox turns"
+        );
+
+        let _ = drain_available_target_filler(&target_peer).await;
+        gate.reset_target_upload_phase();
+        let mut write_progress_snapshot = None;
+        for _ in 0..4 {
+            gate.arm_target_data_round_pause();
+            gate.release_target_data_round();
+            timeout(
+                Duration::from_secs(1),
+                gate.target_data_round_paused.notified(),
+            )
+            .await
+            .expect("pause actor after one recovery target-data round");
+            let snapshot = gate.target_upload_phase_snapshot();
+            if snapshot.2 == 1 {
+                write_progress_snapshot = Some(snapshot);
+                break;
+            }
+            if snapshot.4 == 1 {
+                let _ = drain_available_target_filler(&target_peer).await;
+            }
+        }
+        let (_, _, write_mask, _, _, _) =
+            write_progress_snapshot.expect("peer drain produces real target write progress");
+        assert_eq!(write_mask, 1);
+        gate.release_target_data_round();
+        let mut received = Vec::with_capacity(UPLOAD_MARKER.len());
+        timeout(Duration::from_secs(2), async {
+            let mut buffer = [0_u8; 16 * 1024];
+            loop {
+                let length = target_peer
+                    .read(&mut buffer)
+                    .await
+                    .expect("drain prefilled upload target");
+                assert_ne!(length, 0);
+                for byte in &buffer[..length] {
+                    if *byte == 0xa7 {
+                        assert!(received.is_empty());
+                    } else {
+                        received.push(*byte);
+                    }
+                }
+                if received.len() == UPLOAD_MARKER.len() {
+                    return;
+                }
+                assert!(received.len() < UPLOAD_MARKER.len());
+            }
+        })
+        .await
+        .expect("writable target resumes the exact buffered upload marker");
+        assert_eq!(received, UPLOAD_MARKER);
+        let (_, _, write_mask, _, _, _) = gate.target_upload_phase_snapshot();
+        assert_eq!(write_mask, 1);
+
+        client.receive_available().await;
+        gate.arm_send();
+        client
+            .connection
+            .send_ack_eliciting()
+            .expect("queue upload cancel-priority PING");
+        client.send_pending().await;
+        timeout(Duration::from_secs(1), gate.send_started.notified())
+            .await
+            .expect("pause upload actor before cancel-priority check");
+        timeout(Duration::from_secs(1), async {
+            while sender.capacity() != 0 {
+                client
+                    .connection
+                    .send_ack_eliciting()
+                    .expect("queue cancel-priority upload PING");
+                client.send_pending().await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("refill bounded actor inbox before upload cancellation");
+        cancel_tx
+            .send(true)
+            .expect("cancel upload actor while inbox remains ready");
+        gate.release();
+        router.abort();
+        assert!(router
+            .await
+            .expect_err("upload actor router is intentionally stopped")
+            .is_cancelled());
+        drop(sender);
+        let actor_result = timeout(Duration::from_secs(3), actor)
+            .await
+            .expect("cancelled upload actor terminates")
+            .expect("join cancelled upload actor");
+        assert_eq!(actor_result, Err(ActorError::Cancelled));
+        assert_eq!(
+            timeout(Duration::from_secs(1), target_peer.read_u8())
+                .await
+                .expect("cancel closes upload actor target")
+                .expect_err("cancelled upload target reports EOF")
                 .kind(),
             std::io::ErrorKind::UnexpectedEof
         );
@@ -3963,7 +4503,9 @@ fallback:
         activation_endpoint.fail_next_activation = true;
         let server_address = activation_endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0x61).await;
-        let send_initial = async move { client.send_pending().await };
+        let send_initial = async move {
+            client.send_pending().await;
+        };
         let (result, ()) = tokio::join!(activation_endpoint.run(), send_initial);
         assert_eq!(result, Err(EndpointError::ActorLifecycle));
         assert_eq!(activation_endpoint.registry.actor_count(), 0);
@@ -5229,8 +5771,52 @@ fallback:
         assert!(production_endpoint.contains("JoinSet<Result<(), ActorError>>"));
         assert_eq!(production_endpoint.matches("JoinSet<").count(), 1);
         assert!(production_endpoint.contains("FuturesUnordered<TargetDispatchFuture>"));
-        assert!(production_endpoint.contains("connection.wait_target_readable()"));
-        assert!(production_endpoint.contains("target_readable_slot = Some(slot_index)"));
+        assert!(production_endpoint.contains("connection.wait_target_io_ready()"));
+        assert!(production_endpoint.contains("target_io_signal = Some(signal)"));
+        let production_actor = production_endpoint
+            .split("async fn run_connection_actor(")
+            .nth(1)
+            .expect("production connection actor source")
+            .split("type TargetDispatchFuture")
+            .next()
+            .expect("production connection actor source ends before target future type");
+        assert_eq!(
+            production_actor.matches("drive_target_io_round(").count(),
+            1
+        );
+        let actor_wait = production_actor
+            .rfind("tokio::select! {")
+            .map(|start| &production_actor[start..])
+            .expect("production actor has one final biased wait");
+        let cancel_position = actor_wait
+            .find("changed = cancel.changed()")
+            .expect("actor cancel branch exists");
+        let timer_position = actor_wait
+            .find("tokio::time::sleep_until(actor_deadline)")
+            .expect("actor timer branch exists");
+        let inbox_position = actor_wait
+            .find("inbound = inbox.recv()")
+            .expect("actor inbox branch exists");
+        let readiness_position = actor_wait
+            .find("ready = connection.wait_target_io_ready()")
+            .expect("actor target readiness branch exists");
+        let immediate_position = actor_wait
+            .find("connection.has_immediate_target_io_work()")
+            .expect("actor RecvPending continuation branch exists");
+        assert!(cancel_position < timer_position);
+        assert!(timer_position < inbox_position);
+        assert!(inbox_position < readiness_position);
+        assert!(readiness_position < immediate_position);
+        let immediate_guard = production_runtime
+            .split("pub(super) fn has_immediate_target_io_work")
+            .nth(1)
+            .expect("runtime immediate-work predicate exists")
+            .split("pub(super) fn wait_target_io_ready")
+            .next()
+            .expect("runtime immediate-work predicate remains narrow");
+        assert!(immediate_guard.contains("UploadDispatchState::RecvPending"));
+        assert!(!immediate_guard.contains("TargetDispatchState::BodyPending"));
+        assert!(!immediate_guard.contains("TargetEofFinPending"));
         assert!(production_endpoint.contains("struct TargetDispatchCompletion"));
         assert!(production_endpoint.contains("opened_target: TcpStream"));
         assert!(production_endpoint.contains("private target dispatch completion"));
@@ -5268,6 +5854,10 @@ fallback:
         assert!(production_endpoint.contains("Err(TargetDispatchError::Unavailable)"));
         assert!(production_endpoint.contains("for _ in 0..MAX_OUTBOUND_PACKETS_PER_ROUND"));
         assert!(production_endpoint.contains("tokio::task::yield_now().await"));
+        let production_actor_surface = production_endpoint
+            .split("#[cfg(test)]\n#[derive(Default)]\nstruct ActorTestGate")
+            .next()
+            .expect("production endpoint ends before test-only actor gate");
         for forbidden in [
             ["lookup_", "host"].concat(),
             ["send_", "response"].concat(),
@@ -5277,7 +5867,7 @@ fallback:
             "into_split".to_string(),
             "try_write".to_string(),
         ] {
-            assert!(!production_endpoint.contains(&forbidden));
+            assert!(!production_actor_surface.contains(&forbidden));
         }
         let test_gate_source = production_endpoint
             .split("#[cfg(test)]\nimpl ActorTestGate")

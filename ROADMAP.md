@@ -17,65 +17,67 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2d1 — bounded target-to-client DATA and target-EOF response FIN
+### T027b-2d2 — bounded original-slot client-to-target DATA
 
-- **User result:** After the original slot's exact `:status = 200` response has
-  been accepted by the server's local quiche queue, bytes read from that slot's
-  one target `TcpStream` can be queued as raw DATA on the same response stream.
-  Target EOF queues FIN only after all earlier target bytes. Local queue
-  acceptance still does not prove client receipt; loopback receipt remains
-  local test evidence only.
-- **Scope:** Keep the fixed eight Classic CONNECT slots. Each slot may own one
-  fixed 16 KiB payload buffer. An accepted response with an empty buffer borrows
-  only its original target socket's readable wake; one cancel-safe `try_read`
-  either preserves zero progress, prepares at most 16 KiB, or records target
-  EOF. Before the biased actor wait, that same synchronous round uses an exact
-  readable slot when present or probes at most one cursor-selected accepted
-  response; `WouldBlock` returns to the normal wait without looping.
-  `h3.send_body` retries only the exact unsent suffix, treats partial success
-  precisely, and treats `Done` or `StreamBlocked` as zero progress. Empty-body
-  `fin=true` advances only on `Ok(0)`. One actor round performs at most four
-  target read or body-send operations and advances through a rotating slot
-  cursor, for at most 64 KiB of payload progress. The original slot remains
-  occupied and retains its socket after FIN acceptance.
-- **Acceptance:** Prove bytes written before and after response observation
-  arrive only after the exact 200 on the same stream; initial `WouldBlock`
-  preserves the socket and later readiness wakes without a polling sleep; a
-  payload larger than 16 KiB arrives byte-for-byte in multiple reads; a real
-  small QUIC window preserves and retries the exact suffix without another
-  target read; target EOF follows all bytes, while zero-byte EOF still produces
-  FIN; eight simultaneously readable slots rotate to progress without any
-  round exceeding four operations; and a real continuously ready actor inbox
-  permits one inbound turn before the synchronous target probe, while target
-  readiness cannot bypass cancel or timer priority. RESET, STOP_SENDING, target
-  failure, hard expiry, revocation, and cancellation fail the generation
-  closed, clear the fixed buffer, and release the socket. Authenticated client
-  DATA remains rejected without `recv_body`, and its marker never reaches the
-  target.
-  Preserve all T027b-2d0 response, T027b-2c4/2c5 ownership and fairness,
-  direct-v3 auth, EOF, flush, join, teardown, opener, privacy, and source-shape
-  gates.
-- **Out of scope:** No client-to-target DATA, target write, target write-half
-  shutdown, bidirectional relay, client half-close forwarding, trailer, new
-  stream, slot removal, reclaim or reuse, fallback or error response,
-  product-server startup caller, registry or metrics change, new task, saved
-  future, channel, collection, second socket owner, timer, scheduler, public
-  API, config, schema, wire or version change, dependency, manifest, lockfile,
-  vendor, core, client, SDK, CLI, `STATUS.md`, CI, remote, deployment, release,
-  real-network, credential, infrastructure, or system-network work. Production
-  Domain target opening remains temporarily fail-closed.
+- **User result:** Only after the original fixed slot's exact `:status = 200`
+  response is accepted by the server's local quiche queue, bounded request DATA
+  can be consumed through H3 and written byte-for-byte to that slot's one target
+  `TcpStream`. The T027b-2d1 target-to-client path remains active on the same H3
+  stream. Local H3 consumption and socket write acceptance do not prove that the
+  target application read the bytes.
+- **Scope:** Keep exactly eight slots. Each independently owns its existing
+  fixed 16 KiB download buffer and a new fixed 16 KiB upload buffer, for a
+  256 KiB fixed application-payload ceiling across all slots. A DATA event may
+  enter upload receive-pending only after local 200 acceptance. `h3.recv_body`
+  consumes at most 16 KiB per operation; a nonempty result becomes one exact
+  write-pending suffix, which `try_write` advances without another receive.
+  After the suffix completes, receive-pending continues draining that same DATA
+  event until `Done` rearms it. Read and write readiness borrow the original
+  unsplit socket with independent wakers. One rotating `(slot, direction)`
+  cursor shares at most four I/O/API operations and 64 KiB of operation progress
+  per actor round across both directions. An exact readiness signal goes first;
+  without one, at most one rotating target-socket probe is attempted.
+- **Acceptance:** Prove pre-200 DATA still closes the generation and never
+  reaches the target; post-200 DATA reaches the original target while a target
+  reply returns on the same stream; payloads larger than 16 KiB and multiple H3
+  chunks drain through `Done` without rearm deadlock; a real loopback target with
+  a small TCP send buffer reaches `WouldBlock`, preserves the exact unsent suffix
+  without another receive, then resumes on writable readiness; a blocked
+  download QUIC window does not block upload; request FIN recorded while the
+  target is blocked waits behind all DATA and does not shut down the target write
+  half; and eight bidirectionally ready slots rotate both directions within the
+  shared four-operation/64-KiB ceiling. RESET, target write failure, hard expiry,
+  revocation, and cancellation clear both fixed buffers, release the socket, and
+  return fixed privacy-safe errors; post-reset bytes never leak. Under sustained
+  real QUIC inbox traffic, one inbound turn is followed by a bounded target-write
+  probe that distinguishes a `WouldBlock` attempt from progress, while cancel
+  and timer keep biased priority. Preserve every T027b-2d1, T027b-2d0,
+  T027b-2c4/2c5, direct-v3 auth, EOF, flush, join, teardown, opener, privacy, and
+  source-shape gate.
+- **Out of scope:** Request FIN to target write-half shutdown is the separate
+  T027b-2d3 slice. No slot removal, reclaim or reuse, per-flow graceful
+  completion, trailer, new stream, fallback or error response, Domain DNS,
+  product caller or runtime-readiness claim, registry or metrics change, new
+  task, saved future, channel, collection, socket split or second owner, timer,
+  scheduler, public API, config, schema, wire or version change, dependency,
+  manifest, lockfile, vendor, core, client, SDK, CLI, `STATUS.md`, CI, remote,
+  deployment, release, real-network, credential, infrastructure, or
+  system-network work.
 - **Stop conditions:** Stop before any file outside `ROADMAP.md`,
   `crates/maverick-server/src/quiche_runtime.rs`, and
-  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if the slot's
-  socket must be moved, split, shared, or duplicated; if readiness needs a saved
-  future, task, channel, collection, second owner, polling sleep, unsafe code,
-  or new scheduler; if real partial/blocked behavior cannot be tested; or if a
-  dependency, public surface, forbidden file, or `STATUS.md` change is needed.
+  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if the original
+  `TcpStream` must move, split, clone, share, or gain a second owner; if fixed
+  eight-slot independent buffers or the shared four-operation/64-KiB round
+  cannot be kept; if readiness requires a saved future, task, channel,
+  collection, general scheduler, timer, unsafe code, or polling sleep; if a real
+  stable target `WouldBlock` cannot be produced; if current quiche DATA rearm
+  semantics cannot be driven safely and boundedly; or if a dependency, public
+  surface, fourth file, or `STATUS.md` change is needed.
 
 This remains repository-local, private, feature-gated, and temporarily limited
-to IP-literal production target opening. It is one bounded target-to-client
-foundation slice, not a complete tunnel, client-to-target path, product runtime,
-readiness result, release authorization, or product result.
+to IP-literal production target opening. It is a local bidirectional foundation
+slice, not a product runtime, readiness result, real-user result, release
+authorization, or complete tunnel.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

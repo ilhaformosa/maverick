@@ -39,11 +39,21 @@ const MAX_BIDI_STREAMS: u64 = 8;
 const MAX_PENDING_CLASSIC_CONNECTS: usize = MAX_BIDI_STREAMS as usize;
 pub(super) const MAX_TARGET_DISPATCH_FUTURES: usize = MAX_PENDING_CLASSIC_CONNECTS;
 const TARGET_TO_CLIENT_BUFFER_BYTES: usize = 16 * 1024;
-const MAX_TARGET_TO_CLIENT_IO_OPERATIONS_PER_ROUND: usize = 4;
+const CLIENT_TO_TARGET_BUFFER_BYTES: usize = 16 * 1024;
+const TARGET_IO_DIRECTIONS: usize = 2;
+const TARGET_IO_CURSOR_LENGTH: usize = MAX_PENDING_CLASSIC_CONNECTS * TARGET_IO_DIRECTIONS;
+const MAX_TARGET_IO_OPERATIONS_PER_ROUND: usize = 4;
+const TARGET_IO_MAX_OPERATION_BYTES: usize = 16 * 1024;
+#[cfg(test)]
+const MAX_TARGET_TO_CLIENT_IO_OPERATIONS_PER_ROUND: usize = MAX_TARGET_IO_OPERATIONS_PER_ROUND;
 const _: () = assert!(TARGET_TO_CLIENT_BUFFER_BYTES * MAX_PENDING_CLASSIC_CONNECTS <= 128 * 1024);
+const _: () = assert!(CLIENT_TO_TARGET_BUFFER_BYTES * MAX_PENDING_CLASSIC_CONNECTS <= 128 * 1024);
 const _: () = assert!(
-    TARGET_TO_CLIENT_BUFFER_BYTES * MAX_TARGET_TO_CLIENT_IO_OPERATIONS_PER_ROUND <= 64 * 1024
+    (TARGET_TO_CLIENT_BUFFER_BYTES + CLIENT_TO_TARGET_BUFFER_BYTES) * MAX_PENDING_CLASSIC_CONNECTS
+        <= 256 * 1024
 );
+const _: () =
+    assert!(TARGET_IO_MAX_OPERATION_BYTES * MAX_TARGET_IO_OPERATIONS_PER_ROUND <= 64 * 1024);
 const MAX_UNI_STREAMS: u64 = 8;
 const MAX_FIELD_SECTION_BYTES: u64 = 16_384;
 const QPACK_MAX_TABLE_CAPACITY: u64 = 0;
@@ -206,8 +216,12 @@ struct PendingClassicConnect {
     dispatch_state: TargetDispatchState,
     opened_target: Option<TcpStream>,
     target_payload: Box<[u8; TARGET_TO_CLIENT_BUFFER_BYTES]>,
+    upload_state: UploadDispatchState,
+    upload_payload: Box<[u8; CLIENT_TO_TARGET_BUFFER_BYTES]>,
     #[cfg(test)]
     target_read_failure_requested: bool,
+    #[cfg(test)]
+    target_write_failure_requested: bool,
 }
 
 impl fmt::Debug for PendingClassicConnect {
@@ -217,14 +231,15 @@ impl fmt::Debug for PendingClassicConnect {
 }
 
 impl PendingClassicConnect {
-    fn clear_payload(&mut self) {
+    fn clear_payloads(&mut self) {
         self.target_payload.fill(0);
+        self.upload_payload.fill(0);
     }
 }
 
 impl Drop for PendingClassicConnect {
     fn drop(&mut self) {
-        self.clear_payload();
+        self.clear_payloads();
     }
 }
 
@@ -250,12 +265,133 @@ impl TargetDispatchState {
                 | Self::ResponseFinAccepted
         )
     }
+
+    fn response_was_accepted(self) -> bool {
+        matches!(
+            self,
+            Self::ResponseAccepted
+                | Self::BodyPending { .. }
+                | Self::TargetEofFinPending
+                | Self::ResponseFinAccepted
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UploadDispatchState {
+    Idle,
+    RecvPending,
+    WritePending { offset: usize, length: usize },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TargetIoDirection {
+    TargetToClient,
+    ClientToTarget,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TargetIoSignal {
+    slot_index: usize,
+    direction: TargetIoDirection,
+}
+
+impl TargetIoSignal {
+    fn position(self) -> usize {
+        self.slot_index * TARGET_IO_DIRECTIONS
+            + match self.direction {
+                TargetIoDirection::TargetToClient => 0,
+                TargetIoDirection::ClientToTarget => 1,
+            }
+    }
+
+    fn from_position(position: usize) -> Self {
+        Self {
+            slot_index: position / TARGET_IO_DIRECTIONS,
+            direction: if position.is_multiple_of(TARGET_IO_DIRECTIONS) {
+                TargetIoDirection::TargetToClient
+            } else {
+                TargetIoDirection::ClientToTarget
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct TargetIoRound {
+    operations: usize,
+    #[cfg(test)]
+    progress_operations: usize,
+    operation_progress_bytes: usize,
+    #[cfg(test)]
+    upload_recv_progress_mask: usize,
+    #[cfg(test)]
+    target_write_progress_mask: usize,
+    #[cfg(test)]
+    target_write_blocked_mask: usize,
+}
+
+impl TargetIoRound {
+    pub(super) const fn operations(self) -> usize {
+        self.operations
+    }
+
+    #[cfg(test)]
+    pub(super) const fn progress_operations(self) -> usize {
+        self.progress_operations
+    }
+
+    #[cfg(test)]
+    const fn operation_progress_bytes(self) -> usize {
+        self.operation_progress_bytes
+    }
+
+    #[cfg(test)]
+    pub(super) const fn upload_recv_progress_mask(self) -> usize {
+        self.upload_recv_progress_mask
+    }
+
+    #[cfg(test)]
+    pub(super) const fn target_write_progress_mask(self) -> usize {
+        self.target_write_progress_mask
+    }
+
+    #[cfg(test)]
+    pub(super) const fn target_write_blocked_mask(self) -> usize {
+        self.target_write_blocked_mask
+    }
+
+    #[cfg(test)]
+    fn observe_operation(
+        &mut self,
+        signal: TargetIoSignal,
+        upload_before: Option<UploadDispatchState>,
+        outcome: TargetIoOutcome,
+    ) {
+        if signal.direction != TargetIoDirection::ClientToTarget {
+            return;
+        }
+        let bit = 1_usize << signal.slot_index;
+        match (upload_before, outcome) {
+            (Some(UploadDispatchState::RecvPending), TargetIoOutcome::Progress { .. }) => {
+                self.upload_recv_progress_mask |= bit;
+            }
+            (Some(UploadDispatchState::WritePending { .. }), TargetIoOutcome::Progress { .. }) => {
+                self.target_write_progress_mask |= bit;
+            }
+            (Some(UploadDispatchState::WritePending { .. }), TargetIoOutcome::Blocked) => {
+                self.target_write_blocked_mask |= bit;
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum TargetIoOutcome {
-    Progress,
+    Progress { bytes: usize },
     Blocked,
+    Quiescent,
 }
 
 pub(super) struct TargetOpenDispatchToken {
@@ -395,7 +531,7 @@ impl PendingClassicConnectSlots {
     fn clear(&mut self) {
         for slot in &mut self.slots {
             if let Some(pending) = slot.as_mut() {
-                pending.clear_payload();
+                pending.clear_payloads();
             }
             *slot = None;
         }
@@ -746,13 +882,19 @@ pub(super) struct ServerConnection {
     generation: ServerSourceConnectionId,
     auth: ServerAuthMachine,
     pending_connects: PendingClassicConnectSlots,
-    target_to_client_cursor: usize,
+    target_io_cursor: usize,
     #[cfg(test)]
     auth_body_read_calls: usize,
     #[cfg(test)]
     target_read_calls: usize,
     #[cfg(test)]
     target_send_body_calls: usize,
+    #[cfg(test)]
+    upload_recv_body_calls: usize,
+    #[cfg(test)]
+    upload_data_events: usize,
+    #[cfg(test)]
+    target_write_calls: usize,
     pre_auth_foundation: PreAuthFoundationState,
     local_address: SocketAddr,
     peer_address: SocketAddr,
@@ -811,13 +953,19 @@ impl ServerConnection {
             generation: source_connection_id,
             auth: ServerAuthMachine::fresh(),
             pending_connects: PendingClassicConnectSlots::empty(),
-            target_to_client_cursor: 0,
+            target_io_cursor: 0,
             #[cfg(test)]
             auth_body_read_calls: 0,
             #[cfg(test)]
             target_read_calls: 0,
             #[cfg(test)]
             target_send_body_calls: 0,
+            #[cfg(test)]
+            upload_recv_body_calls: 0,
+            #[cfg(test)]
+            upload_data_events: 0,
+            #[cfg(test)]
+            target_write_calls: 0,
             pre_auth_foundation: PreAuthFoundationState::AwaitingHandshake,
             local_address: meta.to,
             peer_address: meta.from,
@@ -1088,7 +1236,14 @@ impl ServerConnection {
             }
             quiche::h3::Event::Data => {
                 if self.auth.state == ServerAuthState::Authenticated {
-                    return self.reject_with(RuntimeError::ClassicConnectAdmissionRejected);
+                    #[cfg(test)]
+                    {
+                        self.upload_data_events += 1;
+                    }
+                    if let Err(error) = self.begin_client_to_target_data(stream_id) {
+                        return self.reject_with(error);
+                    }
+                    return Ok(());
                 }
                 self.receive_auth_body(h3, stream_id)
             }
@@ -1114,6 +1269,28 @@ impl ServerConnection {
                 self.reject_with(RuntimeError::PreAuthApplicationActivity)
             }
         }
+    }
+
+    fn begin_client_to_target_data(&mut self, stream_id: u64) -> Result<(), RuntimeError> {
+        let mut matches = self
+            .pending_connects
+            .slots
+            .iter_mut()
+            .flatten()
+            .filter(|pending| pending.stream_id == stream_id);
+        let pending = matches
+            .next()
+            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        if matches.next().is_some()
+            || !pending.dispatch_state.response_was_accepted()
+            || pending.opened_target.is_none()
+            || pending.upload_state != UploadDispatchState::Idle
+        {
+            return Err(RuntimeError::ClassicConnectDataRejected);
+        }
+        pending.upload_payload.fill(0);
+        pending.upload_state = UploadDispatchState::RecvPending;
+        Ok(())
     }
 
     fn receive_auth_body(
@@ -1208,8 +1385,12 @@ impl ServerConnection {
             dispatch_state: TargetDispatchState::Admitted,
             opened_target: None,
             target_payload: Box::new([0; TARGET_TO_CLIENT_BUFFER_BYTES]),
+            upload_state: UploadDispatchState::Idle,
+            upload_payload: Box::new([0; CLIENT_TO_TARGET_BUFFER_BYTES]),
             #[cfg(test)]
             target_read_failure_requested: false,
+            #[cfg(test)]
+            target_write_failure_requested: false,
         })
     }
 
@@ -1357,7 +1538,8 @@ impl ServerConnection {
                     {
                         return self.reject_with(RuntimeError::ClassicConnectResponseRejected);
                     }
-                    pending.clear_payload();
+                    pending.clear_payloads();
+                    pending.upload_state = UploadDispatchState::Idle;
                     pending.dispatch_state = TargetDispatchState::ResponseAccepted;
                 }
                 Err(quiche::h3::Error::StreamBlocked) => continue,
@@ -1367,32 +1549,56 @@ impl ServerConnection {
         Ok(())
     }
 
-    pub(super) fn has_target_read_waiter(&self) -> bool {
+    pub(super) fn has_target_io_waiter(&self) -> bool {
+        self.pending_connects.slots.iter().flatten().any(|pending| {
+            pending.dispatch_state == TargetDispatchState::ResponseAccepted
+                || matches!(
+                    pending.upload_state,
+                    UploadDispatchState::WritePending { .. }
+                )
+        })
+    }
+
+    pub(super) fn has_immediate_target_io_work(&self) -> bool {
         self.pending_connects
             .slots
             .iter()
             .flatten()
-            .any(|pending| pending.dispatch_state == TargetDispatchState::ResponseAccepted)
+            .any(|pending| pending.upload_state == UploadDispatchState::RecvPending)
     }
 
-    pub(super) fn wait_target_readable(
+    pub(super) fn wait_target_io_ready(
         &self,
-    ) -> impl std::future::Future<Output = Result<usize, RuntimeError>> + '_ {
-        let start = self.target_to_client_cursor;
+    ) -> impl std::future::Future<Output = Result<TargetIoSignal, RuntimeError>> + '_ {
+        let start = self.target_io_cursor;
         std::future::poll_fn(move |context| {
-            for offset in 0..MAX_PENDING_CLASSIC_CONNECTS {
-                let slot_index = (start + offset) % MAX_PENDING_CLASSIC_CONNECTS;
-                let Some(pending) = self.pending_connects.slots[slot_index].as_ref() else {
+            for offset in 0..TARGET_IO_CURSOR_LENGTH {
+                let position = (start + offset) % TARGET_IO_CURSOR_LENGTH;
+                let signal = TargetIoSignal::from_position(position);
+                let Some(pending) = self.pending_connects.slots[signal.slot_index].as_ref() else {
                     continue;
                 };
-                if pending.dispatch_state != TargetDispatchState::ResponseAccepted {
+                let eligible = match signal.direction {
+                    TargetIoDirection::TargetToClient => {
+                        pending.dispatch_state == TargetDispatchState::ResponseAccepted
+                    }
+                    TargetIoDirection::ClientToTarget => matches!(
+                        pending.upload_state,
+                        UploadDispatchState::WritePending { .. }
+                    ),
+                };
+                if !eligible {
                     continue;
                 }
                 let Some(target) = pending.opened_target.as_ref() else {
                     return Poll::Ready(Err(RuntimeError::ClassicConnectDataRejected));
                 };
-                match target.poll_read_ready(context) {
-                    Poll::Ready(Ok(())) => return Poll::Ready(Ok(slot_index)),
+                let readiness = match signal.direction {
+                    TargetIoDirection::TargetToClient => target.poll_read_ready(context),
+                    TargetIoDirection::ClientToTarget => target.poll_write_ready(context),
+                };
+                match readiness {
+                    Poll::Ready(Ok(())) => return Poll::Ready(Ok(signal)),
                     Poll::Ready(Err(_)) => {
                         return Poll::Ready(Err(RuntimeError::ClassicConnectDataRejected));
                     }
@@ -1403,15 +1609,37 @@ impl ServerConnection {
         })
     }
 
-    pub(super) fn drive_target_to_client_round(
+    #[cfg(test)]
+    fn has_target_read_waiter(&self) -> bool {
+        self.pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .any(|pending| pending.dispatch_state == TargetDispatchState::ResponseAccepted)
+    }
+
+    #[cfg(test)]
+    fn wait_target_readable(
+        &self,
+    ) -> impl std::future::Future<Output = Result<usize, RuntimeError>> + '_ {
+        futures::FutureExt::map(self.wait_target_io_ready(), |result| {
+            let signal = result?;
+            if signal.direction != TargetIoDirection::TargetToClient {
+                return Err(RuntimeError::ClassicConnectDataRejected);
+            }
+            Ok(signal.slot_index)
+        })
+    }
+
+    pub(super) fn drive_target_io_round(
         &mut self,
-        readable_slot: Option<usize>,
-    ) -> Result<usize, RuntimeError> {
+        ready_signal: Option<TargetIoSignal>,
+    ) -> Result<TargetIoRound, RuntimeError> {
         self.enforce_authenticated_lifecycle_at(Instant::now())?;
         if self.lifecycle() != ConnectionLifecycle::Active {
-            return Ok(0);
+            return Ok(TargetIoRound::default());
         }
-        if readable_slot.is_some_and(|slot| slot >= MAX_PENDING_CLASSIC_CONNECTS) {
+        if ready_signal.is_some_and(|signal| signal.position() >= TARGET_IO_CURSOR_LENGTH) {
             return self.reject_with(RuntimeError::ClassicConnectDataRejected);
         }
         if !self
@@ -1421,13 +1649,13 @@ impl ServerConnection {
             .flatten()
             .any(|pending| pending.dispatch_state.owns_opened_target())
         {
-            return Ok(0);
+            return Ok(TargetIoRound::default());
         }
 
         let Some(mut h3) = self.h3.take() else {
             return self.reject_with(RuntimeError::ClassicConnectDataRejected);
         };
-        let result = self.drive_target_to_client_round_inner(&mut h3, readable_slot);
+        let result = self.drive_target_io_round_inner(&mut h3, ready_signal);
         self.h3 = Some(h3);
         if let Err(error) = result {
             if self.lifecycle() == ConnectionLifecycle::Active {
@@ -1438,89 +1666,191 @@ impl ServerConnection {
         result
     }
 
-    fn drive_target_to_client_round_inner(
+    #[cfg(test)]
+    fn drive_target_to_client_round(
         &mut self,
-        h3: &mut quiche::h3::Connection,
         readable_slot: Option<usize>,
     ) -> Result<usize, RuntimeError> {
+        let signal = readable_slot.map(|slot_index| TargetIoSignal {
+            slot_index,
+            direction: TargetIoDirection::TargetToClient,
+        });
+        self.drive_target_io_round(signal)
+            .map(TargetIoRound::operations)
+    }
+
+    fn drive_target_io_round_inner(
+        &mut self,
+        h3: &mut quiche::h3::Connection,
+        ready_signal: Option<TargetIoSignal>,
+    ) -> Result<TargetIoRound, RuntimeError> {
         let now = Instant::now();
         for slot_index in 0..MAX_PENDING_CLASSIC_CONNECTS {
             let Some(pending) = self.pending_connects.slots[slot_index].as_ref() else {
                 continue;
             };
             if pending.dispatch_state.owns_opened_target() {
-                self.validate_target_to_client_slot(slot_index, now)?;
+                self.validate_target_io_slot(slot_index, now)?;
             }
         }
-        if let Some(slot_index) = readable_slot {
-            let pending = self.pending_connects.slots[slot_index]
+        if let Some(signal) = ready_signal {
+            let pending = self.pending_connects.slots[signal.slot_index]
                 .as_ref()
                 .ok_or(RuntimeError::ClassicConnectDataRejected)?;
-            if pending.dispatch_state != TargetDispatchState::ResponseAccepted {
+            let valid = match signal.direction {
+                TargetIoDirection::TargetToClient => {
+                    pending.dispatch_state == TargetDispatchState::ResponseAccepted
+                }
+                TargetIoDirection::ClientToTarget => matches!(
+                    pending.upload_state,
+                    UploadDispatchState::WritePending { .. }
+                ),
+            };
+            if !valid {
                 return Err(RuntimeError::ClassicConnectDataRejected);
             }
         }
 
-        let mut operations = 0_usize;
-        let probe_slot = readable_slot.or_else(|| {
-            (0..MAX_PENDING_CLASSIC_CONNECTS)
-                .map(|offset| {
-                    (self.target_to_client_cursor + offset) % MAX_PENDING_CLASSIC_CONNECTS
-                })
-                .find(|slot_index| {
-                    self.pending_connects.slots[*slot_index]
-                        .as_ref()
-                        .is_some_and(|pending| {
-                            pending.dispatch_state == TargetDispatchState::ResponseAccepted
-                        })
-                })
-        });
+        let mut round = TargetIoRound::default();
         let mut scanned_without_operation = 0_usize;
-        let mut blocked_slots = 0_u8;
-        if let Some(slot_index) = probe_slot {
-            self.target_to_client_cursor = (slot_index + 1) % MAX_PENDING_CLASSIC_CONNECTS;
-            let outcome = self.perform_target_to_client_operation(h3, slot_index)?;
-            operations += 1;
-            if outcome == TargetIoOutcome::Blocked {
-                blocked_slots |= 1_u8 << slot_index;
-            }
-        }
-        while operations < MAX_TARGET_TO_CLIENT_IO_OPERATIONS_PER_ROUND
-            && scanned_without_operation < MAX_PENDING_CLASSIC_CONNECTS
-        {
-            let slot_index = self.target_to_client_cursor;
-            self.target_to_client_cursor =
-                (self.target_to_client_cursor + 1) % MAX_PENDING_CLASSIC_CONNECTS;
-            let Some(state) = self.pending_connects.slots[slot_index]
+        let mut stopped_positions = 0_u16;
+        if let Some(signal) = ready_signal {
+            self.target_io_cursor = (signal.position() + 1) % TARGET_IO_CURSOR_LENGTH;
+            #[cfg(test)]
+            let upload_before = self.pending_connects.slots[signal.slot_index]
                 .as_ref()
-                .map(|pending| pending.dispatch_state)
-            else {
+                .map(|pending| pending.upload_state);
+            let outcome = self.perform_target_io_operation(h3, signal)?;
+            Self::record_target_io_outcome(&mut round, outcome)?;
+            #[cfg(test)]
+            round.observe_operation(signal, upload_before, outcome);
+            if matches!(
+                outcome,
+                TargetIoOutcome::Blocked | TargetIoOutcome::Quiescent
+            ) {
+                stopped_positions |= 1_u16 << signal.position();
+            }
+        } else {
+            let probe = (0..TARGET_IO_CURSOR_LENGTH)
+                .map(|offset| {
+                    TargetIoSignal::from_position(
+                        (self.target_io_cursor + offset) % TARGET_IO_CURSOR_LENGTH,
+                    )
+                })
+                .find(|signal| self.target_io_operation_eligibility(*signal) == (true, true));
+            if let Some(signal) = probe {
+                self.target_io_cursor = (signal.position() + 1) % TARGET_IO_CURSOR_LENGTH;
+                #[cfg(test)]
+                let upload_before = self.pending_connects.slots[signal.slot_index]
+                    .as_ref()
+                    .map(|pending| pending.upload_state);
+                let outcome = self.perform_target_io_operation(h3, signal)?;
+                Self::record_target_io_outcome(&mut round, outcome)?;
+                #[cfg(test)]
+                round.observe_operation(signal, upload_before, outcome);
+                if matches!(
+                    outcome,
+                    TargetIoOutcome::Blocked | TargetIoOutcome::Quiescent
+                ) {
+                    stopped_positions |= 1_u16 << signal.position();
+                }
+            }
+            // A no-signal round probes only the one direction that was already
+            // socket-ready-eligible when the round began. State produced by a
+            // later H3 API operation waits for the normal readiness path or the
+            // next bounded actor turn.
+        }
+        while round.operations < MAX_TARGET_IO_OPERATIONS_PER_ROUND
+            && scanned_without_operation < TARGET_IO_CURSOR_LENGTH
+        {
+            let position = self.target_io_cursor;
+            self.target_io_cursor = (self.target_io_cursor + 1) % TARGET_IO_CURSOR_LENGTH;
+            if stopped_positions & (1_u16 << position) != 0 {
                 scanned_without_operation += 1;
                 continue;
-            };
-            let blocked = blocked_slots & (1_u8 << slot_index) != 0;
-            let eligible = !blocked
-                && matches!(
-                    state,
-                    TargetDispatchState::BodyPending { .. }
-                        | TargetDispatchState::TargetEofFinPending
-                );
+            }
+            let signal = TargetIoSignal::from_position(position);
+            let (eligible, socket_probe) = self.target_io_operation_eligibility(signal);
+            let eligible = eligible && !socket_probe;
             if !eligible {
                 scanned_without_operation += 1;
                 continue;
             }
 
             scanned_without_operation = 0;
-            let outcome = self.perform_target_to_client_operation(h3, slot_index)?;
-            operations += 1;
-            if outcome == TargetIoOutcome::Blocked {
-                blocked_slots |= 1_u8 << slot_index;
+            #[cfg(test)]
+            let upload_before = self.pending_connects.slots[signal.slot_index]
+                .as_ref()
+                .map(|pending| pending.upload_state);
+            let outcome = self.perform_target_io_operation(h3, signal)?;
+            Self::record_target_io_outcome(&mut round, outcome)?;
+            #[cfg(test)]
+            round.observe_operation(signal, upload_before, outcome);
+            if matches!(
+                outcome,
+                TargetIoOutcome::Blocked | TargetIoOutcome::Quiescent
+            ) {
+                stopped_positions |= 1_u16 << position;
             }
         }
-        Ok(operations)
+        if round.operations > MAX_TARGET_IO_OPERATIONS_PER_ROUND
+            || round.operation_progress_bytes > 64 * 1024
+        {
+            return Err(RuntimeError::ClassicConnectDataRejected);
+        }
+        Ok(round)
     }
 
-    fn validate_target_to_client_slot(
+    fn target_io_operation_eligibility(&self, signal: TargetIoSignal) -> (bool, bool) {
+        let Some(pending) = self.pending_connects.slots[signal.slot_index].as_ref() else {
+            return (false, false);
+        };
+        match signal.direction {
+            TargetIoDirection::TargetToClient => match pending.dispatch_state {
+                TargetDispatchState::ResponseAccepted => (true, true),
+                TargetDispatchState::BodyPending { .. }
+                | TargetDispatchState::TargetEofFinPending => (true, false),
+                TargetDispatchState::Admitted
+                | TargetDispatchState::InFlight
+                | TargetDispatchState::ResponsePending
+                | TargetDispatchState::ResponseFinAccepted => (false, false),
+            },
+            TargetIoDirection::ClientToTarget => match pending.upload_state {
+                UploadDispatchState::RecvPending => (true, false),
+                UploadDispatchState::WritePending { .. } => (true, true),
+                UploadDispatchState::Idle => (false, false),
+            },
+        }
+    }
+
+    fn record_target_io_outcome(
+        round: &mut TargetIoRound,
+        outcome: TargetIoOutcome,
+    ) -> Result<(), RuntimeError> {
+        round.operations = round
+            .operations
+            .checked_add(1)
+            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        if let TargetIoOutcome::Progress { bytes } = outcome {
+            if bytes > TARGET_IO_MAX_OPERATION_BYTES {
+                return Err(RuntimeError::ClassicConnectDataRejected);
+            }
+            #[cfg(test)]
+            {
+                round.progress_operations = round
+                    .progress_operations
+                    .checked_add(1)
+                    .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+            }
+            round.operation_progress_bytes = round
+                .operation_progress_bytes
+                .checked_add(bytes)
+                .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        }
+        Ok(())
+    }
+
+    fn validate_target_io_slot(
         &mut self,
         slot_index: usize,
         now: Instant,
@@ -1544,11 +1874,20 @@ impl ServerConnection {
             | TargetDispatchState::ResponseFinAccepted => true,
             TargetDispatchState::Admitted | TargetDispatchState::InFlight => false,
         };
+        let upload_state_is_valid = match pending.upload_state {
+            UploadDispatchState::Idle | UploadDispatchState::RecvPending => true,
+            UploadDispatchState::WritePending { offset, length } => {
+                offset < length && length <= CLIENT_TO_TARGET_BUFFER_BYTES
+            }
+        };
         if pending.generation.as_bytes() != self.generation.as_bytes()
             || pending.max_frame_size != capability.max_frame_size
             || pending.target.is_some()
             || pending.opened_target.is_none()
             || !payload_state_is_valid
+            || !upload_state_is_valid
+            || (pending.upload_state != UploadDispatchState::Idle
+                && !pending.dispatch_state.response_was_accepted())
             || self
                 .pending_connects
                 .slots
@@ -1563,6 +1902,21 @@ impl ServerConnection {
             return Err(RuntimeError::ClassicConnectDataRejected);
         }
         Ok(())
+    }
+
+    fn perform_target_io_operation(
+        &mut self,
+        h3: &mut quiche::h3::Connection,
+        signal: TargetIoSignal,
+    ) -> Result<TargetIoOutcome, RuntimeError> {
+        match signal.direction {
+            TargetIoDirection::TargetToClient => {
+                self.perform_target_to_client_operation(h3, signal.slot_index)
+            }
+            TargetIoDirection::ClientToTarget => {
+                self.perform_client_to_target_operation(h3, signal.slot_index)
+            }
+        }
     }
 
     fn perform_target_to_client_operation(
@@ -1595,14 +1949,14 @@ impl ServerConnection {
                     .ok_or(RuntimeError::ClassicConnectDataRejected)?;
                 match target.try_read(&mut pending.target_payload[..]) {
                     Ok(0) => {
-                        pending.clear_payload();
+                        pending.target_payload.fill(0);
                         pending.dispatch_state = TargetDispatchState::TargetEofFinPending;
-                        Ok(TargetIoOutcome::Progress)
+                        Ok(TargetIoOutcome::Progress { bytes: 0 })
                     }
                     Ok(length) if length <= TARGET_TO_CLIENT_BUFFER_BYTES => {
                         pending.dispatch_state =
                             TargetDispatchState::BodyPending { offset: 0, length };
-                        Ok(TargetIoOutcome::Progress)
+                        Ok(TargetIoOutcome::Progress { bytes: length })
                     }
                     Ok(_) => Err(RuntimeError::ClassicConnectDataRejected),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1644,7 +1998,7 @@ impl ServerConnection {
                                 length,
                             };
                         }
-                        Ok(TargetIoOutcome::Progress)
+                        Ok(TargetIoOutcome::Progress { bytes: written })
                     }
                     Ok(_) => Err(RuntimeError::ClassicConnectDataRejected),
                     Err(quiche::h3::Error::Done | quiche::h3::Error::StreamBlocked) => {
@@ -1663,9 +2017,9 @@ impl ServerConnection {
                     .ok_or(RuntimeError::ClassicConnectDataRejected)?;
                 match h3.send_body(&mut self.transport, pending.stream_id, &[], true) {
                     Ok(0) => {
-                        pending.clear_payload();
+                        pending.target_payload.fill(0);
                         pending.dispatch_state = TargetDispatchState::ResponseFinAccepted;
-                        Ok(TargetIoOutcome::Progress)
+                        Ok(TargetIoOutcome::Progress { bytes: 0 })
                     }
                     Ok(_) => Err(RuntimeError::ClassicConnectDataRejected),
                     Err(quiche::h3::Error::Done | quiche::h3::Error::StreamBlocked) => {
@@ -1680,6 +2034,97 @@ impl ServerConnection {
             | TargetDispatchState::ResponseFinAccepted => {
                 Err(RuntimeError::ClassicConnectDataRejected)
             }
+        }
+    }
+
+    fn perform_client_to_target_operation(
+        &mut self,
+        h3: &mut quiche::h3::Connection,
+        slot_index: usize,
+    ) -> Result<TargetIoOutcome, RuntimeError> {
+        let state = self.pending_connects.slots[slot_index]
+            .as_ref()
+            .map(|pending| pending.upload_state)
+            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        match state {
+            UploadDispatchState::RecvPending => {
+                #[cfg(test)]
+                {
+                    self.upload_recv_body_calls += 1;
+                }
+                let pending = self.pending_connects.slots[slot_index]
+                    .as_mut()
+                    .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+                if pending.upload_payload.iter().any(|byte| *byte != 0) {
+                    return Err(RuntimeError::ClassicConnectDataRejected);
+                }
+                match h3.recv_body(
+                    &mut self.transport,
+                    pending.stream_id,
+                    &mut pending.upload_payload[..],
+                ) {
+                    Ok(0) => Err(RuntimeError::ClassicConnectDataRejected),
+                    Ok(length) if length <= CLIENT_TO_TARGET_BUFFER_BYTES => {
+                        pending.upload_state =
+                            UploadDispatchState::WritePending { offset: 0, length };
+                        Ok(TargetIoOutcome::Progress { bytes: length })
+                    }
+                    Ok(_) => Err(RuntimeError::ClassicConnectDataRejected),
+                    Err(quiche::h3::Error::Done) => {
+                        pending.upload_payload.fill(0);
+                        pending.upload_state = UploadDispatchState::Idle;
+                        Ok(TargetIoOutcome::Quiescent)
+                    }
+                    Err(_) => Err(RuntimeError::ClassicConnectDataRejected),
+                }
+            }
+            UploadDispatchState::WritePending { offset, length } => {
+                #[cfg(test)]
+                {
+                    self.target_write_calls += 1;
+                    if self.pending_connects.slots[slot_index]
+                        .as_ref()
+                        .is_some_and(|pending| pending.target_write_failure_requested)
+                    {
+                        return Err(RuntimeError::ClassicConnectDataRejected);
+                    }
+                }
+                let pending = self.pending_connects.slots[slot_index]
+                    .as_mut()
+                    .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+                let remaining = length
+                    .checked_sub(offset)
+                    .filter(|remaining| *remaining != 0)
+                    .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+                let target = pending
+                    .opened_target
+                    .as_ref()
+                    .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+                match target.try_write(&pending.upload_payload[offset..length]) {
+                    Ok(written) if written != 0 && written <= remaining => {
+                        let next_offset = offset
+                            .checked_add(written)
+                            .filter(|next_offset| *next_offset <= length)
+                            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+                        if next_offset == length {
+                            pending.upload_payload[..length].fill(0);
+                            pending.upload_state = UploadDispatchState::RecvPending;
+                        } else {
+                            pending.upload_state = UploadDispatchState::WritePending {
+                                offset: next_offset,
+                                length,
+                            };
+                        }
+                        Ok(TargetIoOutcome::Progress { bytes: written })
+                    }
+                    Ok(_) => Err(RuntimeError::ClassicConnectDataRejected),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        Ok(TargetIoOutcome::Blocked)
+                    }
+                    Err(_) => Err(RuntimeError::ClassicConnectDataRejected),
+                }
+            }
+            UploadDispatchState::Idle => Err(RuntimeError::ClassicConnectDataRejected),
         }
     }
 
@@ -1705,6 +2150,45 @@ impl ServerConnection {
                     && pending.opened_target.is_some()
             })
             .count()
+    }
+
+    #[cfg(test)]
+    pub(super) fn saturate_pending_upload_target_for_test(&self) -> Result<(), RuntimeError> {
+        let mut matches = self
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .filter(|pending| {
+                matches!(
+                    pending.upload_state,
+                    UploadDispatchState::WritePending { .. }
+                )
+            });
+        let pending = matches
+            .next()
+            .filter(|pending| pending.dispatch_state.response_was_accepted())
+            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        if matches.next().is_some() {
+            return Err(RuntimeError::ClassicConnectDataRejected);
+        }
+        let target = pending
+            .opened_target
+            .as_ref()
+            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        let filler = [0xa7_u8; CLIENT_TO_TARGET_BUFFER_BYTES];
+        for _ in 0..1_024 {
+            match target.try_write(&filler) {
+                Ok(0) => return Err(RuntimeError::ClassicConnectDataRejected),
+                Ok(length) if length <= filler.len() => {}
+                Ok(_) => return Err(RuntimeError::ClassicConnectDataRejected),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(());
+                }
+                Err(_) => return Err(RuntimeError::ClassicConnectDataRejected),
+            }
+        }
+        Err(RuntimeError::ClassicConnectDataRejected)
     }
 
     #[cfg(test)]
@@ -2032,7 +2516,7 @@ fn observe_h3_application_event(events: &mut usize) -> Result<(), RuntimeError> 
     *events = events
         .checked_add(1)
         .ok_or(RuntimeError::H3EventBudgetExhausted)?;
-    if *events >= MAX_H3_EVENTS_PER_DRIVE {
+    if *events > MAX_H3_EVENTS_PER_DRIVE {
         return Err(RuntimeError::H3EventBudgetExhausted);
     }
     Ok(())
@@ -2271,6 +2755,68 @@ mod tests {
         )
     }
 
+    async fn connected_target_pair_with_small_send_buffer() -> (TcpStream, TcpStream) {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind small-send-buffer target listener");
+        let address = listener
+            .local_addr()
+            .expect("read small-send-buffer target address");
+        let socket = tokio::net::TcpSocket::new_v4().expect("create target TcpSocket");
+        socket
+            .set_send_buffer_size(1_024)
+            .expect("set target test send buffer");
+        let (opened, accepted) = tokio::join!(socket.connect(address), listener.accept());
+        (
+            opened.expect("connect small-send-buffer target"),
+            accepted.expect("accept small-send-buffer target").0,
+        )
+    }
+
+    fn fill_real_target_send_buffer(target: &TcpStream) -> usize {
+        let filler = [0xa7_u8; CLIENT_TO_TARGET_BUFFER_BYTES];
+        let mut filled = 0_usize;
+        let mut blocked = false;
+        for _ in 0..1_024 {
+            match target.try_write(&filler) {
+                Ok(0) => panic!("real target prefill made invalid zero progress"),
+                Ok(written) => {
+                    filled = filled
+                        .checked_add(written)
+                        .expect("bounded target prefill length");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    blocked = true;
+                    break;
+                }
+                Err(_) => panic!("real target prefill failed"),
+            }
+        }
+        assert!(
+            blocked,
+            "small real target send buffer must reach WouldBlock"
+        );
+        assert_ne!(filled, 0);
+        filled
+    }
+
+    async fn drain_real_target_filler(peer: &mut TcpStream, mut remaining: usize) {
+        use tokio::io::AsyncReadExt;
+
+        let mut buffer = [0_u8; 8 * 1024];
+        while remaining != 0 {
+            let requested = remaining.min(buffer.len());
+            let read =
+                tokio::time::timeout(Duration::from_secs(1), peer.read(&mut buffer[..requested]))
+                    .await
+                    .expect("drain real target filler within bound")
+                    .expect("read real target filler");
+            assert_ne!(read, 0);
+            assert!(buffer[..read].iter().all(|byte| *byte == 0xa7));
+            remaining -= read;
+        }
+    }
+
     async fn assert_target_peer_eof(mut peer: TcpStream) {
         use tokio::io::AsyncReadExt;
 
@@ -2330,6 +2876,34 @@ mod tests {
         (pair, stream_id, peer)
     }
 
+    async fn response_accepted_pair_with_blocked_target(
+        authority: &[u8],
+    ) -> (TestPair, u64, TcpStream, usize) {
+        let mut pair = TestPair::new().expect("construct blocked-upload pair");
+        pair.authenticate_generation()
+            .expect("authenticate blocked-upload pair");
+        let headers = test_classic_connect_headers(authority, false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue blocked-upload CONNECT");
+        pair.client_to_server()
+            .expect("admit blocked-upload CONNECT");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take blocked-upload dispatch")
+            .expect("blocked-upload dispatch exists");
+        let (opened_target, peer) = connected_target_pair_with_small_send_buffer().await;
+        let filler_length = fill_real_target_send_buffer(&opened_target);
+        pair.server
+            .complete_target_open_dispatch(token, opened_target, Instant::now())
+            .expect("handoff prefilled target");
+        pair.server
+            .drive_h3()
+            .expect("accept blocked-upload response");
+        (pair, stream_id, peer, filler_length)
+    }
+
     async fn body_pending_pair_with_small_window(authority: &[u8]) -> (TestPair, u64, TcpStream) {
         use tokio::io::AsyncWriteExt;
 
@@ -2377,6 +2951,44 @@ mod tests {
                 .dispatch_state,
             TargetDispatchState::BodyPending { .. }
         ));
+        (pair, stream_id, peer)
+    }
+
+    async fn both_payload_buffers_pending_pair(authority: &[u8]) -> (TestPair, u64, TcpStream) {
+        const UPLOAD_MARKER: &[u8] = b"buffered-upload-marker";
+
+        let (mut pair, stream_id, peer) = body_pending_pair_with_small_window(authority).await;
+        assert_eq!(
+            pair.client_h3
+                .as_mut()
+                .expect("double-buffer H3 client exists")
+                .send_body(&mut pair.client, stream_id, UPLOAD_MARKER, false),
+            Ok(UPLOAD_MARKER.len())
+        );
+        pair.client_to_server()
+            .expect("deliver double-buffer upload DATA event");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("receive upload while download suffix remains buffered");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("double-buffer slot remains occupied");
+        assert!(matches!(
+            pending.dispatch_state,
+            TargetDispatchState::BodyPending { .. }
+        ));
+        assert_eq!(
+            pending.upload_state,
+            UploadDispatchState::WritePending {
+                offset: 0,
+                length: UPLOAD_MARKER.len(),
+            }
+        );
+        assert!(pending.target_payload.iter().any(|byte| *byte != 0));
+        assert_eq!(
+            &pending.upload_payload[..UPLOAD_MARKER.len()],
+            UPLOAD_MARKER
+        );
         (pair, stream_id, peer)
     }
 
@@ -2646,6 +3258,53 @@ mod tests {
                                 to: info.to,
                             },
                         )?;
+                    }
+                    Err(quiche::Error::Done) => return Ok(moved),
+                    Err(_) => return Err(RuntimeError::PacketUnavailable),
+                }
+            }
+        }
+
+        fn client_transport_to_server_without_h3_drive(&mut self) -> Result<bool, RuntimeError> {
+            let mut moved = false;
+            let mut packet = [0_u8; MAX_PACKET_BYTES];
+            loop {
+                match self.client.send(&mut packet) {
+                    Ok((length, info)) => {
+                        moved = true;
+                        self.server
+                            .transport
+                            .recv(
+                                &mut packet[..length],
+                                quiche::RecvInfo {
+                                    from: info.from,
+                                    to: info.to,
+                                },
+                            )
+                            .map_err(|_| RuntimeError::PacketRejected)?;
+                    }
+                    Err(quiche::Error::Done) => return Ok(moved),
+                    Err(_) => return Err(RuntimeError::PacketUnavailable),
+                }
+            }
+        }
+
+        fn server_transport_to_client_without_h3_drive(&mut self) -> Result<bool, RuntimeError> {
+            let mut moved = false;
+            let mut packet = [0_u8; MAX_PACKET_BYTES];
+            loop {
+                match self.server.transport.send(&mut packet) {
+                    Ok((length, info)) => {
+                        moved = true;
+                        self.client
+                            .recv(
+                                &mut packet[..length],
+                                quiche::RecvInfo {
+                                    from: info.from,
+                                    to: info.to,
+                                },
+                            )
+                            .map_err(|_| RuntimeError::PacketRejected)?;
                     }
                     Err(quiche::Error::Done) => return Ok(moved),
                     Err(_) => return Err(RuntimeError::PacketUnavailable),
@@ -3978,18 +4637,18 @@ auth:
     }
 
     #[test]
-    fn t027b2b2_2_eighth_h3_application_event_exhausts_production_budget() {
+    fn t027b2d2_eight_h3_events_fit_and_ninth_exhausts_production_budget() {
         let mut pair = TestPair::new().expect("construct bounded event-budget pair");
         pair.drive_until_h3().expect("reach auth gate");
         let mut events = 0;
-        for expected in 1..MAX_H3_EVENTS_PER_DRIVE {
+        for expected in 1..=MAX_H3_EVENTS_PER_DRIVE {
             observe_h3_application_event(&mut events)
-                .expect("the first seven bounded application events fit");
+                .expect("all eight fixed-slot application events fit");
             assert_eq!(events, expected);
         }
         assert_eq!(
             observe_h3_application_event(&mut events)
-                .expect_err("the eighth application event must exhaust production budget"),
+                .expect_err("the ninth application event must exhaust production budget"),
             RuntimeError::H3EventBudgetExhausted
         );
         assert_eq!(
@@ -4436,7 +5095,7 @@ auth:
     }
 
     #[test]
-    fn t027b2b3_data_is_rejected_without_recv_body_or_payload_retention() {
+    fn t027b2b3_pre_200_data_is_rejected_without_recv_body_or_payload_retention() {
         let marker = b"test-private-payload-marker";
         let mut pair = TestPair::new().expect("construct bounded pair");
         pair.authenticate_generation()
@@ -4447,6 +5106,7 @@ auth:
             .expect("queue CONNECT metadata");
         pair.client_to_server().expect("admit CONNECT metadata");
         let reads_before = pair.server.auth_body_read_calls;
+        let upload_reads_before = pair.server.upload_recv_body_calls;
         let written = pair
             .client_h3
             .as_mut()
@@ -4457,8 +5117,9 @@ auth:
         let error = pair
             .client_to_server()
             .expect_err("first DATA event closes the generation");
-        assert_eq!(error, RuntimeError::ClassicConnectAdmissionRejected);
+        assert_eq!(error, RuntimeError::ClassicConnectDataRejected);
         assert_eq!(pair.server.auth_body_read_calls, reads_before);
+        assert_eq!(pair.server.upload_recv_body_calls, upload_reads_before);
         assert_eq!(pair.server.pending_connects.len(), 0);
         for rendered in [error.to_string(), format!("{error:?}")] {
             assert!(!rendered.contains("payload-marker"));
@@ -4856,26 +5517,35 @@ auth:
                 .count(),
             1
         );
-        assert!(
-            production.contains("const MAX_TARGET_TO_CLIENT_IO_OPERATIONS_PER_ROUND: usize = 4;")
+        assert!(production.contains("upload_payload: Box<[u8; CLIENT_TO_TARGET_BUFFER_BYTES]>"));
+        assert_eq!(
+            production
+                .matches("upload_payload: Box<[u8; CLIENT_TO_TARGET_BUFFER_BYTES]>")
+                .count(),
+            1
         );
+        assert!(production.contains("const MAX_TARGET_IO_OPERATIONS_PER_ROUND: usize = 4;"));
         let target_data_path = production
-            .split("    pub(super) fn has_target_read_waiter")
+            .split("    pub(super) fn has_target_io_waiter")
             .nth(1)
             .expect("bounded target-data path exists")
             .split("    #[cfg(test)]\n    pub(super) fn waiting_target_dispatch_count_for_test")
             .next()
             .expect("bounded target-data path ends before test helpers");
         assert!(target_data_path.contains("poll_read_ready"));
+        assert!(target_data_path.contains("poll_write_ready"));
         assert!(target_data_path.contains("target.try_read"));
+        assert!(target_data_path.contains("target.try_write"));
         assert!(target_data_path.contains("h3.send_body"));
+        assert!(target_data_path.contains("h3.recv_body"));
         for forbidden in [
             "into_split",
-            "try_write",
-            "recv_body",
+            "transport.stream_recv",
             "tokio::spawn",
             "JoinSet",
             "FuturesUnordered",
+            "mpsc::channel",
+            "watch::channel",
             "Vec<",
         ] {
             assert!(!target_data_path.contains(forbidden));
@@ -5551,7 +6221,7 @@ auth:
     }
 
     #[tokio::test]
-    async fn t027b2d0_reset_stop_and_post_200_data_fail_closed_without_relay() {
+    async fn t027b2d0_reset_stop_and_pre_200_data_fail_closed_without_relay() {
         let (mut reset, reset_stream, reset_peer) =
             response_pending_pair(b"response-reset.invalid:443").await;
         reset
@@ -5574,16 +6244,10 @@ auth:
 
         let (mut data, data_stream, data_peer) =
             response_pending_pair(b"response-data.invalid:443").await;
-        data.server.drive_h3().expect("queue response before DATA");
-        data.server_to_client()
-            .expect("deliver response before DATA");
-        assert!(data
-            .poll_exact_classic_connect_success(data_stream)
-            .expect("poll response before unsupported DATA"));
         assert_eq!(
             data.client_h3
                 .as_mut()
-                .expect("client H3 exists for unsupported DATA")
+                .expect("client H3 exists for premature DATA")
                 .send_body(&mut data.client, data_stream, b"not-a-tunnel", false),
             Ok(12)
         );
@@ -5642,6 +6306,688 @@ auth:
             .poll_classic_connect_body(stream_id, &mut received)
             .expect("poll later target data without EOF"));
         assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_post_200_client_data_reaches_original_target_and_reply_returns_same_stream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let marker = b"post-200-client-data";
+        let reply = b"same-stream-target-reply";
+        let (mut pair, stream_id, mut target_peer) =
+            response_accepted_pair(b"bidirectional.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver response before client DATA");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe exact response before client DATA"));
+
+        assert_eq!(
+            pair.client_h3
+                .as_mut()
+                .expect("bidirectional H3 client exists")
+                .send_body(&mut pair.client, stream_id, marker, false),
+            Ok(marker.len())
+        );
+        pair.client_to_server()
+            .expect("accepted response permits client DATA");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("receive bounded client DATA");
+        let ready_signal =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("original target becomes writable")
+                .expect("target write readiness is usable");
+        assert_eq!(ready_signal.direction, TargetIoDirection::ClientToTarget);
+        pair.server
+            .drive_target_io_round(Some(ready_signal))
+            .expect("write client DATA to original target");
+
+        let mut received_at_target = [0_u8; 20];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            target_peer.read_exact(&mut received_at_target),
+        )
+        .await
+        .expect("client DATA reaches target within bound")
+        .expect("read client DATA from original target");
+        assert_eq!(&received_at_target, marker);
+
+        target_peer
+            .write_all(reply)
+            .await
+            .expect("write same-stream target reply");
+        let slot_index =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_readable())
+                .await
+                .expect("target reply becomes readable")
+                .expect("target reply readiness is usable");
+        pair.server
+            .drive_target_to_client_round(Some(slot_index))
+            .expect("queue same-stream target reply");
+        pair.server_to_client()
+            .expect("deliver same-stream target reply");
+        let mut received_at_client = Vec::new();
+        assert!(!pair
+            .poll_classic_connect_body(stream_id, &mut received_at_client)
+            .expect("poll same-stream target reply"));
+        assert_eq!(received_at_client, reply);
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_real_target_would_block_preserves_suffix_and_resumes_on_writable() {
+        use tokio::io::AsyncReadExt;
+
+        let marker = b"exact-upload-suffix-after-real-would-block";
+        let (mut pair, stream_id, mut target_peer, filler_length) =
+            response_accepted_pair_with_blocked_target(b"blocked-upload.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver response before blocked upload");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe response before blocked upload"));
+        assert_eq!(
+            pair.client_h3
+                .as_mut()
+                .expect("blocked-upload H3 client exists")
+                .send_body(&mut pair.client, stream_id, marker, false),
+            Ok(marker.len())
+        );
+        pair.client_to_server()
+            .expect("admit blocked-upload DATA event");
+
+        let receive_round = pair
+            .server
+            .drive_target_io_round(None)
+            .expect("receive one blocked-upload chunk");
+        assert!(receive_round.operations() <= MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+        assert!(receive_round.progress_operations() >= 1);
+        let (offset, length) = match pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("blocked-upload slot remains occupied")
+            .upload_state
+        {
+            UploadDispatchState::WritePending { offset, length } => (offset, length),
+            _ => panic!("blocked upload retains one exact write-pending suffix"),
+        };
+        assert_eq!((offset, length), (0, marker.len()));
+        let receives_before_block = pair.server.upload_recv_body_calls;
+        let blocked_round = pair
+            .server
+            .drive_target_io_round(None)
+            .expect("real target WouldBlock is bounded zero progress");
+        assert_eq!(blocked_round.operations(), 1);
+        assert_eq!(blocked_round.progress_operations(), 0);
+        assert_eq!(blocked_round.operation_progress_bytes(), 0);
+        assert_eq!(pair.server.upload_recv_body_calls, receives_before_block);
+        assert_eq!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("WouldBlock retains original slot")
+                .upload_state,
+            UploadDispatchState::WritePending { offset, length }
+        );
+
+        drain_real_target_filler(&mut target_peer, filler_length).await;
+        let ready_signal =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("drained target becomes writable")
+                .expect("writable signal is usable");
+        assert_eq!(ready_signal.direction, TargetIoDirection::ClientToTarget);
+        let resumed = pair
+            .server
+            .drive_target_io_round(Some(ready_signal))
+            .expect("writable target resumes exact suffix");
+        assert!(resumed.progress_operations() >= 1);
+        assert!(resumed.operation_progress_bytes() >= marker.len());
+        let mut received = [0_u8; 42];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            target_peer.read_exact(&mut received),
+        )
+        .await
+        .expect("resumed suffix reaches target within bound")
+        .expect("read resumed exact suffix");
+        assert_eq!(&received, marker);
+        assert_eq!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("resumed upload keeps original slot")
+                .upload_state,
+            UploadDispatchState::Idle
+        );
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_final_data_and_finished_wait_for_write_without_target_shutdown() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let marker = b"final-data-before-deferred-target-shutdown";
+        let (mut pair, stream_id, mut target_peer, filler_length) =
+            response_accepted_pair_with_blocked_target(b"finished-upload.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver response before final upload DATA");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe response before final upload DATA"));
+        assert_eq!(
+            pair.client_h3
+                .as_mut()
+                .expect("final-upload H3 client exists")
+                .send_body(&mut pair.client, stream_id, marker, true),
+            Ok(marker.len())
+        );
+        pair.client_to_server()
+            .expect("deliver final DATA event before Finished rearm");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("buffer final DATA before blocked target write");
+        pair.server
+            .drive_h3()
+            .expect("record request Finished after final DATA was buffered");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("final upload retains original slot");
+        assert!(pending.peer_write_half_closed);
+        assert_eq!(
+            pending.upload_state,
+            UploadDispatchState::WritePending {
+                offset: 0,
+                length: marker.len(),
+            }
+        );
+        let blocked = pair
+            .server
+            .drive_target_io_round(None)
+            .expect("final DATA target WouldBlock is zero progress");
+        assert_eq!(blocked.progress_operations(), 0);
+
+        drain_real_target_filler(&mut target_peer, filler_length).await;
+        let ready_signal =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("final DATA target becomes writable")
+                .expect("final DATA writable signal is usable");
+        assert_eq!(ready_signal.direction, TargetIoDirection::ClientToTarget);
+        pair.server
+            .drive_target_io_round(Some(ready_signal))
+            .expect("write all final DATA after target resumes");
+        let mut received = [0_u8; 42];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            target_peer.read_exact(&mut received),
+        )
+        .await
+        .expect("final DATA reaches target within bound")
+        .expect("read complete final DATA");
+        assert_eq!(&received, marker);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), target_peer.read_u8())
+                .await
+                .is_err()
+        );
+        target_peer
+            .write_all(b"target-still-open-after-request-finished")
+            .await
+            .expect("request Finished did not shut down target write half");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("request Finished still retains slot");
+        assert!(pending.peer_write_half_closed);
+        assert_eq!(pending.upload_state, UploadDispatchState::Idle);
+        assert!(pending.opened_target.is_some());
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_one_data_event_crosses_16k_buffer_and_drains_to_done_byte_exact() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut pair, stream_id, mut target_peer) =
+            response_accepted_pair(b"multi-upload.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver response before multi-chunk upload");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe response before multi-chunk upload"));
+        let expected: Vec<u8> = (0..(CLIENT_TO_TARGET_BUFFER_BYTES * 2 + 977))
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let data_events_before = pair.server.upload_data_events;
+        let mut sent_frames = 0_usize;
+        let mut transport_moves = 0_usize;
+        for chunk in expected.chunks(9_137) {
+            let mut offset = 0_usize;
+            while offset < chunk.len() {
+                let send = pair
+                    .client_h3
+                    .as_mut()
+                    .expect("multi-chunk H3 client exists")
+                    .send_body(&mut pair.client, stream_id, &chunk[offset..], false);
+                match send {
+                    Ok(written) => {
+                        assert_ne!(written, 0);
+                        offset += written;
+                        let moved = pair
+                            .client_transport_to_server_without_h3_drive()
+                            .expect("move queued body bytes without polling server H3");
+                        let acknowledged = pair
+                            .server_transport_to_client_without_h3_drive()
+                            .expect("return transport credit without polling server H3");
+                        assert!(moved || acknowledged);
+                        transport_moves += usize::from(moved);
+                    }
+                    Err(quiche::h3::Error::Done) => {
+                        let moved = pair
+                            .client_transport_to_server_without_h3_drive()
+                            .expect("free client transport capacity without polling server H3");
+                        let acknowledged = pair
+                            .server_transport_to_client_without_h3_drive()
+                            .expect("return transport credit without polling server H3");
+                        assert!(moved || acknowledged);
+                        transport_moves += usize::from(moved);
+                        assert!(transport_moves <= MAX_SHUTTLE_STEPS);
+                    }
+                    Err(_) => panic!("queue one partial real H3 upload frame"),
+                }
+            }
+            sent_frames += 1;
+        }
+        assert!(sent_frames >= 4);
+        let final_move = pair
+            .client_transport_to_server_without_h3_drive()
+            .expect("move every upload frame into the server transport without polling H3");
+        assert!(transport_moves != 0 || final_move);
+        assert_eq!(pair.server.upload_data_events, data_events_before);
+        pair.server
+            .drive_h3()
+            .expect("one H3 drive creates one edge-triggered DATA event");
+        assert_eq!(pair.server.upload_data_events, data_events_before + 1);
+        assert_eq!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("one-event upload slot remains occupied")
+                .upload_state,
+            UploadDispatchState::RecvPending
+        );
+
+        let receives_before = pair.server.upload_recv_body_calls;
+        let mut full_buffer_receives = 0_usize;
+        for _ in 0..MAX_SHUTTLE_STEPS {
+            let round = pair
+                .server
+                .drive_target_io_round(None)
+                .expect("advance one bounded receive/write round for the same DATA event");
+            assert!(round.operations() <= MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+            assert!(round.operation_progress_bytes() <= 64 * 1024);
+            assert_eq!(pair.server.upload_data_events, data_events_before + 1);
+            if pair.server.pending_connects.slots[0]
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.upload_state
+                        == (UploadDispatchState::WritePending {
+                            offset: 0,
+                            length: CLIENT_TO_TARGET_BUFFER_BYTES,
+                        })
+                })
+            {
+                full_buffer_receives += 1;
+            }
+            if pair.server.pending_connects.slots[0]
+                .as_ref()
+                .is_some_and(|pending| pending.upload_state == UploadDispatchState::Idle)
+            {
+                break;
+            }
+        }
+        assert!(full_buffer_receives >= 2);
+        assert_eq!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("same DATA event drains to idle")
+                .upload_state,
+            UploadDispatchState::Idle
+        );
+        assert!(pair.server.upload_recv_body_calls >= receives_before + 4);
+        assert_eq!(pair.server.upload_data_events, data_events_before + 1);
+        let mut received = vec![0_u8; expected.len()];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            target_peer.read_exact(&mut received),
+        )
+        .await
+        .expect("multi-chunk upload reaches target within bound")
+        .expect("read exact multi-chunk upload");
+        assert_eq!(received, expected);
+        pair.server
+            .drive_h3()
+            .expect("drained event does not reveal a second DATA event");
+        assert_eq!(pair.server.upload_data_events, data_events_before + 1);
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_blocked_download_window_does_not_block_same_slot_upload() {
+        use tokio::io::AsyncReadExt;
+
+        let marker = b"upload-progress-while-download-window-blocked";
+        let (mut pair, stream_id, mut target_peer) =
+            body_pending_pair_with_small_window(b"cross-direction.invalid:443").await;
+        assert!(matches!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("cross-direction slot exists")
+                .dispatch_state,
+            TargetDispatchState::BodyPending { .. }
+        ));
+        assert_eq!(
+            pair.client_h3
+                .as_mut()
+                .expect("cross-direction H3 client exists")
+                .send_body(&mut pair.client, stream_id, marker, false),
+            Ok(marker.len())
+        );
+        pair.client_to_server()
+            .expect("deliver cross-direction upload DATA");
+        for _ in 0..4 {
+            let round = pair
+                .server
+                .drive_target_io_round(None)
+                .expect("advance upload while download stays blocked");
+            assert!(round.operations() <= MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+            if pair.server.pending_connects.slots[0]
+                .as_ref()
+                .is_some_and(|pending| pending.upload_state == UploadDispatchState::Idle)
+            {
+                break;
+            }
+        }
+        assert!(matches!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("blocked download retains slot")
+                .dispatch_state,
+            TargetDispatchState::BodyPending { .. }
+        ));
+        let mut received = [0_u8; 45];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            target_peer.read_exact(&mut received),
+        )
+        .await
+        .expect("upload progresses despite blocked QUIC response window")
+        .expect("read upload during blocked download");
+        assert_eq!(&received, marker);
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_recv_pending_continues_after_response_fin_without_socket_waiter() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let marker = b"request-data-after-response-fin";
+        let (mut pair, stream_id, mut target_peer) =
+            response_accepted_pair(b"response-fin-upload.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver response before target EOF");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe response before target EOF"));
+
+        target_peer
+            .shutdown()
+            .await
+            .expect("close only the target-to-server write half");
+        let eof_signal =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("target EOF becomes readable")
+                .expect("target EOF readiness is usable");
+        assert_eq!(eof_signal.direction, TargetIoDirection::TargetToClient);
+        pair.server
+            .drive_target_io_round(Some(eof_signal))
+            .expect("queue response FIN after target EOF");
+        assert_eq!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("response-FIN slot remains fixed")
+                .dispatch_state,
+            TargetDispatchState::ResponseFinAccepted
+        );
+        assert!(!pair.server.has_target_io_waiter());
+        assert!(!pair.server.has_immediate_target_io_work());
+        pair.server_to_client()
+            .expect("deliver target EOF as response FIN");
+        let h3 = pair
+            .client_h3
+            .as_mut()
+            .expect("response-FIN client H3 exists");
+        assert_eq!(
+            h3.poll(&mut pair.client),
+            Ok((stream_id, quiche::h3::Event::Data))
+        );
+        let mut empty = [0_u8; 1];
+        assert_eq!(
+            h3.recv_body(&mut pair.client, stream_id, &mut empty),
+            Err(quiche::h3::Error::Done)
+        );
+        assert_eq!(
+            h3.poll(&mut pair.client),
+            Ok((stream_id, quiche::h3::Event::Finished))
+        );
+
+        assert_eq!(
+            pair.client_h3
+                .as_mut()
+                .expect("response-FIN client H3 exists")
+                .send_body(&mut pair.client, stream_id, marker, false),
+            Ok(marker.len())
+        );
+        pair.client_to_server()
+            .expect("response FIN does not reject legal request DATA");
+        assert!(!pair.server.has_target_io_waiter());
+        assert!(pair.server.has_immediate_target_io_work());
+        let recv_round = pair
+            .server
+            .drive_target_io_round(None)
+            .expect("RecvPending progresses without any socket waiter");
+        assert_eq!(recv_round.operations(), 1);
+        assert_eq!(recv_round.upload_recv_progress_mask(), 1);
+        assert!(pair.server.has_target_io_waiter());
+        assert!(!pair.server.has_immediate_target_io_work());
+
+        let writable =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("half-open target remains writable")
+                .expect("half-open target writable signal is usable");
+        assert_eq!(writable.direction, TargetIoDirection::ClientToTarget);
+        pair.server
+            .drive_target_io_round(Some(writable))
+            .expect("write request DATA after response FIN");
+        let mut received = vec![0_u8; marker.len()];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            target_peer.read_exact(&mut received),
+        )
+        .await
+        .expect("request DATA reaches half-open target")
+        .expect("read request DATA after response FIN");
+        assert_eq!(received, marker);
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_single_drive_eight_data_events_feed_bidirectional_rotating_rounds() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut pair = TestPair::new().expect("construct eight-slot bidirectional pair");
+        pair.authenticate_generation()
+            .expect("authenticate eight-slot bidirectional pair");
+        let headers = test_classic_connect_headers(b"eight-bidirectional.invalid:443", false);
+        let mut stream_ids = Vec::with_capacity(MAX_PENDING_CLASSIC_CONNECTS);
+        let mut target_peers = Vec::with_capacity(MAX_PENDING_CLASSIC_CONNECTS);
+        for _ in 0..MAX_PENDING_CLASSIC_CONNECTS {
+            let stream_id = pair
+                .send_classic_connect(&headers, false)
+                .expect("queue one eight-slot CONNECT");
+            pair.client_to_server()
+                .expect("admit one eight-slot CONNECT");
+            let token = pair
+                .server
+                .take_target_open_dispatch(Instant::now())
+                .expect("take one eight-slot dispatch")
+                .expect("one eight-slot dispatch exists");
+            let (opened_target, target_peer) = connected_target_pair().await;
+            pair.server
+                .complete_target_open_dispatch(token, opened_target, Instant::now())
+                .expect("handoff one eight-slot target");
+            pair.server
+                .drive_h3()
+                .expect("accept one eight-slot response");
+            pair.server_to_client()
+                .expect("deliver one eight-slot response");
+            assert!(pair
+                .poll_exact_classic_connect_success(stream_id)
+                .expect("observe one exact eight-slot response"));
+            stream_ids.push(stream_id);
+            target_peers.push(target_peer);
+        }
+        assert_eq!(stream_ids.len(), MAX_PENDING_CLASSIC_CONNECTS);
+
+        for (index, target_peer) in target_peers.iter_mut().enumerate() {
+            target_peer
+                .write_all(&[0x80 | index as u8])
+                .await
+                .expect("make every target download direction readable");
+        }
+        for (index, stream_id) in stream_ids.iter().copied().enumerate() {
+            assert_eq!(
+                pair.client_h3
+                    .as_mut()
+                    .expect("eight-slot H3 client exists")
+                    .send_body(&mut pair.client, stream_id, &[index as u8], false),
+                Ok(1)
+            );
+        }
+        assert!(pair
+            .client_transport_to_server_without_h3_drive()
+            .expect("queue all eight DATA frames in server transport"));
+        assert!(pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .all(|pending| { pending.upload_state == UploadDispatchState::Idle }));
+        pair.server
+            .drive_h3()
+            .expect("one H3 drive accepts exactly eight legal DATA events");
+        assert_eq!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+        assert_eq!(pair.server.upload_data_events, MAX_PENDING_CLASSIC_CONNECTS);
+        assert!(pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .all(|pending| { pending.upload_state == UploadDispatchState::RecvPending }));
+
+        let mut round_count = 0_usize;
+        for _ in 0..(MAX_PENDING_CLASSIC_CONNECTS * 8) {
+            let ready_signal = if pair.server.has_immediate_target_io_work() {
+                None
+            } else {
+                Some(
+                    tokio::time::timeout(
+                        Duration::from_secs(1),
+                        pair.server.wait_target_io_ready(),
+                    )
+                    .await
+                    .expect("one eight-slot socket direction becomes ready")
+                    .expect("eight-slot readiness signal is usable"),
+                )
+            };
+            let round = pair
+                .server
+                .drive_target_io_round(ready_signal)
+                .expect("advance one shared eight-slot I/O round");
+            assert!(round.operations() <= MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+            assert!(round.operation_progress_bytes() <= 64 * 1024);
+            round_count += 1;
+            if pair.server.target_read_calls >= MAX_PENDING_CLASSIC_CONNECTS
+                && pair.server.target_send_body_calls >= MAX_PENDING_CLASSIC_CONNECTS
+                && pair.server.target_write_calls >= MAX_PENDING_CLASSIC_CONNECTS
+                && pair
+                    .server
+                    .pending_connects
+                    .slots
+                    .iter()
+                    .flatten()
+                    .all(|pending| {
+                        pending.dispatch_state == TargetDispatchState::ResponseAccepted
+                            && pending.upload_state == UploadDispatchState::Idle
+                    })
+            {
+                break;
+            }
+        }
+        assert!(round_count > 1);
+        assert!(pair.server.target_io_cursor < TARGET_IO_CURSOR_LENGTH);
+        assert!(pair.server.target_read_calls >= MAX_PENDING_CLASSIC_CONNECTS);
+        assert!(pair.server.target_send_body_calls >= MAX_PENDING_CLASSIC_CONNECTS);
+        assert!(pair.server.upload_recv_body_calls >= MAX_PENDING_CLASSIC_CONNECTS * 2);
+        assert!(pair.server.target_write_calls >= MAX_PENDING_CLASSIC_CONNECTS);
+        assert!(pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .all(|pending| {
+                pending.dispatch_state == TargetDispatchState::ResponseAccepted
+                    && pending.upload_state == UploadDispatchState::Idle
+            }));
+
+        for (index, target_peer) in target_peers.iter_mut().enumerate() {
+            let mut received = [0_u8; 1];
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                target_peer.read_exact(&mut received),
+            )
+            .await
+            .expect("each upload direction reaches its original target")
+            .expect("read each original-slot upload byte");
+            assert_eq!(received, [index as u8]);
+        }
+
+        pair.server_to_client()
+            .expect("deliver all eight target-to-client bytes");
+        let mut download_seen = [false; MAX_PENDING_CLASSIC_CONNECTS];
+        loop {
+            let h3 = pair
+                .client_h3
+                .as_mut()
+                .expect("eight-slot response H3 exists");
+            match h3.poll(&mut pair.client) {
+                Ok((stream_id, quiche::h3::Event::Data)) => {
+                    let index = stream_ids
+                        .iter()
+                        .position(|candidate| *candidate == stream_id)
+                        .expect("DATA belongs to an original fixed slot");
+                    let mut body = [0_u8; 2];
+                    assert_eq!(h3.recv_body(&mut pair.client, stream_id, &mut body), Ok(1));
+                    assert_eq!(body[0], 0x80 | index as u8);
+                    assert_eq!(
+                        h3.recv_body(&mut pair.client, stream_id, &mut body),
+                        Err(quiche::h3::Error::Done)
+                    );
+                    assert!(!download_seen[index]);
+                    download_seen[index] = true;
+                }
+                Err(quiche::h3::Error::Done) => break,
+                other => panic!("unexpected eight-slot response event: {other:?}"),
+            }
+        }
+        assert!(download_seen.into_iter().all(|seen| seen));
     }
 
     #[tokio::test]
@@ -5777,7 +7123,7 @@ auth:
         }
         assert!(advanced.into_iter().all(|slot| slot));
         assert!(pair.server.target_read_calls >= MAX_PENDING_CLASSIC_CONNECTS);
-        assert!(pair.server.target_to_client_cursor < MAX_PENDING_CLASSIC_CONNECTS);
+        assert!(pair.server.target_io_cursor < TARGET_IO_CURSOR_LENGTH);
     }
 
     #[tokio::test]
@@ -5956,22 +7302,6 @@ auth:
             assert_target_peer_closed(revoked_peer).await;
         }
 
-        {
-            let marker = b"client-marker-must-not-reach-target";
-            let (mut data, data_stream, data_peer) =
-                body_pending_pair_with_small_window(b"buffered-client-data.invalid:443").await;
-            assert_eq!(
-                data.client_h3
-                    .as_mut()
-                    .expect("buffered client-data H3 exists")
-                    .send_body(&mut data.client, data_stream, marker, false),
-                Ok(marker.len())
-            );
-            assert!(data.client_to_server().is_err());
-            assert_eq!(data.server.pending_connects.len(), 0);
-            assert_target_peer_closed(data_peer).await;
-        }
-
         for rendered in [
             RuntimeError::ClassicConnectDataRejected.to_string(),
             format!("{:?}", RuntimeError::ClassicConnectDataRejected),
@@ -5990,6 +7320,82 @@ auth:
             .server
             .close()
             .expect("actor cancellation closes buffered generation");
+        assert_eq!(cancelled.server.pending_connects.len(), 0);
+        assert_target_peer_closed(cancelled_peer).await;
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_write_error_reset_expiry_and_revoke_clear_both_payload_buffers() {
+        {
+            let (mut write_error, _, write_error_peer) =
+                both_payload_buffers_pending_pair(b"double-buffer-write-error.invalid:443").await;
+            write_error.server.pending_connects.slots[0]
+                .as_mut()
+                .expect("double-buffer write-error slot exists")
+                .target_write_failure_requested = true;
+            assert_eq!(
+                write_error
+                    .server
+                    .drive_target_io_round(Some(TargetIoSignal {
+                        slot_index: 0,
+                        direction: TargetIoDirection::ClientToTarget,
+                    })),
+                Err(RuntimeError::ClassicConnectDataRejected)
+            );
+            assert_eq!(write_error.server.pending_connects.len(), 0);
+            assert_target_peer_closed(write_error_peer).await;
+        }
+
+        {
+            let (mut reset, reset_stream, reset_peer) =
+                both_payload_buffers_pending_pair(b"double-buffer-reset.invalid:443").await;
+            reset
+                .client
+                .stream_shutdown(reset_stream, quiche::Shutdown::Write, 0x61)
+                .expect("reset double-buffer request stream");
+            assert!(reset.client_to_server().is_err());
+            assert_eq!(reset.server.pending_connects.len(), 0);
+            assert_target_peer_closed(reset_peer).await;
+        }
+
+        {
+            let (mut expired, _, expired_peer) =
+                both_payload_buffers_pending_pair(b"double-buffer-expiry.invalid:443").await;
+            expired
+                .server
+                .auth
+                .capability
+                .as_mut()
+                .expect("double-buffer expiry capability")
+                .hard_deadline = Instant::now();
+            assert_eq!(
+                expired.server.drive_target_io_round(None),
+                Err(RuntimeError::AuthenticationExpired)
+            );
+            assert_eq!(expired.server.pending_connects.len(), 0);
+            assert_target_peer_closed(expired_peer).await;
+        }
+
+        {
+            let (mut revoked, _, revoked_peer) =
+                both_payload_buffers_pending_pair(b"double-buffer-revoke.invalid:443").await;
+            revoked
+                .server
+                .revoke_authenticated_generation()
+                .expect("revoke double-buffer generation");
+            assert_eq!(revoked.server.pending_connects.len(), 0);
+            assert_target_peer_closed(revoked_peer).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn t027b2d2_cancel_clears_both_payload_buffers_without_upload_marker_leak() {
+        let (mut cancelled, _, cancelled_peer) =
+            both_payload_buffers_pending_pair(b"double-buffer-cancel.invalid:443").await;
+        cancelled
+            .server
+            .close()
+            .expect("cancel double-buffer generation");
         assert_eq!(cancelled.server.pending_connects.len(), 0);
         assert_target_peer_closed(cancelled_peer).await;
     }

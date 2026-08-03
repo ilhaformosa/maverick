@@ -17,59 +17,60 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2d3 — request FIN to original-slot target write-half shutdown
+### T027b-2d4a — terminal lifecycle and generation-bound slot identity
 
-- **User result:** After one Classic CONNECT request's H3 `Finished` is
-  accepted, every client DATA byte already received for that stream is written
-  byte-for-byte to its original fixed slot's one target `TcpStream` before the
-  server closes only that socket's write half. The target read half stays open,
-  so a delayed reply still returns on the same H3 response stream through the
-  T027b-2d1 path.
-- **Scope:** Keep exactly eight slots, their independent 16 KiB upload and
-  download buffers, the original unsplit socket owner, and the one rotating
-  `(slot, direction)` cursor. `peer_write_half_closed` records the first request
-  FIN. Upload dispatch separately moves through idle, H3 receive-pending, exact
-  write-pending suffix, target-shutdown-pending, and target-write-half-closed.
-  FIN before local 200 acceptance is recorded but cannot touch the target.
-  Shutdown waits behind every buffered suffix and the final `recv_body` `Done`,
-  then calls Tokio write-half shutdown on the original socket. That zero-byte
-  state transition consumes one operation in the existing shared four-operation
-  and 64-KiB round; it is not payload progress and has no second budget.
-- **Acceptance:** Prove a real small-buffer target reaches `WouldBlock`, sees no
-  EOF before the exact final marker, then sees marker followed by EOF after its
-  receive side drains; it can send a delayed reply which reaches the client
-  before response FIN. Prove empty-body FIN, FIN before 200, target EOF before
-  request FIN, and response FIN before a legal final upload. Prove eight
-  shutdown-pending slots close in two shared zero-byte rounds without starving
-  exact download readiness. Prove the existing actor continuation completes a
-  shutdown without another test packet or socket waiter while cancel, timer,
-  and inbox remain biased first. A narrow test-only shutdown-failure seam must
-  close the generation, clear both buffers, drop the socket, and return only the
-  fixed value-free error. Duplicate `Finished`, DATA after FIN, RESET,
-  STOP_SENDING, send or target failure, hard expiry, revocation, cancellation,
-  and connection close remain generation-wide fail-closed. Request FIN never
-  creates response FIN, and response FIN never shuts down the target write half.
-  Preserve all T027b-2d2, T027b-2d1, T027b-2d0, T027b-2c4/2c5, direct-v3 auth,
-  EOF, flush, join, teardown, opener, privacy, and source-shape gates.
-- **Out of scope:** Slot reclaim or reuse and per-flow graceful completion are
-  later independent candidates. Domain DNS, a product caller, and runtime-
-  readiness remain deferred. No trailer, new stream, fallback or error response,
-  registry or metrics change, task, saved future, channel, collection, socket
-  split or second owner, timer, scheduler, public API, config, schema, wire or
-  version change, dependency, manifest, lockfile, vendor, core, client, SDK,
-  CLI, `STATUS.md`, CI, remote, deployment, release, real-network, credential,
-  infrastructure, or system-network work.
+- **User result:** A private Classic CONNECT drops its original target socket
+  only after request FIN and every buffered upload have reached target write-half
+  shutdown, while target EOF, every buffered download byte, and response FIN
+  have reached local quiche acceptance. The fixed slot then remains an
+  unreusable tombstone carrying the old generation and stream identity; late
+  readiness or transport state cannot be mistaken for another flow.
+- **Scope:** Keep exactly eight fixed slots, one unsplit target socket owner per
+  active slot, the existing independent 16 KiB buffers, and the shared
+  four-operation/64-KiB rotating I/O round. Freeze generation, H3 stream, slot,
+  and direction in every externally returned target-readiness signal, and bind
+  each target-open completion token to its exact slot. Model application
+  terminal state separately from quiche transport collection. A known opened
+  stream may record transport collection before target upload finishes only
+  after request `Finished`, local response-FIN acceptance, exact live identity,
+  and exact `InvalidStreamState` all agree. It retains the socket and can finish
+  only its existing bounded upload/write/shutdown work. The small pre-poll
+  exception that lets an already queued H3 `Finished` become visible is followed
+  in the same H3 drive by a non-deferred transport check.
+- **Acceptance:** Prove with real loopback transport that an unacknowledged
+  response FIN leaves the old stream present, a real pre-collection
+  `STOP_SENDING` returns `StreamStopped` and closes the generation, and a fully
+  acknowledged known stream becomes exact `InvalidStreamState`. Preserve the
+  valid target-EOF/response-FIN-before-request-FIN order: record narrowly
+  confirmed transport collection, finish the exact upload and target shutdown,
+  then drop the socket once and retain a collection-confirmed tombstone. Prove a
+  STOP arriving in the deferred-`Finished` window is rejected before target I/O.
+  Prove every other premature `InvalidStreamState` fails closed. Prove wrong or
+  stale generation, stream, slot, direction, out-of-range slot, duplicate signal,
+  non-active early return, and wrong/out-of-order target-open completion reject
+  before cursor, H3, socket, buffer, or state mutation. Eight terminal tombstones
+  remain bounded, still reject a ninth flow, and cannot poison another active
+  slot's readiness. Preserve all T027b-2d0 through T027b-2d3, T027b-2c4/2c5,
+  direct-v3 auth, actor, EOF, flush, join, teardown, opener, privacy, and
+  source-shape gates.
+- **Out of scope:** T027b-2d4b slot reclaim/reuse remains a later independent
+  candidate and may use only an application-terminal, collection-confirmed
+  tombstone. This slice never clears or reallocates a terminal slot. Domain DNS,
+  a product caller, runtime readiness, new timers, polling, tasks, channels,
+  registries, maps, epochs, schedulers, metrics, socket splitting or a second
+  owner, vendor changes, public API, config, schema, wire or version changes,
+  dependencies, manifests, lockfiles, core, client, SDK, CLI, `STATUS.md`, CI,
+  remote, deployment, release, real-network, credential, infrastructure, and
+  system-network work remain deferred.
 - **Stop conditions:** Stop before any file outside `ROADMAP.md`,
   `crates/maverick-server/src/quiche_runtime.rs`, and
-  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if the original
-  `TcpStream` must move, split, clone, share, use raw descriptors, or gain a
-  second owner; if shutdown cannot use the shared four-operation budget or can
-  remain pending; if buffered DATA cannot be proven complete before target EOF;
-  if real loopback cannot prove DATA, EOF, and delayed reply ordering; if slot
-  reclaim is required; if RESET, response-FIN, or generation fail-closed
-  semantics must change; or if a task, channel, saved future, timer, polling
-  sleep, general scheduler, unsafe code, dependency, public surface, fourth
-  file, or `STATUS.md` change is needed.
+  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if public quiche
+  facts cannot keep normal collection distinct from observable `STOP_SENDING`;
+  if an identity mismatch can reach an early success, cursor movement, H3 or
+  socket I/O, or state mutation; if target cleanup requires a second operation
+  budget or owner; if this slice requires slot reuse, a timer, polling sleep,
+  saved future, task, channel, growing registry, unsafe code, vendor patch,
+  dependency, public surface, fourth file, or `STATUS.md` change.
 
 This remains repository-local, private, feature-gated, and temporarily limited
 to IP-literal production target opening. It is a local bidirectional foundation

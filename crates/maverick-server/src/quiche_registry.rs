@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use tokio::task::Id;
 
 use crate::quiche_runtime::{
-    PacketMeta, ServerConnection, ServerConnectionConfig, ServerCredentials,
+    ConnectionLifecycle, PacketMeta, ServerConnection, ServerConnectionConfig, ServerCredentials,
     ServerSourceConnectionId, MAX_PACKET_BYTES,
 };
 
@@ -162,14 +162,14 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
                 self.entries[index] = None;
                 return Err(RegistryError::StableConnectionIdUnavailable);
             }
-            if connection.is_terminating() {
+            if connection.lifecycle() == ConnectionLifecycle::Closed {
                 self.entries[index] = None;
                 continue;
             }
 
             let result = connection.next_packet(packet);
             let stable = connection.has_stable_source_connection_id(server_source_id);
-            let terminating = connection.is_terminating();
+            let closed = connection.lifecycle() == ConnectionLifecycle::Closed;
 
             if !stable {
                 self.entries[index] = None;
@@ -178,18 +178,20 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             match result {
                 Ok(Some(output)) => {
                     self.next_outbound_index = (index + 1) % MAX_ACTIVE_CONNECTIONS;
-                    if terminating {
+                    if closed {
                         self.entries[index] = None;
                     }
                     return Ok(Some(output));
                 }
                 Ok(None) => {
-                    if terminating {
+                    if closed {
                         self.entries[index] = None;
                     }
                 }
                 Err(_) => {
-                    self.entries[index] = None;
+                    if closed {
+                        self.entries[index] = None;
+                    }
                     return Err(RegistryError::PacketUnavailable);
                 }
             }
@@ -214,7 +216,7 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
                 self.entries[index] = None;
                 return Err(RegistryError::StableConnectionIdUnavailable);
             }
-            if connection.is_terminating() {
+            if connection.lifecycle() == ConnectionLifecycle::Closed {
                 self.entries[index] = None;
                 continue;
             }
@@ -244,15 +246,15 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
                 failure.get_or_insert(RegistryError::StableConnectionIdUnavailable);
                 continue;
             }
-            if connection.is_terminating() {
+            if connection.lifecycle() == ConnectionLifecycle::Closed {
                 self.entries[index] = None;
                 continue;
             }
 
             let result = connection.on_timeout();
             let stable = connection.has_stable_source_connection_id(server_source_id);
-            let terminating = connection.is_terminating();
-            if result.is_err() || !stable || terminating {
+            let closed = connection.lifecycle() == ConnectionLifecycle::Closed;
+            if !stable || closed {
                 self.entries[index] = None;
             }
             if !stable {
@@ -302,7 +304,6 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             return Err(RegistryError::ConnectionUnavailable);
         };
         let result = connection.close();
-        self.entries[index] = None;
         result
             .map(|()| true)
             .map_err(|_| RegistryError::CloseUnavailable)
@@ -329,14 +330,18 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             self.entries[index] = None;
             return Err(RegistryError::StableConnectionIdUnavailable);
         }
+        if connection.lifecycle() == ConnectionLifecycle::Closed {
+            self.entries[index] = None;
+            return Ok(InboundDisposition::Dropped);
+        }
         if entry.source != meta.from {
             return Ok(InboundDisposition::Dropped);
         }
 
         let result = connection.receive_packet(packet, length, meta);
         let stable = connection.has_stable_source_connection_id(server_source_id);
-        let terminating = connection.is_terminating();
-        if !stable || terminating {
+        let closed = connection.lifecycle() == ConnectionLifecycle::Closed;
+        if !stable || closed {
             self.entries[index] = None;
         }
         if !stable {
@@ -377,7 +382,7 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
         )
         .map_err(|_| RegistryError::ConnectionUnavailable)?;
         if !connection.has_stable_source_connection_id(&server_source_id)
-            || connection.is_terminating()
+            || connection.lifecycle() != ConnectionLifecycle::Active
         {
             return Err(RegistryError::StableConnectionIdUnavailable);
         }
@@ -438,6 +443,16 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             .count()
     }
 
+    #[cfg(test)]
+    pub(super) fn test_route_count(&self) -> usize {
+        self.route_count()
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_source_count(&self, source: SocketAddr) -> usize {
+        self.source_count(source)
+    }
+
     pub(super) fn receive_actor_packet(
         &mut self,
         mut packet: [u8; MAX_PACKET_BYTES],
@@ -494,7 +509,7 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
         )
         .map_err(|_| RegistryError::ConnectionUnavailable)?;
         if !connection.has_stable_source_connection_id(&server_source_id)
-            || connection.is_terminating()
+            || connection.lifecycle() != ConnectionLifecycle::Active
         {
             return Err(RegistryError::StableConnectionIdUnavailable);
         }
@@ -1332,7 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_removes_both_aliases_source_slot_and_capacity_atomically() {
+    fn local_close_retains_aliases_source_and_capacity_until_transport_is_closed() {
         let mut registry = test_registry(ScriptedConnectionIdGenerator::incrementing());
         let first_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 45_001);
         let second_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 45_002);
@@ -1353,34 +1368,119 @@ mod tests {
             receive(&mut registry, &mut second_initial).unwrap(),
             InboundDisposition::Created
         );
+        drive_two_clients_to_h3(
+            &mut registry,
+            &mut first,
+            first_initial_dcid.as_slice(),
+            &mut second,
+            destination_id(&mut second_initial).as_slice(),
+        );
         let first_server_id = registry
             .server_source_id_for_route(first_initial_dcid.as_slice())
             .expect("first live server source ID");
         assert!(registry
             .close_connection(&first_server_id, first_address)
-            .expect("close and reclaim first connection"));
-        assert_eq!(registry.connection_count(), 1);
-        assert_eq!(registry.route_count(), 2);
-        assert_eq!(registry.source_count(first_address), 1);
-        assert!(registry
-            .server_source_id_for_route(first_initial_dcid.as_slice())
-            .is_none());
-        assert!(registry
-            .server_source_id_for_route(&first_server_id)
-            .is_none());
-
-        assert_eq!(
-            receive(&mut registry, &mut replacement_initial)
-                .expect("reclaimed same-IP capacity accepts replacement"),
-            InboundDisposition::Created
-        );
+            .expect("request first connection close"));
         assert_eq!(registry.connection_count(), 2);
         assert_eq!(registry.route_count(), 4);
-        assert_eq!(registry.source_count(replacement_address), 2);
+        assert_eq!(registry.source_count(first_address), 2);
+        assert_eq!(
+            registry.server_source_id_for_route(first_initial_dcid.as_slice()),
+            Some(first_server_id)
+        );
+        assert_eq!(
+            registry.server_source_id_for_route(&first_server_id),
+            Some(first_server_id)
+        );
+        assert_eq!(
+            receive(&mut registry, &mut replacement_initial)
+                .expect_err("closing connection still holds same-IP capacity"),
+            RegistryError::CapacityUnavailable
+        );
+
+        for _ in 0..MAX_ROUTE_KEYS {
+            let mut bytes = [0_u8; MAX_PACKET_BYTES];
+            let Some((length, meta)) = registry
+                .next_packet(&mut bytes)
+                .expect("produce pending close packet")
+            else {
+                break;
+            };
+            let packet = TestPacket {
+                bytes,
+                length,
+                meta,
+            };
+            if meta.to == first.address {
+                first.receive(packet);
+            } else if meta.to == second.address {
+                second.receive(packet);
+            } else {
+                panic!("server close packet crossed synthetic client routes");
+            }
+            if first.transport.peer_error().is_some() {
+                break;
+            }
+        }
+        let peer_error = first
+            .transport
+            .peer_error()
+            .expect("real peer receives the server CONNECTION_CLOSE");
+        assert!(peer_error.is_app);
+        assert_eq!(peer_error.error_code, 0);
+        assert!(peer_error.reason.is_empty());
+        assert_eq!(registry.connection_count(), 2);
+        assert_eq!(registry.route_count(), 4);
+
+        let (finished_tx, finished_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if registry.find_route(&first_initial_dcid).is_none() {
+                    break;
+                }
+                let wait = registry
+                    .next_timeout()
+                    .expect("read retained draining timeout")
+                    .expect("draining connection keeps a timer");
+                assert!(
+                    std::time::Instant::now() + wait <= deadline,
+                    "draining timeout stays inside the test deadline"
+                );
+                std::thread::park_timeout(wait);
+                registry
+                    .on_timeout()
+                    .expect("drive retained draining timeout");
+            }
+
+            assert_eq!(registry.connection_count(), 1);
+            assert_eq!(registry.route_count(), 2);
+            assert_eq!(registry.source_count(first_address), 1);
+            assert!(registry
+                .server_source_id_for_route(first_initial_dcid.as_slice())
+                .is_none());
+            assert!(registry
+                .server_source_id_for_route(&first_server_id)
+                .is_none());
+
+            assert_eq!(
+                receive(&mut registry, &mut replacement_initial)
+                    .expect("reclaimed same-IP capacity accepts replacement"),
+                InboundDisposition::Created
+            );
+            assert_eq!(registry.connection_count(), 2);
+            assert_eq!(registry.route_count(), 4);
+            assert_eq!(registry.source_count(replacement_address), 2);
+            finished_tx.send(()).expect("report timer-drive completion");
+        });
+        finished_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("draining connection closes within the bounded worker deadline");
+        worker.join().expect("join bounded timer-drive worker");
     }
 
     #[test]
-    fn timeout_sweep_reclaims_terminating_entry_without_sleep() {
+    fn timeout_sweep_retains_pending_close_before_protocol_deadline() {
         let mut registry = test_registry(ScriptedConnectionIdGenerator::incrementing());
         let mut client = SyntheticClient::new(CLIENT_ADDRESS, 0x77);
         let mut initial = first_packet(&mut client);
@@ -1398,11 +1498,15 @@ mod tests {
         let ConnectionOwner::Synchronous { connection, .. } = &mut entry.owner else {
             panic!("test entry must use synchronous ownership");
         };
-        connection.close().expect("mark connection terminating");
+        connection.close().expect("request connection close");
+        assert_eq!(
+            connection.lifecycle(),
+            ConnectionLifecycle::ClosingPendingSend
+        );
         registry.on_timeout().expect("bounded timeout sweep");
-        assert_eq!(registry.connection_count(), 0);
-        assert_eq!(registry.route_count(), 0);
-        assert_eq!(registry.source_count(CLIENT_ADDRESS), 0);
+        assert_eq!(registry.connection_count(), 1);
+        assert_eq!(registry.route_count(), 2);
+        assert_eq!(registry.source_count(CLIENT_ADDRESS), 1);
     }
 
     #[test]

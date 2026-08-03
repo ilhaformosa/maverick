@@ -79,7 +79,14 @@ pub(super) struct ServerConnection {
     h3: Option<quiche::h3::Connection>,
     local_address: SocketAddr,
     peer_address: SocketAddr,
-    close_requested: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ConnectionLifecycle {
+    Active,
+    ClosingPendingSend,
+    Draining,
+    Closed,
 }
 
 impl ServerConnection {
@@ -125,7 +132,6 @@ impl ServerConnection {
             h3: None,
             local_address: meta.to,
             peer_address: meta.from,
-            close_requested: false,
         };
         if !connection.has_stable_source_connection_id(&source_connection_id) {
             connection.fail_closed(PRE_AUTH_CLOSE_CODE);
@@ -141,6 +147,9 @@ impl ServerConnection {
         length: usize,
         meta: PacketMeta,
     ) -> Result<(), RuntimeError> {
+        if self.lifecycle() == ConnectionLifecycle::Closed {
+            return Err(RuntimeError::PacketRejected);
+        }
         if meta.from != self.peer_address || meta.to != self.local_address {
             return Err(RuntimeError::PacketRejected);
         }
@@ -199,19 +208,32 @@ impl ServerConnection {
         self.h3.is_some()
     }
 
-    pub(super) fn is_terminating(&self) -> bool {
-        self.close_requested || self.transport.is_draining() || self.transport.is_closed()
+    pub(super) fn lifecycle(&self) -> ConnectionLifecycle {
+        if self.transport.is_closed() {
+            ConnectionLifecycle::Closed
+        } else if self.transport.is_draining() {
+            ConnectionLifecycle::Draining
+        } else if self.transport.local_error().is_some() {
+            ConnectionLifecycle::ClosingPendingSend
+        } else {
+            ConnectionLifecycle::Active
+        }
     }
 
     pub(super) fn close(&mut self) -> Result<(), RuntimeError> {
+        if self.lifecycle() != ConnectionLifecycle::Active {
+            return Ok(());
+        }
         self.transport
             .close(true, 0, b"")
             .map_err(|_| RuntimeError::CloseUnavailable)?;
-        self.close_requested = true;
         Ok(())
     }
 
     fn drive_h3(&mut self) -> Result<(), RuntimeError> {
+        if self.lifecycle() != ConnectionLifecycle::Active {
+            return Ok(());
+        }
         if self.transport.is_in_early_data() {
             self.fail_closed(PRE_AUTH_CLOSE_CODE);
             return Err(RuntimeError::EarlyDataRejected);
@@ -251,8 +273,9 @@ impl ServerConnection {
     }
 
     fn fail_closed(&mut self, code: u64) {
-        self.close_requested = true;
-        let _ = self.transport.close(true, code, b"");
+        if self.lifecycle() == ConnectionLifecycle::Active {
+            let _ = self.transport.close(true, code, b"");
+        }
     }
 
     pub(super) fn has_stable_source_connection_id(
@@ -574,9 +597,31 @@ mod tests {
         pair.server
             .close()
             .expect("explicitly close server-owned connection");
-        assert!(pair.server.is_terminating());
+        let local_error = pair
+            .server
+            .transport
+            .local_error()
+            .expect("local close records a pending application error");
+        assert!(local_error.is_app);
+        assert_eq!(local_error.error_code, 0);
+        assert!(!pair.server.transport.is_draining());
+        assert!(!pair.server.transport.is_closed());
+        assert_eq!(
+            pair.server.lifecycle(),
+            ConnectionLifecycle::ClosingPendingSend
+        );
         pair.server_to_client()
             .expect("deliver explicit server close in memory");
+        let peer_error = pair
+            .client
+            .peer_error()
+            .expect("real peer receives the server CONNECTION_CLOSE");
+        assert!(peer_error.is_app);
+        assert_eq!(peer_error.error_code, 0);
+        assert!(peer_error.reason.is_empty());
+        assert!(pair.server.transport.is_draining());
+        assert!(!pair.server.transport.is_closed());
+        assert_eq!(pair.server.lifecycle(), ConnectionLifecycle::Draining);
         assert!(pair.client.is_draining() || pair.client.is_closed());
         drop(pair.server);
     }
@@ -597,9 +642,19 @@ mod tests {
         );
         assert_eq!(format!("{error:?}"), "private server connection error");
         assert!(std::error::Error::source(&error).is_none());
-        assert!(pair.server.is_terminating());
+        assert_eq!(
+            pair.server.lifecycle(),
+            ConnectionLifecycle::ClosingPendingSend
+        );
         pair.server_to_client()
             .expect("deliver pre-authentication close in memory");
+        let peer_error = pair
+            .client
+            .peer_error()
+            .expect("real peer receives pre-authentication CONNECTION_CLOSE");
+        assert!(peer_error.is_app);
+        assert_eq!(peer_error.error_code, PRE_AUTH_CLOSE_CODE);
+        assert!(peer_error.reason.is_empty());
         assert!(pair.client.is_draining() || pair.client.is_closed());
     }
 

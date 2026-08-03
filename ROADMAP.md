@@ -17,31 +17,30 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2b1b — bounded local UDP endpoint and connection actors
+### T027b-2b1c — bounded native-QUIC termination draining
 
-- **User result:** `maverick-server` can privately run one local-only native-
-  quiche UDP endpoint whose bounded per-connection actors own their connection
-  state. This is repository-local lifecycle and routing foundation, not an
+- **User result:** The private local-only native-quiche server foundation keeps
+  a closing connection owned until quiche reports it closed, so a locally
+  requested close gets a bounded send opportunity and peer draining can finish
+  its protocol timer. This is repository-local lifecycle correctness, not an
   authenticated runtime, data plane, or user-visible product result.
-- **Scope:** Keep one endpoint task as the sole UDP receive loop, CID registry,
-  and actor `JoinSet` owner. Move each accepted `ServerConnection` into exactly
-  one actor with an inbox of four packets. Route with `try_send`, keep the
-  existing registry as the only global/per-source capacity fact, receive at
-  most 1,351 bytes to reject oversize datagrams, flush at most sixteen outbound
-  packets per actor round, use one absolute two-second socket-send deadline for
-  that entire round, cap handshake wall time and QUIC idle time at five seconds,
-  and use a two-second graceful cancel/join deadline. At that deadline, abort
-  remaining actors, drain the `JoinSet` empty, reclaim joined routes, and report
-  the exceeded budget rather than returning with live work. Bind only
-  `127.0.0.1:0` through a private test seam.
-- **Acceptance:** Retain focused red-to-green evidence. Prove real loopback UDP
-  Initial creation and later server-SCID routing for two isolated clients;
-  queue-full and oversize drops; exact-address routing; global/per-source caps
-  and post-join reuse; fair sixteen-packet flush rounds; cancellation and timer
-  bounds; joined cleanup after normal exit, panic, timeout, and shutdown; fixed
-  privacy-safe socket/actor errors; exclusive `ServerConnection` ownership;
-  and unchanged default, legacy H3, client foundation, strict-push, dependency,
-  lint, and local product gates.
+- **Scope:** Separate active, close-pending-send, draining, and closed transport
+  states directly from live quiche facts. Keep synchronous registry aliases,
+  source accounting, and capacity until `is_closed()`. Make connection actors
+  capture their terminal reason, flush a pending close before processing an
+  already-due transport timer, continue bounded receive and timer work while
+  draining, and use a 1.5-second actor termination deadline inside the existing
+  two-second endpoint join budget. The endpoint still aborts overdue actors and
+  unconditionally drains its `JoinSet` before reclaiming joined routes.
+- **Acceptance:** Retain focused red-to-green evidence. Feed server close
+  datagrams into a real quiche peer and verify the exact peer error; prove local
+  close and peer draining retain both CID aliases, source/global capacity, and
+  actor ownership until the transport closes and the actor joins; prove
+  established cancellation sends a real close while pre-key cancellation and
+  handshake failure remain hard-bounded; preserve stable server-SCID checks
+  around every receive, send, and timer operation; and keep all previous
+  endpoint, registry, default, legacy-H3, client, strict-push, lint, and local
+  product gates.
 - **Out of scope:** No Retry or address validation, Version Negotiation,
   Stateless Reset, CID rotation or retirement, NAT rebinding, migration,
   multipath, auth-v3, ClientControl, ServerConfirmation, policy, parser caller,
@@ -49,7 +48,7 @@ adopted nor automatically rejected.
   protocol, frame, wire, schema, version, `STATUS.md`, CI, remote, deployment,
   release, real network, or system-network change. Capacity caps still do not
   prove peer-address ownership or spoofing-DoS resistance.
-- **Stop conditions:** Stop on a sixth changed file, any manifest, lockfile, or
+- **Stop conditions:** Stop on a fifth changed file, any manifest, lockfile, or
   dependency change, a server-to-client production dependency, any public
   third-party type, a need for auth/parser/target/relay work, an unbounded
   collection, queue, wait, flush, or shutdown, shared-lock connection state, a

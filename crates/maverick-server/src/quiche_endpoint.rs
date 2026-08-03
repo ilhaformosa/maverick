@@ -11,10 +11,14 @@ use std::fmt;
 #[cfg(test)]
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
+#[cfg(test)]
+use tokio::sync::Notify;
 use tokio::sync::{mpsc, watch};
 use tokio::task::{Id, JoinError, JoinSet};
 use tokio::time::{timeout_at, Instant};
@@ -22,6 +26,7 @@ use tokio::time::{timeout_at, Instant};
 use crate::quiche_registry::{
     ActorInboundDisposition, ActorPacket, ConnectionRegistry, RegistryError,
 };
+use crate::quiche_runtime::ConnectionLifecycle;
 #[cfg(test)]
 use crate::quiche_runtime::ServerCredentials;
 use crate::quiche_runtime::{PacketMeta, ServerConnection, MAX_PACKET_BYTES};
@@ -32,6 +37,7 @@ const MAX_OUTBOUND_PACKETS_PER_ROUND: usize = 16;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+const ACTOR_TERMINATION_BUDGET: Duration = Duration::from_millis(1_500);
 const SHUTDOWN_JOIN_BUDGET: Duration = Duration::from_secs(2);
 
 struct Endpoint {
@@ -46,6 +52,8 @@ struct Endpoint {
     fail_next_activation: bool,
     #[cfg(test)]
     next_actor_fault: ActorFault,
+    #[cfg(test)]
+    next_actor_test_gate: Option<Arc<ActorTestGate>>,
 }
 
 impl Endpoint {
@@ -73,6 +81,7 @@ impl Endpoint {
                 cancel_rx,
                 fail_next_activation: false,
                 next_actor_fault: ActorFault::None,
+                next_actor_test_gate: None,
             },
             cancel_tx,
         ))
@@ -95,8 +104,8 @@ impl Endpoint {
                     let Some(completion) = completion else {
                         break Err(EndpointError::ActorLifecycle);
                     };
-                    if self.reclaim_joined(completion).is_err() {
-                        break Err(EndpointError::ActorLifecycle);
+                    if let Err(error) = self.reclaim_joined(completion) {
+                        break Err(error);
                     }
                 }
                 received = self.socket.recv_from(&mut receive_buffer) => {
@@ -156,6 +165,7 @@ impl Endpoint {
                         receiver,
                         actor_socket,
                         actor_cancel,
+                        self.next_actor_test_gate.take(),
                     )),
                     ActorFault::Panic => self.actors.spawn(async move {
                         let _owned = (connection, receiver, actor_socket, actor_cancel);
@@ -203,16 +213,25 @@ impl Endpoint {
         &mut self,
         completion: Result<(Id, Result<(), ActorError>), JoinError>,
     ) -> Result<(), EndpointError> {
-        let task_id = match completion {
-            Ok((task_id, _)) => task_id,
-            Err(error) => error.id(),
+        let (task_id, termination_timed_out) = match completion {
+            Ok((task_id, Err(ActorError::TerminationTimeout))) => (task_id, true),
+            Ok((task_id, _)) => (task_id, false),
+            Err(error) => (error.id(), false),
         };
         if self.registry.reclaim_joined_actor(task_id).is_some() {
-            return Ok(());
+            return if termination_timed_out {
+                Err(EndpointError::Shutdown)
+            } else {
+                Ok(())
+            };
         }
         if self.unregistered_actor == Some(task_id) {
             self.unregistered_actor = None;
-            return Ok(());
+            return if termination_timed_out {
+                Err(EndpointError::Shutdown)
+            } else {
+                Ok(())
+            };
         }
         Err(EndpointError::ActorLifecycle)
     }
@@ -222,11 +241,14 @@ impl Endpoint {
         let deadline = Instant::now() + SHUTDOWN_JOIN_BUDGET;
         let mut lifecycle_failed = false;
         let mut exceeded_budget = false;
+        let mut forced_reclaim = false;
         while !self.actors.is_empty() {
             match timeout_at(deadline, self.actors.join_next_with_id()).await {
-                Ok(Some(completion)) => {
-                    lifecycle_failed |= self.reclaim_joined(completion).is_err();
-                }
+                Ok(Some(completion)) => match self.reclaim_joined(completion) {
+                    Ok(()) => {}
+                    Err(EndpointError::Shutdown) => forced_reclaim = true,
+                    Err(_) => lifecycle_failed = true,
+                },
                 Ok(None) => {
                     lifecycle_failed = true;
                     break;
@@ -241,7 +263,11 @@ impl Endpoint {
         if exceeded_budget || !self.actors.is_empty() {
             self.actors.abort_all();
             while let Some(completion) = self.actors.join_next_with_id().await {
-                lifecycle_failed |= self.reclaim_joined(completion).is_err();
+                match self.reclaim_joined(completion) {
+                    Ok(()) => {}
+                    Err(EndpointError::Shutdown) => forced_reclaim = true,
+                    Err(_) => lifecycle_failed = true,
+                }
             }
         }
 
@@ -256,7 +282,7 @@ impl Endpoint {
         {
             return Err(EndpointError::Shutdown);
         }
-        if exceeded_budget {
+        if exceeded_budget || forced_reclaim {
             Err(EndpointError::Shutdown)
         } else if lifecycle_failed {
             Err(EndpointError::ActorLifecycle)
@@ -284,107 +310,299 @@ async fn run_connection_actor(
     mut inbox: mpsc::Receiver<ActorPacket>,
     socket: Arc<UdpSocket>,
     mut cancel: watch::Receiver<bool>,
+    #[cfg(test)] test_gate: Option<Arc<ActorTestGate>>,
 ) -> Result<(), ActorError> {
     let handshake_deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    let mut terminal_error = None;
+    let mut termination_deadline = None;
     loop {
         verify_stable_source_id(&connection, &expected_server_source_id)?;
-        if *cancel.borrow() {
-            let _ = connection.close();
-            return Err(ActorError::Cancelled);
+        if connection.lifecycle() == ConnectionLifecycle::Closed {
+            return terminal_error.map_or(Ok(()), Err);
+        }
+        if termination_deadline.is_none() && *cancel.borrow() {
+            begin_actor_termination(
+                &mut connection,
+                &mut terminal_error,
+                &mut termination_deadline,
+                Some(ActorError::Cancelled),
+            );
         }
 
         let handshake_complete = connection.is_established() && connection.h3_is_ready();
-        if !handshake_complete && Instant::now() >= handshake_deadline {
-            let _ = connection.close();
-            return Err(ActorError::HandshakeTimeout);
-        }
-        if connection
-            .next_timeout()
-            .is_some_and(|timeout| timeout.is_zero())
+        if termination_deadline.is_none()
+            && !handshake_complete
+            && Instant::now() >= handshake_deadline
         {
-            connection
-                .on_timeout()
-                .map_err(|_| ActorError::ConnectionUnavailable)?;
+            begin_actor_termination(
+                &mut connection,
+                &mut terminal_error,
+                &mut termination_deadline,
+                Some(ActorError::HandshakeTimeout),
+            );
+        }
+        let lifecycle_before_flush = connection.lifecycle();
+        let immediate_timeout = timeout_may_precede_flush(lifecycle_before_flush)
+            && connection
+                .next_timeout()
+                .is_some_and(|timeout| timeout.is_zero());
+        if immediate_timeout {
+            if connection.on_timeout().is_err() {
+                begin_actor_termination(
+                    &mut connection,
+                    &mut terminal_error,
+                    &mut termination_deadline,
+                    Some(ActorError::ConnectionUnavailable),
+                );
+            }
             verify_stable_source_id(&connection, &expected_server_source_id)?;
         }
 
-        #[cfg(not(test))]
-        let flush = flush_outbound_round(
-            &mut connection,
-            &expected_server_source_id,
-            &socket,
-            &mut cancel,
-            (!handshake_complete).then_some(handshake_deadline),
-        );
-        #[cfg(test)]
-        let flush = flush_outbound_round(
-            &mut connection,
-            &expected_server_source_id,
-            &socket,
-            &mut cancel,
-            (!handshake_complete).then_some(handshake_deadline),
-            None,
-        );
-        match flush.await? {
-            FlushOutcome::BudgetExhausted => {
-                tokio::task::yield_now().await;
-                continue;
-            }
-            FlushOutcome::Drained => {}
-            FlushOutcome::HandshakeDeadline => {
-                let _ = connection.close();
-                return Err(ActorError::HandshakeTimeout);
-            }
-            FlushOutcome::IdleDeadline => {
-                verify_stable_source_id(&connection, &expected_server_source_id)?;
-                connection
-                    .on_timeout()
-                    .map_err(|_| ActorError::ConnectionUnavailable)?;
-                verify_stable_source_id(&connection, &expected_server_source_id)?;
-                continue;
-            }
-            FlushOutcome::SendDeadline => return Err(ActorError::SocketSendUnavailable),
+        if connection.lifecycle() == ConnectionLifecycle::Closed {
+            continue;
         }
-        if connection.is_terminating() {
-            return Ok(());
+        if connection.lifecycle() == ConnectionLifecycle::Draining && termination_deadline.is_none()
+        {
+            begin_actor_termination(
+                &mut connection,
+                &mut terminal_error,
+                &mut termination_deadline,
+                None,
+            );
         }
 
-        let idle_wait = connection
+        let should_flush = connection.lifecycle() != ConnectionLifecycle::Draining;
+        if should_flush {
+            let handshake_flush_deadline = (termination_deadline.is_none() && !handshake_complete)
+                .then_some(handshake_deadline);
+            let flush_control = FlushControl {
+                honor_cancel: termination_deadline.is_none(),
+                handshake_deadline: handshake_flush_deadline,
+                termination_deadline,
+            };
+            #[cfg(not(test))]
+            let flush = flush_outbound_round(
+                &mut connection,
+                &expected_server_source_id,
+                &socket,
+                &mut cancel,
+                flush_control,
+            );
+            #[cfg(test)]
+            let flush = flush_outbound_round(
+                &mut connection,
+                &expected_server_source_id,
+                &socket,
+                &mut cancel,
+                flush_control,
+                FlushTestHooks {
+                    packets: None,
+                    actor_gate: test_gate.as_deref(),
+                },
+            );
+            match flush.await {
+                Ok(FlushOutcome::BudgetExhausted) => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Ok(FlushOutcome::Drained) => {}
+                Ok(FlushOutcome::HandshakeDeadline) => {
+                    begin_actor_termination(
+                        &mut connection,
+                        &mut terminal_error,
+                        &mut termination_deadline,
+                        Some(ActorError::HandshakeTimeout),
+                    );
+                    continue;
+                }
+                Ok(FlushOutcome::IdleDeadline) => {
+                    verify_stable_source_id(&connection, &expected_server_source_id)?;
+                    if connection.on_timeout().is_err() {
+                        begin_actor_termination(
+                            &mut connection,
+                            &mut terminal_error,
+                            &mut termination_deadline,
+                            Some(ActorError::ConnectionUnavailable),
+                        );
+                    }
+                    verify_stable_source_id(&connection, &expected_server_source_id)?;
+                    continue;
+                }
+                Ok(FlushOutcome::TerminationDeadline) => {
+                    return Err(ActorError::TerminationTimeout);
+                }
+                Ok(FlushOutcome::SendDeadline) => {
+                    begin_actor_termination(
+                        &mut connection,
+                        &mut terminal_error,
+                        &mut termination_deadline,
+                        Some(ActorError::SocketSendUnavailable),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    begin_actor_termination(
+                        &mut connection,
+                        &mut terminal_error,
+                        &mut termination_deadline,
+                        Some(error),
+                    );
+                    continue;
+                }
+            }
+        }
+
+        if connection.lifecycle() != ConnectionLifecycle::Active && termination_deadline.is_none() {
+            begin_actor_termination(
+                &mut connection,
+                &mut terminal_error,
+                &mut termination_deadline,
+                None,
+            );
+        }
+        if connection.lifecycle() == ConnectionLifecycle::Closed {
+            continue;
+        }
+
+        let protocol_wait = connection
             .next_timeout()
             .unwrap_or(MAX_IDLE_TIMEOUT)
             .min(MAX_IDLE_TIMEOUT);
-        let idle_deadline = Instant::now() + idle_wait;
+        let protocol_deadline = Instant::now() + protocol_wait;
         let handshake_complete = connection.is_established() && connection.h3_is_ready();
+        let (actor_deadline, actor_deadline_kind) = earliest_actor_deadline(
+            protocol_deadline,
+            (termination_deadline.is_none() && !handshake_complete).then_some(handshake_deadline),
+            termination_deadline,
+        );
+        #[cfg(test)]
+        if connection.lifecycle() == ConnectionLifecycle::ClosingPendingSend {
+            if let Some(test_gate) = test_gate.as_deref() {
+                test_gate.observe_pending_close_wait();
+            }
+        }
+        #[cfg(test)]
+        if connection.lifecycle() == ConnectionLifecycle::Draining {
+            if let Some(test_gate) = test_gate.as_deref() {
+                test_gate.pause_draining_wait_once_if_armed().await;
+            }
+        }
         tokio::select! {
             biased;
-            changed = cancel.changed() => {
+            changed = cancel.changed(), if termination_deadline.is_none() => {
                 let _ = changed;
-                let _ = connection.close();
-                return Err(ActorError::Cancelled);
+                begin_actor_termination(
+                    &mut connection,
+                    &mut terminal_error,
+                    &mut termination_deadline,
+                    Some(ActorError::Cancelled),
+                );
             }
-            _ = tokio::time::sleep_until(handshake_deadline), if !handshake_complete => {
-                let _ = connection.close();
-                return Err(ActorError::HandshakeTimeout);
-            }
-            _ = tokio::time::sleep_until(idle_deadline) => {
-                verify_stable_source_id(&connection, &expected_server_source_id)?;
-                connection
-                    .on_timeout()
-                    .map_err(|_| ActorError::ConnectionUnavailable)?;
-                verify_stable_source_id(&connection, &expected_server_source_id)?;
+            _ = tokio::time::sleep_until(actor_deadline) => {
+                match actor_deadline_kind {
+                    ActorDeadlineKind::Termination => {
+                        return Err(ActorError::TerminationTimeout);
+                    }
+                    ActorDeadlineKind::Handshake => {
+                        begin_actor_termination(
+                            &mut connection,
+                            &mut terminal_error,
+                            &mut termination_deadline,
+                            Some(ActorError::HandshakeTimeout),
+                        );
+                    }
+                    ActorDeadlineKind::Protocol => {
+                        verify_stable_source_id(&connection, &expected_server_source_id)?;
+                        if connection.on_timeout().is_err() {
+                            begin_actor_termination(
+                                &mut connection,
+                                &mut terminal_error,
+                                &mut termination_deadline,
+                                Some(ActorError::ConnectionUnavailable),
+                            );
+                        }
+                        verify_stable_source_id(&connection, &expected_server_source_id)?;
+                    }
+                }
             }
             inbound = inbox.recv() => {
-                let Some(mut inbound) = inbound else {
-                    return Err(ActorError::InboxUnavailable);
-                };
-                verify_stable_source_id(&connection, &expected_server_source_id)?;
-                connection
-                    .receive_packet(&mut inbound.bytes, inbound.length, inbound.meta)
-                    .map_err(|_| ActorError::ConnectionUnavailable)?;
-                verify_stable_source_id(&connection, &expected_server_source_id)?;
+                match inbound {
+                    Some(mut inbound) => {
+                        verify_stable_source_id(&connection, &expected_server_source_id)?;
+                        if connection
+                            .receive_packet(&mut inbound.bytes, inbound.length, inbound.meta)
+                            .is_err()
+                        {
+                            begin_actor_termination(
+                                &mut connection,
+                                &mut terminal_error,
+                                &mut termination_deadline,
+                                Some(ActorError::ConnectionUnavailable),
+                            );
+                        }
+                        verify_stable_source_id(&connection, &expected_server_source_id)?;
+                    }
+                    None => {
+                        begin_actor_termination(
+                            &mut connection,
+                            &mut terminal_error,
+                            &mut termination_deadline,
+                            Some(ActorError::InboxUnavailable),
+                        );
+                    }
+                }
             }
         }
     }
+}
+
+fn timeout_may_precede_flush(lifecycle: ConnectionLifecycle) -> bool {
+    matches!(
+        lifecycle,
+        ConnectionLifecycle::Active | ConnectionLifecycle::Draining
+    )
+}
+
+fn begin_actor_termination(
+    connection: &mut ServerConnection,
+    terminal_error: &mut Option<ActorError>,
+    termination_deadline: &mut Option<Instant>,
+    error: Option<ActorError>,
+) {
+    if let Some(error) = error {
+        terminal_error.get_or_insert(error);
+    }
+    if termination_deadline.is_none() {
+        *termination_deadline = Some(Instant::now() + ACTOR_TERMINATION_BUDGET);
+    }
+    if connection.lifecycle() == ConnectionLifecycle::Active && connection.close().is_err() {
+        terminal_error.get_or_insert(ActorError::ConnectionUnavailable);
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ActorDeadlineKind {
+    Protocol,
+    Handshake,
+    Termination,
+}
+
+fn earliest_actor_deadline(
+    protocol_deadline: Instant,
+    handshake_deadline: Option<Instant>,
+    termination_deadline: Option<Instant>,
+) -> (Instant, ActorDeadlineKind) {
+    if let Some(termination_deadline) = termination_deadline {
+        if termination_deadline <= protocol_deadline {
+            return (termination_deadline, ActorDeadlineKind::Termination);
+        }
+    }
+    if let Some(handshake_deadline) = handshake_deadline {
+        if handshake_deadline <= protocol_deadline {
+            return (handshake_deadline, ActorDeadlineKind::Handshake);
+        }
+    }
+    (protocol_deadline, ActorDeadlineKind::Protocol)
 }
 
 enum FlushOutcome {
@@ -392,7 +610,15 @@ enum FlushOutcome {
     BudgetExhausted,
     HandshakeDeadline,
     IdleDeadline,
+    TerminationDeadline,
     SendDeadline,
+}
+
+#[derive(Clone, Copy)]
+struct FlushControl {
+    honor_cancel: bool,
+    handshake_deadline: Option<Instant>,
+    termination_deadline: Option<Instant>,
 }
 
 async fn flush_outbound_round(
@@ -400,20 +626,20 @@ async fn flush_outbound_round(
     expected_server_source_id: &crate::quiche_runtime::ServerSourceConnectionId,
     socket: &UdpSocket,
     cancel: &mut watch::Receiver<bool>,
-    handshake_deadline: Option<Instant>,
-    #[cfg(test)] mut test_packets: Option<&mut FlushTestPackets>,
+    control: FlushControl,
+    #[cfg(test)] mut test_hooks: FlushTestHooks<'_>,
 ) -> Result<FlushOutcome, ActorError> {
     let mut packet = [0_u8; MAX_PACKET_BYTES];
     let round_send_deadline = Instant::now() + SOCKET_SEND_TIMEOUT;
     for _ in 0..MAX_OUTBOUND_PACKETS_PER_ROUND {
-        if *cancel.borrow() {
+        if control.honor_cancel && *cancel.borrow() {
             return Err(ActorError::Cancelled);
         }
         verify_stable_source_id(connection, expected_server_source_id)?;
         #[cfg(not(test))]
         let output = connection.next_packet(&mut packet);
         #[cfg(test)]
-        let output = match test_packets.as_deref_mut() {
+        let output = match test_hooks.packets.as_deref_mut() {
             Some(test_packets) => Ok(test_packets.next_packet(&mut packet)),
             None => connection.next_packet(&mut packet),
         };
@@ -427,15 +653,23 @@ async fn flush_outbound_round(
                 .next_timeout()
                 .unwrap_or(MAX_IDLE_TIMEOUT)
                 .min(MAX_IDLE_TIMEOUT);
-        let (effective_deadline, deadline_kind) =
-            earliest_flush_deadline(round_send_deadline, handshake_deadline, idle_deadline);
+        let (effective_deadline, deadline_kind) = earliest_flush_deadline(
+            round_send_deadline,
+            control.handshake_deadline,
+            idle_deadline,
+            control.termination_deadline,
+        );
         let send = timeout_at(
             effective_deadline,
             socket.send_to(&packet[..length], meta.to),
         );
+        #[cfg(test)]
+        if let Some(actor_gate) = test_hooks.actor_gate {
+            actor_gate.pause_once_if_armed().await;
+        }
         tokio::select! {
             biased;
-            changed = cancel.changed() => {
+            changed = cancel.changed(), if control.honor_cancel => {
                 let _ = changed;
                 return Err(ActorError::Cancelled);
             }
@@ -448,6 +682,7 @@ async fn flush_outbound_round(
                             FlushDeadlineKind::RoundSend => FlushOutcome::SendDeadline,
                             FlushDeadlineKind::Handshake => FlushOutcome::HandshakeDeadline,
                             FlushDeadlineKind::Idle => FlushOutcome::IdleDeadline,
+                            FlushDeadlineKind::Termination => FlushOutcome::TerminationDeadline,
                         });
                     }
                 }
@@ -459,10 +694,65 @@ async fn flush_outbound_round(
 }
 
 #[cfg(test)]
+struct FlushTestHooks<'a> {
+    packets: Option<&'a mut FlushTestPackets>,
+    actor_gate: Option<&'a ActorTestGate>,
+}
+
+#[cfg(test)]
 struct FlushTestPackets {
     remaining: usize,
     emitted: usize,
     meta: PacketMeta,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct ActorTestGate {
+    send_armed: AtomicBool,
+    send_started: Notify,
+    release_send: Notify,
+    pending_close_wait: Notify,
+    draining_wait_armed: AtomicBool,
+    draining_wait_started: Notify,
+    release_draining_wait: Notify,
+}
+
+#[cfg(test)]
+impl ActorTestGate {
+    fn arm_send(&self) {
+        assert!(!self.send_armed.swap(true, Ordering::SeqCst));
+    }
+
+    async fn pause_once_if_armed(&self) {
+        if self.send_armed.swap(false, Ordering::SeqCst) {
+            self.send_started.notify_one();
+            self.release_send.notified().await;
+        }
+    }
+
+    fn release(&self) {
+        self.release_send.notify_one();
+    }
+
+    fn observe_pending_close_wait(&self) {
+        self.pending_close_wait.notify_one();
+    }
+
+    fn arm_draining_wait(&self) {
+        assert!(!self.draining_wait_armed.swap(true, Ordering::SeqCst));
+    }
+
+    async fn pause_draining_wait_once_if_armed(&self) {
+        if self.draining_wait_armed.swap(false, Ordering::SeqCst) {
+            self.draining_wait_started.notify_one();
+            self.release_draining_wait.notified().await;
+        }
+    }
+
+    fn release_draining_wait(&self) {
+        self.release_draining_wait.notify_one();
+    }
 }
 
 #[cfg(test)]
@@ -483,13 +773,20 @@ enum FlushDeadlineKind {
     RoundSend,
     Handshake,
     Idle,
+    Termination,
 }
 
 fn earliest_flush_deadline(
     round_send_deadline: Instant,
     handshake_deadline: Option<Instant>,
     idle_deadline: Instant,
+    termination_deadline: Option<Instant>,
 ) -> (Instant, FlushDeadlineKind) {
+    if let Some(termination_deadline) = termination_deadline {
+        if termination_deadline <= idle_deadline && termination_deadline <= round_send_deadline {
+            return (termination_deadline, FlushDeadlineKind::Termination);
+        }
+    }
     if let Some(handshake_deadline) = handshake_deadline {
         if handshake_deadline <= idle_deadline && handshake_deadline <= round_send_deadline {
             return (handshake_deadline, FlushDeadlineKind::Handshake);
@@ -547,6 +844,7 @@ impl std::error::Error for EndpointError {}
 enum ActorError {
     Cancelled,
     HandshakeTimeout,
+    TerminationTimeout,
     InboxUnavailable,
     ConnectionUnavailable,
     SocketSendUnavailable,
@@ -557,6 +855,7 @@ impl fmt::Display for ActorError {
         let message = match self {
             Self::Cancelled => "server actor cancelled",
             Self::HandshakeTimeout => "server actor handshake timeout",
+            Self::TerminationTimeout => "server actor termination timeout",
             Self::InboxUnavailable => "server actor inbox unavailable",
             Self::ConnectionUnavailable => "server actor connection unavailable",
             Self::SocketSendUnavailable => "server actor send unavailable",
@@ -840,6 +1139,90 @@ mod tests {
         .expect("drive two UDP clients within wall bound");
     }
 
+    async fn drive_client_to_h3(client: &mut UdpQuicheClient) {
+        timeout(Duration::from_secs(5), async {
+            let mut ready_rounds = 0_usize;
+            for _ in 0..128 {
+                client.send_pending().await;
+                client.receive_available().await;
+                client.prepare_h3();
+                if client.h3.is_some() {
+                    ready_rounds += 1;
+                    if ready_rounds == 2 {
+                        return;
+                    }
+                }
+            }
+            panic!("UDP client did not reach H3 within step bound");
+        })
+        .await
+        .expect("drive UDP client within wall bound");
+    }
+
+    async fn drive_endpoint_client_to_h3(endpoint: &mut Endpoint, client: &mut UdpQuicheClient) {
+        timeout(Duration::from_secs(5), async {
+            let mut ready_rounds = 0_usize;
+            for _ in 0..128 {
+                client.send_pending().await;
+                route_available_client_datagrams(endpoint).await;
+                client.receive_available().await;
+                client.prepare_h3();
+                if client.h3.is_some() {
+                    ready_rounds += 1;
+                    if ready_rounds == 2 {
+                        return;
+                    }
+                }
+            }
+            panic!("manually driven endpoint client did not reach H3");
+        })
+        .await
+        .expect("drive manual endpoint client within wall bound");
+    }
+
+    async fn route_available_client_datagrams(endpoint: &mut Endpoint) {
+        let mut receive_buffer = [0_u8; SOCKET_RECV_BYTES];
+        let first = timeout(
+            Duration::from_millis(25),
+            endpoint.socket.recv_from(&mut receive_buffer),
+        )
+        .await;
+        let Ok(Ok((length, source))) = first else {
+            return;
+        };
+        route_one_client_datagram(endpoint, &receive_buffer, length, source);
+        for _ in 0..64 {
+            match endpoint.socket.try_recv_from(&mut receive_buffer) {
+                Ok((length, source)) => {
+                    route_one_client_datagram(endpoint, &receive_buffer, length, source);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
+                Err(_) => panic!("receive manual endpoint datagram"),
+            }
+        }
+        panic!("manual endpoint inbound work exceeded test bound");
+    }
+
+    fn route_one_client_datagram(
+        endpoint: &mut Endpoint,
+        receive_buffer: &[u8; SOCKET_RECV_BYTES],
+        length: usize,
+        source: SocketAddr,
+    ) {
+        let packet = bounded_received_datagram(receive_buffer, length)
+            .expect("manual endpoint receives bounded datagram");
+        endpoint
+            .route_datagram(
+                packet,
+                length,
+                PacketMeta {
+                    from: source,
+                    to: endpoint.local_address,
+                },
+            )
+            .expect("route manual endpoint datagram");
+    }
+
     #[test]
     fn endpoint_actor_contract_has_exact_bounds() {
         assert_eq!(ACTOR_INBOX_CAPACITY, 4);
@@ -848,7 +1231,19 @@ mod tests {
         assert_eq!(HANDSHAKE_TIMEOUT.as_secs(), 5);
         assert_eq!(MAX_IDLE_TIMEOUT.as_secs(), 5);
         assert_eq!(SOCKET_SEND_TIMEOUT.as_secs(), 2);
+        assert_eq!(ACTOR_TERMINATION_BUDGET.as_millis(), 1_500);
+        assert!(ACTOR_TERMINATION_BUDGET < SHUTDOWN_JOIN_BUDGET);
         assert_eq!(SHUTDOWN_JOIN_BUDGET.as_secs(), 2);
+    }
+
+    #[test]
+    fn pending_local_close_is_flushed_before_any_immediate_transport_timeout() {
+        assert!(!timeout_may_precede_flush(
+            ConnectionLifecycle::ClosingPendingSend
+        ));
+        assert!(timeout_may_precede_flush(ConnectionLifecycle::Active));
+        assert!(timeout_may_precede_flush(ConnectionLifecycle::Draining));
+        assert!(!timeout_may_precede_flush(ConnectionLifecycle::Closed));
     }
 
     #[test]
@@ -1215,63 +1610,354 @@ mod tests {
             receiver,
             server_socket,
             cancel_rx,
+            None,
         ));
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(4_999)).await;
         tokio::task::yield_now().await;
         assert!(!actor.is_finished());
         tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !actor.is_finished(),
+            "handshake failure first enters bounded closing"
+        );
+        tokio::time::advance(ACTOR_TERMINATION_BUDGET).await;
         let error = actor
             .await
-            .expect("join handshake-timeout actor")
-            .expect_err("handshake must hit wall deadline");
-        assert_eq!(error, ActorError::HandshakeTimeout);
+            .expect("join bounded-closing actor")
+            .expect_err("paused transport clock reaches the hard termination boundary");
+        assert_eq!(error, ActorError::TerminationTimeout);
         drop(client_socket);
     }
 
+    #[tokio::test]
+    async fn cancel_flushes_close_to_established_real_peer_before_actor_reclaim() {
+        let credentials = TestCredentials::new();
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+            .await
+            .expect("bind cancel endpoint");
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xa2).await;
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            cancel.send(true).expect("cancel established endpoint");
+            timeout(Duration::from_secs(1), async {
+                loop {
+                    client.receive_available().await;
+                    if client.connection.peer_error().is_some() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("cancel close reaches real peer within one second");
+            let peer_error = client
+                .connection
+                .peer_error()
+                .expect("cancel close carries a real CONNECTION_CLOSE");
+            assert!(peer_error.is_app);
+            assert_eq!(peer_error.error_code, 0);
+            assert!(peer_error.reason.is_empty());
+            assert!(
+                client.connection.is_draining() || client.connection.is_closed(),
+                "real peer enters QUIC termination"
+            );
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("cancel endpoint joins every connection actor");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_during_in_flight_flush_restarts_close_flush_before_waiting() {
+        let credentials = TestCredentials::new();
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+            .await
+            .expect("bind in-flight cancel endpoint");
+        let send_gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&send_gate));
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xa6).await;
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            send_gate.arm_send();
+            client
+                .connection
+                .send_ack_eliciting()
+                .expect("schedule real ack-eliciting client packet");
+            client.send_pending().await;
+            timeout(Duration::from_secs(1), send_gate.send_started.notified())
+                .await
+                .expect("actor reaches controlled in-flight send");
+
+            cancel
+                .send(true)
+                .expect("cancel while real actor send is in flight");
+            send_gate.release();
+
+            let close_reaches_peer = timeout(Duration::from_secs(1), async {
+                loop {
+                    client.receive_available().await;
+                    if client.connection.peer_error().is_some() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            });
+            tokio::select! {
+                biased;
+                _ = send_gate.pending_close_wait.notified() => {
+                    panic!("actor waited with a pending local close before flushing it");
+                }
+                result = close_reaches_peer => {
+                    result.expect("in-flight cancellation close reaches real peer");
+                }
+            }
+
+            let peer_error = client
+                .connection
+                .peer_error()
+                .expect("in-flight cancellation carries a real CONNECTION_CLOSE");
+            assert!(peer_error.is_app);
+            assert_eq!(peer_error.error_code, 0);
+            assert!(peer_error.reason.is_empty());
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("in-flight cancellation joins every connection actor");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn cancel_is_checked_before_handshake_queue_and_timer_work() {
+    async fn pre_key_cancel_uses_hard_closing_deadline_without_hanging() {
         let credentials = TestCredentials::new();
         let server_socket = Arc::new(
             UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
                 .await
-                .expect("bind actor server socket"),
+                .expect("bind pre-key server socket"),
         );
         let client_socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .await
-            .expect("bind actor client socket");
+            .expect("bind pre-key client socket");
         let server = server_socket
             .local_addr()
-            .expect("read actor server address");
+            .expect("read pre-key server address");
         let source = client_socket
             .local_addr()
-            .expect("read actor client address");
+            .expect("read pre-key client address");
         let mut registry = ConnectionRegistry::new(credentials.as_server_credentials())
-            .expect("construct actor registry");
+            .expect("construct pre-key registry");
         let (_pending, connection, expected) =
-            actor_admission(&mut registry, initial_packet(source, server, 0xa2)).into_parts();
-        let (sender, receiver) = mpsc::channel(ACTOR_INBOX_CAPACITY);
+            actor_admission(&mut registry, initial_packet(source, server, 0xa4)).into_parts();
+        let (_sender, receiver) = mpsc::channel(ACTOR_INBOX_CAPACITY);
         let (cancel_tx, cancel_rx) = watch::channel(false);
-        for index in 0..ACTOR_INBOX_CAPACITY {
-            sender
-                .try_send(ActorPacket {
-                    bytes: [index as u8; MAX_PACKET_BYTES],
-                    length: MAX_PACKET_BYTES,
-                    meta: PacketMeta {
-                        from: source,
-                        to: server,
-                    },
-                })
-                .expect("fill actor queue");
-        }
-        cancel_tx.send(true).expect("cancel actor before it runs");
-        let started = Instant::now();
-        let error = run_connection_actor(connection, expected, receiver, server_socket, cancel_rx)
+        cancel_tx.send(true).expect("cancel pre-key actor");
+        let actor = tokio::spawn(run_connection_actor(
+            connection,
+            expected,
+            receiver,
+            server_socket,
+            cancel_rx,
+            None,
+        ));
+
+        tokio::task::yield_now().await;
+        assert!(!actor.is_finished(), "pre-key cancel enters closing");
+        tokio::time::advance(ACTOR_TERMINATION_BUDGET - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !actor.is_finished(),
+            "pre-key closing remains live before its hard deadline"
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let error = actor
             .await
-            .expect_err("cancelled actor exits");
-        assert_eq!(error, ActorError::Cancelled);
-        assert_eq!(Instant::now(), started);
-        drop(client_socket);
+            .expect("join pre-key cancelled actor")
+            .expect_err("pre-key cancel reaches its hard closing boundary");
+        assert_eq!(error, ActorError::TerminationTimeout);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn endpoint_reports_pre_key_forced_reclaim_after_draining_joinset() {
+        let credentials = TestCredentials::new();
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+            .await
+            .expect("bind pre-key endpoint");
+        let source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 48_001);
+        let initial = initial_packet(source, endpoint.local_address, 0xa5);
+        endpoint
+            .route_datagram(initial.bytes, initial.length, initial.meta)
+            .expect("activate pre-key endpoint actor");
+        assert_eq!(endpoint.registry.actor_count(), 1);
+        cancel.send(true).expect("cancel pre-key endpoint");
+
+        let started = Instant::now();
+        assert_eq!(endpoint.run().await, Err(EndpointError::Shutdown));
+        assert_eq!(
+            Instant::now().duration_since(started),
+            ACTOR_TERMINATION_BUDGET
+        );
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+    }
+
+    #[tokio::test]
+    async fn peer_draining_holds_actor_routes_and_source_capacity_until_closed_join() {
+        let credentials = TestCredentials::new();
+        let (mut endpoint, _cancel) = Endpoint::bind_test(credentials.as_server_credentials())
+            .await
+            .expect("bind peer-draining endpoint");
+        let test_gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&test_gate));
+        let server_address = endpoint.local_address;
+        let mut closing_client =
+            UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xb1).await;
+        drive_endpoint_client_to_h3(&mut endpoint, &mut closing_client).await;
+        assert_eq!(endpoint.registry.actor_count(), 1);
+
+        let second_source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 48_011);
+        let third_source = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 48_012);
+        let second = initial_packet(second_source, server_address, 0xb2);
+        endpoint
+            .route_datagram(second.bytes, second.length, second.meta)
+            .expect("activate second same-source-IP actor");
+        assert_eq!(endpoint.registry.actor_count(), 2);
+
+        closing_client
+            .connection
+            .close(true, 0x44, b"")
+            .expect("peer requests application close");
+        test_gate.arm_draining_wait();
+        closing_client.send_pending().await;
+        let mut close_datagram = [0_u8; SOCKET_RECV_BYTES];
+        let (close_length, close_source) = timeout(
+            Duration::from_secs(1),
+            endpoint.socket.recv_from(&mut close_datagram),
+        )
+        .await
+        .expect("peer close reaches endpoint socket")
+        .expect("receive peer close datagram");
+        let close_packet = bounded_received_datagram(&close_datagram, close_length)
+            .expect("peer close datagram is bounded");
+        assert!(matches!(
+            endpoint.registry.receive_actor_packet(
+                close_packet,
+                close_length,
+                PacketMeta {
+                    from: close_source,
+                    to: endpoint.local_address,
+                },
+            ),
+            Ok(ActorInboundDisposition::Routed)
+        ));
+        timeout(
+            Duration::from_secs(1),
+            test_gate.draining_wait_started.notified(),
+        )
+        .await
+        .expect("actor observes draining before its real timer wait");
+        assert_eq!(endpoint.registry.actor_count(), 2);
+        assert_eq!(endpoint.registry.test_route_count(), 4);
+        assert_eq!(endpoint.registry.test_source_count(close_source), 2);
+
+        let third = initial_packet(third_source, server_address, 0xb3);
+        assert!(matches!(
+            endpoint
+                .registry
+                .receive_actor_packet(third.bytes, third.length, third.meta,),
+            Err(RegistryError::CapacityUnavailable)
+        ));
+
+        for index in 0..(crate::quiche_registry::MAX_ACTIVE_CONNECTIONS - 2) {
+            let source = SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2 + index as u8)),
+                48_100 + index as u16,
+            );
+            let filler = initial_packet(source, server_address, 0xc0 + index as u8);
+            endpoint
+                .route_datagram(filler.bytes, filler.length, filler.meta)
+                .expect("fill remaining global actor capacity");
+        }
+        assert_eq!(
+            endpoint.registry.actor_count(),
+            crate::quiche_registry::MAX_ACTIVE_CONNECTIONS
+        );
+        assert_eq!(
+            endpoint.registry.test_route_count(),
+            crate::quiche_registry::MAX_ACTIVE_CONNECTIONS * 2
+        );
+        let overflow_source = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 250)), 48_250);
+        let overflow = initial_packet(overflow_source, server_address, 0xcf);
+        assert!(matches!(
+            endpoint
+                .registry
+                .receive_actor_packet(overflow.bytes, overflow.length, overflow.meta,),
+            Err(RegistryError::CapacityUnavailable)
+        ));
+
+        test_gate.release_draining_wait();
+        let completion = timeout(SHUTDOWN_JOIN_BUDGET, endpoint.actors.join_next_with_id())
+            .await
+            .expect("peer draining reaches its real protocol timer")
+            .expect("peer-draining actor joins")
+            .expect("peer-draining actor does not panic");
+        completion
+            .1
+            .expect("peer-draining actor reaches transport closed naturally");
+        assert_eq!(
+            endpoint.registry.actor_count(),
+            crate::quiche_registry::MAX_ACTIVE_CONNECTIONS,
+            "join is not reclaim"
+        );
+        assert_eq!(
+            endpoint.registry.test_route_count(),
+            crate::quiche_registry::MAX_ACTIVE_CONNECTIONS * 2
+        );
+        assert!(matches!(
+            endpoint
+                .registry
+                .receive_actor_packet(overflow.bytes, overflow.length, overflow.meta,),
+            Err(RegistryError::CapacityUnavailable)
+        ));
+        assert!(endpoint
+            .registry
+            .reclaim_joined_actor(completion.0)
+            .is_some());
+        assert_eq!(
+            endpoint.registry.actor_count(),
+            crate::quiche_registry::MAX_ACTIVE_CONNECTIONS - 1
+        );
+        assert_eq!(
+            endpoint.registry.test_route_count(),
+            (crate::quiche_registry::MAX_ACTIVE_CONNECTIONS - 1) * 2
+        );
+        assert_eq!(endpoint.registry.test_source_count(close_source), 1);
+        assert!(matches!(
+            endpoint
+                .registry
+                .receive_actor_packet(overflow.bytes, overflow.length, overflow.meta,),
+            Ok(ActorInboundDisposition::Created(_))
+        ));
+        assert!(matches!(
+            endpoint
+                .registry
+                .receive_actor_packet(third.bytes, third.length, third.meta,),
+            Ok(ActorInboundDisposition::Created(_))
+        ));
+
+        assert_eq!(endpoint.shutdown().await, Err(EndpointError::Shutdown));
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
     }
 
     #[tokio::test]
@@ -1310,8 +1996,15 @@ mod tests {
             &expected,
             &server_socket,
             &mut cancel_rx,
-            None,
-            Some(&mut packets),
+            FlushControl {
+                honor_cancel: true,
+                handshake_deadline: None,
+                termination_deadline: None,
+            },
+            FlushTestHooks {
+                packets: Some(&mut packets),
+                actor_gate: None,
+            },
         )
         .await
         .expect("flush first bounded round");
@@ -1343,8 +2036,15 @@ mod tests {
             &expected,
             &server_socket,
             &mut cancel_rx,
-            None,
-            Some(&mut packets),
+            FlushControl {
+                honor_cancel: true,
+                handshake_deadline: None,
+                termination_deadline: None,
+            },
+            FlushTestHooks {
+                packets: Some(&mut packets),
+                actor_gate: None,
+            },
         )
         .await;
         assert!(matches!(result, Err(ActorError::Cancelled)));
@@ -1358,7 +2058,7 @@ mod tests {
         let handshake = started + Duration::from_millis(100);
         let idle = started + MAX_IDLE_TIMEOUT;
         let round = started + SOCKET_SEND_TIMEOUT;
-        let (deadline, kind) = earliest_flush_deadline(round, Some(handshake), idle);
+        let (deadline, kind) = earliest_flush_deadline(round, Some(handshake), idle, None);
         assert!(matches!(kind, FlushDeadlineKind::Handshake));
         assert!(timeout_at(deadline, std::future::pending::<()>())
             .await
@@ -1371,7 +2071,7 @@ mod tests {
         let started = Instant::now();
         let idle = started + Duration::from_millis(75);
         let round = started + SOCKET_SEND_TIMEOUT;
-        let (deadline, kind) = earliest_flush_deadline(round, None, idle);
+        let (deadline, kind) = earliest_flush_deadline(round, None, idle, None);
         assert!(matches!(kind, FlushDeadlineKind::Idle));
         assert!(timeout_at(deadline, std::future::pending::<()>())
             .await
@@ -1383,12 +2083,26 @@ mod tests {
 
         let started = Instant::now();
         let round = started + SOCKET_SEND_TIMEOUT;
-        let (deadline, kind) = earliest_flush_deadline(round, None, started + MAX_IDLE_TIMEOUT);
+        let (deadline, kind) =
+            earliest_flush_deadline(round, None, started + MAX_IDLE_TIMEOUT, None);
         assert!(matches!(kind, FlushDeadlineKind::RoundSend));
         assert!(timeout_at(deadline, std::future::pending::<()>())
             .await
             .is_err());
         assert_eq!(Instant::now().duration_since(started), SOCKET_SEND_TIMEOUT);
+
+        let started = Instant::now();
+        let termination = started + Duration::from_millis(50);
+        let (deadline, kind) =
+            earliest_actor_deadline(started + MAX_IDLE_TIMEOUT, None, Some(termination));
+        assert!(matches!(kind, ActorDeadlineKind::Termination));
+        assert!(timeout_at(deadline, std::future::pending::<()>())
+            .await
+            .is_err());
+        assert_eq!(
+            Instant::now().duration_since(started),
+            Duration::from_millis(50)
+        );
     }
 
     #[test]
@@ -1409,6 +2123,7 @@ mod tests {
         let actor_errors = [
             ActorError::Cancelled,
             ActorError::HandshakeTimeout,
+            ActorError::TerminationTimeout,
             ActorError::InboxUnavailable,
             ActorError::ConnectionUnavailable,
             ActorError::SocketSendUnavailable,

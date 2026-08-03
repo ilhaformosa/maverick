@@ -17,54 +17,64 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-1 — server-owned structured target-open seam
+### T023b-1 — authenticated-generation lifetime and limits
 
-- **User result:** The server's existing target-opening implementation gains one
-  crate-private entry that accepts an already structured `TargetAddr` and port.
-  The existing public and crate-private `OpenTcpPayload` entries delegate to the
-  same implementation, preserving current H2, WebSocket, and legacy behavior,
-  errors, metrics, egress, DNS, connection ordering, timeouts, and
-  `TCP_NODELAY`. There is no quiche caller, authority parser, new product entry,
-  or path for real user traffic.
+- **User result:** Every feature-gated direct-quiche authenticated generation
+  retains the server confirmation that the existing auth-v3 verifier accepted.
+  The generation retains its verified admission expiry, hard expiry, selected
+  maximum frame size, and selected maximum concurrent flows. It enforces both
+  expiries and the effective local flow limit of one; this slice does not claim
+  Maverick frame-size enforcement. Admission expiry prevents a new test-private
+  classic CONNECT from starting. Hard expiry makes the local capability and
+  application I/O fail closed, revokes the driver, and best-effort closes the
+  QUIC generation. Dropping the lease for an active flow wakes that flow and
+  fails it; dropping an idle lease returns only its permit.
 - **Scope:** Change only this queue and
-  `crates/maverick-server/src/relay.rs`. Keep the public `open_target` and
-  crate-private `open_target_with_metrics` signatures unchanged. Add exactly one
-  crate-private structured `TargetAddr` plus `u16` entry using the existing
-  timeout, egress, and metric inputs. Converge all TCP target opening on the one
-  existing resolver, egress filter, dual-stack connection race, timeout,
-  request-level metric, and `TCP_NODELAY` algorithm.
-- **Acceptance:** First retain a failing focused test for the absent structured
-  seam, then make it pass with the smallest implementation. Prove both the old
-  payload entry and new structured entry connect to the same loopback ephemeral
-  listener over IPv4 and, when available, IPv6. Prove structured domain input
-  still uses the existing resolver; egress rejection happens before connect;
-  old and new entries retain the same fixed error category and metric behavior;
-  resolution/connect timeout and failure classification does not drift; and
-  successful resolution/connect latency count semantics remain unchanged. All
-  existing public target-open and server relay tests remain green. Errors and
-  debug output add no target, domain, address, port, raw resolver error, local
-  path, identity, credential, or endpoint value.
-- **Hard prerequisite:** T023b-1 remains required before any real post-auth H3
-  target wiring. The current authenticated capability does not retain the
-  expiry, quota, and revocation state required to authorize target work. This
-  seam must not be connected to quiche or treated as satisfying that gate.
-- **Out of scope:** No authority parser, new caller, quiche or H3 socket relay,
-  DNS task, second opener, alternate metrics or error system, queue, manager,
-  trait, framework, public hidden API, product dial path, config/schema/wire/
-  version change, dependency, Cargo/lock/manifest/core/client/server/SDK/CLI/
-  vendor change, CI, push, PR, merge, tag, release, remote, deployment, real
-  network, or system-network work. `STATUS.md` remains unchanged, and this task
-  defines no release scope.
-- **Stop conditions:** Stop on a third changed file; a need for an authority
-  parser, new caller, target or DNS task, quiche integration, public signature,
-  dependency, feature, config, schema, wire, or version change; any drift in
-  H2/WebSocket/legacy behavior, egress-before-connect ordering, dual-stack
-  ordering, timeout, metrics, or `TCP_NODELAY`; a test that cannot stay on
-  loopback and OS-assigned ephemeral ports; a large refactor or new framework;
-  or any focused or full local gate regression.
+  `crates/maverick-client/src/quiche_foundation.rs`. Capture one trusted Unix
+  time and monotonic anchor before authentication; derive both deadlines from
+  that unchanged anchor and the verified absolute expiries. Retain one private
+  immutable policy by `Arc` across the authenticated generation, lease, and
+  proof. Reuse the existing verifier, manager, bounded command queue, driver,
+  flow reference, resource limits, failure path, and close path. The effective
+  local flow limit is the smaller of the verified selected limit and the
+  existing one-lease foundation limit, which remains one.
+- **Acceptance:** First retain a focused red test, then make the complete local
+  matrix green. Prove client and server retain the same absolute expiries and
+  selected frame/flow limits even though their monotonic anchors are local;
+  authentication time never moves a deadline; admission is strict before/equal/
+  after while an already armed flow may cross admission; hard equality closes
+  idle and stalled active generations; active-flow lease drop really wakes and
+  fails the flow; idle lease drop does not close the generation and permits a
+  same-generation reacquire; manager close, replacement generation, wrong
+  generation, policy-`Arc` identity, backpressure, cancellation, reclamation,
+  and fixed privacy-safe diagnostics remain correct. Hard-close checks require
+  failed flow response, inactive leases, cleared bounded buffers, returned
+  permits, reclaimed tasks and loopback sockets, one physical connection, and
+  no retry. The selected limits remain observable only to private tests; the
+  effective local flow limit is one.
+- **Out of scope:** No real target, DNS, socket relay, authority parser, second
+  connection, fallback, external credential/profile revocation feed, watcher,
+  task, queue, manager, framework, public API, core primitive, dependency,
+  Cargo/lock/manifest, config/schema/wire/version, server/SDK/CLI/vendor,
+  `STATUS.md`, CI, push, PR, merge, tag, release, remote, deployment, real
+  network, or system-network change. Retaining `max_frame_size` does not claim
+  Maverick frame-size enforcement in this raw reference flow; retaining a peer
+  flow limit above one does not claim multiple real flows. Manager close,
+  generation replacement, active-flow lease drop, and hard expiry are local
+  revocation inputs only; external credential/profile revocation remains
+  deferred.
+- **Stop conditions:** Stop on a third changed file; a need for an external
+  watcher or revocation feed, new task/queue/framework, real target/DNS/socket,
+  authority parsing, second connection, fallback, public/core/dependency/config/
+  schema/wire/version change, or unstable wall-clock sleep test; inability to
+  fail closed at deadline equality before new application I/O; any T026d or
+  T027a-1 authorization, one-generation, one-stream, no-retry, cleanup,
+  backpressure, or privacy regression; or any focused or full local gate
+  failure.
 
-This internal seam is not tied to a release version and does not authorize
-publication, product wiring, deployment, or real-network work.
+This private reference slice is not external credential revocation, a product
+H3 data plane, multi-flow support, a release result, or authorization for
+publication, deployment, or real-network work.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

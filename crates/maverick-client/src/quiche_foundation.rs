@@ -17,7 +17,7 @@ use boring::ssl::{SslRef, SslVersion};
 use maverick_core::auth::{TlsChannelBinding, TLS_CHANNEL_BINDING_EXPORTER_LABEL};
 use maverick_core::auth_v3::{AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN};
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, oneshot, Barrier, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Barrier, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -212,8 +212,8 @@ mod generation_auth {
         encode_auth_v3_client_control, encode_auth_v3_server_confirmation,
         verify_auth_v3_client_control, verify_auth_v3_server_confirmation, AuthV3Carrier,
         AuthV3ClientControlInput, AuthV3ClientReceipt, AuthV3PreselectedProfile,
-        AuthV3ServerConfirmationInput, AuthV3TlsVersion, AUTH_V3_CLIENT_CONTROL_LEN,
-        AUTH_V3_SERVER_CONFIRMATION_LEN,
+        AuthV3ServerConfirmationInput, AuthV3TlsVersion, VerifiedAuthV3ServerConfirmation,
+        AUTH_V3_CLIENT_CONTROL_LEN, AUTH_V3_SERVER_CONFIRMATION_LEN,
     };
     use maverick_core::config::{ClientRoleConfig, DirectV3TransportStrategy, ServerRoleConfig};
     use quiche::h3::NameValue;
@@ -533,7 +533,8 @@ mod generation_auth {
 
     #[derive(Clone, Copy)]
     pub(super) struct TrustedGenerationAuthInputs {
-        now: u64,
+        trusted_unix_anchor: u64,
+        monotonic_anchor: Instant,
         admission_expiry: u64,
         hard_expiry: u64,
         max_frame_size: u32,
@@ -563,7 +564,8 @@ mod generation_auth {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
             Ok(Self {
-                now,
+                trusted_unix_anchor: now,
+                monotonic_anchor: Instant::now(),
                 admission_expiry,
                 hard_expiry,
                 max_frame_size,
@@ -572,11 +574,96 @@ mod generation_auth {
                 client_max_concurrent_flows,
             })
         }
+
+        #[cfg(test)]
+        fn with_test_anchor(mut self, monotonic_anchor: Instant) -> Self {
+            self.monotonic_anchor = monotonic_anchor;
+            self
+        }
+
+        fn deadline_for(&self, expiry_unix: u64) -> Result<Instant, FoundationError> {
+            let seconds = expiry_unix
+                .checked_sub(self.trusted_unix_anchor)
+                .filter(|seconds| *seconds != 0)
+                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            self.monotonic_anchor
+                .checked_add(Duration::from_secs(seconds))
+                .ok_or(FoundationError::PreAuthApplicationActivity)
+        }
+    }
+
+    struct AuthenticatedGenerationPolicy {
+        verified: VerifiedAuthV3ServerConfirmation,
+        admission_deadline: Instant,
+        hard_deadline: Instant,
+        effective_local_flow_limit: u32,
+    }
+
+    impl AuthenticatedGenerationPolicy {
+        fn new(
+            verified: VerifiedAuthV3ServerConfirmation,
+            inputs: &TrustedGenerationAuthInputs,
+        ) -> Result<Self, FoundationError> {
+            let admission_deadline = inputs.deadline_for(verified.admission_expiry_unix())?;
+            let hard_deadline = inputs.deadline_for(verified.hard_expiry_unix())?;
+            if admission_deadline >= hard_deadline {
+                return Err(FoundationError::PreAuthApplicationActivity);
+            }
+            let local_flow_limit = u32::try_from(CONNECTION_LEASE_LIMIT)
+                .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+            let effective_local_flow_limit = verified.max_concurrent_flows().min(local_flow_limit);
+            if effective_local_flow_limit == 0 {
+                return Err(FoundationError::PreAuthApplicationActivity);
+            }
+            Ok(Self {
+                verified,
+                admission_deadline,
+                hard_deadline,
+                effective_local_flow_limit,
+            })
+        }
+
+        fn admission_expiry_unix(&self) -> u64 {
+            self.verified.admission_expiry_unix()
+        }
+
+        fn hard_expiry_unix(&self) -> u64 {
+            self.verified.hard_expiry_unix()
+        }
+
+        fn max_frame_size(&self) -> u32 {
+            self.verified.max_frame_size()
+        }
+
+        fn max_concurrent_flows(&self) -> u32 {
+            self.verified.max_concurrent_flows()
+        }
+
+        fn effective_local_flow_limit(&self) -> u32 {
+            self.effective_local_flow_limit
+        }
+
+        fn admission_deadline(&self) -> Instant {
+            self.admission_deadline
+        }
+
+        pub(super) fn hard_deadline(&self) -> Instant {
+            self.hard_deadline
+        }
+
+        pub(super) fn admits_new_flow_at(&self, now: Instant) -> bool {
+            now < self.admission_deadline
+        }
+
+        fn hard_active_at(&self, now: Instant) -> bool {
+            now < self.hard_deadline
+        }
     }
 
     pub(super) struct AuthenticatedGeneration {
         generation: ConnectionGeneration,
         active: Arc<AtomicBool>,
+        policy: Arc<AuthenticatedGenerationPolicy>,
     }
 
     impl AuthenticatedGeneration {
@@ -584,14 +671,20 @@ mod generation_auth {
             Self {
                 generation: self.generation,
                 active: Arc::clone(&self.active),
+                policy: Arc::clone(&self.policy),
             }
         }
 
         pub(super) fn authorizes(&self, candidate: &Self) -> bool {
+            self.authorizes_at(candidate, Instant::now())
+        }
+
+        fn authorizes_at(&self, candidate: &Self, now: Instant) -> bool {
             self.generation == candidate.generation
                 && Arc::ptr_eq(&self.active, &candidate.active)
-                && self.active.load(Ordering::Acquire)
-                && candidate.active.load(Ordering::Acquire)
+                && Arc::ptr_eq(&self.policy, &candidate.policy)
+                && self.is_active_at(now)
+                && candidate.is_active_at(now)
         }
 
         pub(super) fn generation(&self) -> ConnectionGeneration {
@@ -599,13 +692,31 @@ mod generation_auth {
         }
 
         pub(super) fn is_active(&self) -> bool {
-            self.active.load(Ordering::Acquire)
+            self.is_active_at(Instant::now())
+        }
+
+        fn is_active_at(&self, now: Instant) -> bool {
+            self.active.load(Ordering::Acquire) && self.policy.hard_active_at(now)
+        }
+
+        pub(super) fn admits_new_flow_at(&self, now: Instant) -> bool {
+            self.is_active_at(now) && self.policy.admits_new_flow_at(now)
+        }
+
+        pub(super) fn hard_deadline(&self) -> Instant {
+            self.policy.hard_deadline()
+        }
+
+        #[cfg(test)]
+        pub(super) fn admission_deadline(&self) -> Instant {
+            self.policy.admission_deadline()
         }
     }
 
     pub(super) struct AuthenticatedConnectionLease {
         authenticated: AuthenticatedGeneration,
         lease_active: Arc<AtomicBool>,
+        lease_dropped: Arc<Notify>,
         _permit: OwnedSemaphorePermit,
     }
 
@@ -618,23 +729,68 @@ mod generation_auth {
             self.authenticated.is_active()
         }
 
+        #[cfg(test)]
+        pub(super) fn admission_expiry_unix(&self) -> u64 {
+            self.authenticated.policy.admission_expiry_unix()
+        }
+
+        #[cfg(test)]
+        pub(super) fn hard_expiry_unix(&self) -> u64 {
+            self.authenticated.policy.hard_expiry_unix()
+        }
+
+        #[cfg(test)]
+        pub(super) fn max_frame_size(&self) -> u32 {
+            self.authenticated.policy.max_frame_size()
+        }
+
+        #[cfg(test)]
+        pub(super) fn max_concurrent_flows(&self) -> u32 {
+            self.authenticated.policy.max_concurrent_flows()
+        }
+
+        #[cfg(test)]
+        pub(super) fn effective_local_flow_limit(&self) -> u32 {
+            self.authenticated.policy.effective_local_flow_limit()
+        }
+
+        #[cfg(test)]
+        pub(super) fn hard_deadline(&self) -> Instant {
+            self.authenticated.hard_deadline()
+        }
+
         pub(super) fn release(self) {}
     }
 
     impl Drop for AuthenticatedConnectionLease {
         fn drop(&mut self) {
             self.lease_active.store(false, Ordering::Release);
+            self.lease_dropped.notify_one();
         }
     }
 
     pub(super) struct AuthenticatedLeaseProof {
         authenticated: AuthenticatedGeneration,
         lease_active: Arc<AtomicBool>,
+        lease_dropped: Arc<Notify>,
     }
 
     impl AuthenticatedLeaseProof {
         pub(super) fn authorizes(&self, current: &AuthenticatedGeneration) -> bool {
-            current.authorizes(&self.authenticated) && self.lease_active.load(Ordering::Acquire)
+            self.authorizes_at(current, Instant::now())
+        }
+
+        pub(super) fn authorizes_at(
+            &self,
+            current: &AuthenticatedGeneration,
+            now: Instant,
+        ) -> bool {
+            current.authorizes_at(&self.authenticated, now)
+                && self.lease_active.load(Ordering::Acquire)
+        }
+
+        pub(super) fn drop_notification(&self) -> Arc<Notify> {
+            Arc::clone(&self.lease_dropped)
         }
     }
 
@@ -644,32 +800,42 @@ mod generation_auth {
         AuthenticatedLeaseProof {
             authenticated: lease.authenticated.duplicate(),
             lease_active: Arc::clone(&lease.lease_active),
+            lease_dropped: Arc::clone(&lease.lease_dropped),
         }
     }
 
     pub(super) fn bind_authenticated_lease(
         authenticated: AuthenticatedGeneration,
         permit: OwnedSemaphorePermit,
-    ) -> AuthenticatedConnectionLease {
-        AuthenticatedConnectionLease {
+    ) -> Result<AuthenticatedConnectionLease, FoundationError> {
+        if !authenticated.is_active() || authenticated.policy.effective_local_flow_limit() == 0 {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        Ok(AuthenticatedConnectionLease {
             authenticated,
             lease_active: Arc::new(AtomicBool::new(true)),
+            lease_dropped: Arc::new(Notify::new()),
             _permit: permit,
-        }
+        })
     }
 
     #[cfg(test)]
     pub(super) fn test_authenticated_lease(
         generation: u64,
     ) -> Result<(AuthenticatedGeneration, AuthenticatedConnectionLease), FoundationError> {
+        let inputs = test_trusted_inputs()?;
         let authenticated = AuthenticatedGeneration {
             generation: ConnectionGeneration(generation),
             active: Arc::new(AtomicBool::new(true)),
+            policy: Arc::new(AuthenticatedGenerationPolicy::new(
+                test_verified_confirmation(),
+                &inputs,
+            )?),
         };
         let permit = Arc::new(Semaphore::new(1))
             .try_acquire_owned()
             .map_err(|_| FoundationError::LeaseUnavailable)?;
-        let lease = bind_authenticated_lease(authenticated.duplicate(), permit);
+        let lease = bind_authenticated_lease(authenticated.duplicate(), permit)?;
         Ok((authenticated, lease))
     }
 
@@ -684,6 +850,7 @@ mod generation_auth {
         phase: AuthPhase,
         facts: Option<FoundationObservation>,
         authenticated_generation: Option<ConnectionGeneration>,
+        authenticated_policy: Option<Arc<AuthenticatedGenerationPolicy>>,
         deadline: Option<Instant>,
         request_send: Option<BodySendState<AUTH_V3_CLIENT_CONTROL_LEN>>,
         response_send: Option<BodySendState<AUTH_V3_SERVER_CONFIRMATION_LEN>>,
@@ -733,6 +900,7 @@ mod generation_auth {
                 phase: AuthPhase::Fresh,
                 facts: None,
                 authenticated_generation: None,
+                authenticated_policy: None,
                 deadline: None,
                 request_send: None,
                 response_send: None,
@@ -1021,7 +1189,7 @@ mod generation_auth {
                         return Err(FoundationError::PreAuthApplicationActivity);
                     }
                     exact_body_finished(self.response_recv_len, AUTH_V3_SERVER_CONFIRMATION_LEN)?;
-                    self.verify_server_confirmation()?;
+                    self.authenticated_policy = Some(self.verify_server_confirmation()?);
                     self.check_datagram_queue(connection)?;
                     self.authenticate()
                 }
@@ -1106,7 +1274,7 @@ mod generation_auth {
                 &context,
                 &AuthV3ClientControlInput::new(
                     AuthV3Carrier::H3,
-                    self.parameters.now,
+                    self.parameters.trusted_unix_anchor,
                     client_nonce,
                 ),
             );
@@ -1152,7 +1320,7 @@ mod generation_auth {
                 &self.request_recv,
                 &preselected.trusted_profile(),
                 &context,
-                self.parameters.now,
+                self.parameters.trusted_unix_anchor,
             )
             .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
             let mut server_nonce = [0_u8; 32];
@@ -1165,7 +1333,7 @@ mod generation_auth {
                 verified,
                 &context,
                 &AuthV3ServerConfirmationInput::new(
-                    self.parameters.now,
+                    self.parameters.trusted_unix_anchor,
                     self.parameters.admission_expiry,
                     self.parameters.hard_expiry,
                     server_nonce,
@@ -1178,6 +1346,22 @@ mod generation_auth {
             session_id.fill(0);
             let confirmation =
                 confirmation_result.map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+            let verified_confirmation = verify_auth_v3_server_confirmation(
+                &confirmation,
+                &self.request_recv,
+                &preselected.trusted_profile(),
+                &context,
+                &AuthV3ClientReceipt::new(
+                    self.parameters.trusted_unix_anchor,
+                    self.parameters.client_max_frame_size,
+                    self.parameters.client_max_concurrent_flows,
+                ),
+            )
+            .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+            self.authenticated_policy = Some(Arc::new(AuthenticatedGenerationPolicy::new(
+                verified_confirmation,
+                &self.parameters,
+            )?));
             #[cfg(test)]
             let mut confirmation = confirmation;
             #[cfg(test)]
@@ -1193,7 +1377,9 @@ mod generation_auth {
             Ok(())
         }
 
-        fn verify_server_confirmation(&self) -> Result<(), FoundationError> {
+        fn verify_server_confirmation(
+            &self,
+        ) -> Result<Arc<AuthenticatedGenerationPolicy>, FoundationError> {
             let facts = self
                 .facts
                 .ok_or(FoundationError::PreAuthApplicationActivity)?;
@@ -1220,19 +1406,22 @@ mod generation_auth {
             } else {
                 client_max_frame_size
             };
-            verify_auth_v3_server_confirmation(
+            let verified = verify_auth_v3_server_confirmation(
                 &self.response_recv,
                 request,
                 &preselected.trusted_profile(),
                 &context,
                 &AuthV3ClientReceipt::new(
-                    self.parameters.now,
+                    self.parameters.trusted_unix_anchor,
                     client_max_frame_size,
                     self.parameters.client_max_concurrent_flows,
                 ),
             )
-            .map(|_| ())
-            .map_err(|_| FoundationError::PreAuthApplicationActivity)
+            .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+            Ok(Arc::new(AuthenticatedGenerationPolicy::new(
+                verified,
+                &self.parameters,
+            )?))
         }
 
         fn claim_client_slot(&mut self) -> Result<(), FoundationError> {
@@ -1347,6 +1536,7 @@ mod generation_auth {
             if !matches!(self.slot, AuthSlot::Authenticating(Some(_))) {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
+            self.enforce_hard_deadline_at(Instant::now())?;
             let generation = self
                 .facts
                 .as_ref()
@@ -1369,10 +1559,30 @@ mod generation_auth {
             {
                 return None;
             }
-            Some(AuthenticatedGeneration {
+            let authenticated = AuthenticatedGeneration {
                 generation: self.authenticated_generation?,
                 active: Arc::clone(&self.active),
-            })
+                policy: Arc::clone(self.authenticated_policy.as_ref()?),
+            };
+            authenticated.is_active().then_some(authenticated)
+        }
+
+        pub(super) fn hard_deadline(&self) -> Option<Instant> {
+            self.authenticated_policy
+                .as_ref()
+                .map(|policy| policy.hard_deadline())
+        }
+
+        pub(super) fn enforce_hard_deadline_at(&self, now: Instant) -> Result<(), FoundationError> {
+            if self
+                .authenticated_policy
+                .as_ref()
+                .is_some_and(|policy| !policy.hard_active_at(now))
+            {
+                self.active.store(false, Ordering::Release);
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            Ok(())
         }
 
         pub(super) fn role(&self) -> AuthRole {
@@ -1433,6 +1643,78 @@ mod generation_auth {
             131_072,
             256,
         )
+    }
+
+    #[cfg(test)]
+    fn test_trusted_inputs_at(
+        anchor: Instant,
+    ) -> Result<TrustedGenerationAuthInputs, FoundationError> {
+        TrustedGenerationAuthInputs::new(
+            T026C_NOW,
+            T026C_NOW + 1_800,
+            T026C_NOW + 86_400,
+            65_536,
+            128,
+            131_072,
+            256,
+        )
+        .map(|inputs| inputs.with_test_anchor(anchor))
+    }
+
+    #[cfg(test)]
+    fn test_verified_confirmation() -> VerifiedAuthV3ServerConfirmation {
+        let config = ClientRoleConfig::from_yaml_str(&test_client_role_yaml())
+            .expect("parse verified-policy client role");
+        let direct = config
+            .direct_v3()
+            .expect("read verified-policy direct role");
+        let preselected = direct.preselected_profile();
+        let exporter = [0x41; AUTH_V3_EXPORTER_LEN];
+        let context = preselected.trusted_connection_context(
+            AuthV3Carrier::H3,
+            AuthV3TlsVersion::Tls13,
+            true,
+            false,
+            &exporter,
+            true,
+            Some(&[]),
+            T026C_CONTROL_PATH,
+        );
+        let control = encode_auth_v3_client_control(
+            &preselected.trusted_profile(),
+            &context,
+            &AuthV3ClientControlInput::new(AuthV3Carrier::H3, T026C_NOW, [0x61; 32]),
+        )
+        .expect("encode verified-policy client control");
+        let verified_control = verify_auth_v3_client_control(
+            &control,
+            &preselected.trusted_profile(),
+            &context,
+            T026C_NOW,
+        )
+        .expect("verify verified-policy client control");
+        let confirmation = encode_auth_v3_server_confirmation(
+            verified_control,
+            &context,
+            &AuthV3ServerConfirmationInput::new(
+                T026C_NOW,
+                T026C_NOW + 1_800,
+                T026C_NOW + 86_400,
+                [0x62; 32],
+                [0x63; 16],
+                65_536,
+                128,
+            ),
+        )
+        .expect("encode verified-policy server confirmation");
+        verify_auth_v3_server_confirmation(
+            &confirmation,
+            &control,
+            &preselected.trusted_profile(),
+            &context,
+            &AuthV3ClientReceipt::new(T026C_NOW, 131_072, 256),
+        )
+        .expect("verify verified-policy server confirmation")
     }
 
     impl Drop for GenerationAuth {
@@ -1658,6 +1940,128 @@ auth:
     #[cfg(test)]
     mod state_tests {
         use super::*;
+
+        #[test]
+        fn t023b1_verified_policy_keeps_original_anchor_expiries_and_selected_limits() {
+            let client_anchor = Instant::now();
+            let server_anchor = client_anchor
+                .checked_add(Duration::from_millis(7))
+                .expect("construct distinct server monotonic anchor");
+            let client_inputs = test_trusted_inputs_at(client_anchor)
+                .expect("construct anchored client policy inputs");
+            let server_inputs = test_trusted_inputs_at(server_anchor)
+                .expect("construct anchored server policy inputs");
+            let client_policy =
+                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &client_inputs)
+                    .expect("construct verified client policy");
+            let server_policy =
+                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &server_inputs)
+                    .expect("construct verified server policy");
+
+            assert_eq!(
+                client_policy.admission_expiry_unix(),
+                server_policy.admission_expiry_unix()
+            );
+            assert_eq!(
+                client_policy.hard_expiry_unix(),
+                server_policy.hard_expiry_unix()
+            );
+            assert_eq!(client_policy.max_frame_size(), 65_536);
+            assert_eq!(client_policy.max_concurrent_flows(), 128);
+            assert_eq!(client_policy.effective_local_flow_limit(), 1);
+            assert_eq!(
+                client_policy.admission_deadline(),
+                client_anchor + Duration::from_secs(1_800)
+            );
+            assert_eq!(
+                server_policy.admission_deadline(),
+                server_anchor + Duration::from_secs(1_800)
+            );
+            assert_eq!(
+                client_policy.hard_deadline(),
+                client_anchor + Duration::from_secs(86_400)
+            );
+            assert_eq!(
+                server_policy.hard_deadline(),
+                server_anchor + Duration::from_secs(86_400)
+            );
+        }
+
+        #[test]
+        fn t023b1_admission_and_hard_equality_are_strict_without_resetting_the_anchor() {
+            let anchor = Instant::now();
+            let inputs = test_trusted_inputs_at(anchor).expect("construct strict policy inputs");
+            let simulated_auth_completion = anchor + Duration::from_secs(900);
+            let policy = AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &inputs)
+                .expect("construct strict verified policy");
+
+            assert_eq!(
+                policy.admission_deadline(),
+                anchor + Duration::from_secs(1_800)
+            );
+            assert!(policy.admits_new_flow_at(simulated_auth_completion));
+            assert!(
+                policy.admits_new_flow_at(policy.admission_deadline() - Duration::from_nanos(1))
+            );
+            assert!(!policy.admits_new_flow_at(policy.admission_deadline()));
+            assert!(
+                !policy.admits_new_flow_at(policy.admission_deadline() + Duration::from_nanos(1))
+            );
+            assert!(policy.hard_active_at(policy.hard_deadline() - Duration::from_nanos(1)));
+            assert!(!policy.hard_active_at(policy.hard_deadline()));
+            assert!(!policy.hard_active_at(policy.hard_deadline() + Duration::from_nanos(1)));
+        }
+
+        #[test]
+        fn t023b1_generation_authorization_requires_the_same_policy_arc() {
+            let anchor = Instant::now();
+            let inputs = test_trusted_inputs_at(anchor).expect("construct identity inputs");
+            let first_policy = Arc::new(
+                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &inputs)
+                    .expect("construct first identity policy"),
+            );
+            let second_policy = Arc::new(
+                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &inputs)
+                    .expect("construct second identity policy"),
+            );
+            let active = Arc::new(AtomicBool::new(true));
+            let current = AuthenticatedGeneration {
+                generation: ConnectionGeneration(92),
+                active: Arc::clone(&active),
+                policy: Arc::clone(&first_policy),
+            };
+            let same_policy = current.duplicate();
+            let different_policy = AuthenticatedGeneration {
+                generation: current.generation,
+                active,
+                policy: second_policy,
+            };
+            let before_hard = first_policy.hard_deadline() - Duration::from_nanos(1);
+
+            assert!(current.authorizes_at(&same_policy, before_hard));
+            assert!(!current.authorizes_at(&different_policy, before_hard));
+            assert!(!current.authorizes_at(&same_policy, first_policy.hard_deadline()));
+        }
+
+        #[test]
+        fn t023b1_deadline_derivation_fails_closed_on_an_invalid_anchor_relation() {
+            let trusted_unix_anchor = T026C_NOW + 90_000;
+            let inputs = TrustedGenerationAuthInputs::new(
+                trusted_unix_anchor,
+                trusted_unix_anchor + 1,
+                trusted_unix_anchor + 2,
+                65_536,
+                128,
+                131_072,
+                256,
+            )
+            .map(|inputs| inputs.with_test_anchor(Instant::now()))
+            .expect("construct mismatched deadline inputs");
+            assert!(matches!(
+                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &inputs),
+                Err(FoundationError::PreAuthApplicationActivity)
+            ));
+        }
 
         fn synthetic_live_facts() -> FoundationObservation {
             FoundationObservation {
@@ -2188,6 +2592,13 @@ auth:
             request.completed_chunks = 2;
             runtime.request_send = Some(request);
             runtime.response_recv_len = AUTH_V3_SERVER_CONFIRMATION_LEN;
+            runtime.authenticated_policy = Some(Arc::new(
+                AuthenticatedGenerationPolicy::new(
+                    test_verified_confirmation(),
+                    &runtime.parameters,
+                )
+                .expect("construct transactional authenticated policy"),
+            ));
             runtime
                 .authenticate()
                 .expect("authenticate complete transactional runtime");
@@ -2239,6 +2650,7 @@ mod classic_connect {
         DuplicateResponseField,
         ResponseTrailer,
         ResetAfterResponse,
+        StallAfterArm,
     }
 
     #[cfg(test)]
@@ -2247,6 +2659,10 @@ mod classic_connect {
         header_send_attempts: Arc<std::sync::atomic::AtomicUsize>,
         body_send_calls: Arc<std::sync::atomic::AtomicUsize>,
         request_streams_opened: Arc<std::sync::atomic::AtomicUsize>,
+        arm_attempts: Arc<std::sync::atomic::AtomicUsize>,
+        buffered_bytes: Arc<std::sync::atomic::AtomicUsize>,
+        lease_drop_wakeups: Arc<std::sync::atomic::AtomicUsize>,
+        lease_wait_armed: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     #[cfg(test)]
@@ -2256,6 +2672,10 @@ mod classic_connect {
                 header_send_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 body_send_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 request_streams_opened: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                arm_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                buffered_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                lease_drop_wakeups: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                lease_wait_armed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
         }
 
@@ -2269,6 +2689,30 @@ mod classic_connect {
 
         pub(super) fn request_streams_opened(&self) -> usize {
             self.request_streams_opened.load(Ordering::Acquire)
+        }
+
+        pub(super) fn arm_attempts(&self) -> usize {
+            self.arm_attempts.load(Ordering::Acquire)
+        }
+
+        pub(super) fn buffered_bytes(&self) -> usize {
+            self.buffered_bytes.load(Ordering::Acquire)
+        }
+
+        pub(super) fn lease_drop_wakeups(&self) -> usize {
+            self.lease_drop_wakeups.load(Ordering::Acquire)
+        }
+
+        pub(super) fn lease_wait_armed(&self) -> usize {
+            self.lease_wait_armed.load(Ordering::Acquire)
+        }
+
+        pub(super) fn record_lease_drop_wakeup(&self) {
+            self.lease_drop_wakeups.fetch_add(1, Ordering::AcqRel);
+        }
+
+        pub(super) fn record_lease_wait_armed(&self) {
+            self.lease_wait_armed.store(1, Ordering::Release);
         }
     }
 
@@ -2404,8 +2848,29 @@ mod classic_connect {
             response: oneshot::Sender<Result<ClassicConnectOutcome, FoundationError>>,
             #[cfg(test)] fault: ReferenceFault,
         ) -> Result<(), FoundationError> {
+            self.arm_at(
+                current,
+                proof,
+                outbound,
+                response,
+                Instant::now(),
+                #[cfg(test)]
+                fault,
+            )
+        }
+
+        pub(super) fn arm_at(
+            &mut self,
+            current: &AuthenticatedGeneration,
+            proof: AuthenticatedLeaseProof,
+            outbound: FlowBuffer,
+            response: oneshot::Sender<Result<ClassicConnectOutcome, FoundationError>>,
+            now: Instant,
+            #[cfg(test)] fault: ReferenceFault,
+        ) -> Result<(), FoundationError> {
             if self.phase != FlowPhase::Dormant
-                || !proof.authorizes(current)
+                || !proof.authorizes_at(current, now)
+                || !current.admits_new_flow_at(now)
                 || self.role.is_none()
                 || response.is_closed()
             {
@@ -2426,6 +2891,8 @@ mod classic_connect {
             #[cfg(test)]
             {
                 self.fault = fault;
+                self.spy.arm_attempts.fetch_add(1, Ordering::AcqRel);
+                self.spy.buffered_bytes.store(length, Ordering::Release);
             }
             self.phase = match self.role {
                 Some(AuthRole::Client) => FlowPhase::ClientSendingHeaders,
@@ -2453,13 +2920,31 @@ mod classic_connect {
         }
 
         pub(super) fn route_is_open_for(&self, current: &AuthenticatedGeneration) -> bool {
+            self.route_is_open_for_at(current, Instant::now())
+        }
+
+        pub(super) fn route_is_open_for_at(
+            &self,
+            current: &AuthenticatedGeneration,
+            now: Instant,
+        ) -> bool {
             !matches!(
                 self.phase,
                 FlowPhase::Dormant | FlowPhase::Complete | FlowPhase::Failed
             ) && self
                 .proof
                 .as_ref()
-                .is_some_and(|proof| proof.authorizes(current))
+                .is_some_and(|proof| proof.authorizes_at(current, now))
+        }
+
+        pub(super) fn active_lease_notification(&self) -> Option<Arc<Notify>> {
+            self.has_attempt()
+                .then(|| {
+                    self.proof
+                        .as_ref()
+                        .map(AuthenticatedLeaseProof::drop_notification)
+                })
+                .flatten()
         }
 
         pub(super) fn drive_outbound(
@@ -2468,7 +2953,17 @@ mod classic_connect {
             connection: &mut quiche::Connection,
             h3_connection: &mut quiche::h3::Connection,
         ) -> Result<(), FoundationError> {
-            if !self.route_is_open_for(current) {
+            self.drive_outbound_at(current, connection, h3_connection, Instant::now())
+        }
+
+        pub(super) fn drive_outbound_at(
+            &mut self,
+            current: &AuthenticatedGeneration,
+            connection: &mut quiche::Connection,
+            h3_connection: &mut quiche::h3::Connection,
+            now: Instant,
+        ) -> Result<(), FoundationError> {
+            if !self.route_is_open_for_at(current, now) {
                 return Err(FoundationError::PostAuthFlowRejected);
             }
             if self
@@ -2477,6 +2972,10 @@ mod classic_connect {
                 .is_none_or(oneshot::Sender::is_closed)
             {
                 return Err(FoundationError::PostAuthFlowRejected);
+            }
+            #[cfg(test)]
+            if self.fault == ReferenceFault::StallAfterArm {
+                return Ok(());
             }
             match self.phase {
                 FlowPhase::ClientSendingHeaders => {
@@ -2692,6 +3191,8 @@ mod classic_connect {
             }
             self.outbound = None;
             self.inbound.clear();
+            #[cfg(test)]
+            self.spy.buffered_bytes.store(0, Ordering::Release);
             if let Some(response) = self.response.take() {
                 let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
             }
@@ -2716,6 +3217,8 @@ mod classic_connect {
                 send.clear();
             }
             self.outbound = None;
+            #[cfg(test)]
+            self.spy.buffered_bytes.store(0, Ordering::Release);
             self.phase = FlowPhase::Complete;
             response
                 .send(Ok(outcome))
@@ -2973,6 +3476,11 @@ enum DriverCommand {
     ObserveDriverTick {
         response: oneshot::Sender<()>,
     },
+    #[cfg(test)]
+    ExpireAuthenticatedAt {
+        now: Instant,
+        response: oneshot::Sender<()>,
+    },
     Close,
 }
 
@@ -3049,7 +3557,7 @@ impl SingleIdentityQuicManager {
             .await
             .map_err(|_| FoundationError::DriverTimeout)?
             .map_err(|_| FoundationError::DriverStopped)?;
-        Ok(bind_authenticated_lease(authenticated, permit))
+        bind_authenticated_lease(authenticated, permit)
     }
 
     async fn open_classic_connect_reference(
@@ -3091,6 +3599,25 @@ impl SingleIdentityQuicManager {
         outbound: &[u8],
         #[cfg(test)] fault: ClassicConnectFault,
     ) -> Result<ClassicConnectOutcome, FoundationError> {
+        let response_rx = self.enqueue_classic_connect_reference(
+            lease,
+            outbound,
+            #[cfg(test)]
+            fault,
+        )?;
+        timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, response_rx)
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::DriverStopped)?
+    }
+
+    fn enqueue_classic_connect_reference(
+        &self,
+        lease: &AuthenticatedConnectionLease,
+        outbound: &[u8],
+        #[cfg(test)] fault: ClassicConnectFault,
+    ) -> Result<oneshot::Receiver<Result<ClassicConnectOutcome, FoundationError>>, FoundationError>
+    {
         let command_tx = self
             .command_tx
             .as_ref()
@@ -3111,10 +3638,37 @@ impl SingleIdentityQuicManager {
                 fault,
             },
         )?;
-        timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, response_rx)
+        Ok(response_rx)
+    }
+
+    #[cfg(test)]
+    fn start_stalled_classic_connect(
+        &self,
+        lease: &AuthenticatedConnectionLease,
+        outbound: &[u8],
+    ) -> Result<oneshot::Receiver<Result<ClassicConnectOutcome, FoundationError>>, FoundationError>
+    {
+        self.enqueue_classic_connect_reference(lease, outbound, ClassicConnectFault::StallAfterArm)
+    }
+
+    #[cfg(test)]
+    async fn expire_authenticated_at(&self, now: Instant) -> Result<(), FoundationError> {
+        let command_tx = self
+            .command_tx
+            .as_ref()
+            .ok_or(FoundationError::ManagerClosed)?;
+        let (response_tx, response_rx) = oneshot::channel();
+        try_send_driver_command(
+            command_tx,
+            DriverCommand::ExpireAuthenticatedAt {
+                now,
+                response: response_tx,
+            },
+        )?;
+        timeout(COMMAND_RESPONSE_TIMEOUT, response_rx)
             .await
             .map_err(|_| FoundationError::DriverTimeout)?
-            .map_err(|_| FoundationError::DriverStopped)?
+            .map_err(|_| FoundationError::DriverStopped)
     }
 
     #[cfg(test)]
@@ -3354,6 +3908,39 @@ impl FoundationDriver {
         })
     }
 
+    fn authenticated_hard_deadline(&self) -> Option<Instant> {
+        self.auth_runtime
+            .generation()
+            .and_then(GenerationAuth::hard_deadline)
+    }
+
+    fn enforce_authenticated_hard_deadline(&self) -> Result<(), FoundationError> {
+        if let Some(runtime) = self.auth_runtime.generation() {
+            runtime.enforce_hard_deadline_at(Instant::now())?;
+        }
+        Ok(())
+    }
+
+    fn enforce_active_flow_lease(&self) -> Result<(), FoundationError> {
+        if !self.classic_connect.has_attempt() {
+            return Ok(());
+        }
+        let authenticated = self
+            .authenticated_generation()
+            .ok_or(FoundationError::PostAuthFlowRejected)?;
+        if !self.classic_connect.route_is_open_for(&authenticated) {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        Ok(())
+    }
+
+    fn revoke_authenticated_state(&mut self) {
+        self.classic_connect.fail_closed();
+        if let Some(runtime) = self.auth_runtime.generation_mut() {
+            runtime.fail_closed();
+        }
+    }
+
     async fn run(
         mut self,
         mut command_rx: mpsc::Receiver<DriverCommand>,
@@ -3387,10 +3974,14 @@ impl FoundationDriver {
             None;
 
         loop {
+            self.enforce_authenticated_hard_deadline()?;
+            self.enforce_active_flow_lease()?;
             self.initialize_h3()?;
             #[cfg(test)]
             self.send_queued_pre_auth_request()?;
             let observation_ready = self.process_h3(generation)?;
+            self.enforce_authenticated_hard_deadline()?;
+            self.enforce_active_flow_lease()?;
             if !foundation_ready && observation_ready {
                 self.flush_packets(&mut send_buffer).await?;
                 timeout(HANDSHAKE_TIMEOUT, self.ready_barrier.wait())
@@ -3400,8 +3991,11 @@ impl FoundationDriver {
             }
             self.drive_generation_auth(foundation_ready)?;
             self.flush_packets(&mut send_buffer).await?;
+            self.enforce_authenticated_hard_deadline()?;
+            self.enforce_active_flow_lease()?;
 
             if let Some(response) = pending_authenticated_acquire.take() {
+                self.enforce_authenticated_hard_deadline()?;
                 if let Some(authenticated) = self.authenticated_generation() {
                     let _ = response.send(authenticated);
                 } else {
@@ -3428,8 +4022,43 @@ impl FoundationDriver {
                 continue;
             }
 
+            let hard_deadline = self.authenticated_hard_deadline();
+            let active_lease_notification = self.classic_connect.active_lease_notification();
+            #[cfg(test)]
+            if active_lease_notification.is_some() {
+                self.classic_connect.test_spy().record_lease_wait_armed();
+            }
+            let hard_deadline_wait = async move {
+                match hard_deadline {
+                    Some(deadline) => {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            let active_lease_wait = async move {
+                match active_lease_notification {
+                    Some(notification) => notification.notified().await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+
             tokio::select! {
                 biased;
+                _ = hard_deadline_wait => {
+                    self.revoke_authenticated_state();
+                    return Err(FoundationError::PostAuthFlowRejected);
+                }
+                _ = active_lease_wait => {
+                    let active_lease_result = self.enforce_active_flow_lease();
+                    #[cfg(test)]
+                    if active_lease_result.is_err() {
+                        self.classic_connect
+                            .test_spy()
+                            .record_lease_drop_wakeup();
+                    }
+                    active_lease_result?;
+                }
                 command = command_rx.recv() => {
                     match command {
                         Some(DriverCommand::AcquireAuthenticated { response }) => {
@@ -3452,6 +4081,10 @@ impl FoundationDriver {
                                 let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
                                 return Err(FoundationError::PostAuthFlowRejected);
                             };
+                            if !authenticated.admits_new_flow_at(Instant::now()) {
+                                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                                return Err(FoundationError::PostAuthFlowRejected);
+                            }
                             self.classic_connect.arm(
                                 &authenticated,
                                 proof,
@@ -3468,6 +4101,20 @@ impl FoundationDriver {
                         #[cfg(test)]
                         Some(DriverCommand::ObserveDriverTick { response }) => {
                             let _ = response.send(());
+                        }
+                        #[cfg(test)]
+                        Some(DriverCommand::ExpireAuthenticatedAt { now, response }) => {
+                            let expired = self
+                                .auth_runtime
+                                .generation()
+                                .ok_or(FoundationError::PostAuthFlowRejected)?
+                                .enforce_hard_deadline_at(now)
+                                .is_err();
+                            let _ = response.send(());
+                            if expired {
+                                self.revoke_authenticated_state();
+                                return Err(FoundationError::PostAuthFlowRejected);
+                            }
                         }
                         Some(DriverCommand::Close) | None => {
                             // T021b promises bounded reclamation, not a
@@ -3578,6 +4225,9 @@ impl FoundationDriver {
     }
 
     fn process_h3(&mut self, generation: ConnectionGeneration) -> Result<bool, FoundationError> {
+        if let Some(runtime) = self.auth_runtime.generation() {
+            runtime.enforce_hard_deadline_at(Instant::now())?;
+        }
         let Some(h3_connection) = self.h3_connection.as_mut() else {
             return Ok(false);
         };
@@ -3596,6 +4246,7 @@ impl FoundationDriver {
                     let Some(runtime) = self.auth_runtime.generation_mut() else {
                         return Err(FoundationError::PreAuthApplicationActivity);
                     };
+                    runtime.enforce_hard_deadline_at(Instant::now())?;
                     runtime.check_datagram_queue(&self.connection)?;
                     if let Some(authenticated) = runtime.authenticated_generation() {
                         if !self.classic_connect.route_is_open_for(&authenticated) {
@@ -3671,6 +4322,7 @@ impl FoundationDriver {
         let Some(runtime) = self.auth_runtime.generation_mut() else {
             return Ok(());
         };
+        runtime.enforce_hard_deadline_at(Instant::now())?;
         let Some(h3_connection) = self.h3_connection.as_mut() else {
             return Ok(());
         };
@@ -4639,6 +5291,25 @@ mod tests {
         fixed_ok(server_close, "close managed loopback H3 server");
     }
 
+    async fn wait_for_stalled_flow_arms(pair: &LoopbackPair) {
+        fixed_ok(
+            timeout(COMMAND_RESPONSE_TIMEOUT, async {
+                loop {
+                    if pair.client.classic_connect_spy.arm_attempts() == 1
+                        && pair.server.classic_connect_spy.arm_attempts() == 1
+                        && pair.client.classic_connect_spy.lease_wait_armed() == 1
+                        && pair.server.classic_connect_spy.lease_wait_armed() == 1
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await,
+            "wait for stalled classic CONNECT arms",
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bounded_loopback_lock_fails_within_short_local_deadline() {
         let lock = tokio::sync::Mutex::new(());
@@ -4755,6 +5426,20 @@ mod tests {
         );
         assert_eq!(client_lease.generation(), client_observation.generation);
         assert_eq!(server_lease.generation(), server_observation.generation);
+        assert_eq!(
+            client_lease.admission_expiry_unix(),
+            server_lease.admission_expiry_unix()
+        );
+        assert_eq!(
+            client_lease.hard_expiry_unix(),
+            server_lease.hard_expiry_unix()
+        );
+        assert_eq!(client_lease.max_frame_size(), 65_536);
+        assert_eq!(server_lease.max_frame_size(), 65_536);
+        assert_eq!(client_lease.max_concurrent_flows(), 128);
+        assert_eq!(server_lease.max_concurrent_flows(), 128);
+        assert_eq!(client_lease.effective_local_flow_limit(), 1);
+        assert_eq!(server_lease.effective_local_flow_limit(), 1);
         assert!(client_lease.is_active());
         assert!(server_lease.is_active());
         assert!(!pair.client.driver_is_finished());
@@ -4815,6 +5500,282 @@ mod tests {
         drop(fixed_ok(
             bind_bounded_loopback_socket(server_address).await,
             "reclaim test-private H3 server socket",
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t023b1_idle_lease_drop_returns_only_its_permit_and_allows_reacquire() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_t026c_loopback_pair(&task_budget, &task_budget).await;
+        let _ = receive_loopback_observations(&mut pair).await;
+        let (first_client, first_server) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let first_client = fixed_ok(first_client, "acquire idle client lease");
+        let first_server = fixed_ok(first_server, "acquire idle server lease");
+        let client_generation = first_client.generation();
+        let server_generation = first_server.generation();
+        drop(first_client);
+        drop(first_server);
+        assert_eq!(pair.client.lease_permits.available_permits(), 1);
+        assert_eq!(pair.server.lease_permits.available_permits(), 1);
+        fixed_ok(
+            pair.client.observe_driver_tick().await,
+            "observe client after idle lease drop",
+        );
+        fixed_ok(
+            pair.server.observe_driver_tick().await,
+            "observe server after idle lease drop",
+        );
+        assert_eq!(pair.client.classic_connect_spy.lease_drop_wakeups(), 0);
+        assert_eq!(pair.server.classic_connect_spy.lease_drop_wakeups(), 0);
+
+        let (second_client, second_server) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let second_client = fixed_ok(second_client, "reacquire idle client generation");
+        let second_server = fixed_ok(second_server, "reacquire idle server generation");
+        assert_eq!(second_client.generation(), client_generation);
+        assert_eq!(second_server.generation(), server_generation);
+        assert!(second_client.is_active());
+        assert!(second_server.is_active());
+        assert_eq!(pair.client_connections_created.load(Ordering::Relaxed), 1);
+        assert_eq!(pair.server_connections_created.load(Ordering::Relaxed), 1);
+
+        let (client_exit, server_exit) = tokio::join!(
+            pair.client.close_and_take_driver_exit(),
+            pair.server.close_and_take_driver_exit(),
+        );
+        fixed_ok(client_exit, "close reacquired idle client");
+        fixed_ok(server_exit, "close reacquired idle server");
+        assert!(!second_client.is_active());
+        assert!(!second_server.is_active());
+        second_client.release();
+        second_server.release();
+        drop(pair);
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t023b1_hard_equality_closes_an_idle_authenticated_generation() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_t026c_loopback_pair(&task_budget, &task_budget).await;
+        let _ = receive_loopback_observations(&mut pair).await;
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "acquire hard-idle client lease");
+        let server_lease = fixed_ok(server_lease, "acquire hard-idle server lease");
+        let (client_expired, server_expired) = tokio::join!(
+            pair.client
+                .expire_authenticated_at(client_lease.hard_deadline()),
+            pair.server
+                .expire_authenticated_at(server_lease.hard_deadline()),
+        );
+        fixed_ok(client_expired, "expire idle client at hard equality");
+        fixed_ok(server_expired, "expire idle server at hard equality");
+        let (client_exit, server_exit) = tokio::join!(
+            pair.client.take_driver_exit(),
+            pair.server.take_driver_exit(),
+        );
+        assert_eq!(
+            client_exit.err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+        assert_eq!(
+            server_exit.err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+        assert!(!client_lease.is_active());
+        assert!(!server_lease.is_active());
+        assert_eq!(pair.client_connections_created.load(Ordering::Relaxed), 1);
+        assert_eq!(pair.server_connections_created.load(Ordering::Relaxed), 1);
+        let client_address = pair.client_address;
+        let server_address = pair.server_address;
+        client_lease.release();
+        server_lease.release();
+        assert_eq!(pair.client.lease_permits.available_permits(), 1);
+        assert_eq!(pair.server.lease_permits.available_permits(), 1);
+        drop(pair);
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+        drop(fixed_ok(
+            bind_bounded_loopback_socket(client_address).await,
+            "reclaim hard-idle client socket",
+        ));
+        drop(fixed_ok(
+            bind_bounded_loopback_socket(server_address).await,
+            "reclaim hard-idle server socket",
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t023b1_active_flow_lease_drop_notifies_and_closes_without_retry() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_t026c_loopback_pair(&task_budget, &task_budget).await;
+        let _ = receive_loopback_observations(&mut pair).await;
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "acquire notify client lease");
+        let server_lease = fixed_ok(server_lease, "acquire notify server lease");
+        let client_response = fixed_ok(
+            pair.client
+                .start_stalled_classic_connect(&client_lease, b"notify-client-pattern"),
+            "start stalled notify client flow",
+        );
+        let server_response = fixed_ok(
+            pair.server
+                .start_stalled_classic_connect(&server_lease, b"notify-server-pattern"),
+            "start stalled notify server flow",
+        );
+        wait_for_stalled_flow_arms(&pair).await;
+        assert_eq!(pair.client.classic_connect_spy.header_send_attempts(), 0);
+        assert_eq!(pair.server.classic_connect_spy.header_send_attempts(), 0);
+        assert!(pair.client.classic_connect_spy.buffered_bytes() > 0);
+        assert!(pair.server.classic_connect_spy.buffered_bytes() > 0);
+
+        drop(client_lease);
+        assert_eq!(pair.client.lease_permits.available_permits(), 1);
+        let client_result = fixed_ok(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, client_response).await,
+                "wait for notified client flow response",
+            ),
+            "receive notified client flow response",
+        );
+        assert_eq!(
+            client_result.err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+        let client_exit = fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()).await,
+            "reclaim notified client driver",
+        );
+        assert_eq!(
+            client_exit.err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+        assert_eq!(pair.client.classic_connect_spy.lease_drop_wakeups(), 1);
+        assert_eq!(pair.client.classic_connect_spy.buffered_bytes(), 0);
+        assert_eq!(pair.client_connections_created.load(Ordering::Relaxed), 1);
+
+        let server_result = fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, server_response).await,
+            "wait for peer-closed server flow response",
+        );
+        assert!(server_result.is_ok_and(|result| result.is_err()));
+        let server_exit = fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, pair.server.take_driver_exit()).await,
+            "reclaim peer-closed server driver",
+        );
+        assert!(server_exit.is_err());
+        assert!(!server_lease.is_active());
+        assert_eq!(pair.server.classic_connect_spy.buffered_bytes(), 0);
+        assert_eq!(pair.server_connections_created.load(Ordering::Relaxed), 1);
+        let client_address = pair.client_address;
+        let server_address = pair.server_address;
+        server_lease.release();
+        assert_eq!(pair.server.lease_permits.available_permits(), 1);
+        drop(pair);
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+        drop(fixed_ok(
+            bind_bounded_loopback_socket(client_address).await,
+            "reclaim notified client socket",
+        ));
+        drop(fixed_ok(
+            bind_bounded_loopback_socket(server_address).await,
+            "reclaim notified server socket",
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t023b1_hard_equality_closes_a_stalled_active_flow_and_reclaims_it() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_t026c_loopback_pair(&task_budget, &task_budget).await;
+        let _ = receive_loopback_observations(&mut pair).await;
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "acquire hard-flow client lease");
+        let server_lease = fixed_ok(server_lease, "acquire hard-flow server lease");
+        let client_response = fixed_ok(
+            pair.client
+                .start_stalled_classic_connect(&client_lease, b"hard-client-pattern"),
+            "start hard-expiry client flow",
+        );
+        let server_response = fixed_ok(
+            pair.server
+                .start_stalled_classic_connect(&server_lease, b"hard-server-pattern"),
+            "start hard-expiry server flow",
+        );
+        wait_for_stalled_flow_arms(&pair).await;
+        let (client_expired, server_expired) = tokio::join!(
+            pair.client
+                .expire_authenticated_at(client_lease.hard_deadline()),
+            pair.server
+                .expire_authenticated_at(server_lease.hard_deadline()),
+        );
+        fixed_ok(client_expired, "expire active client at hard equality");
+        fixed_ok(server_expired, "expire active server at hard equality");
+        let (client_response, server_response) = tokio::join!(client_response, server_response);
+        assert!(fixed_ok(client_response, "receive hard client response").is_err());
+        assert!(fixed_ok(server_response, "receive hard server response").is_err());
+        let (client_exit, server_exit) = tokio::join!(
+            pair.client.take_driver_exit(),
+            pair.server.take_driver_exit(),
+        );
+        assert_eq!(
+            client_exit.err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+        assert_eq!(
+            server_exit.err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+        assert!(!client_lease.is_active());
+        assert!(!server_lease.is_active());
+        assert_eq!(pair.client.classic_connect_spy.buffered_bytes(), 0);
+        assert_eq!(pair.server.classic_connect_spy.buffered_bytes(), 0);
+        assert_eq!(pair.client.classic_connect_spy.request_streams_opened(), 0);
+        assert_eq!(pair.server.classic_connect_spy.request_streams_opened(), 0);
+        assert_eq!(pair.client_connections_created.load(Ordering::Relaxed), 1);
+        assert_eq!(pair.server_connections_created.load(Ordering::Relaxed), 1);
+        let client_address = pair.client_address;
+        let server_address = pair.server_address;
+        client_lease.release();
+        server_lease.release();
+        assert_eq!(pair.client.lease_permits.available_permits(), 1);
+        assert_eq!(pair.server.lease_permits.available_permits(), 1);
+        drop(pair);
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+        drop(fixed_ok(
+            bind_bounded_loopback_socket(client_address).await,
+            "reclaim hard-flow client socket",
+        ));
+        drop(fixed_ok(
+            bind_bounded_loopback_socket(server_address).await,
+            "reclaim hard-flow server socket",
         ));
     }
 
@@ -5345,6 +6306,11 @@ mod tests {
                     server_result,
                     "server reaches local confirmation queue boundary",
                 );
+                assert_eq!(server_lease.admission_expiry_unix(), T026C_NOW + 1_800);
+                assert_eq!(server_lease.hard_expiry_unix(), T026C_NOW + 86_400);
+                assert_eq!(server_lease.max_frame_size(), 65_536);
+                assert_eq!(server_lease.max_concurrent_flows(), 128);
+                assert_eq!(server_lease.effective_local_flow_limit(), 1);
                 assert!(server_lease.is_active() || pair.server.driver_is_finished());
                 assert!(client_result.is_err());
                 server_lease.release();
@@ -5466,6 +6432,68 @@ mod tests {
     }
 
     #[test]
+    fn t023b1_new_flow_admission_is_strict_but_an_armed_flow_keeps_running() {
+        let (equal_current, equal_lease) = fixed_ok(
+            generation_auth::test_authenticated_lease(401),
+            "construct admission-equality lease",
+        );
+        let mut equal = ClassicConnectReference::new(Some(AuthRole::Client));
+        let equal_spy = equal.test_spy();
+        let (equal_tx, mut equal_rx) = oneshot::channel();
+        assert_eq!(
+            equal.arm_at(
+                &equal_current,
+                lease_command_proof(&equal_lease),
+                fixed_ok(
+                    FlowBuffer::from_slice(b"admission-equality-pattern"),
+                    "construct admission-equality payload",
+                ),
+                equal_tx,
+                equal_current.admission_deadline(),
+                ClassicConnectFault::None,
+            ),
+            Err(FoundationError::PostAuthFlowRejected)
+        );
+        assert_eq!(
+            fixed_ok(equal_rx.try_recv(), "read admission-equality response").err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+        assert_eq!(equal_spy.header_send_attempts(), 0);
+        assert_eq!(equal_spy.request_streams_opened(), 0);
+        assert_eq!(equal_spy.buffered_bytes(), 0);
+        equal_lease.release();
+
+        let (armed_current, armed_lease) = fixed_ok(
+            generation_auth::test_authenticated_lease(402),
+            "construct pre-admission lease",
+        );
+        let mut armed = ClassicConnectReference::new(Some(AuthRole::Client));
+        let (armed_tx, _armed_rx) = oneshot::channel();
+        fixed_ok(
+            armed.arm_at(
+                &armed_current,
+                lease_command_proof(&armed_lease),
+                fixed_ok(
+                    FlowBuffer::from_slice(b"pre-admission-pattern"),
+                    "construct pre-admission payload",
+                ),
+                armed_tx,
+                armed_current.admission_deadline() - Duration::from_nanos(1),
+                ClassicConnectFault::None,
+            ),
+            "arm flow before admission expiry",
+        );
+        assert!(armed.route_is_open_for_at(&armed_current, armed_current.admission_deadline()));
+        assert!(armed.route_is_open_for_at(
+            &armed_current,
+            armed_current.admission_deadline() + Duration::from_secs(1)
+        ));
+        assert!(!armed.route_is_open_for_at(&armed_current, armed_current.hard_deadline()));
+        armed.fail_closed();
+        armed_lease.release();
+    }
+
+    #[test]
     fn t027a1_classic_connect_field_sections_are_exact_and_extended_connect_is_absent() {
         fn owned_headers(pairs: &[(&[u8], &[u8])]) -> Vec<quiche::h3::Header> {
             pairs
@@ -5567,6 +6595,25 @@ mod tests {
 
         let (_temp, mut session) = foundation_strict_test_session();
         fixed_ok(session.handshake(), "handshake lease-bound session");
+
+        let (hard_current, hard_lease) = fixed_ok(
+            test_authenticated_lease(500),
+            "construct hard-equality test lease",
+        );
+        let (mut hard, _hard_rx, hard_spy) = armed_client(&hard_current, &hard_lease);
+        assert_eq!(
+            hard.drive_outbound_at(
+                &hard_current,
+                &mut session.pipe.client,
+                &mut session.client,
+                hard_current.hard_deadline(),
+            ),
+            Err(FoundationError::PostAuthFlowRejected)
+        );
+        assert_eq!(hard_spy.header_send_attempts(), 0);
+        assert_eq!(hard_spy.request_streams_opened(), 0);
+        hard.fail_closed();
+        hard_lease.release();
 
         let (released_current, released_lease) = fixed_ok(
             test_authenticated_lease(501),

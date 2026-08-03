@@ -17,50 +17,60 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T026d-1 — product-private authenticated-generation handoff
+### T027a-1 — authenticated single-stream classic CONNECT reference
 
-- **User result:** Inside the private feature-gated direct-quiche foundation,
-  one physical H3 generation authenticates exactly once before its manager can
-  hand out a module-private, unforgeable generation-bound authenticated
-  capability. Client success means
-  the complete 320-byte confirmation passed local receipt verification; server
-  success means only that the complete confirmation with FIN was accepted by
-  its local quiche send queue, not that the client received or acknowledged it.
-  Auth success itself does not close the connection; it remains managed until
-  explicit close or fail-closed transport termination.
+- **User result:** Inside the private feature-gated direct-quiche foundation, a
+  paired `127.0.0.1` reference may use one active, same-generation authenticated
+  lease to arm at most one client-initiated classic CONNECT request stream. It
+  checks the exact request and `200` response fields, carries distinct raw H3
+  DATA bytes in both directions, and exercises half-close, reset, and real
+  backpressure without resolving or dialing any target. This is a dormant local
+  transport reference, not a product runtime, Developer Mode feature, public
+  API, or path for real user traffic.
 - **Scope:** Change only this queue and
-  `crates/maverick-client/src/quiche_foundation.rs`. Move the reusable T026c
-  auth slot, strict H3 event state machine, bounded body handling, and direct-v3
-  verification into one non-test private module. Consume one by-value validated
-  client or server role config before I/O, use its same singleton profile,
-  exact authority, and exact path, bind all facts to the manager generation,
-  and keep fixtures, fault injection, and outcome spies test-only.
-- **Acceptance:** Preserve the accurate pre-change reds that ordinary acquire
-  was foundation-ready before auth and the non-test H3 path rejected the exact
-  POST. Prove both roles authenticate once, manager handoff cannot precede auth,
-  request authority and same-generation raw SNI compare independently, split
-  DATA is exact, duplicate/trailer/wrong-stream/reset/GOAWAY/priority/Datagram/
-  push/deadline and auth/context/receipt failures close without retry, real
-  `StreamBlocked`, partial, and `Done` branches retain one stream and the exact
-  unwritten suffix, server-local queue success can precede client receipt
-  failure, close invalidates leases, and a replacement starts Fresh and
-  reauthenticates. Keep one physical connection, no fallback, fixed resources,
-  privacy-safe diagnostics, cleared auth buffers, and complete reclamation.
-- **Out of scope:** No product entry, Developer Mode, CONNECT or Extended
-  CONNECT, target, DNS, egress, user DATA, UDP relay, CLI, SDK, server product
-  runtime, public API, dependency, Cargo/lock/vendor/core change, wire or
-  version change, CI, push, PR, tag, release, remote, deployment, real network,
-  or system-network work. `STATUS.md` remains unchanged, and this task defines
-  no release scope.
-- **Stop conditions:** Stop on a third changed file, unavailable same-generation
-  raw SNI or ordered headers, a need for another queue, manager, registry,
-  timeout framework, dependency/vendor/core/public API/wire/version change,
-  sensitive production diagnostic, fallback or data-plane work, or any focused
-  or full local gate regression. If a retry branch cannot be forced through the
-  real quiche API without such expansion, record it as deferred instead of
-  manufacturing evidence.
+  `crates/maverick-client/src/quiche_foundation.rs`. Add a module-private
+  post-auth router and bounded one-shot flow state tied to the manager-issued
+  lease, its connection generation, and a lease-specific revocation token.
+  Reuse the existing physical connection, command queue, deadline/idle driver,
+  and bounded partial/`Done` send helper. Keep synthetic payloads, peer faults,
+  outcomes, and spies under `cfg(test)`.
+- **Acceptance:** Preserve T026d authentication-once, strict pre-auth event
+  gates, same-generation proof, deadline and close invalidation, server
+  local-queue honesty, privacy, and reclamation. Prove pre-auth, closed,
+  released, dropped, canceled, wrong-generation, and replaced-generation
+  attempts send zero CONNECT headers; only one authenticated request stream can
+  open; the request is exactly ordered `:method = CONNECT` then `:authority =
+  reference.invalid:443`; and the success response is exactly `:status = 200`
+  with `fin=false`. Strictly reject missing, duplicate, unknown, reordered, bad
+  method or authority request fields and non-200, extra, duplicate, trailer,
+  wrong-stream, or out-of-order response events. Prove distinct patterned raw
+  DATA arrives byte-for-byte in both directions on that same stream, client
+  request FIN still permits response DATA, server response FIN completes the
+  flow, reset never retries, a second command or stream cannot reopen it, and a
+  consumed success remains alive through another driver tick until explicit
+  close. Force real quiche `StreamBlocked`, partial, and `Done` results and
+  retain the exact unwritten suffix on the same stream. Keep one physical
+  connection, no Datagram path, no target/DNS/fallback, fixed resource bounds,
+  fixed value-free errors, cleared buffers, and complete permit reclamation.
+- **Compatibility boundary:** The classic mapping itself sends no `:protocol`
+  field and uses no H3 Datagram. This reference nevertheless runs only after
+  the existing stricter foundation readiness check has observed peer-advertised
+  Extended CONNECT and H3 Datagram capabilities. Decoupling that inherited
+  precondition is a separate later decision; this slice does not establish
+  generic classic-CONNECT peer compatibility.
+- **Out of scope:** No target parsing-to-connect, DNS, egress policy, socket
+  relay, fallback, UDP, product client or server path, CLI, SDK, public API,
+  dependency, Cargo/lock/vendor/core change, wire or version change, CI, push,
+  PR, tag, release, remote, deployment, real network, or system-network work.
+  `STATUS.md` remains unchanged, and this task defines no release scope.
+- **Stop conditions:** Stop on a third changed file; a need for target dialing,
+  DNS, egress, socket relay, a second connection, or another queue, manager,
+  registry, fallback, or timeout framework; inability to bind header emission
+  to the active same-generation lease; dependency/vendor/core/public
+  API/wire/version change; sensitive production diagnostics; fabricated
+  backpressure evidence; or any focused or full local gate regression.
 
-This private handoff is not tied to a release version and does not authorize
+This private reference is not tied to a release version and does not authorize
 publication, push, deployment, or real-network work.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks

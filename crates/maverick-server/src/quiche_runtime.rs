@@ -1,8 +1,10 @@
 //! Private, connection-local native-quiche server ownership seam.
 //!
-//! This module owns no socket, listener, connection registry, task, or channel.
-//! A future outer driver can synchronously feed one bounded packet at a time,
-//! drain one bounded packet at a time, and schedule the returned timer.
+//! This module performs no DNS lookup or target connect and owns no listener,
+//! connection registry, task, or channel. A pending Classic CONNECT slot may
+//! own one already-connected target socket handed back by its outer driver.
+//! That driver can synchronously feed one bounded packet at a time, drain one
+//! bounded packet at a time, and schedule the returned timer.
 
 #![forbid(unsafe_code)]
 
@@ -25,6 +27,7 @@ use maverick_core::config::{
 use maverick_core::frame::TargetAddr;
 use quiche::h3::NameValue;
 use rand::{rngs::OsRng, TryRngCore};
+use tokio::net::TcpStream;
 
 pub(super) const MAX_PACKET_BYTES: usize = 1_350;
 const INITIAL_CONNECTION_WINDOW_BYTES: u64 = 1_048_576;
@@ -187,6 +190,7 @@ struct PendingClassicConnect {
     peer_write_half_closed: bool,
     max_frame_size: u32,
     dispatch_state: TargetDispatchState,
+    opened_target: Option<TcpStream>,
 }
 
 impl fmt::Debug for PendingClassicConnect {
@@ -293,6 +297,7 @@ impl PendingClassicConnectSlots {
             || pending.max_frame_size != capability.max_frame_size
             || pending.target.is_none()
             || pending.dispatch_state != TargetDispatchState::Admitted
+            || pending.opened_target.is_some()
         {
             return Err(RuntimeError::ClassicConnectAdmissionRejected);
         }
@@ -1130,6 +1135,7 @@ impl ServerConnection {
             peer_write_half_closed: false,
             max_frame_size: capability.max_frame_size,
             dispatch_state: TargetDispatchState::Admitted,
+            opened_target: None,
         })
     }
 
@@ -1170,6 +1176,7 @@ impl ServerConnection {
         if pending.dispatch_state != TargetDispatchState::Admitted
             || pending.generation.as_bytes() != self.generation.as_bytes()
             || pending.max_frame_size != max_frame_size
+            || pending.opened_target.is_some()
         {
             return Err(RuntimeError::TargetOpenDispatchRejected);
         }
@@ -1192,6 +1199,7 @@ impl ServerConnection {
     pub(super) fn complete_target_open_dispatch(
         &mut self,
         token: TargetOpenDispatchToken,
+        opened_target: TcpStream,
         now: Instant,
     ) -> Result<(), RuntimeError> {
         let capability = self
@@ -1214,9 +1222,12 @@ impl ServerConnection {
             || pending.dispatch_state != TargetDispatchState::InFlight
             || pending.target.is_some()
             || pending.port != token.port
+            || pending.max_frame_size != token.max_frame_size
+            || pending.opened_target.is_some()
         {
             return Err(RuntimeError::TargetOpenDispatchRejected);
         }
+        pending.opened_target = Some(opened_target);
         pending.dispatch_state = TargetDispatchState::WaitingNextStage;
         Ok(())
     }
@@ -1228,6 +1239,20 @@ impl ServerConnection {
             .iter()
             .flatten()
             .filter(|pending| pending.dispatch_state == TargetDispatchState::WaitingNextStage)
+            .count()
+    }
+
+    #[cfg(test)]
+    pub(super) fn waiting_opened_target_count_for_test(&self) -> usize {
+        self.pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .filter(|pending| {
+                pending.dispatch_state == TargetDispatchState::WaitingNextStage
+                    && pending.target.is_none()
+                    && pending.opened_target.is_some()
+            })
             .count()
     }
 
@@ -1752,6 +1777,31 @@ mod tests {
         client_h3: Option<quiche::h3::Connection>,
         client_h3_config: Option<quiche::h3::Config>,
         server: ServerConnection,
+    }
+
+    async fn connected_target_pair() -> (TcpStream, TcpStream) {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind loopback target listener");
+        let address = listener.local_addr().expect("read loopback target address");
+        let (opened, accepted) = tokio::join!(TcpStream::connect(address), listener.accept());
+        (
+            opened.expect("connect loopback target"),
+            accepted.expect("accept loopback target").0,
+        )
+    }
+
+    async fn assert_target_peer_eof(mut peer: TcpStream) {
+        use tokio::io::AsyncReadExt;
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer.read_u8())
+                .await
+                .expect("target peer closes within bound")
+                .expect_err("closed target peer reports EOF")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
     }
 
     struct ConfirmationProgress {
@@ -4215,8 +4265,8 @@ auth:
         assert_eq!(pair.server.pending_connects.len(), 8);
     }
 
-    #[test]
-    fn t027b2c1_attempt_deadline_is_one_strict_minimum() {
+    #[tokio::test]
+    async fn t027b2c1_attempt_deadline_is_one_strict_minimum() {
         let headers = test_classic_connect_headers(b"deadline.invalid:8443", false);
 
         let mut timeout_first = TestPair::new().expect("construct timeout-first pair");
@@ -4281,17 +4331,19 @@ auth:
             hard_token.egress_policy(),
             ServerEgressPolicyConfig::default()
         );
+        let (opened, peer) = connected_target_pair().await;
         assert_eq!(
             hard_first
                 .server
-                .complete_target_open_dispatch(hard_token, hard_deadline),
+                .complete_target_open_dispatch(hard_token, opened, hard_deadline),
             Err(RuntimeError::TargetOpenDispatchRejected),
             "the absolute deadline boundary is strict"
         );
+        assert_target_peer_eof(peer).await;
     }
 
-    #[test]
-    fn t027b2c1_completion_rechecks_generation_revocation_and_hard_expiry() {
+    #[tokio::test]
+    async fn t027b2c1_completion_rechecks_generation_revocation_and_hard_expiry() {
         let headers = test_classic_connect_headers(b"stale.invalid:443", false);
 
         let mut mismatch = TestPair::new().expect("construct generation-mismatch pair");
@@ -4310,12 +4362,14 @@ auth:
             .expect("take generation-mismatch token")
             .expect("generation-mismatch token exists");
         token.generation = ServerSourceConnectionId::new([0x77; quiche::MAX_CONN_ID_LEN]);
+        let (opened, peer) = connected_target_pair().await;
         assert_eq!(
             mismatch
                 .server
-                .complete_target_open_dispatch(token, Instant::now()),
+                .complete_target_open_dispatch(token, opened, Instant::now()),
             Err(RuntimeError::TargetOpenDispatchRejected)
         );
+        assert_target_peer_eof(peer).await;
 
         let mut revoked = TestPair::new().expect("construct revoke-race pair");
         revoked
@@ -4336,12 +4390,14 @@ auth:
             .server
             .revoke_authenticated_generation()
             .expect("revoke generation before completion");
+        let (opened, peer) = connected_target_pair().await;
         assert_eq!(
             revoked
                 .server
-                .complete_target_open_dispatch(token, Instant::now()),
+                .complete_target_open_dispatch(token, opened, Instant::now()),
             Err(RuntimeError::TargetOpenDispatchRejected)
         );
+        assert_target_peer_eof(peer).await;
 
         let mut hard = TestPair::new().expect("construct hard-race pair");
         hard.authenticate_generation()
@@ -4360,15 +4416,17 @@ auth:
             .as_mut()
             .expect("active hard-race capability")
             .hard_deadline = Instant::now();
+        let (opened, peer) = connected_target_pair().await;
         assert_eq!(
             hard.server
-                .complete_target_open_dispatch(token, Instant::now()),
+                .complete_target_open_dispatch(token, opened, Instant::now()),
             Err(RuntimeError::TargetOpenDispatchRejected)
         );
+        assert_target_peer_eof(peer).await;
     }
 
-    #[test]
-    fn t027b2c1_admission_expiry_blocks_untaken_work_but_not_in_flight_completion() {
+    #[tokio::test]
+    async fn t027b2c1_admission_expiry_blocks_untaken_work_but_not_in_flight_completion() {
         let headers = test_classic_connect_headers(b"admission-boundary.invalid:443", false);
 
         let mut untaken = TestPair::new().expect("construct untaken-expiry pair");
@@ -4417,7 +4475,7 @@ auth:
             .admission_deadline = Instant::now();
         in_flight
             .server
-            .complete_target_open_dispatch(token, Instant::now())
+            .complete_target_open_dispatch(token, connected_target_pair().await.0, Instant::now())
             .expect("admission expiry does not invalidate in-flight work");
         assert_eq!(in_flight.server.pending_connects.len(), 1);
         assert!(matches!(
@@ -4429,8 +4487,8 @@ auth:
         ));
     }
 
-    #[test]
-    fn t027b2c1_peer_fin_during_dispatch_updates_slot_without_staling_token() {
+    #[tokio::test]
+    async fn t027b2c1_peer_fin_during_dispatch_updates_slot_without_staling_token() {
         let mut pair = TestPair::new().expect("construct in-flight FIN pair");
         pair.authenticate_generation()
             .expect("authenticate in-flight FIN generation");
@@ -4449,7 +4507,7 @@ auth:
         pair.client_to_server()
             .expect("peer FIN updates the occupied in-flight slot");
         pair.server
-            .complete_target_open_dispatch(token, Instant::now())
+            .complete_target_open_dispatch(token, connected_target_pair().await.0, Instant::now())
             .expect("legal peer FIN does not stale the dispatch token");
         let pending = pair.server.pending_connects.slots[0]
             .as_ref()
@@ -4486,5 +4544,212 @@ auth:
             assert!(!rendered.contains(marker));
             assert!(!rendered.contains("54321"));
         }
+    }
+
+    #[tokio::test]
+    async fn t027b2c4_completion_places_connected_target_in_original_slot_until_connection_drop() {
+        use tokio::io::AsyncReadExt;
+        use tokio::time::timeout;
+
+        let mut pair = TestPair::new().expect("construct socket-owner pair");
+        pair.authenticate_generation()
+            .expect("authenticate socket-owner generation");
+        let headers = test_classic_connect_headers(b"socket-owner.invalid:443", false);
+        pair.send_classic_connect(&headers, false)
+            .expect("queue socket-owner CONNECT");
+        pair.client_to_server().expect("admit socket-owner CONNECT");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take socket-owner token")
+            .expect("socket-owner token exists");
+
+        let (opened_target, mut peer) = connected_target_pair().await;
+
+        pair.server
+            .complete_target_open_dispatch(token, opened_target, Instant::now())
+            .expect("handoff connected target into original slot");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("original slot remains occupied");
+        assert!(pending.opened_target.is_some());
+        assert!(matches!(
+            pending.dispatch_state,
+            TargetDispatchState::WaitingNextStage
+        ));
+        assert!(timeout(Duration::from_millis(25), peer.read_u8())
+            .await
+            .is_err());
+
+        drop(pair.server);
+        assert_eq!(
+            timeout(Duration::from_secs(1), peer.read_u8())
+                .await
+                .expect("slot-owned target closes within bound")
+                .expect_err("closed target peer reports EOF")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[tokio::test]
+    async fn t027b2c4_occupied_owner_rejects_duplicate_without_overwrite() {
+        let mut pair = TestPair::new().expect("construct duplicate-owner pair");
+        pair.authenticate_generation()
+            .expect("authenticate duplicate-owner generation");
+        let headers = test_classic_connect_headers(b"duplicate-owner.invalid:443", false);
+        for _ in 0..2 {
+            pair.send_classic_connect(&headers, false)
+                .expect("queue duplicate-owner CONNECT");
+            pair.client_to_server()
+                .expect("admit duplicate-owner CONNECT");
+            pair.server_to_client()
+                .expect("return duplicate-owner request credit");
+        }
+
+        let first_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take first duplicate-owner token")
+            .expect("first duplicate-owner token exists");
+        let first_stream_id = first_token.stream_id;
+        let (first_opened, first_peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(first_token, first_opened, Instant::now())
+            .expect("install first target owner");
+
+        let mut duplicate_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take second duplicate-owner token")
+            .expect("second duplicate-owner token exists");
+        duplicate_token.stream_id = first_stream_id;
+        let (duplicate_opened, duplicate_peer) = connected_target_pair().await;
+        assert_eq!(
+            pair.server.complete_target_open_dispatch(
+                duplicate_token,
+                duplicate_opened,
+                Instant::now(),
+            ),
+            Err(RuntimeError::TargetOpenDispatchRejected)
+        );
+        assert_target_peer_eof(duplicate_peer).await;
+        assert_eq!(pair.server.waiting_opened_target_count_for_test(), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), first_peer.readable())
+                .await
+                .is_err()
+        );
+
+        drop(pair.server);
+        assert_target_peer_eof(first_peer).await;
+    }
+
+    #[tokio::test]
+    async fn t027b2c4_target_peer_write_half_close_preserves_slot_socket_bijection() {
+        use tokio::io::AsyncWriteExt;
+
+        let mut pair = TestPair::new().expect("construct target-half-close pair");
+        pair.authenticate_generation()
+            .expect("authenticate target-half-close generation");
+        let headers = test_classic_connect_headers(b"target-half-close.invalid:443", false);
+        for _ in 0..2 {
+            pair.send_classic_connect(&headers, false)
+                .expect("queue target-half-close CONNECT");
+            pair.client_to_server()
+                .expect("admit target-half-close CONNECT");
+            pair.server_to_client()
+                .expect("return target-half-close request credit");
+        }
+
+        let first_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take in-flight half-close token")
+            .expect("in-flight half-close token exists");
+        let (first_opened, mut first_peer) = connected_target_pair().await;
+        first_peer
+            .shutdown()
+            .await
+            .expect("half-close target peer before handoff");
+        pair.server
+            .complete_target_open_dispatch(first_token, first_opened, Instant::now())
+            .expect("in-flight target half-close preserves handoff");
+
+        let second_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take waiting-stage half-close token")
+            .expect("waiting-stage half-close token exists");
+        let (second_opened, mut second_peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(second_token, second_opened, Instant::now())
+            .expect("install second target owner");
+        second_peer
+            .shutdown()
+            .await
+            .expect("half-close target peer after handoff");
+
+        assert_eq!(pair.server.pending_connects.len(), 2);
+        assert_eq!(pair.server.waiting_target_dispatch_count_for_test(), 2);
+        assert_eq!(pair.server.waiting_opened_target_count_for_test(), 2);
+    }
+
+    #[tokio::test]
+    async fn t027b2c4_stream_port_and_frame_mismatch_drop_socket_without_advancing_slot() {
+        let mut pair = TestPair::new().expect("construct metadata-mismatch pair");
+        pair.authenticate_generation()
+            .expect("authenticate metadata-mismatch generation");
+        let headers = test_classic_connect_headers(b"metadata-mismatch.invalid:443", false);
+        for _ in 0..3 {
+            pair.send_classic_connect(&headers, false)
+                .expect("queue metadata-mismatch CONNECT");
+            pair.client_to_server()
+                .expect("admit metadata-mismatch CONNECT");
+            pair.server_to_client()
+                .expect("return metadata-mismatch request credit");
+        }
+
+        let mut stream_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take stream-mismatch token")
+            .expect("stream-mismatch token exists");
+        stream_token.stream_id = u64::MAX;
+        let mut port_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take port-mismatch token")
+            .expect("port-mismatch token exists");
+        port_token.port = 444;
+        let mut frame_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take frame-mismatch token")
+            .expect("frame-mismatch token exists");
+        frame_token.max_frame_size += 1;
+
+        for token in [stream_token, port_token, frame_token] {
+            let (opened, peer) = connected_target_pair().await;
+            assert_eq!(
+                pair.server
+                    .complete_target_open_dispatch(token, opened, Instant::now()),
+                Err(RuntimeError::TargetOpenDispatchRejected)
+            );
+            assert_target_peer_eof(peer).await;
+        }
+        assert_eq!(pair.server.pending_connects.len(), 3);
+        assert_eq!(pair.server.waiting_target_dispatch_count_for_test(), 0);
+        assert_eq!(pair.server.waiting_opened_target_count_for_test(), 0);
+        assert_eq!(
+            pair.server
+                .pending_connects
+                .slots
+                .iter()
+                .flatten()
+                .filter(|pending| pending.dispatch_state == TargetDispatchState::InFlight)
+                .count(),
+            3
+        );
     }
 }

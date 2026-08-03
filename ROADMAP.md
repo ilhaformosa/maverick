@@ -17,42 +17,52 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2c3 — single metrics-owner handoff into the private quiche actor lifecycle
+### T027b-2c4 — fixed-slot successful target-stream ownership
 
-- **User result:** A future private direct-v3 target dispatch can use the same
-  fixed aggregate target-open metrics already owned by the server, without a
-  hidden second owner or default sink.
-- **Scope:** Make the private quiche `Endpoint::bind` accept the caller's one
-  existing `Arc<ServerRuntimeMetrics>` beside the frozen server role. Retain
-  that exact owner, derive one `TargetOpenMetricSinks` through its existing
-  method, and clone only those sinks into each actor and its actor-owned target
-  dispatch futures.
-- **Acceptance:** Prove exact owner identity with `Arc::ptr_eq`; prove all four
-  failure counters and both latency metrics share the caller owner's underlying
-  storage; keep synthetic dispatch observations at zero; release future and
-  actor sink clones on normal completion, timeout, panic, cancellation, and
-  forced parent abort before joined actors are reclaimed; preserve the eight-
-  future ceiling, four-completion rounds, fairness, generation, deadline,
-  cancellation, panic, and registry-reclaim gates; and keep registry,
-  `ServerConnection`, and the frozen role metrics-free.
-- **Out of scope:** No opener call, DNS, `TcpStream`, target socket, response,
-  DATA, relay, fallback, product server caller, public API, schema, wire or
-  version change, new metrics owner or default sink, `runtime_metrics.rs`,
-  `server.rs`, `relay.rs`, quiche registry/runtime, core/config, manifest,
-  lockfile, dependency, vendor, client, SDK, CLI, `STATUS.md`, CI, remote,
-  deployment, release, real-network, credential, infrastructure, or system-
-  network work.
-- **Stop conditions:** Stop before any file outside `ROADMAP.md` and
-  `crates/maverick-server/src/quiche_endpoint.rs` changes; any need to construct
-  or default metrics inside endpoint/actor/registry, hand metrics to registry or
-  runtime connection state, call an opener, perform target I/O, retain a target
-  socket, record a target-open observation, expose a public API, add a
-  dependency, or change `STATUS.md` requires re-adjudication.
+- **User result:** A future private direct-v3 target dispatch can return one
+  already-connected TCP target without losing it or creating a second socket
+  owner outside the existing fixed eight request slots.
+- **Scope:** Add one optional connected target socket to each existing
+  `PendingClassicConnect` slot. While work is admitted the slot owns target
+  metadata; while it is in flight the actor-owned future temporarily owns the
+  token and any connected socket; after synchronous completion checks pass, the
+  same originating slot alone owns that socket in `WaitingNextStage`. Update
+  only the registry's obsolete source-scan test so it continues to prohibit
+  registry network ownership while recognizing this explicit runtime slot
+  owner; registry production code and responsibility remain unchanged.
+- **Acceptance:** Keep exactly eight slots and no second socket map, array, or
+  queue; recheck generation, active and unrevoked state, hard and attempt
+  deadlines, stream, port, frame limit, in-flight state, consumed target, and
+  empty socket owner before handoff; drop a rejected or abandoned socket; prove
+  single and eight-socket completion, unchanged ninth-request rejection,
+  peer-half-close stability, fixed four-completion rounds, zero target-open
+  observations, and bounded socket closure on timeout, panic, cancellation,
+  expiry, revocation, peer or local close, inbox close, actor abort, connection
+  drop, and registry reclaim. Keep `ServerConnection: Send` and keep registry
+  ownership limited to its sender and task ID.
+- **Out of scope:** No production opener call, DNS, new connect policy, success
+  response, DATA read or write, relay, fallback, slot reuse, product-server
+  caller, public API, schema, wire or version change, metrics behavior or owner
+  change, `relay.rs`, registry production code, `runtime_metrics.rs`,
+  `server.rs`, config, manifest, lockfile, dependency, vendor, core, client,
+  SDK, CLI, `STATUS.md`, CI, remote, deployment, release, real-network,
+  credential, infrastructure, or system-network work.
+- **Stop conditions:** Stop before any file outside `ROADMAP.md`,
+  `crates/maverick-server/src/quiche_runtime.rs`, and
+  `crates/maverick-server/src/quiche_endpoint.rs` changes, except for the
+  architecture-only source-scan assertion in
+  `crates/maverick-server/src/quiche_registry.rs`. Any need for a ninth slot,
+  another socket collection, a production DNS/connect/opener call, a response
+  or data plane, metrics observation, registry production change or new
+  responsibility, public API, dependency, or `STATUS.md` change requires
+  re-adjudication.
 
-This remains repository-local, private, feature-gated dependency-handoff
-foundation. Zero synthetic target-open observations do not establish H3 target
-connectivity, a metrics product result, runtime readiness, a release result, or
-a product result; the endpoint still has no product-server startup caller.
+This remains repository-local, private, feature-gated socket-ownership
+foundation. Production target dispatch is still fixed `Unavailable`, and the
+test-only dispatch seam uses loopback with OS-assigned ephemeral ports. Zero
+target-open observations and retained sockets do not establish H3 target
+connectivity, a data plane, runtime readiness, a release result, or a product
+result; the endpoint still has no product-server startup caller.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

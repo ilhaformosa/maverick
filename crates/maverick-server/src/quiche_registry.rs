@@ -1602,23 +1602,66 @@ auth:
     }
 
     #[test]
-    fn source_scan_excludes_retry_rotation_async_and_network_ownership() {
+    fn source_scan_keeps_registry_network_free_and_runtime_slot_owned_only() {
         let registry_source = include_str!("quiche_registry.rs");
         let runtime_source = include_str!("quiche_runtime.rs");
-        let combined = [registry_source, runtime_source];
-        let forbidden = [
-            ["quiche::", "retry("].concat(),
-            ["accept_with_", "retry"].concat(),
-            [".new_", "scid("].concat(),
-            ["Udp", "Socket"].concat(),
-            ["Tcp", "Stream"].concat(),
-            ["async", " fn"].concat(),
-            [".", "await"].concat(),
-        ];
-        for source in combined {
-            for needle in &forbidden {
-                assert!(!source.contains(needle));
-            }
+        let registry_production = registry_source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production registry source");
+        let runtime_production = runtime_source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production runtime source");
+
+        for forbidden in [
+            "quiche::retry(",
+            "accept_with_retry",
+            ".new_scid(",
+            "UdpSocket",
+            "TcpStream",
+            "TcpListener",
+            "async fn",
+            ".await",
+            "tokio::spawn",
+            "JoinSet<",
+            "FuturesUnordered",
+            "mpsc::channel(",
+            "opened_target",
+            "TargetOpenDispatchToken",
+        ] {
+            assert!(!registry_production.contains(forbidden));
+        }
+
+        assert!(runtime_production.contains("use tokio::net::TcpStream;"));
+        assert_eq!(
+            runtime_production
+                .matches("opened_target: Option<TcpStream>")
+                .count(),
+            1
+        );
+        assert!(runtime_production.contains("pending.opened_target = Some(opened_target);"));
+        assert!(!runtime_production.contains("type ConnectedTarget"));
+
+        for forbidden in [
+            "quiche::retry(",
+            "accept_with_retry",
+            ".new_scid(",
+            "UdpSocket",
+            "TcpListener",
+            "TcpStream::connect",
+            "lookup_host",
+            "open_target_addr_before_deadline_with_metrics",
+            "async fn",
+            ".await",
+            "tokio::spawn",
+            "mpsc::channel(",
+            "Vec<TcpStream",
+            "VecDeque<TcpStream",
+            "[Option<TcpStream>",
+            "HashMap<SocketAddr, TcpStream",
+        ] {
+            assert!(!runtime_production.contains(forbidden));
         }
     }
 }

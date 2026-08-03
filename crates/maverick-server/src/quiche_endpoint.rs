@@ -2,8 +2,11 @@
 //!
 //! The endpoint owns the only receive loop, CID registry, and actor `JoinSet`.
 //! Each actor receives one `ServerConnection` by value and never shares it.
-//! This module has no authentication, CONNECT parser, DNS, opener, target I/O,
-//! relay, public API, or non-loopback binding seam.
+//! Production dispatch remains fixed-unavailable and performs no DNS, connect,
+//! response, DATA, or relay work. A test-only loopback seam may let one actor
+//! future temporarily own an already-connected target socket until it is
+//! synchronously handed into the originating `ServerConnection` slot. This
+//! module exposes no public API or non-loopback binding seam.
 
 #![forbid(unsafe_code)]
 
@@ -20,7 +23,9 @@ use std::time::Duration;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use maverick_core::config::ServerRoleConfig;
-use tokio::net::UdpSocket;
+#[cfg(test)]
+use tokio::net::TcpListener;
+use tokio::net::{TcpStream, UdpSocket};
 #[cfg(test)]
 use tokio::sync::Notify;
 use tokio::sync::{mpsc, watch};
@@ -524,6 +529,13 @@ async fn run_connection_actor(
             #[cfg(test)]
             if let Some(test_gate) = test_gate.as_deref() {
                 test_gate.observe_ready_completion_round(ready_completions);
+                if ready_completions != 0 {
+                    test_gate.observe_target_future_queue(target_futures.is_empty());
+                }
+                assert!(
+                    !test_gate.take_parent_panic_request(),
+                    "injected fixed connection actor panic"
+                );
                 if test_gate.take_parent_stall_request() {
                     test_gate.observe_parent_stall_started();
                     std::future::pending::<()>().await;
@@ -799,8 +811,21 @@ async fn run_connection_actor(
 }
 
 type TargetDispatchFuture = Pin<
-    Box<dyn Future<Output = Result<TargetOpenDispatchToken, TargetDispatchError>> + Send + 'static>,
+    Box<
+        dyn Future<Output = Result<TargetDispatchCompletion, TargetDispatchError>> + Send + 'static,
+    >,
 >;
+
+struct TargetDispatchCompletion {
+    token: TargetOpenDispatchToken,
+    opened_target: TcpStream,
+}
+
+impl fmt::Debug for TargetDispatchCompletion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("private target dispatch completion")
+    }
+}
 
 struct TargetDispatchFutures {
     futures: FuturesUnordered<TargetDispatchFuture>,
@@ -842,11 +867,13 @@ impl TargetDispatchFutures {
         Ok(())
     }
 
-    fn try_next_ready(&mut self) -> Option<Result<TargetOpenDispatchToken, TargetDispatchError>> {
+    fn try_next_ready(&mut self) -> Option<Result<TargetDispatchCompletion, TargetDispatchError>> {
         self.futures.next().now_or_never().flatten()
     }
 
-    async fn next_ready(&mut self) -> Option<Result<TargetOpenDispatchToken, TargetDispatchError>> {
+    async fn next_ready(
+        &mut self,
+    ) -> Option<Result<TargetDispatchCompletion, TargetDispatchError>> {
         self.futures.next().await
     }
 
@@ -859,7 +886,7 @@ async fn run_target_dispatch_future(
     token: TargetOpenDispatchToken,
     target_open_sinks: TargetOpenMetricSinks,
     #[cfg(test)] test_gate: Option<Arc<ActorTestGate>>,
-) -> Result<TargetOpenDispatchToken, TargetDispatchError> {
+) -> Result<TargetDispatchCompletion, TargetDispatchError> {
     if !token.is_structurally_valid() {
         return Err(TargetDispatchError::Unavailable);
     }
@@ -871,21 +898,24 @@ async fn run_target_dispatch_future(
     let result = timeout_at(deadline, attempt).await;
     drop(target_open_sinks);
     match result {
-        Ok(Ok(())) => Ok(token),
+        Ok(Ok(opened_target)) => Ok(TargetDispatchCompletion {
+            token,
+            opened_target,
+        }),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(TargetDispatchError::Timeout),
     }
 }
 
 #[cfg(not(test))]
-async fn synthetic_target_dispatch() -> Result<(), TargetDispatchError> {
+async fn synthetic_target_dispatch() -> Result<TcpStream, TargetDispatchError> {
     Err(TargetDispatchError::Unavailable)
 }
 
 #[cfg(test)]
 async fn synthetic_target_dispatch(
     test_gate: Option<Arc<ActorTestGate>>,
-) -> Result<(), TargetDispatchError> {
+) -> Result<TcpStream, TargetDispatchError> {
     match test_gate {
         Some(test_gate) => test_gate.run_synthetic_target_dispatch().await,
         None => Err(TargetDispatchError::Unavailable),
@@ -894,17 +924,22 @@ async fn synthetic_target_dispatch(
 
 fn handle_target_dispatch_completion(
     connection: &mut ServerConnection,
-    completion: Result<TargetOpenDispatchToken, TargetDispatchError>,
+    completion: Result<TargetDispatchCompletion, TargetDispatchError>,
     #[cfg(test)] test_gate: Option<&ActorTestGate>,
 ) -> Result<(), ActorError> {
-    let token = completion.map_err(|_| ActorError::TargetDispatchUnavailable)?;
+    let completion = completion.map_err(|_| ActorError::TargetDispatchUnavailable)?;
     connection
-        .complete_target_open_dispatch(token, std::time::Instant::now())
+        .complete_target_open_dispatch(
+            completion.token,
+            completion.opened_target,
+            std::time::Instant::now(),
+        )
         .map_err(|_| ActorError::TargetDispatchUnavailable)?;
     #[cfg(test)]
     if let Some(test_gate) = test_gate {
         test_gate.observe_target_dispatch_completion(
             connection.waiting_target_dispatch_count_for_test(),
+            connection.waiting_opened_target_count_for_test(),
             connection.lifecycle() == ConnectionLifecycle::Active && connection.is_authenticated(),
         );
     }
@@ -1121,6 +1156,7 @@ struct ActorTestGate {
     dispatch_ended_notify: Notify,
     dispatch_release_permits: AtomicUsize,
     release_dispatch: Notify,
+    dispatch_target: std::sync::Mutex<Option<SocketAddr>>,
     inbound_observed: AtomicUsize,
     inbound_while_dispatch_blocked: AtomicBool,
     flush_while_dispatch_blocked: AtomicBool,
@@ -1129,15 +1165,19 @@ struct ActorTestGate {
     completion_waiting_peak: AtomicUsize,
     completion_actor_active: AtomicBool,
     completion_round_peak: AtomicUsize,
+    completion_queue_drained: AtomicBool,
     completion_accepted_notify: Notify,
     fail_first_dispatch: Notify,
     revoke_requested: AtomicBool,
     hard_expiry_requested: AtomicBool,
     local_close_requested: AtomicBool,
+    parent_panic_requested: AtomicBool,
     parent_stall_requested: AtomicBool,
     parent_stall_started: Notify,
     parent_join_observed: AtomicBool,
     parent_join_after_dispatch_drop: AtomicBool,
+    target_peer_eof_observed: AtomicBool,
+    parent_join_after_target_peer_eof: AtomicBool,
 }
 
 #[cfg(test)]
@@ -1194,6 +1234,18 @@ impl ActorTestGate {
     fn block_target_dispatches(&self) {
         self.dispatch_behavior
             .store(Self::DISPATCH_BLOCK, Ordering::Release);
+    }
+
+    fn set_target_dispatch_listener(&self, listener: &TcpListener) {
+        let address = listener
+            .local_addr()
+            .expect("read loopback target listener address");
+        assert!(address.ip().is_loopback());
+        assert_ne!(address.port(), 0);
+        *self
+            .dispatch_target
+            .lock()
+            .expect("lock synthetic target address") = Some(address);
     }
 
     fn error_first_target_dispatch(&self) {
@@ -1292,7 +1344,13 @@ impl ActorTestGate {
         )
     }
 
-    fn observe_target_dispatch_completion(&self, waiting: usize, actor_active: bool) {
+    fn observe_target_dispatch_completion(
+        &self,
+        waiting: usize,
+        opened: usize,
+        actor_active: bool,
+    ) {
+        assert_eq!(opened, waiting);
         self.completion_accepted.fetch_add(1, Ordering::AcqRel);
         self.completion_waiting_peak
             .fetch_max(waiting, Ordering::AcqRel);
@@ -1306,8 +1364,26 @@ impl ActorTestGate {
             .fetch_max(processed, Ordering::AcqRel);
     }
 
+    fn observe_target_future_queue(&self, empty: bool) {
+        if empty {
+            self.completion_queue_drained.store(true, Ordering::Release);
+        }
+    }
+
+    fn target_future_queue_drained(&self) -> bool {
+        self.completion_queue_drained.load(Ordering::Acquire)
+    }
+
     fn request_parent_stall(&self) {
         self.parent_stall_requested.store(true, Ordering::Release);
+    }
+
+    fn request_parent_panic(&self) {
+        self.parent_panic_requested.store(true, Ordering::Release);
+    }
+
+    fn take_parent_panic_request(&self) -> bool {
+        self.parent_panic_requested.swap(false, Ordering::AcqRel)
     }
 
     fn take_parent_stall_request(&self) -> bool {
@@ -1324,13 +1400,29 @@ impl ActorTestGate {
             started != 0 && active == 0 && ended == started,
             Ordering::Release,
         );
+        self.parent_join_after_target_peer_eof.store(
+            self.target_peer_eof_observed.load(Ordering::Acquire),
+            Ordering::Release,
+        );
         self.parent_join_observed.store(true, Ordering::Release);
+    }
+
+    fn observe_target_peer_eof(&self) {
+        self.target_peer_eof_observed.store(true, Ordering::Release);
     }
 
     fn parent_join_snapshot(&self) -> (bool, bool) {
         (
             self.parent_join_observed.load(Ordering::Acquire),
             self.parent_join_after_dispatch_drop.load(Ordering::Acquire),
+        )
+    }
+
+    fn target_peer_eof_join_snapshot(&self) -> (bool, bool) {
+        (
+            self.target_peer_eof_observed.load(Ordering::Acquire),
+            self.parent_join_after_target_peer_eof
+                .load(Ordering::Acquire),
         )
     }
 
@@ -1356,7 +1448,9 @@ impl ActorTestGate {
         }
     }
 
-    async fn run_synthetic_target_dispatch(self: Arc<Self>) -> Result<(), TargetDispatchError> {
+    async fn run_synthetic_target_dispatch(
+        self: Arc<Self>,
+    ) -> Result<TcpStream, TargetDispatchError> {
         let index = self.dispatch_started.fetch_add(1, Ordering::AcqRel);
         self.dispatch_started_notify.notify_one();
         let active = self.dispatch_active.fetch_add(1, Ordering::AcqRel) + 1;
@@ -1365,11 +1459,19 @@ impl ActorTestGate {
             gate: Arc::clone(&self),
             finished: false,
         };
+        let address = self
+            .dispatch_target
+            .lock()
+            .map_err(|_| TargetDispatchError::Unavailable)?
+            .ok_or(TargetDispatchError::Unavailable)?;
+        let opened_target = TcpStream::connect(address)
+            .await
+            .map_err(|_| TargetDispatchError::Unavailable)?;
         match self.dispatch_behavior.load(Ordering::Acquire) {
             Self::DISPATCH_BLOCK => {
                 self.wait_for_dispatch_release().await;
                 guard.finish();
-                Ok(())
+                Ok(opened_target)
             }
             Self::DISPATCH_ERROR_FIRST if index == 0 => {
                 self.fail_first_dispatch.notified().await;
@@ -1382,7 +1484,7 @@ impl ActorTestGate {
             Self::DISPATCH_ERROR_FIRST | Self::DISPATCH_PANIC_FIRST => {
                 self.wait_for_dispatch_release().await;
                 guard.finish();
-                Ok(())
+                Ok(opened_target)
             }
             _ => Err(TargetDispatchError::Unavailable),
         }
@@ -1564,6 +1666,7 @@ mod tests {
         MAX_PACKET_BYTES,
     };
 
+    use tokio::io::AsyncReadExt;
     use tokio::task::AbortHandle;
     use tokio::time::timeout;
 
@@ -1604,6 +1707,49 @@ mod tests {
         }
     }
 
+    async fn loopback_target_listener(gate: &ActorTestGate) -> TcpListener {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind loopback target listener");
+        gate.set_target_dispatch_listener(&listener);
+        listener
+    }
+
+    async fn accept_target_peers(listener: &TcpListener, count: usize) -> Vec<TcpStream> {
+        let mut peers = Vec::with_capacity(count);
+        for _ in 0..count {
+            peers.push(
+                timeout(Duration::from_secs(1), listener.accept())
+                    .await
+                    .expect("target connect reaches loopback listener")
+                    .expect("accept loopback target connection")
+                    .0,
+            );
+        }
+        peers
+    }
+
+    async fn assert_target_peers_stay_open(peers: &mut [TcpStream]) {
+        for peer in peers {
+            assert!(timeout(Duration::from_millis(25), peer.read_u8())
+                .await
+                .is_err());
+        }
+    }
+
+    async fn assert_target_peers_eof(peers: Vec<TcpStream>) {
+        for mut peer in peers {
+            assert_eq!(
+                timeout(Duration::from_secs(4), peer.read_u8())
+                    .await
+                    .expect("target peer closes within bound")
+                    .expect_err("closed target peer reports EOF")
+                    .kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        }
+    }
+
     struct TestCredentials {
         _directory: tempfile::TempDir,
         certificate_path: PathBuf,
@@ -1639,6 +1785,33 @@ mod tests {
             certificate_path: &std::path::Path,
             key_path: &std::path::Path,
         ) -> Arc<ServerRoleConfig> {
+            self.server_role_with_timeout(
+                transport_strategy,
+                expected_authority,
+                certificate_path,
+                key_path,
+                10_000,
+            )
+        }
+
+        fn server_role_with_target_timeout(&self, timeout_ms: u64) -> Arc<ServerRoleConfig> {
+            self.server_role_with_timeout(
+                "h3",
+                "localhost",
+                &self.certificate_path,
+                &self.key_path,
+                timeout_ms,
+            )
+        }
+
+        fn server_role_with_timeout(
+            &self,
+            transport_strategy: &str,
+            expected_authority: &str,
+            certificate_path: &std::path::Path,
+            key_path: &std::path::Path,
+            timeout_ms: u64,
+        ) -> Arc<ServerRoleConfig> {
             let yaml = format!(
                 r#"version: 3
 role: server
@@ -1655,7 +1828,7 @@ maverick:
   tunnel_path: "/direct-v3"
   expected_authority: "{expected_authority}"
 target_open:
-  timeout_ms: 10000
+  timeout_ms: {timeout_ms}
   egress:
     allow_loopback: false
     allow_private: false
@@ -2089,6 +2262,12 @@ fallback:
         LocalClose,
     }
 
+    #[derive(Clone, Copy)]
+    enum CompletedActorTermination {
+        Panic,
+        ForcedAbort,
+    }
+
     async fn assert_blocked_future_termination(case: BlockedFutureTermination) {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
@@ -2099,6 +2278,7 @@ fallback:
                 .expect("bind termination-case endpoint");
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
+        let target_listener = loopback_target_listener(&gate).await;
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xe1).await;
@@ -2119,6 +2299,7 @@ fallback:
             )
             .await
             .expect("termination-case dispatch future starts");
+            let target_peers = accept_target_peers(&target_listener, 1).await;
             assert_eq!(target_sink_clone_count(&client_metrics), 4);
             assert_zero_target_open_metrics(&client_metrics);
 
@@ -2167,6 +2348,7 @@ fallback:
             )
             .await
             .expect("termination drops the active dispatch future");
+            assert_target_peers_eof(target_peers).await;
             assert_eq!(client_gate.dispatch_counts(), (1, 0, 1, 1));
             if !matches!(case, BlockedFutureTermination::EndpointCancel) {
                 client_cancel
@@ -2178,6 +2360,197 @@ fallback:
         let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
         endpoint_result.expect("termination-case endpoint joins its actor");
         assert_eq!(gate.dispatch_counts(), (1, 0, 1, 1));
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    async fn assert_slot_owned_target_termination(case: BlockedFutureTermination) {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role();
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind slot-owner termination endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        gate.block_target_dispatches();
+        let target_listener = loopback_target_listener(&gate).await;
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xe4).await;
+        let client_gate = Arc::clone(&gate);
+        let client_cancel = cancel.clone();
+        let client_metrics = Arc::clone(&metrics_owner);
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            client
+                .send_classic_connect()
+                .expect("queue slot-owner termination CONNECT");
+            client.send_pending().await;
+            timeout(
+                Duration::from_secs(1),
+                client_gate.wait_for_dispatch_started(1),
+            )
+            .await
+            .expect("slot-owner dispatch future starts");
+            let mut target_peers = accept_target_peers(&target_listener, 1).await;
+            client_gate.release_target_dispatches(1);
+            timeout(
+                Duration::from_secs(1),
+                client_gate.wait_for_target_completions(1),
+            )
+            .await
+            .expect("connected target reaches original slot");
+            assert_eq!(client_gate.dispatch_counts(), (1, 0, 1, 1));
+            assert_target_peers_stay_open(&mut target_peers).await;
+            assert_zero_target_open_metrics(&client_metrics);
+
+            match case {
+                BlockedFutureTermination::EndpointCancel => {
+                    client_cancel
+                        .send(true)
+                        .expect("cancel endpoint with slot-owned target");
+                }
+                BlockedFutureTermination::HardExpiry => {
+                    client_gate.request_hard_expiry();
+                    client
+                        .connection
+                        .send_ack_eliciting()
+                        .expect("wake slot owner for hard expiry");
+                    client.send_pending().await;
+                }
+                BlockedFutureTermination::Revocation => {
+                    client_gate.request_revocation();
+                    client
+                        .connection
+                        .send_ack_eliciting()
+                        .expect("wake slot owner for revocation");
+                    client.send_pending().await;
+                }
+                BlockedFutureTermination::PeerClose => {
+                    client
+                        .connection
+                        .close(true, 0x67, b"")
+                        .expect("peer closes slot-owned generation");
+                    client.send_pending().await;
+                }
+                BlockedFutureTermination::LocalClose => {
+                    client_gate.request_local_close();
+                    client
+                        .connection
+                        .send_ack_eliciting()
+                        .expect("wake slot owner for local close");
+                    client.send_pending().await;
+                }
+            }
+
+            assert_target_peers_eof(target_peers).await;
+            client_gate.observe_target_peer_eof();
+            if !matches!(case, BlockedFutureTermination::EndpointCancel) {
+                client_cancel
+                    .send(true)
+                    .expect("stop slot-owner endpoint after termination");
+            }
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("slot-owner endpoint joins its actor");
+        assert_eq!(gate.target_peer_eof_join_snapshot(), (true, true));
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    async fn assert_completed_actor_termination(case: CompletedActorTermination) {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role();
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind completed-actor termination endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        gate.block_target_dispatches();
+        let target_listener = loopback_target_listener(&gate).await;
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xe6).await;
+        let client_gate = Arc::clone(&gate);
+        let client_metrics = Arc::clone(&metrics_owner);
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            client
+                .send_classic_connect()
+                .expect("queue completed-actor CONNECT");
+            client.send_pending().await;
+            timeout(
+                Duration::from_secs(1),
+                client_gate.wait_for_dispatch_started(1),
+            )
+            .await
+            .expect("completed-actor dispatch starts");
+            let mut target_peers = accept_target_peers(&target_listener, 1).await;
+            client_gate.release_target_dispatches(1);
+            timeout(
+                Duration::from_secs(1),
+                client_gate.wait_for_target_completions(1),
+            )
+            .await
+            .expect("completed-actor target reaches slot");
+            assert_target_peers_stay_open(&mut target_peers).await;
+            assert_zero_target_open_metrics(&client_metrics);
+
+            match case {
+                CompletedActorTermination::Panic => {
+                    client_gate.request_parent_panic();
+                    client
+                        .connection
+                        .send_ack_eliciting()
+                        .expect("wake actor for injected panic");
+                    client.send_pending().await;
+                }
+                CompletedActorTermination::ForcedAbort => {
+                    client_gate.request_parent_stall();
+                    client
+                        .connection
+                        .send_ack_eliciting()
+                        .expect("wake actor for forced parent abort");
+                    client.send_pending().await;
+                    timeout(
+                        Duration::from_secs(1),
+                        client_gate.parent_stall_started.notified(),
+                    )
+                    .await
+                    .expect("completed actor reaches forced stall");
+                    cancel
+                        .send(true)
+                        .expect("cancel endpoint around completed stalled actor");
+                }
+            }
+
+            assert_target_peers_eof(target_peers).await;
+            if matches!(case, CompletedActorTermination::Panic) {
+                cancel.send(true).expect("stop endpoint after actor panic");
+            }
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        match case {
+            CompletedActorTermination::Panic => {
+                endpoint_result.expect("panicked actor is joined and reclaimed")
+            }
+            CompletedActorTermination::ForcedAbort => {
+                assert_eq!(endpoint_result, Err(EndpointError::Shutdown));
+            }
+        }
+        assert_eq!(gate.parent_join_snapshot(), (true, true));
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
         assert_eq!(target_sink_clone_count(&metrics_owner), 2);
@@ -2198,6 +2571,7 @@ fallback:
         } else {
             gate.error_first_target_dispatch();
         }
+        let target_listener = loopback_target_listener(&gate).await;
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xe2).await;
@@ -2220,6 +2594,7 @@ fallback:
                 .expect("start failing future and sibling");
                 client.receive_available().await;
             }
+            let target_peers = accept_target_peers(&target_listener, 2).await;
             assert_eq!(client_gate.dispatch_counts(), (2, 2, 2, 0));
             assert_eq!(target_sink_clone_count(&client_metrics), 5);
             assert_zero_target_open_metrics(&client_metrics);
@@ -2230,6 +2605,7 @@ fallback:
             )
             .await
             .expect("dispatch failure drops its sibling future");
+            assert_target_peers_eof(target_peers).await;
             assert_eq!(client_gate.dispatch_counts(), (2, 0, 2, 2));
             timeout(Duration::from_secs(1), async {
                 loop {
@@ -2261,7 +2637,7 @@ fallback:
         assert_zero_target_open_metrics(&metrics_owner);
     }
 
-    async fn assert_inbox_close_drops_dispatch_future() {
+    async fn assert_inbox_close_releases_target(complete_before_close: bool) {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role();
         let metrics_owner = test_metrics_owner();
@@ -2321,6 +2697,7 @@ fallback:
         let (_cancel_tx, cancel_rx) = watch::channel(false);
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
+        let target_listener = loopback_target_listener(&gate).await;
         let actor = tokio::spawn(run_connection_actor(
             connection,
             expected,
@@ -2340,7 +2717,17 @@ fallback:
         timeout(Duration::from_secs(1), gate.wait_for_dispatch_started(1))
             .await
             .expect("inbox-close dispatch future starts");
-        assert_eq!(target_sink_clone_count(&metrics_owner), 3);
+        let mut target_peers = accept_target_peers(&target_listener, 1).await;
+        if complete_before_close {
+            gate.release_target_dispatches(1);
+            timeout(Duration::from_secs(1), gate.wait_for_target_completions(1))
+                .await
+                .expect("inbox-close target reaches original slot");
+            assert_target_peers_stay_open(&mut target_peers).await;
+            assert_eq!(target_sink_clone_count(&metrics_owner), 2);
+        } else {
+            assert_eq!(target_sink_clone_count(&metrics_owner), 3);
+        }
         assert_zero_target_open_metrics(&metrics_owner);
 
         router.abort();
@@ -2351,7 +2738,8 @@ fallback:
         drop(sender);
         timeout(Duration::from_secs(2), gate.wait_for_dispatch_ended(1))
             .await
-            .expect("inbox close drops dispatch future");
+            .expect("inbox close releases dispatch state");
+        assert_target_peers_eof(target_peers).await;
         let actor_result = timeout(Duration::from_secs(3), actor)
             .await
             .expect("inbox-close actor terminates within bound")
@@ -3146,6 +3534,7 @@ fallback:
                 .expect("bind bounded-dispatch endpoint");
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
+        let target_listener = loopback_target_listener(&gate).await;
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd1).await;
@@ -3168,6 +3557,8 @@ fallback:
                 .expect("actor starts each bounded dispatch future");
                 client.receive_available().await;
             }
+            let target_peers =
+                accept_target_peers(&target_listener, MAX_TARGET_DISPATCH_FUTURES).await;
             assert!(client.send_classic_connect().is_err());
             assert_eq!(client_gate.dispatch_counts(), (8, 8, 8, 0));
             assert_eq!(target_sink_clone_count(&client_metrics), 11);
@@ -3202,6 +3593,7 @@ fallback:
             )
             .await
             .expect("real QUIC timer drops all blocked dispatch futures");
+            assert_target_peers_eof(target_peers).await;
             assert!(client_gate
                 .timer_while_dispatch_blocked
                 .load(Ordering::Acquire));
@@ -3230,6 +3622,7 @@ fallback:
                 .expect("bind completion endpoint");
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
+        let target_listener = loopback_target_listener(&gate).await;
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd2).await;
@@ -3252,6 +3645,8 @@ fallback:
                 .expect("actor starts each completion-case future");
                 client.receive_available().await;
             }
+            let mut target_peers =
+                accept_target_peers(&target_listener, MAX_TARGET_DISPATCH_FUTURES).await;
             assert_eq!(target_sink_clone_count(&client_metrics), 11);
             assert_zero_target_open_metrics(&client_metrics);
 
@@ -3270,6 +3665,12 @@ fallback:
                 (8, 8, true, MAX_READY_TARGET_COMPLETIONS_PER_ROUND),
                 "the actor advances all slots while limiting each ready pre-drain round"
             );
+            assert!(client_gate.target_future_queue_drained());
+            assert!(
+                client.send_classic_connect().is_err(),
+                "eight WaitingNextStage owners retain the original fixed quota"
+            );
+            assert_target_peers_stay_open(&mut target_peers).await;
 
             let inbound_before = client_gate.inbound_observed.load(Ordering::Acquire);
             client
@@ -3289,6 +3690,7 @@ fallback:
             .await
             .expect("actor remains active after synthetic completions");
             cancel.send(true).expect("stop completion endpoint");
+            assert_target_peers_eof(target_peers).await;
         };
 
         let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
@@ -3311,6 +3713,7 @@ fallback:
                 .expect("bind forced-parent endpoint");
         let gate = Arc::new(ActorTestGate::default());
         gate.block_target_dispatches();
+        let target_listener = loopback_target_listener(&gate).await;
         endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
         let server_address = endpoint.local_address;
         let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd3).await;
@@ -3333,6 +3736,8 @@ fallback:
                 .expect("forced-parent future starts");
                 client.receive_available().await;
             }
+            let target_peers =
+                accept_target_peers(&target_listener, MAX_TARGET_DISPATCH_FUTURES).await;
             assert_eq!(client_gate.dispatch_counts(), (8, 8, 8, 0));
             assert_eq!(target_sink_clone_count(&client_metrics), 11);
             assert_zero_target_open_metrics(&client_metrics);
@@ -3352,6 +3757,7 @@ fallback:
             cancel
                 .send(true)
                 .expect("cancel endpoint around stalled connection actor");
+            assert_target_peers_eof(target_peers).await;
         };
 
         let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
@@ -3382,6 +3788,76 @@ fallback:
     }
 
     #[tokio::test]
+    async fn t027b2c4_every_normal_termination_path_closes_slot_owned_target() {
+        for case in [
+            BlockedFutureTermination::EndpointCancel,
+            BlockedFutureTermination::HardExpiry,
+            BlockedFutureTermination::Revocation,
+            BlockedFutureTermination::PeerClose,
+            BlockedFutureTermination::LocalClose,
+        ] {
+            assert_slot_owned_target_termination(case).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn t027b2c4_dispatch_timeout_drops_connected_socket_before_handoff() {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role_with_target_timeout(25);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind dispatch-timeout endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        gate.block_target_dispatches();
+        let target_listener = loopback_target_listener(&gate).await;
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xe5).await;
+        let client_gate = Arc::clone(&gate);
+        let client_metrics = Arc::clone(&metrics_owner);
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            client
+                .send_classic_connect()
+                .expect("queue dispatch-timeout CONNECT");
+            client.send_pending().await;
+            timeout(
+                Duration::from_secs(1),
+                client_gate.wait_for_dispatch_started(1),
+            )
+            .await
+            .expect("dispatch-timeout future starts");
+            let target_peers = accept_target_peers(&target_listener, 1).await;
+            timeout(
+                Duration::from_secs(1),
+                client_gate.wait_for_dispatch_ended(1),
+            )
+            .await
+            .expect("absolute dispatch deadline drops future");
+            assert_target_peers_eof(target_peers).await;
+            assert_eq!(client_gate.completion_snapshot().0, 0);
+            assert_zero_target_open_metrics(&client_metrics);
+            cancel.send(true).expect("stop dispatch-timeout endpoint");
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("dispatch-timeout endpoint joins its actor");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    #[tokio::test]
+    async fn t027b2c4_actor_panic_and_forced_abort_close_slot_owned_target_before_reclaim() {
+        assert_completed_actor_termination(CompletedActorTermination::Panic).await;
+        assert_completed_actor_termination(CompletedActorTermination::ForcedAbort).await;
+    }
+
+    #[tokio::test]
     async fn t027b2c1_future_error_and_panic_fail_generation_and_drop_sibling() {
         assert_dispatch_failure_drops_sibling(false).await;
         assert_dispatch_failure_drops_sibling(true).await;
@@ -3389,7 +3865,12 @@ fallback:
 
     #[tokio::test]
     async fn t027b2c1_inbox_close_drops_future_before_actor_return() {
-        assert_inbox_close_drops_dispatch_future().await;
+        assert_inbox_close_releases_target(false).await;
+    }
+
+    #[tokio::test]
+    async fn t027b2c4_inbox_close_drops_slot_owned_target_before_actor_return() {
+        assert_inbox_close_releases_target(true).await;
     }
 
     #[tokio::test]
@@ -3885,6 +4366,10 @@ fallback:
             .expect("production endpoint source");
         let registry_source = include_str!("quiche_registry.rs");
         let runtime_source = include_str!("quiche_runtime.rs");
+        let production_runtime = runtime_source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production runtime source");
         for forbidden in [
             ["Arc<", "Mutex<ServerConnection"].concat(),
             ["Arc<", "Mutex<HashMap"].concat(),
@@ -3898,6 +4383,16 @@ fallback:
         assert!(production_endpoint.contains("JoinSet<Result<(), ActorError>>"));
         assert_eq!(production_endpoint.matches("JoinSet<").count(), 1);
         assert!(production_endpoint.contains("FuturesUnordered<TargetDispatchFuture>"));
+        assert!(production_endpoint.contains("struct TargetDispatchCompletion"));
+        assert!(production_endpoint.contains("opened_target: TcpStream"));
+        assert!(production_endpoint.contains("private target dispatch completion"));
+        assert!(production_runtime.contains("opened_target: Option<TcpStream>"));
+        assert_eq!(
+            production_runtime
+                .matches("opened_target: Option<TcpStream>")
+                .count(),
+            1
+        );
         assert!(production_endpoint.contains("metrics_owner: Arc<ServerRuntimeMetrics>"));
         assert!(production_endpoint.contains("target_open_sinks: TargetOpenMetricSinks"));
         assert_eq!(
@@ -3930,13 +4425,36 @@ fallback:
         for forbidden in [
             ["open_target_addr", "_with_metrics"].concat(),
             ["lookup_", "host"].concat(),
-            ["TcpStream::", "connect"].concat(),
             ["send_", "response"].concat(),
             ["recv_", "body"].concat(),
             ["relay_", "tcp"].concat(),
             ["target_", "listener"].concat(),
         ] {
             assert!(!production_endpoint.contains(&forbidden));
+        }
+        let test_gate_source = production_endpoint
+            .split("#[cfg(test)]\nimpl ActorTestGate")
+            .nth(1)
+            .expect("test-only actor gate source");
+        assert_eq!(production_endpoint.matches("TcpStream::connect").count(), 1);
+        assert!(test_gate_source.contains("TcpStream::connect"));
+        assert!(!production_runtime.contains("TcpStream::connect"));
+        assert!(!production_runtime.contains("TcpListener"));
+        for socket_collection in [
+            "Vec<TcpStream",
+            "VecDeque<TcpStream",
+            "[Option<TcpStream>",
+            "HashMap<SocketAddr, TcpStream",
+        ] {
+            assert!(!production_endpoint.contains(socket_collection));
+            assert!(!production_runtime.contains(socket_collection));
+        }
+        for opener in [
+            ["open_target_addr_before_deadline", "_with_metrics"].concat(),
+            ["lookup_", "host"].concat(),
+        ] {
+            assert!(!production_endpoint.contains(&opener));
+            assert!(!production_runtime.contains(&opener));
         }
         assert!(registry_source.contains("sender.try_send(ActorPacket"));
     }

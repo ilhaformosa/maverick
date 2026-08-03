@@ -218,6 +218,15 @@ The role exposes the timeout and a shared reference to the existing
 `ServerEgressPolicyConfig` through read-only getters, so its established IP
 classification semantics remain the single implementation.
 
+The crate-private direct-v3 opener API foundation consumes one already-derived
+absolute attempt deadline for the whole target-open attempt. Hostname
+resolution and every TCP connect attempt share that same deadline; neither
+stage may reset, recompute, or extend it. Timeout and backend-failure
+classification uses the existing aggregate target-open metric sinks exactly
+once, while egress rejection remains separate. This API is not called by the
+quiche endpoint or runtime in this slice, so it does not make H3 target
+connectivity or any target socket a product runtime result.
+
 Parsing this policy performs no DNS lookup, socket creation, target open, or
 other I/O. A client role containing `target_open` is invalid. The policy does
 not make H3, target connectivity, authentication, responses, DATA handling, or

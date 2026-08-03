@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tokio::sync::Mutex;
-use tokio::time::{sleep_until, timeout, Duration, Instant};
+use tokio::time::{sleep_until, timeout, timeout_at, Duration, Instant};
 
 const TARGET_CONNECT_RACE_DELAY: Duration = Duration::from_millis(250);
 pub(crate) const TARGET_OPEN_LATENCY_BUCKETS_MS: [u64; 10] =
@@ -167,6 +167,61 @@ impl StdError for TargetOpenFailure {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DirectV3TargetOpenFailureKind {
+    ResolutionTimeout,
+    ResolutionFailure,
+    EgressPolicyRejected,
+    ConnectTimeout,
+    ConnectFailure,
+}
+
+pub(crate) struct DirectV3TargetOpenError {
+    kind: DirectV3TargetOpenFailureKind,
+}
+
+impl DirectV3TargetOpenError {
+    const fn new(kind: DirectV3TargetOpenFailureKind) -> Self {
+        Self { kind }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn kind(&self) -> DirectV3TargetOpenFailureKind {
+        self.kind
+    }
+
+    fn recorded(kind: DirectV3TargetOpenFailureKind, metrics: &TargetOpenMetricSinks) -> Self {
+        metrics.record_direct_v3(kind);
+        Self::new(kind)
+    }
+}
+
+impl fmt::Debug for DirectV3TargetOpenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("direct-v3 target-open error")
+    }
+}
+
+impl fmt::Display for DirectV3TargetOpenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.kind {
+            DirectV3TargetOpenFailureKind::ResolutionTimeout => {
+                "direct-v3 target resolution timed out"
+            }
+            DirectV3TargetOpenFailureKind::ResolutionFailure => {
+                "direct-v3 target resolution failed"
+            }
+            DirectV3TargetOpenFailureKind::EgressPolicyRejected => {
+                "direct-v3 egress policy rejected target"
+            }
+            DirectV3TargetOpenFailureKind::ConnectTimeout => "direct-v3 target connect timed out",
+            DirectV3TargetOpenFailureKind::ConnectFailure => "direct-v3 target connect failed",
+        })
+    }
+}
+
+impl StdError for DirectV3TargetOpenError {}
+
 impl TargetOpenMetricSinks {
     fn record(&self, kind: TargetOpenFailureKind) {
         let counter = match kind {
@@ -175,6 +230,19 @@ impl TargetOpenMetricSinks {
             TargetOpenFailureKind::EgressPolicyRejected => None,
             TargetOpenFailureKind::ConnectTimeout => Some(&self.connect_timeouts),
             TargetOpenFailureKind::ConnectFailure => Some(&self.connect_failures),
+        };
+        if let Some(counter) = counter {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_direct_v3(&self, kind: DirectV3TargetOpenFailureKind) {
+        let counter = match kind {
+            DirectV3TargetOpenFailureKind::ResolutionTimeout => Some(&self.resolution_timeouts),
+            DirectV3TargetOpenFailureKind::ResolutionFailure => Some(&self.resolution_failures),
+            DirectV3TargetOpenFailureKind::EgressPolicyRejected => None,
+            DirectV3TargetOpenFailureKind::ConnectTimeout => Some(&self.connect_timeouts),
+            DirectV3TargetOpenFailureKind::ConnectFailure => Some(&self.connect_failures),
         };
         if let Some(counter) = counter {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -280,6 +348,125 @@ pub(crate) async fn open_target_addr_with_metrics(
     metrics: &TargetOpenMetricSinks,
 ) -> Result<TcpStream> {
     open_target_inner(target, port, timeout_ms, egress, Some(metrics)).await
+}
+
+#[allow(dead_code)]
+pub(crate) async fn open_target_addr_before_deadline_with_metrics(
+    target: &TargetAddr,
+    port: u16,
+    absolute_deadline: std::time::Instant,
+    egress: &ServerEgressPolicyConfig,
+    metrics: &TargetOpenMetricSinks,
+) -> std::result::Result<TcpStream, DirectV3TargetOpenError> {
+    let authority = target.to_authority(port);
+    open_target_addr_before_deadline_with_metrics_using(
+        absolute_deadline,
+        egress,
+        metrics,
+        move || async move {
+            lookup_host(authority)
+                .await
+                .map(|resolved| resolved.collect::<Vec<_>>())
+        },
+        |addrs| connect_target_addresses(addrs, TARGET_CONNECT_RACE_DELAY, connect_target_tcp),
+    )
+    .await
+}
+
+async fn open_target_addr_before_deadline_with_metrics_using<
+    T,
+    Resolve,
+    ResolveFuture,
+    Connect,
+    ConnectFuture,
+>(
+    absolute_deadline: std::time::Instant,
+    egress: &ServerEgressPolicyConfig,
+    metrics: &TargetOpenMetricSinks,
+    resolver: Resolve,
+    connector: Connect,
+) -> std::result::Result<T, DirectV3TargetOpenError>
+where
+    Resolve: FnOnce() -> ResolveFuture,
+    ResolveFuture: Future<Output = io::Result<Vec<SocketAddr>>>,
+    Connect: FnOnce(Vec<SocketAddr>) -> ConnectFuture,
+    ConnectFuture: Future<Output = io::Result<T>>,
+{
+    let absolute_deadline = Instant::from_std(absolute_deadline);
+    if Instant::now() >= absolute_deadline {
+        return Err(DirectV3TargetOpenError::recorded(
+            DirectV3TargetOpenFailureKind::ResolutionTimeout,
+            metrics,
+        ));
+    }
+
+    let resolution_started = Instant::now();
+    let resolved = match timeout_at(absolute_deadline, resolver()).await {
+        Err(_) => {
+            return Err(DirectV3TargetOpenError::recorded(
+                DirectV3TargetOpenFailureKind::ResolutionTimeout,
+                metrics,
+            ))
+        }
+        Ok(_result) if Instant::now() >= absolute_deadline => {
+            return Err(DirectV3TargetOpenError::recorded(
+                DirectV3TargetOpenFailureKind::ResolutionTimeout,
+                metrics,
+            ))
+        }
+        Ok(Err(_)) => {
+            return Err(DirectV3TargetOpenError::recorded(
+                DirectV3TargetOpenFailureKind::ResolutionFailure,
+                metrics,
+            ))
+        }
+        Ok(Ok(resolved)) if resolved.is_empty() => {
+            return Err(DirectV3TargetOpenError::recorded(
+                DirectV3TargetOpenFailureKind::ResolutionFailure,
+                metrics,
+            ))
+        }
+        Ok(Ok(resolved)) => resolved,
+    };
+
+    let allowed = resolved
+        .into_iter()
+        .filter(|addr| egress.allows_ip(addr.ip()))
+        .collect::<Vec<_>>();
+    if allowed.is_empty() {
+        return Err(DirectV3TargetOpenError::new(
+            DirectV3TargetOpenFailureKind::EgressPolicyRejected,
+        ));
+    }
+    metrics
+        .resolution_latency
+        .record(resolution_started.elapsed());
+
+    if Instant::now() >= absolute_deadline {
+        return Err(DirectV3TargetOpenError::recorded(
+            DirectV3TargetOpenFailureKind::ConnectTimeout,
+            metrics,
+        ));
+    }
+    let connect_started = Instant::now();
+    match timeout_at(absolute_deadline, connector(allowed)).await {
+        Err(_) => Err(DirectV3TargetOpenError::recorded(
+            DirectV3TargetOpenFailureKind::ConnectTimeout,
+            metrics,
+        )),
+        Ok(_) if Instant::now() >= absolute_deadline => Err(DirectV3TargetOpenError::recorded(
+            DirectV3TargetOpenFailureKind::ConnectTimeout,
+            metrics,
+        )),
+        Ok(Err(_)) => Err(DirectV3TargetOpenError::recorded(
+            DirectV3TargetOpenFailureKind::ConnectFailure,
+            metrics,
+        )),
+        Ok(Ok(connected)) => {
+            metrics.connect_latency.record(connect_started.elapsed());
+            Ok(connected)
+        }
+    }
 }
 
 async fn open_target_inner(
@@ -936,11 +1123,12 @@ where
 mod tests {
     use super::{
         connect_target_addresses, connect_target_tcp, connect_with_timeout, open_target,
-        open_target_addr_with_metrics, open_target_with_metrics, relay_dns_query,
-        relay_target_and_tunnel, relay_udp_packet, resolve_allowed_addresses, send_frame,
-        write_all_with_idle_timeout, CumulativeLatencyMetric, H2SendStall, RateLimiter,
-        TargetOpenFailure, TargetOpenFailureKind, TargetOpenMetricSinks, TunnelRelayPolicy,
-        TARGET_CONNECT_RACE_DELAY,
+        open_target_addr_before_deadline_with_metrics_using, open_target_addr_with_metrics,
+        open_target_with_metrics, relay_dns_query, relay_target_and_tunnel, relay_udp_packet,
+        resolve_allowed_addresses, send_frame, write_all_with_idle_timeout,
+        CumulativeLatencyMetric, DirectV3TargetOpenError, DirectV3TargetOpenFailureKind,
+        H2SendStall, RateLimiter, TargetOpenFailure, TargetOpenFailureKind, TargetOpenMetricSinks,
+        TunnelRelayPolicy, TARGET_CONNECT_RACE_DELAY,
     };
     use anyhow::Result;
     use bytes::{Bytes, BytesMut};
@@ -949,6 +1137,7 @@ mod tests {
     use maverick_core::frame::{Frame, FrameType, OpenTcpPayload, TargetAddr, UdpPacketPayload};
     use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
     use maverick_core::padding::{RuntimeCoverTraffic, RuntimePadding};
+    use std::error::Error as StdError;
     use std::future::{pending, ready};
     use std::io;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -956,7 +1145,7 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
-    use tokio::time::{advance, timeout, Duration};
+    use tokio::time::{advance, sleep, sleep_until, timeout, Duration, Instant};
 
     async fn assert_grpc_ok_trailers(body: &mut h2::RecvStream) -> Result<()> {
         let trailers = body
@@ -1242,6 +1431,287 @@ mod tests {
         let metrics = target_metric_sinks();
         metrics.record(failure.kind);
         assert_eq!(target_metric_values(&metrics), [0, 0, 1, 0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn legacy_h2_two_stage_target_open_can_run_for_nineteen_seconds() {
+        let started = Instant::now();
+        let resolved = resolve_allowed_addresses(
+            async {
+                sleep(Duration::from_secs(9)).await;
+                Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))])
+            },
+            Duration::from_secs(10),
+            &loopback_egress_policy(),
+        )
+        .await
+        .expect("synthetic resolution must finish inside its own deadline");
+        assert_eq!(started.elapsed(), Duration::from_secs(9));
+
+        let failure = connect_with_timeout(pending::<io::Result<()>>(), Duration::from_secs(10))
+            .await
+            .expect_err("legacy H2 connect stage must receive a fresh timeout");
+
+        assert!(!resolved.is_empty());
+        assert_eq!(failure.kind, TargetOpenFailureKind::ConnectTimeout);
+        assert_eq!(started.elapsed(), Duration::from_secs(19));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn direct_v3_dns_time_leaves_only_the_shared_deadline_remainder() {
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(10);
+        let connector_started = Arc::new(StdMutex::new(None));
+        let connector_observation = Arc::clone(&connector_started);
+        let metrics = target_metric_sinks();
+
+        let error = open_target_addr_before_deadline_with_metrics_using(
+            deadline.into_std(),
+            &loopback_egress_policy(),
+            &metrics,
+            || async {
+                sleep(Duration::from_secs(9)).await;
+                Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))])
+            },
+            move |_| {
+                *connector_observation.lock().unwrap() = Some(Instant::now());
+                pending::<io::Result<usize>>()
+            },
+        )
+        .await
+        .expect_err("connector must receive only the remaining whole-attempt budget");
+
+        assert_eq!(error.kind(), DirectV3TargetOpenFailureKind::ConnectTimeout);
+        assert_eq!(started.elapsed(), Duration::from_secs(10));
+        assert_eq!(
+            connector_started.lock().unwrap().expect("connector called") - started,
+            Duration::from_secs(9)
+        );
+        assert_eq!(target_metric_values(&metrics), [0, 0, 1, 0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn direct_v3_resolution_at_deadline_counts_once_and_never_connects() {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let connector_calls = Arc::new(AtomicUsize::new(0));
+        let observed_connector_calls = Arc::clone(&connector_calls);
+        let metrics = target_metric_sinks();
+
+        let error = open_target_addr_before_deadline_with_metrics_using(
+            deadline.into_std(),
+            &loopback_egress_policy(),
+            &metrics,
+            || async {
+                sleep_until(deadline).await;
+                Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))])
+            },
+            move |_| {
+                observed_connector_calls.fetch_add(1, Ordering::Relaxed);
+                ready(Ok::<_, io::Error>(()))
+            },
+        )
+        .await
+        .expect_err("resolution reaching the strict deadline must time out");
+
+        assert_eq!(
+            error.kind(),
+            DirectV3TargetOpenFailureKind::ResolutionTimeout
+        );
+        assert_eq!(connector_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(target_metric_values(&metrics), [1, 0, 0, 0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn direct_v3_connect_at_shared_deadline_counts_once() {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let metrics = target_metric_sinks();
+
+        let error = open_target_addr_before_deadline_with_metrics_using(
+            deadline.into_std(),
+            &loopback_egress_policy(),
+            &metrics,
+            || ready(Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))])),
+            move |_| async move {
+                sleep_until(deadline).await;
+                Ok::<_, io::Error>(())
+            },
+        )
+        .await
+        .expect_err("connect reaching the same strict deadline must time out");
+
+        assert_eq!(error.kind(), DirectV3TargetOpenFailureKind::ConnectTimeout);
+        assert_eq!(target_metric_values(&metrics), [0, 0, 1, 0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn direct_v3_expired_deadline_rejects_before_resolver_or_connector() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let resolver_calls = Arc::clone(&calls);
+        let connector_calls = Arc::clone(&calls);
+        let metrics = target_metric_sinks();
+        let expired = Instant::now()
+            .checked_sub(Duration::from_nanos(1))
+            .expect("paused clock must permit a prior instant");
+
+        let error = open_target_addr_before_deadline_with_metrics_using(
+            expired.into_std(),
+            &loopback_egress_policy(),
+            &metrics,
+            move || {
+                resolver_calls.fetch_add(1, Ordering::Relaxed);
+                ready(Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))]))
+            },
+            move |_| {
+                connector_calls.fetch_add(1, Ordering::Relaxed);
+                ready(Ok::<_, io::Error>(()))
+            },
+        )
+        .await
+        .expect_err("an already expired attempt must fail before work starts");
+
+        assert_eq!(
+            error.kind(),
+            DirectV3TargetOpenFailureKind::ResolutionTimeout
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(target_metric_values(&metrics), [1, 0, 0, 0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn direct_v3_failures_are_typed_counted_once_and_egress_precedes_connect() {
+        const PRIVATE_MARKER: &str = "sensitive-synthetic-marker.invalid";
+        let deadline = (Instant::now() + Duration::from_secs(10)).into_std();
+
+        let resolution_metrics = target_metric_sinks();
+        let resolution_error = open_target_addr_before_deadline_with_metrics_using(
+            deadline,
+            &loopback_egress_policy(),
+            &resolution_metrics,
+            || ready(Err(io::Error::other(PRIVATE_MARKER))),
+            |_| ready(Ok::<_, io::Error>(())),
+        )
+        .await
+        .expect_err("synthetic resolver failure must be typed");
+        assert_eq!(
+            resolution_error.kind(),
+            DirectV3TargetOpenFailureKind::ResolutionFailure
+        );
+        assert_eq!(target_metric_values(&resolution_metrics), [0, 1, 0, 0]);
+
+        let order = Arc::new(StdMutex::new(Vec::new()));
+        let resolver_order = Arc::clone(&order);
+        let connector_order = Arc::clone(&order);
+        let egress_metrics = target_metric_sinks();
+        let egress_error = open_target_addr_before_deadline_with_metrics_using(
+            deadline,
+            &ServerEgressPolicyConfig::default(),
+            &egress_metrics,
+            move || {
+                resolver_order.lock().unwrap().push("resolution");
+                ready(Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))]))
+            },
+            move |_| {
+                connector_order.lock().unwrap().push("connect");
+                ready(Ok::<_, io::Error>(()))
+            },
+        )
+        .await
+        .expect_err("egress policy must reject before connect");
+        assert_eq!(
+            egress_error.kind(),
+            DirectV3TargetOpenFailureKind::EgressPolicyRejected
+        );
+        assert_eq!(*order.lock().unwrap(), ["resolution"]);
+        assert_eq!(target_metric_values(&egress_metrics), [0, 0, 0, 0]);
+
+        let connect_metrics = target_metric_sinks();
+        let connect_error = open_target_addr_before_deadline_with_metrics_using(
+            deadline,
+            &loopback_egress_policy(),
+            &connect_metrics,
+            || ready(Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))])),
+            |_| ready(Err::<(), io::Error>(io::Error::other(PRIVATE_MARKER))),
+        )
+        .await
+        .expect_err("synthetic connect failure must be typed");
+        assert_eq!(
+            connect_error.kind(),
+            DirectV3TargetOpenFailureKind::ConnectFailure
+        );
+        assert_eq!(target_metric_values(&connect_metrics), [0, 0, 0, 1]);
+
+        for error in [resolution_error, egress_error, connect_error] {
+            assert!(!error.to_string().contains(PRIVATE_MARKER));
+            assert!(!format!("{error:?}").contains(PRIVATE_MARKER));
+            assert!(StdError::source(&error).is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn direct_v3_synthetic_success_returns_neutral_sentinel_before_deadline() {
+        let metrics = target_metric_sinks();
+        let sentinel = open_target_addr_before_deadline_with_metrics_using(
+            (Instant::now() + Duration::from_secs(10)).into_std(),
+            &loopback_egress_policy(),
+            &metrics,
+            || ready(Ok(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 443))])),
+            |_| ready(Ok::<_, io::Error>(7_u8)),
+        )
+        .await
+        .expect("synthetic success before the deadline must return its sentinel");
+
+        assert_eq!(sentinel, 7);
+        assert_eq!(target_metric_values(&metrics), [0, 0, 0, 0]);
+        assert_eq!(metrics.resolution_latency.snapshot().count, 1);
+        assert_eq!(metrics.connect_latency.snapshot().count, 1);
+    }
+
+    #[test]
+    fn direct_v3_typed_errors_have_fixed_value_free_text_and_no_source() {
+        let cases = [
+            (
+                DirectV3TargetOpenFailureKind::ResolutionTimeout,
+                "direct-v3 target resolution timed out",
+            ),
+            (
+                DirectV3TargetOpenFailureKind::ResolutionFailure,
+                "direct-v3 target resolution failed",
+            ),
+            (
+                DirectV3TargetOpenFailureKind::EgressPolicyRejected,
+                "direct-v3 egress policy rejected target",
+            ),
+            (
+                DirectV3TargetOpenFailureKind::ConnectTimeout,
+                "direct-v3 target connect timed out",
+            ),
+            (
+                DirectV3TargetOpenFailureKind::ConnectFailure,
+                "direct-v3 target connect failed",
+            ),
+        ];
+        for (kind, display) in cases {
+            let error = DirectV3TargetOpenError::new(kind);
+            assert_eq!(error.to_string(), display);
+            assert_eq!(format!("{error:?}"), "direct-v3 target-open error");
+            assert!(StdError::source(&error).is_none());
+            assert!(error.to_string().len() <= 40);
+        }
+    }
+
+    #[test]
+    fn direct_v3_opener_remains_disconnected_from_quiche_production_source() {
+        let opener = ["open_target_addr_before_deadline", "_with_metrics"].concat();
+        for source in [
+            include_str!("quiche_endpoint.rs"),
+            include_str!("quiche_runtime.rs"),
+        ] {
+            let production = source
+                .split("#[cfg(test)]\nmod tests")
+                .next()
+                .expect("production source");
+            assert!(!production.contains(&opener));
+        }
     }
 
     #[tokio::test]

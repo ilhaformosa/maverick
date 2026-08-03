@@ -17,64 +17,45 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T023b-1 — authenticated-generation lifetime and limits
+### T027b-2a — strict Classic CONNECT request/authority parser
 
-- **User result:** Every feature-gated direct-quiche authenticated generation
-  retains the server confirmation that the existing auth-v3 verifier accepted.
-  The generation retains its verified admission expiry, hard expiry, selected
-  maximum frame size, and selected maximum concurrent flows. It enforces both
-  expiries and the effective local flow limit of one; this slice does not claim
-  Maverick frame-size enforcement. Admission expiry prevents a new test-private
-  classic CONNECT from starting. Hard expiry makes the local capability and
-  application I/O fail closed, revokes the driver, and best-effort closes the
-  QUIC generation. Dropping the lease for an active flow wakes that flow and
-  fails it; dropping an idle lease returns only its permit.
-- **Scope:** Change only this queue and
-  `crates/maverick-client/src/quiche_foundation.rs`. Capture one trusted Unix
-  time and monotonic anchor before authentication; derive both deadlines from
-  that unchanged anchor and the verified absolute expiries. Retain one private
-  immutable policy by `Arc` across the authenticated generation, lease, and
-  proof. Reuse the existing verifier, manager, bounded command queue, driver,
-  flow reference, resource limits, failure path, and close path. The effective
-  local flow limit is the smaller of the verified selected limit and the
-  existing one-lease foundation limit, which remains one.
-- **Acceptance:** First retain a focused red test, then make the complete local
-  matrix green. Prove client and server retain the same absolute expiries and
-  selected frame/flow limits even though their monotonic anchors are local;
-  authentication time never moves a deadline; admission is strict before/equal/
-  after while an already armed flow may cross admission; hard equality closes
-  idle and stalled active generations; active-flow lease drop really wakes and
-  fails the flow; idle lease drop does not close the generation and permits a
-  same-generation reacquire; manager close, replacement generation, wrong
-  generation, policy-`Arc` identity, backpressure, cancellation, reclamation,
-  and fixed privacy-safe diagnostics remain correct. Hard-close checks require
-  failed flow response, inactive leases, cleared bounded buffers, returned
-  permits, reclaimed tasks and loopback sockets, one physical connection, and
-  no retry. The selected limits remain observable only to private tests; the
-  effective local flow limit is one.
-- **Out of scope:** No real target, DNS, socket relay, authority parser, second
-  connection, fallback, external credential/profile revocation feed, watcher,
-  task, queue, manager, framework, public API, core primitive, dependency,
-  Cargo/lock/manifest, config/schema/wire/version, server/SDK/CLI/vendor,
-  `STATUS.md`, CI, push, PR, merge, tag, release, remote, deployment, real
-  network, or system-network change. Retaining `max_frame_size` does not claim
-  Maverick frame-size enforcement in this raw reference flow; retaining a peer
-  flow limit above one does not claim multiple real flows. Manager close,
-  generation replacement, active-flow lease drop, and hard expiry are local
-  revocation inputs only; external credential/profile revocation remains
-  deferred.
-- **Stop conditions:** Stop on a third changed file; a need for an external
-  watcher or revocation feed, new task/queue/framework, real target/DNS/socket,
-  authority parsing, second connection, fallback, public/core/dependency/config/
-  schema/wire/version change, or unstable wall-clock sleep test; inability to
-  fail closed at deadline equality before new application I/O; any T026d or
-  T027a-1 authorization, one-generation, one-stream, no-retry, cleanup,
-  backpressure, or privacy regression; or any focused or full local gate
+- **User result:** A future authenticated standard HTTP/3 TCP Classic CONNECT
+  path can pass its borrowed raw initial request fields through one strict,
+  privacy-safe pure parser and receive the existing typed `(TargetAddr, u16)`.
+  This slice has no product caller and performs no DNS lookup, egress decision,
+  target connection, socket operation, or traffic relay.
+- **Scope:** Change only this queue, `crates/maverick-server/src/lib.rs`, and one
+  new private `crates/maverick-server/src/h3_connect.rs`. Accept exactly one
+  byte-exact `:method = CONNECT` and one strict `:authority`, in either relative
+  order, and no other field. Parse only canonical `domain:port`, `IPv4:port`, or
+  `[IPv6]:port`; return the existing target type, lowercase ASCII domains, and
+  discard all raw input and lower-level parse errors. Add no quiche dependency.
+- **Acceptance:** Retain a real focused red test before implementation, then
+  cover the complete positive and strict-rejection matrices for fields,
+  authority, canonical ports, IPv4, bracketed IPv6, and ASCII domains. Errors
+  are fixed, bounded, source-free, and value-free under both Display and Debug.
+  The parser remains a synchronous private function with no caller or side
+  effect. Existing T027b-1 resolver, egress, and structured-connect tests plus
+  the server, core, client, workspace lint, and local product gates stay green.
+  Any future runtime must enforce this order as a hard gate: authenticated
+  generation, then policy/lease/admission/permit, then parse, then egress and
+  DNS/connect work.
+- **Out of scope:** No runtime or quiche caller, trailer input, response parser,
+  DNS, egress, opener invocation, socket, target, real traffic, Extended
+  CONNECT, `:protocol`, URI Template, CONNECT-UDP, IDNA, URL or HTTP/1 parser,
+  public API, dependency or manifest, core/client/SDK/CLI change, config,
+  protocol, authentication, frame, wire, stored schema, version, `STATUS.md`,
+  CI, push, PR, merge, tag, release, remote, deployment, real network, or system
+  network change.
+- **Stop conditions:** Stop on a fourth changed file; a need for any dependency
+  or manifest, public/runtime API, quiche integration, DNS/socket/opener/target,
+  Extended CONNECT or UDP/IDNA work, logging of raw or lower-level errors, an
+  unclear raw-header contract, a real-network or unstable-sleep test, any
+  T023b-1/T027a-1/T027b-1 safety regression, or any focused or full local gate
   failure.
 
-This private reference slice is not external credential revocation, a product
-H3 data plane, multi-flow support, a release result, or authorization for
-publication, deployment, or real-network work.
+This pure parser is a future typed boundary, not a product H3 data plane,
+authenticated runtime, target-opening result, or publication authorization.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

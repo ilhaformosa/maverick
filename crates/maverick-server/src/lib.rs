@@ -7,6 +7,8 @@ mod auth_gate;
 mod direct_v3_h2;
 pub mod fallback;
 pub mod h2_acceptor;
+#[allow(dead_code)]
+mod h3_connect;
 pub mod relay;
 pub mod server;
 pub mod users;

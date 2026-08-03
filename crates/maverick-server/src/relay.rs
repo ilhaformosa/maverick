@@ -3,7 +3,9 @@ use bytes::{Bytes, BytesMut};
 use futures::{future::poll_fn, stream::FuturesUnordered, StreamExt};
 use http::{HeaderMap, HeaderValue};
 use maverick_core::config::ServerEgressPolicyConfig;
-use maverick_core::frame::{ErrorCode, Frame, FrameType, OpenTcpPayload, UdpPacketPayload};
+use maverick_core::frame::{
+    ErrorCode, Frame, FrameType, OpenTcpPayload, TargetAddr, UdpPacketPayload,
+};
 use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
 use maverick_core::padding::{RuntimeCoverTraffic, RuntimePadding};
 use std::collections::VecDeque;
@@ -258,7 +260,7 @@ pub async fn open_target(
     timeout_ms: u64,
     egress: &ServerEgressPolicyConfig,
 ) -> Result<TcpStream> {
-    open_target_inner(open, timeout_ms, egress, None).await
+    open_target_inner(&open.target, open.port, timeout_ms, egress, None).await
 }
 
 pub(crate) async fn open_target_with_metrics(
@@ -267,16 +269,27 @@ pub(crate) async fn open_target_with_metrics(
     egress: &ServerEgressPolicyConfig,
     metrics: &TargetOpenMetricSinks,
 ) -> Result<TcpStream> {
-    open_target_inner(open, timeout_ms, egress, Some(metrics)).await
+    open_target_addr_with_metrics(&open.target, open.port, timeout_ms, egress, metrics).await
+}
+
+pub(crate) async fn open_target_addr_with_metrics(
+    target: &TargetAddr,
+    port: u16,
+    timeout_ms: u64,
+    egress: &ServerEgressPolicyConfig,
+    metrics: &TargetOpenMetricSinks,
+) -> Result<TcpStream> {
+    open_target_inner(target, port, timeout_ms, egress, Some(metrics)).await
 }
 
 async fn open_target_inner(
-    open: &OpenTcpPayload,
+    target: &TargetAddr,
+    port: u16,
     timeout_ms: u64,
     egress: &ServerEgressPolicyConfig,
     metrics: Option<&TargetOpenMetricSinks>,
 ) -> Result<TcpStream> {
-    let authority = open.target.to_authority(open.port);
+    let authority = target.to_authority(port);
     let resolution_started = Instant::now();
     let addrs = match resolve_allowed_authority_classified(&authority, timeout_ms, egress).await {
         Ok(addrs) => {
@@ -922,11 +935,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_target_addresses, connect_target_tcp, connect_with_timeout,
-        open_target_with_metrics, relay_dns_query, relay_target_and_tunnel, relay_udp_packet,
-        resolve_allowed_addresses, send_frame, write_all_with_idle_timeout,
-        CumulativeLatencyMetric, H2SendStall, RateLimiter, TargetOpenFailureKind,
-        TargetOpenMetricSinks, TunnelRelayPolicy, TARGET_CONNECT_RACE_DELAY,
+        connect_target_addresses, connect_target_tcp, connect_with_timeout, open_target,
+        open_target_addr_with_metrics, open_target_with_metrics, relay_dns_query,
+        relay_target_and_tunnel, relay_udp_packet, resolve_allowed_addresses, send_frame,
+        write_all_with_idle_timeout, CumulativeLatencyMetric, H2SendStall, RateLimiter,
+        TargetOpenFailure, TargetOpenFailureKind, TargetOpenMetricSinks, TunnelRelayPolicy,
+        TARGET_CONNECT_RACE_DELAY,
     };
     use anyhow::Result;
     use bytes::{Bytes, BytesMut};
@@ -1038,6 +1052,140 @@ mod tests {
         );
         assert_eq!(metrics.connect_latency.snapshot().cumulative_buckets[10], 1);
         drop(target);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_and_structured_target_open_share_ipv4_path() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let target_addr = TargetAddr::Ipv4(Ipv4Addr::LOCALHOST);
+        let open = OpenTcpPayload::new(target_addr.clone(), port);
+
+        let legacy_target = open_target(&open, 1_000, &loopback_egress_policy()).await?;
+        let (_legacy_peer, _) = listener.accept().await?;
+
+        let metrics = target_metric_sinks();
+        let structured_target = open_target_addr_with_metrics(
+            &target_addr,
+            port,
+            1_000,
+            &loopback_egress_policy(),
+            &metrics,
+        )
+        .await?;
+        let (_structured_peer, _) = listener.accept().await?;
+
+        assert!(legacy_target.nodelay()?);
+        assert!(structured_target.nodelay()?);
+        assert_eq!(metrics.resolution_latency.snapshot().count, 1);
+        assert_eq!(metrics.connect_latency.snapshot().count, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn structured_domain_target_uses_existing_resolver() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let metrics = target_metric_sinks();
+
+        let target = open_target_addr_with_metrics(
+            &TargetAddr::Domain("localhost".to_owned()),
+            port,
+            1_000,
+            &loopback_egress_policy(),
+            &metrics,
+        )
+        .await?;
+        let (_peer, _) = listener.accept().await?;
+
+        assert!(target.nodelay()?);
+        assert_eq!(metrics.resolution_latency.snapshot().count, 1);
+        assert_eq!(metrics.connect_latency.snapshot().count, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_and_structured_target_open_share_ipv6_path_when_available() -> Result<()> {
+        let listener = match TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, 0))).await {
+            Ok(listener) => listener,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AddrNotAvailable | io::ErrorKind::Unsupported
+                ) =>
+            {
+                return Ok(())
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let port = listener.local_addr()?.port();
+        let target_addr = TargetAddr::Ipv6(Ipv6Addr::LOCALHOST);
+        let open = OpenTcpPayload::new(target_addr.clone(), port);
+
+        let legacy_target = open_target(&open, 1_000, &loopback_egress_policy()).await?;
+        let (_legacy_peer, _) = listener.accept().await?;
+
+        let metrics = target_metric_sinks();
+        let structured_target = open_target_addr_with_metrics(
+            &target_addr,
+            port,
+            1_000,
+            &loopback_egress_policy(),
+            &metrics,
+        )
+        .await?;
+        let (_structured_peer, _) = listener.accept().await?;
+
+        assert!(legacy_target.nodelay()?);
+        assert!(structured_target.nodelay()?);
+        assert_eq!(metrics.resolution_latency.snapshot().count, 1);
+        assert_eq!(metrics.connect_latency.snapshot().count, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_and_structured_egress_rejection_precedes_connect() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let target_addr = TargetAddr::Ipv4(Ipv4Addr::LOCALHOST);
+        let open = OpenTcpPayload::new(target_addr.clone(), port);
+        let egress = ServerEgressPolicyConfig::default();
+        let legacy_metrics = target_metric_sinks();
+        let structured_metrics = target_metric_sinks();
+
+        let legacy_error = open_target_with_metrics(&open, 1_000, &egress, &legacy_metrics)
+            .await
+            .expect_err("legacy target open must enforce egress policy");
+        let structured_error =
+            open_target_addr_with_metrics(&target_addr, port, 1_000, &egress, &structured_metrics)
+                .await
+                .expect_err("structured target open must enforce egress policy");
+
+        let legacy_failure = legacy_error
+            .downcast_ref::<TargetOpenFailure>()
+            .expect("legacy error must retain its fixed target-open category");
+        let structured_failure = structured_error
+            .downcast_ref::<TargetOpenFailure>()
+            .expect("structured error must retain its fixed target-open category");
+        assert_eq!(
+            legacy_failure.kind,
+            TargetOpenFailureKind::EgressPolicyRejected
+        );
+        assert_eq!(structured_failure.kind, legacy_failure.kind);
+        assert_eq!(target_metric_values(&legacy_metrics), [0, 0, 0, 0]);
+        assert_eq!(
+            target_metric_values(&structured_metrics),
+            target_metric_values(&legacy_metrics)
+        );
+        assert_eq!(legacy_metrics.resolution_latency.snapshot().count, 0);
+        assert_eq!(structured_metrics.resolution_latency.snapshot().count, 0);
+        assert!(
+            timeout(Duration::from_millis(25), listener.accept())
+                .await
+                .is_err(),
+            "egress rejection must happen before a TCP connection is attempted"
+        );
         Ok(())
     }
 

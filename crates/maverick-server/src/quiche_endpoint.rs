@@ -565,6 +565,7 @@ async fn run_connection_actor(
                         round.upload_recv_progress_mask(),
                         round.target_write_progress_mask(),
                         round.target_write_blocked_mask(),
+                        round.target_shutdown_progress_mask(),
                     );
                 }
                 if target_data_round.is_err() {
@@ -1266,6 +1267,7 @@ struct ActorTestGate {
     target_upload_recv_progress_inbound: AtomicUsize,
     target_write_progress_mask: AtomicUsize,
     target_write_blocked_mask: AtomicUsize,
+    target_shutdown_progress_mask: AtomicUsize,
     target_write_blocked_inbound: AtomicUsize,
     target_write_progress_inbound: AtomicUsize,
     immediate_target_io_yields: AtomicUsize,
@@ -1561,6 +1563,7 @@ impl ActorTestGate {
         upload_recv_progress_mask: usize,
         target_write_progress_mask: usize,
         target_write_blocked_mask: usize,
+        target_shutdown_progress_mask: usize,
     ) {
         assert!(operations <= 4);
         assert!(progress_operations <= operations);
@@ -1591,6 +1594,8 @@ impl ActorTestGate {
                 Ordering::Release,
             );
         }
+        self.target_shutdown_progress_mask
+            .fetch_or(target_shutdown_progress_mask, Ordering::AcqRel);
         if progress_operations == 0 {
             if operations != 0 {
                 self.target_data_zero_progress_operations
@@ -1648,6 +1653,12 @@ impl ActorTestGate {
         self.target_write_blocked_mask.store(0, Ordering::Release);
         self.target_write_blocked_inbound
             .store(0, Ordering::Release);
+        self.target_shutdown_progress_mask
+            .store(0, Ordering::Release);
+    }
+
+    fn target_shutdown_progress_mask(&self) -> usize {
+        self.target_shutdown_progress_mask.load(Ordering::Acquire)
     }
 
     fn target_upload_phase_snapshot(&self) -> (usize, usize, usize, usize, usize, usize) {
@@ -3068,7 +3079,7 @@ fallback:
     }
 
     #[tokio::test]
-    async fn t027b2d2_real_actor_upload_progress_follows_inbound_and_real_would_block() {
+    async fn t027b2d2_retained_and_t027b2d3_real_actor_upload_then_fin() {
         const UPLOAD_MARKER: &[u8] = b"actor-upload-marker";
 
         let credentials = TestCredentials::new();
@@ -3313,6 +3324,19 @@ fallback:
         assert_eq!(received, UPLOAD_MARKER);
         let (_, _, write_mask, _, _, _) = gate.target_upload_phase_snapshot();
         assert_eq!(write_mask, 1);
+
+        gate.reset_target_upload_phase();
+        assert_eq!(client.connection.stream_send(stream_id, b"", true), Ok(0));
+        client.send_pending().await;
+        assert_eq!(
+            timeout(Duration::from_secs(2), target_peer.read_u8())
+                .await
+                .expect("actor continuation shuts down target without another test packet")
+                .expect_err("actor request FIN produces target EOF")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(gate.target_shutdown_progress_mask(), 1);
 
         client.receive_available().await;
         gate.arm_send();
@@ -5815,6 +5839,7 @@ fallback:
             .next()
             .expect("runtime immediate-work predicate remains narrow");
         assert!(immediate_guard.contains("UploadDispatchState::RecvPending"));
+        assert!(immediate_guard.contains("UploadDispatchState::ShutdownPending"));
         assert!(!immediate_guard.contains("TargetDispatchState::BodyPending"));
         assert!(!immediate_guard.contains("TargetEofFinPending"));
         assert!(production_endpoint.contains("struct TargetDispatchCompletion"));

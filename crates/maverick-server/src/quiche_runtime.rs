@@ -12,8 +12,9 @@ use crate::h3_connect::parse_classic_connect_request;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Poll;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use boring::ssl::{SslRef, SslVersion};
@@ -28,6 +29,7 @@ use maverick_core::config::{
 use maverick_core::frame::TargetAddr;
 use quiche::h3::NameValue;
 use rand::{rngs::OsRng, TryRngCore};
+use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
 
 pub(super) const MAX_PACKET_BYTES: usize = 1_350;
@@ -222,6 +224,8 @@ struct PendingClassicConnect {
     target_read_failure_requested: bool,
     #[cfg(test)]
     target_write_failure_requested: bool,
+    #[cfg(test)]
+    target_shutdown_failure_requested: bool,
 }
 
 impl fmt::Debug for PendingClassicConnect {
@@ -282,6 +286,8 @@ enum UploadDispatchState {
     Idle,
     RecvPending,
     WritePending { offset: usize, length: usize },
+    ShutdownPending,
+    WriteHalfClosed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -329,6 +335,8 @@ pub(super) struct TargetIoRound {
     target_write_progress_mask: usize,
     #[cfg(test)]
     target_write_blocked_mask: usize,
+    #[cfg(test)]
+    target_shutdown_progress_mask: usize,
 }
 
 impl TargetIoRound {
@@ -362,6 +370,11 @@ impl TargetIoRound {
     }
 
     #[cfg(test)]
+    pub(super) const fn target_shutdown_progress_mask(self) -> usize {
+        self.target_shutdown_progress_mask
+    }
+
+    #[cfg(test)]
     fn observe_operation(
         &mut self,
         signal: TargetIoSignal,
@@ -382,6 +395,9 @@ impl TargetIoRound {
             (Some(UploadDispatchState::WritePending { .. }), TargetIoOutcome::Blocked) => {
                 self.target_write_blocked_mask |= bit;
             }
+            (Some(UploadDispatchState::ShutdownPending), TargetIoOutcome::StateTransition) => {
+                self.target_shutdown_progress_mask |= bit;
+            }
             _ => {}
         }
     }
@@ -390,6 +406,7 @@ impl TargetIoRound {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum TargetIoOutcome {
     Progress { bytes: usize },
+    StateTransition,
     Blocked,
     Quiescent,
 }
@@ -506,6 +523,19 @@ impl PendingClassicConnectSlots {
             .find(|pending| pending.stream_id == stream_id)
             .ok_or(RuntimeError::ClassicConnectAdmissionRejected)?;
         if pending.peer_write_half_closed {
+            return Err(RuntimeError::ClassicConnectAdmissionRejected);
+        }
+        if pending.dispatch_state.response_was_accepted() {
+            match pending.upload_state {
+                UploadDispatchState::Idle => {
+                    pending.upload_state = UploadDispatchState::ShutdownPending;
+                }
+                UploadDispatchState::RecvPending | UploadDispatchState::WritePending { .. } => {}
+                UploadDispatchState::ShutdownPending | UploadDispatchState::WriteHalfClosed => {
+                    return Err(RuntimeError::ClassicConnectAdmissionRejected);
+                }
+            }
+        } else if pending.upload_state != UploadDispatchState::Idle {
             return Err(RuntimeError::ClassicConnectAdmissionRejected);
         }
         pending.peer_write_half_closed = true;
@@ -895,6 +925,8 @@ pub(super) struct ServerConnection {
     upload_data_events: usize,
     #[cfg(test)]
     target_write_calls: usize,
+    #[cfg(test)]
+    target_shutdown_calls: usize,
     pre_auth_foundation: PreAuthFoundationState,
     local_address: SocketAddr,
     peer_address: SocketAddr,
@@ -966,6 +998,8 @@ impl ServerConnection {
             upload_data_events: 0,
             #[cfg(test)]
             target_write_calls: 0,
+            #[cfg(test)]
+            target_shutdown_calls: 0,
             pre_auth_foundation: PreAuthFoundationState::AwaitingHandshake,
             local_address: meta.to,
             peer_address: meta.from,
@@ -1284,6 +1318,7 @@ impl ServerConnection {
         if matches.next().is_some()
             || !pending.dispatch_state.response_was_accepted()
             || pending.opened_target.is_none()
+            || pending.peer_write_half_closed
             || pending.upload_state != UploadDispatchState::Idle
         {
             return Err(RuntimeError::ClassicConnectDataRejected);
@@ -1391,6 +1426,8 @@ impl ServerConnection {
             target_read_failure_requested: false,
             #[cfg(test)]
             target_write_failure_requested: false,
+            #[cfg(test)]
+            target_shutdown_failure_requested: false,
         })
     }
 
@@ -1539,7 +1576,11 @@ impl ServerConnection {
                         return self.reject_with(RuntimeError::ClassicConnectResponseRejected);
                     }
                     pending.clear_payloads();
-                    pending.upload_state = UploadDispatchState::Idle;
+                    pending.upload_state = if pending.peer_write_half_closed {
+                        UploadDispatchState::ShutdownPending
+                    } else {
+                        UploadDispatchState::Idle
+                    };
                     pending.dispatch_state = TargetDispatchState::ResponseAccepted;
                 }
                 Err(quiche::h3::Error::StreamBlocked) => continue,
@@ -1560,11 +1601,12 @@ impl ServerConnection {
     }
 
     pub(super) fn has_immediate_target_io_work(&self) -> bool {
-        self.pending_connects
-            .slots
-            .iter()
-            .flatten()
-            .any(|pending| pending.upload_state == UploadDispatchState::RecvPending)
+        self.pending_connects.slots.iter().flatten().any(|pending| {
+            matches!(
+                pending.upload_state,
+                UploadDispatchState::RecvPending | UploadDispatchState::ShutdownPending
+            )
+        })
     }
 
     pub(super) fn wait_target_io_ready(
@@ -1730,7 +1772,7 @@ impl ServerConnection {
             ) {
                 stopped_positions |= 1_u16 << signal.position();
             }
-        } else {
+        } else if !self.has_immediate_target_io_work() {
             let probe = (0..TARGET_IO_CURSOR_LENGTH)
                 .map(|offset| {
                     TargetIoSignal::from_position(
@@ -1755,10 +1797,11 @@ impl ServerConnection {
                     stopped_positions |= 1_u16 << signal.position();
                 }
             }
-            // A no-signal round probes only the one direction that was already
-            // socket-ready-eligible when the round began. State produced by a
-            // later H3 API operation waits for the normal readiness path or the
-            // next bounded actor turn.
+            // A no-signal round with no immediate work probes only the one
+            // direction that was already socket-ready-eligible when the round
+            // began. Immediate H3 receive or target-shutdown state uses the
+            // same rotating shared budget without spending an operation on an
+            // unrelated speculative socket probe.
         }
         while round.operations < MAX_TARGET_IO_OPERATIONS_PER_ROUND
             && scanned_without_operation < TARGET_IO_CURSOR_LENGTH
@@ -1816,9 +1859,11 @@ impl ServerConnection {
                 | TargetDispatchState::ResponseFinAccepted => (false, false),
             },
             TargetIoDirection::ClientToTarget => match pending.upload_state {
-                UploadDispatchState::RecvPending => (true, false),
+                UploadDispatchState::RecvPending | UploadDispatchState::ShutdownPending => {
+                    (true, false)
+                }
                 UploadDispatchState::WritePending { .. } => (true, true),
-                UploadDispatchState::Idle => (false, false),
+                UploadDispatchState::Idle | UploadDispatchState::WriteHalfClosed => (false, false),
             },
         }
     }
@@ -1831,16 +1876,21 @@ impl ServerConnection {
             .operations
             .checked_add(1)
             .ok_or(RuntimeError::ClassicConnectDataRejected)?;
-        if let TargetIoOutcome::Progress { bytes } = outcome {
-            if bytes > TARGET_IO_MAX_OPERATION_BYTES {
-                return Err(RuntimeError::ClassicConnectDataRejected);
-            }
+        if matches!(
+            outcome,
+            TargetIoOutcome::Progress { .. } | TargetIoOutcome::StateTransition
+        ) {
             #[cfg(test)]
             {
                 round.progress_operations = round
                     .progress_operations
                     .checked_add(1)
                     .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+            }
+        }
+        if let TargetIoOutcome::Progress { bytes } = outcome {
+            if bytes > TARGET_IO_MAX_OPERATION_BYTES {
+                return Err(RuntimeError::ClassicConnectDataRejected);
             }
             round.operation_progress_bytes = round
                 .operation_progress_bytes
@@ -1875,7 +1925,10 @@ impl ServerConnection {
             TargetDispatchState::Admitted | TargetDispatchState::InFlight => false,
         };
         let upload_state_is_valid = match pending.upload_state {
-            UploadDispatchState::Idle | UploadDispatchState::RecvPending => true,
+            UploadDispatchState::Idle
+            | UploadDispatchState::RecvPending
+            | UploadDispatchState::ShutdownPending
+            | UploadDispatchState::WriteHalfClosed => true,
             UploadDispatchState::WritePending { offset, length } => {
                 offset < length && length <= CLIENT_TO_TARGET_BUFFER_BYTES
             }
@@ -1888,6 +1941,13 @@ impl ServerConnection {
             || !upload_state_is_valid
             || (pending.upload_state != UploadDispatchState::Idle
                 && !pending.dispatch_state.response_was_accepted())
+            || (matches!(
+                pending.upload_state,
+                UploadDispatchState::ShutdownPending | UploadDispatchState::WriteHalfClosed
+            ) && !pending.peer_write_half_closed)
+            || (pending.dispatch_state.response_was_accepted()
+                && pending.peer_write_half_closed
+                && pending.upload_state == UploadDispatchState::Idle)
             || self
                 .pending_connects
                 .slots
@@ -2072,7 +2132,11 @@ impl ServerConnection {
                     Ok(_) => Err(RuntimeError::ClassicConnectDataRejected),
                     Err(quiche::h3::Error::Done) => {
                         pending.upload_payload.fill(0);
-                        pending.upload_state = UploadDispatchState::Idle;
+                        pending.upload_state = if pending.peer_write_half_closed {
+                            UploadDispatchState::ShutdownPending
+                        } else {
+                            UploadDispatchState::Idle
+                        };
                         Ok(TargetIoOutcome::Quiescent)
                     }
                     Err(_) => Err(RuntimeError::ClassicConnectDataRejected),
@@ -2124,7 +2188,43 @@ impl ServerConnection {
                     Err(_) => Err(RuntimeError::ClassicConnectDataRejected),
                 }
             }
-            UploadDispatchState::Idle => Err(RuntimeError::ClassicConnectDataRejected),
+            UploadDispatchState::ShutdownPending => {
+                #[cfg(test)]
+                {
+                    self.target_shutdown_calls += 1;
+                    if self.pending_connects.slots[slot_index]
+                        .as_ref()
+                        .is_some_and(|pending| pending.target_shutdown_failure_requested)
+                    {
+                        return Err(RuntimeError::ClassicConnectDataRejected);
+                    }
+                }
+                let pending = self.pending_connects.slots[slot_index]
+                    .as_mut()
+                    .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+                if !pending.peer_write_half_closed
+                    || pending.upload_payload.iter().any(|byte| *byte != 0)
+                {
+                    return Err(RuntimeError::ClassicConnectDataRejected);
+                }
+                let target = pending
+                    .opened_target
+                    .as_mut()
+                    .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+                let mut context = Context::from_waker(futures::task::noop_waker_ref());
+                match Pin::new(target).poll_shutdown(&mut context) {
+                    Poll::Ready(Ok(())) => {
+                        pending.upload_state = UploadDispatchState::WriteHalfClosed;
+                        Ok(TargetIoOutcome::StateTransition)
+                    }
+                    Poll::Ready(Err(_)) | Poll::Pending => {
+                        Err(RuntimeError::ClassicConnectDataRejected)
+                    }
+                }
+            }
+            UploadDispatchState::Idle | UploadDispatchState::WriteHalfClosed => {
+                Err(RuntimeError::ClassicConnectDataRejected)
+            }
         }
     }
 
@@ -2990,6 +3090,58 @@ mod tests {
             UPLOAD_MARKER
         );
         (pair, stream_id, peer)
+    }
+
+    async fn eight_shutdown_pending_pair(authority: &[u8]) -> (TestPair, Vec<u64>, Vec<TcpStream>) {
+        let mut pair = TestPair::new().expect("construct eight-shutdown pair");
+        pair.authenticate_generation()
+            .expect("authenticate eight-shutdown pair");
+        let headers = test_classic_connect_headers(authority, false);
+        let mut stream_ids = Vec::with_capacity(MAX_PENDING_CLASSIC_CONNECTS);
+        let mut target_peers = Vec::with_capacity(MAX_PENDING_CLASSIC_CONNECTS);
+        for _ in 0..MAX_PENDING_CLASSIC_CONNECTS {
+            let stream_id = pair
+                .send_classic_connect(&headers, false)
+                .expect("queue one eight-shutdown CONNECT");
+            pair.client_to_server()
+                .expect("admit one eight-shutdown CONNECT");
+            let token = pair
+                .server
+                .take_target_open_dispatch(Instant::now())
+                .expect("take one eight-shutdown dispatch")
+                .expect("one eight-shutdown dispatch exists");
+            let (opened_target, target_peer) = connected_target_pair().await;
+            pair.server
+                .complete_target_open_dispatch(token, opened_target, Instant::now())
+                .expect("handoff one eight-shutdown target");
+            pair.server
+                .drive_h3()
+                .expect("accept one eight-shutdown response");
+            pair.server_to_client()
+                .expect("deliver one eight-shutdown response");
+            assert!(pair
+                .poll_exact_classic_connect_success(stream_id)
+                .expect("observe one eight-shutdown response"));
+            stream_ids.push(stream_id);
+            target_peers.push(target_peer);
+        }
+        for stream_id in &stream_ids {
+            assert_eq!(pair.client.stream_send(*stream_id, b"", true), Ok(0));
+        }
+        assert!(pair
+            .client_transport_to_server_without_h3_drive()
+            .expect("deliver all eight empty request FINs"));
+        pair.server
+            .drive_h3()
+            .expect("record exactly eight request Finished events");
+        assert!(pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .all(|pending| pending.upload_state == UploadDispatchState::ShutdownPending));
+        (pair, stream_ids, target_peers)
     }
 
     struct ConfirmationProgress {
@@ -5538,8 +5690,15 @@ auth:
         assert!(target_data_path.contains("target.try_write"));
         assert!(target_data_path.contains("h3.send_body"));
         assert!(target_data_path.contains("h3.recv_body"));
+        assert!(target_data_path.contains("Pin::new(target).poll_shutdown"));
+        assert_eq!(target_data_path.matches("target.try_write").count(), 1);
+        assert_eq!(target_data_path.matches("poll_shutdown").count(), 1);
         for forbidden in [
             "into_split",
+            "try_shutdown",
+            "as_raw_fd",
+            "from_raw_fd",
+            "unsafe {",
             "transport.stream_recv",
             "tokio::spawn",
             "JoinSet",
@@ -6461,7 +6620,7 @@ auth:
     }
 
     #[tokio::test]
-    async fn t027b2d2_final_data_and_finished_wait_for_write_without_target_shutdown() {
+    async fn t027b2d2_retained_and_t027b2d3_real_blocked_fin_and_reply() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let marker = b"final-data-before-deferred-target-shutdown";
@@ -6528,16 +6687,626 @@ auth:
                 .await
                 .is_err()
         );
+        let shutdown_round = pair
+            .server
+            .drive_target_io_round(None)
+            .expect("shutdown target write half only after complete final DATA");
+        assert_eq!(shutdown_round.operations(), 1);
+        assert_eq!(shutdown_round.operation_progress_bytes(), 0);
+        assert_eq!(shutdown_round.target_shutdown_progress_mask(), 1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), target_peer.read_u8())
+                .await
+                .expect("target sees EOF after complete final marker")
+                .expect_err("target EOF is not payload")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+
+        let reply = b"delayed-reply-after-blocked-final-data";
         target_peer
-            .write_all(b"target-still-open-after-request-finished")
+            .write_all(reply)
             .await
-            .expect("request Finished did not shut down target write half");
+            .expect("target read half remains usable for delayed reply");
+        target_peer
+            .shutdown()
+            .await
+            .expect("target closes its own write half after delayed reply");
+        let readable =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("delayed reply becomes readable")
+                .expect("delayed reply readiness is usable");
+        assert_eq!(readable.direction, TargetIoDirection::TargetToClient);
+        let response_round = pair
+            .server
+            .drive_target_io_round(Some(readable))
+            .expect("start queueing delayed reply");
+        assert!(response_round.operations() <= MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+        for _ in 0..4 {
+            if pair.server.pending_connects.slots[0]
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.dispatch_state == TargetDispatchState::ResponseFinAccepted
+                })
+            {
+                break;
+            }
+            let ready_signal = if pair.server.has_target_io_waiter() {
+                Some(
+                    tokio::time::timeout(
+                        Duration::from_secs(1),
+                        pair.server.wait_target_io_ready(),
+                    )
+                    .await
+                    .expect("delayed reply continuation becomes ready")
+                    .expect("delayed reply continuation signal is usable"),
+                )
+            } else {
+                None
+            };
+            pair.server
+                .drive_target_io_round(ready_signal)
+                .expect("finish queueing delayed reply and target EOF");
+        }
+        assert_eq!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("delayed-reply slot remains occupied")
+                .dispatch_state,
+            TargetDispatchState::ResponseFinAccepted
+        );
+        pair.server_to_client()
+            .expect("deliver delayed reply and response FIN");
+        let mut received_reply = Vec::new();
+        assert!(pair
+            .poll_classic_connect_body(stream_id, &mut received_reply)
+            .expect("poll delayed reply through response FIN"));
+        assert_eq!(received_reply, reply);
+
         let pending = pair.server.pending_connects.slots[0]
             .as_ref()
             .expect("request Finished still retains slot");
         assert!(pending.peer_write_half_closed);
-        assert_eq!(pending.upload_state, UploadDispatchState::Idle);
+        assert_eq!(pending.upload_state, UploadDispatchState::WriteHalfClosed);
+        assert_eq!(
+            pending.dispatch_state,
+            TargetDispatchState::ResponseFinAccepted
+        );
         assert!(pending.opened_target.is_some());
+    }
+
+    #[tokio::test]
+    async fn t027b2d3_final_data_reaches_target_before_write_half_shutdown() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let marker = b"final-upload-before-target-eof";
+        let reply = b"delayed-reply-after-target-eof";
+        let (mut pair, stream_id, mut target_peer) =
+            response_accepted_pair(b"request-fin-half-close.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver response before final upload");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe exact response before final upload"));
+
+        assert_eq!(
+            pair.client_h3
+                .as_mut()
+                .expect("request-FIN H3 client exists")
+                .send_body(&mut pair.client, stream_id, marker, true),
+            Ok(marker.len())
+        );
+        pair.client_to_server()
+            .expect("deliver final DATA before request Finished");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("buffer final DATA before target write");
+        pair.server
+            .drive_h3()
+            .expect("record request Finished after body consumption");
+
+        let writable =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("target becomes writable for final DATA")
+                .expect("final DATA writable signal is usable");
+        assert_eq!(writable.direction, TargetIoDirection::ClientToTarget);
+        pair.server
+            .drive_target_io_round(Some(writable))
+            .expect("write the complete final DATA marker");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("drain final DATA event through recv_body Done");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("shut down only the target write half");
+
+        let mut received = vec![0_u8; marker.len()];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            target_peer.read_exact(&mut received),
+        )
+        .await
+        .expect("complete final DATA reaches target before EOF")
+        .expect("read complete final DATA before EOF");
+        assert_eq!(received, marker);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), target_peer.read_u8())
+                .await
+                .expect("target observes request EOF after complete final DATA")
+                .expect_err("target read after request EOF is not payload")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+
+        target_peer
+            .write_all(reply)
+            .await
+            .expect("target read half remains usable for delayed reply");
+        target_peer
+            .shutdown()
+            .await
+            .expect("target closes its own write half after delayed reply");
+        let readable =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("delayed target reply becomes readable")
+                .expect("delayed reply readiness is usable");
+        assert_eq!(readable.direction, TargetIoDirection::TargetToClient);
+        pair.server
+            .drive_target_io_round(Some(readable))
+            .expect("queue delayed target reply");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("queue response FIN after delayed reply");
+        pair.server_to_client()
+            .expect("deliver delayed reply and response FIN");
+        let mut received_reply = Vec::new();
+        assert!(pair
+            .poll_classic_connect_body(stream_id, &mut received_reply)
+            .expect("poll delayed reply through response FIN"));
+        assert_eq!(received_reply, reply);
+    }
+
+    #[tokio::test]
+    async fn t027b2d3_empty_body_fin_closes_only_target_write_half() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let reply = b"reply-after-empty-request-body";
+        let (mut pair, stream_id, mut target_peer) =
+            response_accepted_pair(b"empty-request-fin.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver response before empty request FIN");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe exact response before empty request FIN"));
+        assert_eq!(pair.client.stream_send(stream_id, b"", true), Ok(0));
+        pair.client_to_server().expect("deliver empty request FIN");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("empty-FIN slot remains occupied");
+        assert_eq!(pending.upload_state, UploadDispatchState::ShutdownPending);
+        assert_eq!(
+            pending.dispatch_state,
+            TargetDispatchState::ResponseAccepted
+        );
+
+        let round = pair
+            .server
+            .drive_target_io_round(None)
+            .expect("empty FIN shuts down target write half");
+        assert_eq!(round.operations(), 1);
+        assert_eq!(round.operation_progress_bytes(), 0);
+        assert_eq!(round.target_shutdown_progress_mask(), 1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), target_peer.read_u8())
+                .await
+                .expect("empty request body produces target EOF")
+                .expect_err("empty request EOF is not payload")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+
+        target_peer
+            .write_all(reply)
+            .await
+            .expect("target can reply after observing empty-body EOF");
+        target_peer
+            .shutdown()
+            .await
+            .expect("target closes reply write half");
+        let readable =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("empty-body delayed reply becomes readable")
+                .expect("empty-body reply readiness is usable");
+        pair.server
+            .drive_target_io_round(Some(readable))
+            .expect("start queueing empty-body delayed reply");
+        for _ in 0..4 {
+            if pair.server.pending_connects.slots[0]
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.dispatch_state == TargetDispatchState::ResponseFinAccepted
+                })
+            {
+                break;
+            }
+            let ready_signal = if pair.server.has_target_io_waiter() {
+                Some(
+                    tokio::time::timeout(
+                        Duration::from_secs(1),
+                        pair.server.wait_target_io_ready(),
+                    )
+                    .await
+                    .expect("empty-body reply continuation becomes ready")
+                    .expect("empty-body reply continuation signal is usable"),
+                )
+            } else {
+                None
+            };
+            pair.server
+                .drive_target_io_round(ready_signal)
+                .expect("finish queueing empty-body delayed reply and FIN");
+        }
+        assert_eq!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("empty-body reply slot remains occupied")
+                .dispatch_state,
+            TargetDispatchState::ResponseFinAccepted
+        );
+        pair.server_to_client()
+            .expect("deliver empty-body delayed reply and FIN");
+        let mut received_reply = Vec::new();
+        assert!(pair
+            .poll_classic_connect_body(stream_id, &mut received_reply)
+            .expect("poll empty-body delayed reply"));
+        assert_eq!(received_reply, reply);
+    }
+
+    #[tokio::test]
+    async fn t027b2d3_target_eof_and_request_fin_remain_orthogonal() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let marker = b"upload-after-response-fin";
+        let (mut pair, stream_id, mut target_peer) =
+            response_accepted_pair(b"orthogonal-half-closes.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver response before target EOF");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe response before target EOF"));
+        target_peer
+            .shutdown()
+            .await
+            .expect("target closes only its write half first");
+        let readable =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("target EOF becomes readable")
+                .expect("target EOF readiness is usable");
+        pair.server
+            .drive_target_io_round(Some(readable))
+            .expect("queue response FIN from target EOF");
+        pair.server_to_client()
+            .expect("deliver response FIN before request FIN");
+        let mut empty_response = Vec::new();
+        assert!(pair
+            .poll_classic_connect_body(stream_id, &mut empty_response)
+            .expect("poll target EOF as response FIN"));
+        assert!(empty_response.is_empty());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), target_peer.read_u8())
+                .await
+                .is_err()
+        );
+
+        assert_eq!(
+            pair.client_h3
+                .as_mut()
+                .expect("post-response-FIN H3 client exists")
+                .send_body(&mut pair.client, stream_id, marker, true),
+            Ok(marker.len())
+        );
+        pair.client_to_server()
+            .expect("legal final upload follows response FIN");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("receive final upload after response FIN");
+        pair.server
+            .drive_h3()
+            .expect("record request Finished after response FIN");
+        let writable =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("half-open target remains writable")
+                .expect("half-open target writable signal is usable");
+        pair.server
+            .drive_target_io_round(Some(writable))
+            .expect("write final upload after response FIN");
+        pair.server
+            .drive_target_io_round(None)
+            .expect("shutdown target write half after response FIN");
+        let mut received = vec![0_u8; marker.len()];
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            target_peer.read_exact(&mut received),
+        )
+        .await
+        .expect("final upload reaches target after response FIN")
+        .expect("read final upload after response FIN");
+        assert_eq!(received, marker);
+        assert_eq!(
+            target_peer
+                .read_u8()
+                .await
+                .expect_err("request FIN follows complete post-response-FIN upload")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("orthogonal slot remains occupied");
+        assert_eq!(
+            pending.dispatch_state,
+            TargetDispatchState::ResponseFinAccepted
+        );
+        assert_eq!(pending.upload_state, UploadDispatchState::WriteHalfClosed);
+    }
+
+    #[tokio::test]
+    async fn t027b2d3_fin_before_200_defers_shutdown_until_response_acceptance() {
+        use tokio::io::AsyncReadExt;
+
+        let mut pair = TestPair::new().expect("construct pre-200 FIN pair");
+        pair.authenticate_generation()
+            .expect("authenticate pre-200 FIN pair");
+        let headers = test_classic_connect_headers(b"fin-before-200.invalid:443", false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue headers before request FIN");
+        pair.client_to_server()
+            .expect("admit request before pre-200 FIN");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take pre-200 FIN dispatch")
+            .expect("pre-200 FIN dispatch exists");
+        assert_eq!(pair.client.stream_send(stream_id, b"", true), Ok(0));
+        pair.client_to_server()
+            .expect("record request FIN before target readiness");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("pre-200 FIN slot remains occupied");
+        assert!(pending.peer_write_half_closed);
+        assert_eq!(pending.upload_state, UploadDispatchState::Idle);
+        assert_eq!(pending.dispatch_state, TargetDispatchState::InFlight);
+
+        let (opened_target, mut target_peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(token, opened_target, Instant::now())
+            .expect("complete original pre-200 FIN target");
+        pair.server
+            .drive_h3()
+            .expect("accept 200 after pre-200 FIN");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("post-200 FIN slot remains occupied");
+        assert_eq!(pending.stream_id, stream_id);
+        assert_eq!(pending.upload_state, UploadDispatchState::ShutdownPending);
+        pair.server
+            .drive_target_io_round(None)
+            .expect("shutdown target only after local 200 acceptance");
+        assert_eq!(
+            target_peer
+                .read_u8()
+                .await
+                .expect_err("pre-200 FIN reaches target only after accepted response")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[tokio::test]
+    async fn t027b2d3_eight_shutdowns_use_two_shared_zero_byte_rounds() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut pair, _, mut target_peers) =
+            eight_shutdown_pending_pair(b"eight-shutdowns.invalid:443").await;
+
+        let first = pair
+            .server
+            .drive_target_io_round(None)
+            .expect("first shared shutdown round");
+        let second = pair
+            .server
+            .drive_target_io_round(None)
+            .expect("second shared shutdown round");
+        assert_eq!(first.operations(), MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+        assert_eq!(second.operations(), MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+        assert_eq!(first.operation_progress_bytes(), 0);
+        assert_eq!(second.operation_progress_bytes(), 0);
+        assert_eq!(
+            first.target_shutdown_progress_mask() | second.target_shutdown_progress_mask(),
+            (1_usize << MAX_PENDING_CLASSIC_CONNECTS) - 1
+        );
+        assert_eq!(
+            first.target_shutdown_progress_mask() & second.target_shutdown_progress_mask(),
+            0
+        );
+        assert_eq!(
+            pair.server.target_shutdown_calls,
+            MAX_PENDING_CLASSIC_CONNECTS
+        );
+        assert!(pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .all(|pending| pending.upload_state == UploadDispatchState::WriteHalfClosed));
+        for target_peer in &mut target_peers {
+            assert_eq!(
+                target_peer
+                    .read_u8()
+                    .await
+                    .expect_err("every original target observes request EOF")
+                    .kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn t027b2d3_exact_download_readiness_precedes_eight_shutdowns_without_starvation() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let marker = b"download-amid-eight-request-fins";
+        let (mut pair, stream_ids, mut target_peers) =
+            eight_shutdown_pending_pair(b"mixed-eight-shutdowns.invalid:443").await;
+        target_peers[0]
+            .write_all(marker)
+            .await
+            .expect("make original slot zero genuinely readable");
+        let ready_signal =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("real mixed downlink readiness arrives")
+                .expect("real mixed readiness signal is usable");
+        assert_eq!(ready_signal.slot_index, 0);
+        assert_eq!(ready_signal.direction, TargetIoDirection::TargetToClient);
+
+        let reads_before = pair.server.target_read_calls;
+        let shutdowns_before = pair.server.target_shutdown_calls;
+        let first = pair
+            .server
+            .drive_target_io_round(Some(ready_signal))
+            .expect("exact downlink readiness leads the mixed shared round");
+        assert_eq!(first.operations(), MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+        assert_eq!(first.operation_progress_bytes(), marker.len());
+        assert_eq!(pair.server.target_read_calls, reads_before + 1);
+        assert_eq!(pair.server.target_shutdown_calls, shutdowns_before + 3);
+        assert_eq!(first.target_shutdown_progress_mask().count_ones(), 3);
+        assert!(matches!(
+            pair.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("mixed slot zero remains occupied")
+                .dispatch_state,
+            TargetDispatchState::BodyPending { .. }
+        ));
+
+        let mut shutdown_mask = first.target_shutdown_progress_mask();
+        let mut rounds = 1_usize;
+        for _ in 0..3 {
+            if pair
+                .server
+                .pending_connects
+                .slots
+                .iter()
+                .flatten()
+                .all(|pending| {
+                    pending.upload_state == UploadDispatchState::WriteHalfClosed
+                        && pending.dispatch_state == TargetDispatchState::ResponseAccepted
+                })
+            {
+                break;
+            }
+            let round = pair
+                .server
+                .drive_target_io_round(None)
+                .expect("bounded mixed continuation advances downlink and shutdowns");
+            assert!(round.operations() <= MAX_TARGET_IO_OPERATIONS_PER_ROUND);
+            assert!(round.operation_progress_bytes() <= 64 * 1024);
+            shutdown_mask |= round.target_shutdown_progress_mask();
+            rounds += 1;
+        }
+        assert!(rounds <= 3);
+        assert_eq!(shutdown_mask, (1_usize << MAX_PENDING_CLASSIC_CONNECTS) - 1);
+        assert_eq!(
+            pair.server.target_shutdown_calls,
+            MAX_PENDING_CLASSIC_CONNECTS
+        );
+        assert!(pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .all(|pending| {
+                pending.upload_state == UploadDispatchState::WriteHalfClosed
+                    && pending.dispatch_state == TargetDispatchState::ResponseAccepted
+            }));
+
+        pair.server_to_client()
+            .expect("deliver mixed downlink marker after bounded continuation");
+        let mut received = Vec::new();
+        assert!(!pair
+            .poll_classic_connect_body(stream_ids[0], &mut received)
+            .expect("poll mixed downlink marker without response FIN"));
+        assert_eq!(received, marker);
+        for target_peer in &mut target_peers {
+            assert_eq!(
+                target_peer
+                    .read_u8()
+                    .await
+                    .expect_err("each mixed target sees exactly one request EOF")
+                    .kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn t027b2d3_shutdown_failure_and_post_fin_data_fail_generation_closed() {
+        {
+            let (mut failure, failure_stream, failure_peer) =
+                body_pending_pair_with_small_window(b"shutdown-failure.invalid:443").await;
+            assert_eq!(failure.client.stream_send(failure_stream, b"", true), Ok(0));
+            failure
+                .client_to_server()
+                .expect("record FIN for injected shutdown failure");
+            let pending = failure.server.pending_connects.slots[0]
+                .as_mut()
+                .expect("shutdown-failure slot remains occupied");
+            assert!(pending.target_payload.iter().any(|byte| *byte != 0));
+            assert_eq!(pending.upload_state, UploadDispatchState::ShutdownPending);
+            pending.target_shutdown_failure_requested = true;
+            let error = failure
+                .server
+                .drive_target_io_round(None)
+                .expect_err("injected shutdown failure closes generation");
+            assert_eq!(error, RuntimeError::ClassicConnectDataRejected);
+            assert_eq!(failure.server.pending_connects.len(), 0);
+            for rendered in [error.to_string(), format!("{error:?}")] {
+                assert!(!rendered.contains("shutdown-failure"));
+                assert!(!rendered.contains("invalid:443"));
+            }
+            assert_target_peer_closed(failure_peer).await;
+        }
+
+        {
+            let (mut post_fin, stream_id, post_fin_peer) =
+                response_accepted_pair(b"post-fin-data.invalid:443").await;
+            let mut h3 = post_fin
+                .server
+                .h3
+                .take()
+                .expect("post-FIN server H3 exists");
+            post_fin
+                .server
+                .handle_h3_event(&mut h3, stream_id, quiche::h3::Event::Finished)
+                .expect("first Finished records request FIN");
+            let error = post_fin
+                .server
+                .handle_h3_event(&mut h3, stream_id, quiche::h3::Event::Data)
+                .expect_err("DATA after request FIN closes generation");
+            post_fin.server.h3 = Some(h3);
+            assert_eq!(error, RuntimeError::ClassicConnectDataRejected);
+            assert_eq!(post_fin.server.pending_connects.len(), 0);
+            assert_target_peer_closed(post_fin_peer).await;
+        }
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+use crate::h3_connect::parse_classic_connect_request;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -21,6 +22,7 @@ use maverick_core::auth_v3::{
 use maverick_core::config::{
     DirectV3ServerRoleConfig, DirectV3TransportStrategy, ServerRoleConfig,
 };
+use maverick_core::frame::TargetAddr;
 use quiche::h3::NameValue;
 use rand::{rngs::OsRng, TryRngCore};
 
@@ -30,6 +32,7 @@ const INITIAL_BIDI_STREAM_WINDOW_BYTES: u64 = 65_536;
 const INITIAL_UNI_STREAM_WINDOW_BYTES: u64 = 16_384;
 const MAX_STREAM_WINDOW_BYTES: u64 = 65_536;
 const MAX_BIDI_STREAMS: u64 = 8;
+const MAX_PENDING_CLASSIC_CONNECTS: usize = MAX_BIDI_STREAMS as usize;
 const MAX_UNI_STREAMS: u64 = 8;
 const MAX_FIELD_SECTION_BYTES: u64 = 16_384;
 const QPACK_MAX_TABLE_CAPACITY: u64 = 0;
@@ -140,6 +143,14 @@ impl AuthenticatedGenerationCapability {
         self.active && !self.revoked && now < self.hard_deadline
     }
 
+    fn permits_admission_at(&self, generation: &ServerSourceConnectionId, now: Instant) -> bool {
+        self.active
+            && !self.revoked
+            && self.generation.as_bytes() == generation.as_bytes()
+            && now < self.admission_deadline
+            && now < self.hard_deadline
+    }
+
     fn revoke(&mut self) {
         self.active = false;
         self.revoked = true;
@@ -157,6 +168,111 @@ impl AuthenticatedGenerationCapability {
 impl fmt::Debug for AuthenticatedGenerationCapability {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("authenticated server generation capability")
+    }
+}
+
+struct PendingClassicConnect {
+    generation: ServerSourceConnectionId,
+    stream_id: u64,
+    target: TargetAddr,
+    port: u16,
+    peer_write_half_closed: bool,
+    max_frame_size: u32,
+}
+
+impl fmt::Debug for PendingClassicConnect {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("pending Classic CONNECT metadata")
+    }
+}
+
+struct PendingClassicConnectSlots {
+    slots: [Option<PendingClassicConnect>; MAX_PENDING_CLASSIC_CONNECTS],
+}
+
+impl PendingClassicConnectSlots {
+    fn empty() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| None),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.slots.iter().flatten().count()
+    }
+
+    fn quota_for(capability: &AuthenticatedGenerationCapability) -> usize {
+        usize::try_from(capability.max_concurrent_flows)
+            .unwrap_or(0)
+            .min(MAX_PENDING_CLASSIC_CONNECTS)
+    }
+
+    fn has_quota_for(&self, capability: &AuthenticatedGenerationCapability) -> bool {
+        self.len() < Self::quota_for(capability)
+    }
+
+    fn contains_stream(&self, stream_id: u64) -> bool {
+        self.slots
+            .iter()
+            .flatten()
+            .any(|pending| pending.stream_id == stream_id)
+    }
+
+    fn insert(
+        &mut self,
+        pending: PendingClassicConnect,
+        capability: &AuthenticatedGenerationCapability,
+    ) -> Result<(), RuntimeError> {
+        if !self.has_quota_for(capability)
+            || self.contains_stream(pending.stream_id)
+            || pending.generation.as_bytes() != capability.generation.as_bytes()
+            || pending.max_frame_size != capability.max_frame_size
+        {
+            return Err(RuntimeError::ClassicConnectAdmissionRejected);
+        }
+        let slot = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(RuntimeError::ClassicConnectAdmissionRejected)?;
+        *slot = Some(pending);
+        Ok(())
+    }
+
+    fn mark_peer_write_half_closed(&mut self, stream_id: u64) -> Result<(), RuntimeError> {
+        let pending = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|pending| pending.stream_id == stream_id)
+            .ok_or(RuntimeError::ClassicConnectAdmissionRejected)?;
+        if pending.peer_write_half_closed {
+            return Err(RuntimeError::ClassicConnectAdmissionRejected);
+        }
+        pending.peer_write_half_closed = true;
+        Ok(())
+    }
+
+    fn stream_ids(&self) -> [Option<u64>; MAX_PENDING_CLASSIC_CONNECTS] {
+        std::array::from_fn(|index| self.slots[index].as_ref().map(|pending| pending.stream_id))
+    }
+
+    fn clear(&mut self) {
+        for slot in &mut self.slots {
+            *slot = None;
+        }
+    }
+}
+
+impl Drop for PendingClassicConnectSlots {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+impl fmt::Debug for PendingClassicConnectSlots {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("bounded pending Classic CONNECT slots")
     }
 }
 
@@ -491,6 +607,9 @@ pub(super) struct ServerConnection {
     role: FrozenDirectV3ServerRole,
     generation: ServerSourceConnectionId,
     auth: ServerAuthMachine,
+    pending_connects: PendingClassicConnectSlots,
+    #[cfg(test)]
+    auth_body_read_calls: usize,
     pre_auth_foundation: PreAuthFoundationState,
     local_address: SocketAddr,
     peer_address: SocketAddr,
@@ -548,6 +667,9 @@ impl ServerConnection {
             role: config.role.clone(),
             generation: source_connection_id,
             auth: ServerAuthMachine::fresh(),
+            pending_connects: PendingClassicConnectSlots::empty(),
+            #[cfg(test)]
+            auth_body_read_calls: 0,
             pre_auth_foundation: PreAuthFoundationState::AwaitingHandshake,
             local_address: meta.to,
             peer_address: meta.from,
@@ -583,7 +705,7 @@ impl ServerConnection {
             Ok(_) | Err(quiche::Error::Done) => {}
             Err(_) => {
                 if self.lifecycle() != ConnectionLifecycle::Active {
-                    self.auth.fail();
+                    self.clear_generation_state();
                 }
                 return Err(RuntimeError::PacketRejected);
             }
@@ -667,7 +789,7 @@ impl ServerConnection {
     }
 
     pub(super) fn close(&mut self) -> Result<(), RuntimeError> {
-        self.auth.fail();
+        self.clear_generation_state();
         if self.lifecycle() != ConnectionLifecycle::Active {
             return Ok(());
         }
@@ -682,7 +804,7 @@ impl ServerConnection {
     }
 
     pub(super) fn reject_generation(&mut self) -> Result<(), RuntimeError> {
-        self.auth.fail();
+        self.clear_generation_state();
         if self.lifecycle() != ConnectionLifecycle::Active {
             return Ok(());
         }
@@ -733,6 +855,7 @@ impl ServerConnection {
             if self.transport.dgram_recv_front_len().is_some() {
                 return self.reject_with(RuntimeError::PreAuthApplicationActivity);
             }
+            self.reject_if_pending_stream_stopped()?;
 
             let event = h3.poll(&mut self.transport);
             if self.transport.dgram_recv_front_len().is_some() {
@@ -759,7 +882,7 @@ impl ServerConnection {
                 Err(_) => {
                     // quiche can already have selected its own H3 wire error for a
                     // malformed frame. Do not replace that fact with a 0x105 claim.
-                    self.auth.fail();
+                    self.clear_generation_state();
                     return Err(RuntimeError::H3Unavailable);
                 }
             }
@@ -788,6 +911,12 @@ impl ServerConnection {
     ) -> Result<(), RuntimeError> {
         match event {
             quiche::h3::Event::Headers { list, more_frames } => {
+                if self.auth.state == ServerAuthState::Authenticated {
+                    if let Err(error) = self.admit_classic_connect(stream_id, &list, more_frames) {
+                        return self.reject_with(error);
+                    }
+                    return Ok(());
+                }
                 if self.auth.state != ServerAuthState::Fresh {
                     return self.reject_with(RuntimeError::AuthenticationRejected);
                 }
@@ -808,8 +937,20 @@ impl ServerConnection {
                 }
                 Ok(())
             }
-            quiche::h3::Event::Data => self.receive_auth_body(h3, stream_id),
+            quiche::h3::Event::Data => {
+                if self.auth.state == ServerAuthState::Authenticated {
+                    return self.reject_with(RuntimeError::ClassicConnectAdmissionRejected);
+                }
+                self.receive_auth_body(h3, stream_id)
+            }
             quiche::h3::Event::Finished => {
+                if self.auth.state == ServerAuthState::Authenticated {
+                    if let Err(error) = self.pending_connects.mark_peer_write_half_closed(stream_id)
+                    {
+                        return self.reject_with(error);
+                    }
+                    return Ok(());
+                }
                 if self.auth.state != ServerAuthState::Authenticating
                     || self.auth.bound_stream()? != stream_id
                     || self.auth.control_len != AUTH_V3_CLIENT_CONTROL_LEN
@@ -837,6 +978,10 @@ impl ServerConnection {
             return self.reject_with(RuntimeError::AuthenticationRejected);
         }
         loop {
+            #[cfg(test)]
+            {
+                self.auth_body_read_calls += 1;
+            }
             let read = if self.auth.control_len < AUTH_V3_CLIENT_CONTROL_LEN {
                 h3.recv_body(
                     &mut self.transport,
@@ -862,6 +1007,78 @@ impl ServerConnection {
                 Err(_) => return self.reject_with(RuntimeError::AuthenticationRejected),
             }
         }
+    }
+
+    fn admit_classic_connect(
+        &mut self,
+        stream_id: u64,
+        headers: &[quiche::h3::Header],
+        more_frames: bool,
+    ) -> Result<(), RuntimeError> {
+        let pending = self.prepare_classic_connect(stream_id, headers, more_frames)?;
+        self.commit_classic_connect(pending)
+    }
+
+    fn prepare_classic_connect(
+        &self,
+        stream_id: u64,
+        headers: &[quiche::h3::Header],
+        more_frames: bool,
+    ) -> Result<PendingClassicConnect, RuntimeError> {
+        let capability = self
+            .auth
+            .capability
+            .as_ref()
+            .filter(|capability| capability.permits_admission_at(&self.generation, Instant::now()))
+            .ok_or(RuntimeError::ClassicConnectAdmissionRejected)?;
+        if !self.pending_connects.has_quota_for(capability) {
+            return Err(RuntimeError::ClassicConnectAdmissionRejected);
+        }
+        if !more_frames
+            || self.auth.stream_id == Some(stream_id)
+            || self.pending_connects.contains_stream(stream_id)
+        {
+            return Err(RuntimeError::ClassicConnectAdmissionRejected);
+        }
+        let borrowed = match headers {
+            [first, second] => [
+                (first.name(), first.value()),
+                (second.name(), second.value()),
+            ],
+            _ => return Err(RuntimeError::ClassicConnectAdmissionRejected),
+        };
+        let (target, port) = parse_classic_connect_request(&borrowed)
+            .map_err(|_| RuntimeError::ClassicConnectAdmissionRejected)?;
+        Ok(PendingClassicConnect {
+            generation: self.generation,
+            stream_id,
+            target,
+            port,
+            peer_write_half_closed: false,
+            max_frame_size: capability.max_frame_size,
+        })
+    }
+
+    fn commit_classic_connect(
+        &mut self,
+        pending: PendingClassicConnect,
+    ) -> Result<(), RuntimeError> {
+        let capability = self
+            .auth
+            .capability
+            .as_ref()
+            .filter(|capability| capability.permits_admission_at(&self.generation, Instant::now()))
+            .ok_or(RuntimeError::ClassicConnectAdmissionRejected)?;
+        self.pending_connects.insert(pending, capability)
+    }
+
+    fn reject_if_pending_stream_stopped(&mut self) -> Result<(), RuntimeError> {
+        for stream_id in self.pending_connects.stream_ids().into_iter().flatten() {
+            if self.transport.stream_capacity(stream_id).is_err() {
+                return self.reject_with(RuntimeError::ClassicConnectAdmissionRejected);
+            }
+        }
+        Ok(())
     }
 
     fn finish_authentication_request(&mut self) -> Result<(), RuntimeError> {
@@ -1007,7 +1224,7 @@ impl ServerConnection {
 
     fn enforce_authenticated_lifecycle_at(&mut self, now: Instant) -> Result<(), RuntimeError> {
         if self.lifecycle() != ConnectionLifecycle::Active {
-            self.auth.fail();
+            self.clear_generation_state();
             return Ok(());
         }
         if self.auth.is_expired_at(now) {
@@ -1022,10 +1239,20 @@ impl ServerConnection {
     }
 
     fn fail_closed(&mut self, code: u64) {
-        self.auth.fail();
+        self.clear_generation_state();
         if self.lifecycle() == ConnectionLifecycle::Active {
             let _ = self.transport.close(true, code, b"");
         }
+    }
+
+    fn clear_generation_state(&mut self) {
+        self.pending_connects.clear();
+        self.auth.fail();
+    }
+
+    pub(super) fn revoke_authenticated_generation(&mut self) -> Result<(), RuntimeError> {
+        self.auth.revoke();
+        self.reject_generation()
     }
 
     pub(super) fn has_stable_source_connection_id(
@@ -1050,6 +1277,12 @@ impl ServerConnection {
     }
 }
 
+impl Drop for ServerConnection {
+    fn drop(&mut self) {
+        self.pending_connects.clear();
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum RuntimeError {
     RoleUnavailable,
@@ -1069,6 +1302,7 @@ pub(super) enum RuntimeError {
     AuthenticationRejected,
     AuthenticationUnavailable,
     AuthenticationExpired,
+    ClassicConnectAdmissionRejected,
     CloseUnavailable,
 }
 
@@ -1092,6 +1326,7 @@ impl fmt::Display for RuntimeError {
             Self::AuthenticationRejected => "server authentication rejected",
             Self::AuthenticationUnavailable => "server authentication unavailable",
             Self::AuthenticationExpired => "server authentication expired",
+            Self::ClassicConnectAdmissionRejected => "Classic CONNECT admission rejected",
             Self::CloseUnavailable => "server connection close unavailable",
         };
         formatter.write_str(message)
@@ -1723,6 +1958,34 @@ mod tests {
                 .map_err(|_| RuntimeError::H3Unavailable)
         }
 
+        fn authenticate_generation(&mut self) -> Result<u64, RuntimeError> {
+            self.drive_until_h3()?;
+            let control = self.live_client_control()?;
+            let stream_id = self.send_auth_control(&control, true)?;
+            self.client_to_server()?;
+            self.collect_confirmation(stream_id)?;
+            for _ in 0..2 {
+                self.client_to_server()?;
+                self.server_to_client()?;
+            }
+            if !self.server.is_authenticated() {
+                return Err(RuntimeError::AuthenticationRejected);
+            }
+            Ok(stream_id)
+        }
+
+        fn send_classic_connect(
+            &mut self,
+            headers: &[quiche::h3::Header],
+            fin: bool,
+        ) -> Result<u64, RuntimeError> {
+            self.client_h3
+                .as_mut()
+                .ok_or(RuntimeError::H3Unavailable)?
+                .send_request(&mut self.client, headers, fin)
+                .map_err(|_| RuntimeError::ClassicConnectAdmissionRejected)
+        }
+
         fn collect_confirmation(
             &mut self,
             expected_stream: u64,
@@ -1852,6 +2115,23 @@ mod tests {
             quiche::h3::Header::new(b"content-type", AUTH_CONTENT_TYPE),
             quiche::h3::Header::new(b"content-length", b"256"),
         ]
+    }
+
+    fn test_classic_connect_headers(
+        authority: &[u8],
+        authority_first: bool,
+    ) -> [quiche::h3::Header; 2] {
+        if authority_first {
+            [
+                quiche::h3::Header::new(b":authority", authority),
+                quiche::h3::Header::new(b":method", b"CONNECT"),
+            ]
+        } else {
+            [
+                quiche::h3::Header::new(b":method", b"CONNECT"),
+                quiche::h3::Header::new(b":authority", authority),
+            ]
+        }
     }
 
     fn test_server_role(
@@ -2944,5 +3224,731 @@ auth:
             Err(RuntimeError::AuthenticationExpired)
         ));
         pair.deliver_close_to_client();
+    }
+
+    #[test]
+    fn t027b2b3_authenticated_generation_admits_one_strict_classic_connect() {
+        let mut pair = TestPair::new().expect("construct bounded pair");
+        pair.authenticate_generation()
+            .expect("authenticate and finish confirmation");
+        assert!(pair.server.is_authenticated());
+
+        let headers = test_classic_connect_headers(b"example.invalid:443", false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue one strict Classic CONNECT");
+        pair.client_to_server()
+            .expect("authenticated strict Classic CONNECT must be admitted");
+        assert_eq!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+        assert_eq!(pair.server.pending_connects.len(), 1);
+        let pending = pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .next()
+            .expect("one pending metadata slot exists");
+        assert_eq!(
+            pending.generation.as_bytes(),
+            pair.server.generation.as_bytes()
+        );
+        assert_eq!(pending.stream_id, stream_id);
+        assert_eq!(
+            pending.target,
+            TargetAddr::Domain("example.invalid".to_owned())
+        );
+        assert_eq!(pending.port, 443);
+        assert!(!pending.peer_write_half_closed);
+        assert_eq!(pending.max_frame_size, AUTH_MAX_FRAME_SIZE);
+
+        pair.server_to_client()
+            .expect("only transport bookkeeping may be emitted");
+        assert!(matches!(
+            pair.client_h3
+                .as_mut()
+                .expect("client H3 exists")
+                .poll(&mut pair.client),
+            Err(quiche::h3::Error::Done)
+        ));
+    }
+
+    #[test]
+    fn t027b2b3_confirmation_fin_precedes_every_flow_admission() {
+        let mut pair = TestPair::with_response_window(0).expect("construct blocked pair");
+        pair.drive_until_h3().expect("reach auth gate");
+        let control = pair.live_client_control().expect("encode valid control");
+        pair.send_auth_control(&control, true)
+            .expect("queue valid auth control");
+        pair.client_to_server()
+            .expect("leave confirmation headers flow-control blocked");
+        assert_eq!(pair.server.auth.state, ServerAuthState::SendingConfirmation);
+        assert!(!pair.server.is_authenticated());
+
+        let headers = test_classic_connect_headers(b"example.invalid:443", false);
+        pair.send_classic_connect(&headers, false)
+            .expect("queue a premature CONNECT");
+        assert!(pair.client_to_server().is_err());
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        assert!(pair.server.auth.capability.is_none());
+    }
+
+    #[test]
+    fn t027b2b3_real_h3_headers_admit_domain_ipv4_ipv6_in_both_orders() {
+        for (authority, expected, authority_first) in [
+            (
+                b"example.invalid:443".as_slice(),
+                TargetAddr::Domain("example.invalid".to_owned()),
+                false,
+            ),
+            (
+                b"example.invalid:443".as_slice(),
+                TargetAddr::Domain("example.invalid".to_owned()),
+                true,
+            ),
+            (
+                b"192.0.2.1:8443".as_slice(),
+                TargetAddr::Ipv4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                false,
+            ),
+            (
+                b"192.0.2.1:8443".as_slice(),
+                TargetAddr::Ipv4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                true,
+            ),
+            (
+                b"[2001:db8::1]:65535".as_slice(),
+                TargetAddr::Ipv6("2001:db8::1".parse().expect("RFC IPv6 literal")),
+                false,
+            ),
+            (
+                b"[2001:db8::1]:65535".as_slice(),
+                TargetAddr::Ipv6("2001:db8::1".parse().expect("RFC IPv6 literal")),
+                true,
+            ),
+        ] {
+            let mut pair = TestPair::new().expect("construct bounded pair");
+            pair.authenticate_generation()
+                .expect("authenticate generation");
+            let headers = test_classic_connect_headers(authority, authority_first);
+            pair.send_classic_connect(&headers, false)
+                .expect("queue strict Classic CONNECT");
+            pair.client_to_server().expect("admit strict metadata");
+            let pending = pair
+                .server
+                .pending_connects
+                .slots
+                .iter()
+                .flatten()
+                .next()
+                .expect("one pending slot");
+            assert_eq!(pending.target, expected);
+            assert_eq!(pair.server.pending_connects.len(), 1);
+        }
+    }
+
+    #[test]
+    fn t027b2b3_capability_predicate_is_generation_bound_and_deadline_strict() {
+        let mut pair = TestPair::new().expect("construct bounded pair");
+        pair.authenticate_generation()
+            .expect("authenticate generation");
+        let capability = pair
+            .server
+            .auth
+            .capability
+            .as_ref()
+            .expect("active capability");
+        let other_generation = ServerSourceConnectionId::new([0x5c; quiche::MAX_CONN_ID_LEN]);
+        assert!(capability.permits_admission_at(
+            &pair.server.generation,
+            capability.admission_deadline - Duration::from_nanos(1)
+        ));
+        assert!(!capability
+            .permits_admission_at(&pair.server.generation, capability.admission_deadline));
+        assert!(!capability.permits_admission_at(
+            &pair.server.generation,
+            capability.admission_deadline + Duration::from_nanos(1)
+        ));
+        assert!(!capability.permits_admission_at(&pair.server.generation, capability.hard_deadline));
+        assert!(!capability.permits_admission_at(&other_generation, Instant::now()));
+    }
+
+    #[test]
+    fn t027b2b3_prepare_and_commit_repeat_the_same_capability_predicate() {
+        for revoke_between_checks in [false, true] {
+            let mut pair = TestPair::new().expect("construct bounded pair");
+            pair.authenticate_generation()
+                .expect("authenticate generation");
+            let headers = test_classic_connect_headers(b"example.invalid:443", false);
+            let pending = pair
+                .server
+                .prepare_classic_connect(4, &headers, true)
+                .expect("first predicate and strict parser pass");
+            assert_eq!(
+                pending.target,
+                TargetAddr::Domain("example.invalid".to_owned())
+            );
+            let capability = pair
+                .server
+                .auth
+                .capability
+                .as_mut()
+                .expect("active capability");
+            if revoke_between_checks {
+                capability.revoke();
+            } else {
+                capability.admission_deadline = Instant::now();
+            }
+            assert_eq!(
+                pair.server.commit_classic_connect(pending),
+                Err(RuntimeError::ClassicConnectAdmissionRejected)
+            );
+            assert_eq!(pair.server.pending_connects.len(), 0);
+        }
+    }
+
+    #[test]
+    fn t027b2b3_pre_auth_and_invalid_headers_never_create_a_slot() {
+        let mut pre_auth = TestPair::new().expect("construct pre-auth pair");
+        pre_auth.drive_until_h3().expect("reach auth gate");
+        let exact = test_classic_connect_headers(b"example.invalid:443", false);
+        pre_auth
+            .send_classic_connect(&exact, false)
+            .expect("queue pre-auth CONNECT");
+        assert!(pre_auth.client_to_server().is_err());
+        assert_eq!(pre_auth.server.pending_connects.len(), 0);
+
+        let mut reused_auth = TestPair::new().expect("construct auth-stream reuse pair");
+        let auth_stream = reused_auth
+            .authenticate_generation()
+            .expect("authenticate generation");
+        assert!(matches!(
+            reused_auth
+                .server
+                .prepare_classic_connect(auth_stream, &exact, true),
+            Err(RuntimeError::ClassicConnectAdmissionRejected)
+        ));
+        assert_eq!(reused_auth.server.pending_connects.len(), 0);
+
+        let cases = vec![
+            vec![
+                quiche::h3::Header::new(b":method", b"GET"),
+                quiche::h3::Header::new(b":authority", b"example.invalid:443"),
+            ],
+            vec![
+                quiche::h3::Header::new(b":method", b"CONNECT"),
+                quiche::h3::Header::new(b":method", b"CONNECT"),
+            ],
+            vec![
+                quiche::h3::Header::new(b":method", b"CONNECT"),
+                quiche::h3::Header::new(b":unknown", b"x"),
+            ],
+            vec![
+                quiche::h3::Header::new(b":method", b"CONNECT"),
+                quiche::h3::Header::new(b":authority", b"example.invalid:443"),
+                quiche::h3::Header::new(b"x-extra", b"1"),
+            ],
+        ];
+        for headers in cases {
+            let mut pair = TestPair::new().expect("construct invalid-header pair");
+            pair.authenticate_generation()
+                .expect("authenticate generation");
+            pair.send_classic_connect(&headers, false)
+                .expect("queue invalid request metadata");
+            assert!(pair.client_to_server().is_err());
+            assert_eq!(pair.server.pending_connects.len(), 0);
+        }
+
+        let mut no_more_frames = TestPair::new().expect("construct FIN pair");
+        no_more_frames
+            .authenticate_generation()
+            .expect("authenticate generation");
+        no_more_frames
+            .send_classic_connect(&exact, true)
+            .expect("queue initial Headers with immediate FIN");
+        assert!(no_more_frames.client_to_server().is_err());
+        assert_eq!(no_more_frames.server.pending_connects.len(), 0);
+    }
+
+    #[test]
+    fn t027b2b3_fixed_quota_is_transport_eight_not_advertised_128() {
+        let mut pair = TestPair::new().expect("construct bounded pair");
+        pair.authenticate_generation()
+            .expect("authenticate generation");
+        let headers = test_classic_connect_headers(b"quota.invalid:443", false);
+        for expected in 1..=MAX_PENDING_CLASSIC_CONNECTS {
+            pair.send_classic_connect(&headers, false)
+                .unwrap_or_else(|_| panic!("transport permits bounded request stream {expected}"));
+            pair.client_to_server().expect("admit bounded metadata");
+            pair.server_to_client()
+                .expect("deliver bounded transport credit");
+            assert_eq!(pair.server.pending_connects.len(), expected);
+        }
+        let capability = pair
+            .server
+            .auth
+            .capability
+            .as_ref()
+            .expect("active capability");
+        assert_eq!(capability.max_concurrent_flows, 128);
+        assert_eq!(MAX_BIDI_STREAMS, 8);
+        assert_eq!(PendingClassicConnectSlots::quota_for(capability), 8);
+        assert!(pair.send_classic_connect(&headers, false).is_err());
+        assert!(matches!(
+            pair.server.prepare_classic_connect(10_000, &headers, true),
+            Err(RuntimeError::ClassicConnectAdmissionRejected)
+        ));
+        assert_eq!(pair.server.pending_connects.len(), 8);
+    }
+
+    #[test]
+    fn t027b2b3_admission_expiry_keeps_existing_metadata_but_rejects_new_flow() {
+        let mut pair = TestPair::new().expect("construct bounded pair");
+        pair.authenticate_generation()
+            .expect("authenticate generation");
+        let headers = test_classic_connect_headers(b"existing.invalid:443", false);
+        pair.send_classic_connect(&headers, false)
+            .expect("queue first CONNECT");
+        pair.client_to_server().expect("admit first metadata");
+        pair.server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active capability")
+            .admission_deadline = Instant::now();
+
+        let mut packet = [0_u8; MAX_PACKET_BYTES];
+        pair.server
+            .next_packet(&mut packet)
+            .expect("admission expiry alone does not close the generation");
+        assert!(pair.server.is_authenticated());
+        assert_eq!(pair.server.pending_connects.len(), 1);
+
+        let second = test_classic_connect_headers(b"new.invalid:8443", false);
+        pair.send_classic_connect(&second, false)
+            .expect("transport can carry the rejected new flow");
+        assert_eq!(
+            pair.client_to_server()
+                .expect_err("expired admission must reject the new flow"),
+            RuntimeError::ClassicConnectAdmissionRejected
+        );
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        assert!(!pair.server.is_authenticated());
+    }
+
+    #[test]
+    fn t027b2b3_data_is_rejected_without_recv_body_or_payload_retention() {
+        let marker = b"test-private-payload-marker";
+        let mut pair = TestPair::new().expect("construct bounded pair");
+        pair.authenticate_generation()
+            .expect("authenticate generation");
+        let headers = test_classic_connect_headers(b"data.invalid:443", false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        pair.client_to_server().expect("admit CONNECT metadata");
+        let reads_before = pair.server.auth_body_read_calls;
+        let written = pair
+            .client_h3
+            .as_mut()
+            .expect("client H3 exists")
+            .send_body(&mut pair.client, stream_id, marker, false)
+            .expect("queue forbidden DATA");
+        assert_eq!(written, marker.len());
+        let error = pair
+            .client_to_server()
+            .expect_err("first DATA event closes the generation");
+        assert_eq!(error, RuntimeError::ClassicConnectAdmissionRejected);
+        assert_eq!(pair.server.auth_body_read_calls, reads_before);
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        for rendered in [error.to_string(), format!("{error:?}")] {
+            assert!(!rendered.contains("payload-marker"));
+            assert!(rendered.len() <= 64);
+        }
+    }
+
+    #[test]
+    fn t027b2b3_finished_only_marks_half_close_and_duplicate_closes() {
+        let mut pair = TestPair::new().expect("construct bounded pair");
+        pair.authenticate_generation()
+            .expect("authenticate generation");
+        let headers = test_classic_connect_headers(b"finished.invalid:443", false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        pair.client_to_server().expect("admit CONNECT metadata");
+        assert_eq!(
+            pair.client.stream_send(stream_id, b"", true),
+            Ok(0),
+            "raw QUIC FIN produces Finished without a DATA frame"
+        );
+        pair.client_to_server()
+            .expect("first Finished only marks peer write half-close");
+        let pending = pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .next()
+            .expect("slot remains occupied");
+        assert!(pending.peer_write_half_closed);
+        assert_eq!(pair.server.pending_connects.len(), 1);
+        assert_eq!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+        pair.server_to_client()
+            .expect("only transport bookkeeping may be emitted");
+        assert!(matches!(
+            pair.client_h3
+                .as_mut()
+                .expect("client H3 exists")
+                .poll(&mut pair.client),
+            Err(quiche::h3::Error::Done)
+        ));
+
+        let mut h3 = pair.server.h3.take().expect("server H3 exists");
+        let error = pair
+            .server
+            .handle_h3_event(&mut h3, stream_id, quiche::h3::Event::Finished)
+            .expect_err("duplicate Finished closes the generation");
+        pair.server.h3 = Some(h3);
+        assert_eq!(error, RuntimeError::ClassicConnectAdmissionRejected);
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        assert_eq!(
+            pair.server
+                .transport
+                .local_error()
+                .expect("fixed application close")
+                .error_code,
+            PRE_AUTH_CLOSE_CODE
+        );
+    }
+
+    #[test]
+    fn t027b2b3_trailers_and_unknown_stream_events_close_generation() {
+        let mut trailers = TestPair::new().expect("construct trailers pair");
+        trailers
+            .authenticate_generation()
+            .expect("authenticate generation");
+        let headers = test_classic_connect_headers(b"trailers.invalid:443", false);
+        let stream_id = trailers
+            .send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        trailers.client_to_server().expect("admit CONNECT metadata");
+        trailers
+            .client_h3
+            .as_mut()
+            .expect("client H3 exists")
+            .send_additional_headers(
+                &mut trailers.client,
+                stream_id,
+                &[quiche::h3::Header::new(b"x-trailer", b"1")],
+                true,
+                false,
+            )
+            .expect("queue forbidden trailer section");
+        assert_eq!(
+            trailers
+                .client_to_server()
+                .expect_err("trailers close generation"),
+            RuntimeError::ClassicConnectAdmissionRejected
+        );
+        assert_eq!(trailers.server.pending_connects.len(), 0);
+
+        let mut unknown = TestPair::new().expect("construct unknown-event pair");
+        unknown
+            .authenticate_generation()
+            .expect("authenticate generation");
+        let mut h3 = unknown.server.h3.take().expect("server H3 exists");
+        let error = unknown
+            .server
+            .handle_h3_event(&mut h3, 40, quiche::h3::Event::Finished)
+            .expect_err("unknown stream Finished closes generation");
+        unknown.server.h3 = Some(h3);
+        assert_eq!(error, RuntimeError::ClassicConnectAdmissionRejected);
+        assert_eq!(unknown.server.pending_connects.len(), 0);
+    }
+
+    #[test]
+    fn t027b2b3_reset_and_stop_sending_each_close_the_generation() {
+        let mut reset = TestPair::new().expect("construct reset pair");
+        reset
+            .authenticate_generation()
+            .expect("authenticate generation");
+        let headers = test_classic_connect_headers(b"reset.invalid:443", false);
+        let stream_id = reset
+            .send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        reset.client_to_server().expect("admit CONNECT metadata");
+        reset
+            .client
+            .stream_shutdown(stream_id, quiche::Shutdown::Write, 0x44)
+            .expect("queue request reset");
+        assert!(reset.client_to_server().is_err());
+        assert_eq!(reset.server.pending_connects.len(), 0);
+        assert!(!reset.server.is_authenticated());
+
+        let mut stopped = TestPair::new().expect("construct STOP_SENDING pair");
+        stopped
+            .authenticate_generation()
+            .expect("authenticate generation");
+        let stream_id = stopped
+            .send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        stopped.client_to_server().expect("admit CONNECT metadata");
+        stopped
+            .client
+            .stream_shutdown(stream_id, quiche::Shutdown::Read, 0x45)
+            .expect("queue STOP_SENDING");
+        assert_eq!(
+            stopped
+                .client_to_server()
+                .expect_err("STOP_SENDING closes generation"),
+            RuntimeError::ClassicConnectAdmissionRejected
+        );
+        assert_eq!(stopped.server.pending_connects.len(), 0);
+        assert!(!stopped.server.is_authenticated());
+    }
+
+    #[test]
+    fn t027b2b3_datagram_goaway_and_priority_update_close_after_authentication() {
+        let mut datagram = TestPair::new().expect("construct Datagram pair");
+        datagram
+            .authenticate_generation()
+            .expect("authenticate generation");
+        datagram
+            .client
+            .dgram_send(b"test-private-datagram-marker")
+            .expect("queue bounded Datagram");
+        assert_eq!(
+            datagram
+                .client_to_server()
+                .expect_err("Datagram closes generation"),
+            RuntimeError::PreAuthApplicationActivity
+        );
+        assert!(!datagram.server.is_authenticated());
+
+        let mut goaway = TestPair::new().expect("construct GOAWAY pair");
+        goaway
+            .authenticate_generation()
+            .expect("authenticate generation");
+        goaway
+            .client_h3
+            .as_mut()
+            .expect("client H3 exists")
+            .send_goaway(&mut goaway.client, 0)
+            .expect("queue GOAWAY");
+        assert_eq!(
+            goaway
+                .client_to_server()
+                .expect_err("GOAWAY closes generation"),
+            RuntimeError::PreAuthApplicationActivity
+        );
+        assert!(!goaway.server.is_authenticated());
+
+        let mut priority = TestPair::new().expect("construct priority pair");
+        priority
+            .authenticate_generation()
+            .expect("authenticate generation");
+        let headers = test_classic_connect_headers(b"priority.invalid:443", false);
+        let stream_id = priority
+            .send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        priority.client_to_server().expect("admit CONNECT metadata");
+        priority
+            .client_h3
+            .as_mut()
+            .expect("client H3 exists")
+            .send_priority_update_for_request(
+                &mut priority.client,
+                stream_id,
+                &quiche::h3::Priority::default(),
+            )
+            .expect("queue priority update");
+        assert_eq!(
+            priority
+                .client_to_server()
+                .expect_err("priority update closes generation"),
+            RuntimeError::PreAuthApplicationActivity
+        );
+        assert_eq!(priority.server.pending_connects.len(), 0);
+    }
+
+    #[test]
+    fn t027b2b3_hard_expiry_revocation_and_transport_close_clear_all_targets() {
+        let headers = test_classic_connect_headers(b"cleanup.invalid:443", false);
+
+        let mut hard = TestPair::new().expect("construct hard-expiry pair");
+        hard.authenticate_generation()
+            .expect("authenticate generation");
+        hard.send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        hard.client_to_server().expect("admit CONNECT metadata");
+        hard.server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active capability")
+            .hard_deadline = Instant::now();
+        let mut packet = [0_u8; MAX_PACKET_BYTES];
+        let error = match hard.server.next_packet(&mut packet) {
+            Err(error) => error,
+            Ok(_) => panic!("hard expiry must close generation"),
+        };
+        assert_eq!(error, RuntimeError::AuthenticationExpired);
+        assert_eq!(hard.server.pending_connects.len(), 0);
+        let local_error = hard
+            .server
+            .transport
+            .local_error()
+            .expect("hard expiry installs fixed close");
+        assert!(local_error.is_app);
+        assert_eq!(local_error.error_code, PRE_AUTH_CLOSE_CODE);
+        assert!(local_error.reason.is_empty());
+        hard.deliver_close_to_client();
+        assert_eq!(hard.server.lifecycle(), ConnectionLifecycle::Draining);
+
+        let mut revoked = TestPair::new().expect("construct revocation pair");
+        revoked
+            .authenticate_generation()
+            .expect("authenticate generation");
+        revoked
+            .send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        revoked.client_to_server().expect("admit CONNECT metadata");
+        revoked
+            .server
+            .revoke_authenticated_generation()
+            .expect("revocation closes generation");
+        assert_eq!(revoked.server.pending_connects.len(), 0);
+        let local_error = revoked
+            .server
+            .transport
+            .local_error()
+            .expect("revocation installs fixed close");
+        assert!(local_error.is_app);
+        assert_eq!(local_error.error_code, PRE_AUTH_CLOSE_CODE);
+        assert!(local_error.reason.is_empty());
+        revoked.deliver_close_to_client();
+        assert_eq!(revoked.server.lifecycle(), ConnectionLifecycle::Draining);
+
+        let mut closed = TestPair::new().expect("construct peer-close pair");
+        closed
+            .authenticate_generation()
+            .expect("authenticate generation");
+        closed
+            .send_classic_connect(&headers, false)
+            .expect("queue CONNECT metadata");
+        closed.client_to_server().expect("admit CONNECT metadata");
+        closed
+            .client
+            .close(true, 0x44, b"")
+            .expect("peer closes transport");
+        closed
+            .client_to_server()
+            .expect("process peer transport close");
+        assert_eq!(closed.server.pending_connects.len(), 0);
+        assert!(!closed.server.is_authenticated());
+        assert_ne!(closed.server.lifecycle(), ConnectionLifecycle::Active);
+    }
+
+    #[test]
+    fn t027b2b3_replacement_generation_is_empty_and_must_reauthenticate() {
+        let headers = test_classic_connect_headers(b"replacement.invalid:443", false);
+        let mut original = TestPair::new().expect("construct original generation");
+        original
+            .authenticate_generation()
+            .expect("authenticate original generation");
+        original
+            .send_classic_connect(&headers, false)
+            .expect("queue original CONNECT metadata");
+        original
+            .client_to_server()
+            .expect("admit original metadata");
+        assert_eq!(original.server.pending_connects.len(), 1);
+        original
+            .server
+            .revoke_authenticated_generation()
+            .expect("close original generation");
+        assert_eq!(original.server.pending_connects.len(), 0);
+        drop(original);
+
+        let mut unauthenticated = TestPair::new().expect("construct replacement generation");
+        assert_eq!(unauthenticated.server.pending_connects.len(), 0);
+        assert!(!unauthenticated.server.is_authenticated());
+        unauthenticated
+            .drive_until_h3()
+            .expect("replacement reaches only foundation readiness");
+        unauthenticated
+            .send_classic_connect(&headers, false)
+            .expect("queue forbidden pre-auth CONNECT");
+        assert!(unauthenticated.client_to_server().is_err());
+        assert_eq!(unauthenticated.server.pending_connects.len(), 0);
+
+        let mut reauthenticated = TestPair::new().expect("construct fresh replacement");
+        reauthenticated
+            .authenticate_generation()
+            .expect("replacement authenticates from the beginning");
+        assert_eq!(reauthenticated.server.pending_connects.len(), 0);
+        reauthenticated
+            .send_classic_connect(&headers, false)
+            .expect("queue replacement CONNECT metadata");
+        reauthenticated
+            .client_to_server()
+            .expect("admit only after replacement authentication");
+        assert_eq!(reauthenticated.server.pending_connects.len(), 1);
+    }
+
+    #[test]
+    fn t027b2b3_slot_capability_and_error_formatting_are_value_free() {
+        let marker = "format-marker.invalid";
+        let mut pair = TestPair::new().expect("construct formatting pair");
+        pair.authenticate_generation()
+            .expect("authenticate generation");
+        let authority = format!("{marker}:65432");
+        let headers = test_classic_connect_headers(authority.as_bytes(), false);
+        let pending = pair
+            .server
+            .prepare_classic_connect(4, &headers, true)
+            .expect("prepare structured metadata");
+        assert_eq!(format!("{pending:?}"), "pending Classic CONNECT metadata");
+        pair.server
+            .commit_classic_connect(pending)
+            .expect("commit structured metadata");
+
+        let capability = pair
+            .server
+            .auth
+            .capability
+            .as_ref()
+            .expect("active capability");
+        let rendered = [
+            format!("{capability:?}"),
+            format!("{:?}", pair.server.pending_connects),
+            RuntimeError::ClassicConnectAdmissionRejected.to_string(),
+            format!("{:?}", RuntimeError::ClassicConnectAdmissionRejected),
+        ];
+        assert_eq!(rendered[0], "authenticated server generation capability");
+        assert_eq!(rendered[1], "bounded pending Classic CONNECT slots");
+        for value in rendered {
+            assert!(value.len() <= 64);
+            for forbidden in [marker, "65432", "replacement.invalid", "2001:db8"] {
+                assert!(!value.contains(forbidden));
+            }
+        }
+
+        let production = include_str!("quiche_runtime.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source prefix exists");
+        for forbidden in [
+            "tokio::spawn",
+            "HashMap<",
+            "Vec<PendingClassicConnect",
+            "connect_target",
+            "resolve_dns",
+            "open_relay",
+        ] {
+            assert!(!production.contains(forbidden));
+        }
     }
 }

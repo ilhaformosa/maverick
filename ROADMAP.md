@@ -17,50 +17,55 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2b2-2 — direct-H3 server auth-v3 generation runtime
+### T027b-2b3 — authenticated Classic CONNECT admission metadata gate
 
-- **User result:** One private native-quiche server connection authenticates
-  its one physical generation exactly once after the existing role, live SNI,
-  TLS 1.3, ALPN, and peer-SETTINGS gates. Only complete acceptance of the exact
-  320-byte confirmation body with final FIN installs a minimal, secret-free
-  authenticated-generation capability.
-- **Scope:** Preselect the singleton trusted local profile before wire input;
-  accept only the frozen POST control request on one stream; export the frozen
-  32-byte auth-v3 value from that same live TLS connection; delegate control
-  verification and confirmation encoding to core; retry only identical
-  response headers and the remaining confirmation suffix; enforce a fixed
-  ten-second auth wall plus the frozen credential-capped admission and hard
-  expiries; and use the existing `0x105` empty-reason close, flush, drain, and
-  actor-reclaim lifecycle for slice-owned failures.
-- **Acceptance:** Prove live same-generation success, exact
-  SETTINGS-before-Headers ordering, fixed 256/320-byte shapes, fragmented
-  request collection, blocked and partial response retry, final-FIN-only
-  activation, duplicate and second-stream rejection, reset/stop rejection,
-  wrong live exporter/profile and wire-field rejection, Datagram and other
-  pre-auth activity rejection,
-  an activity-independent wall deadline, expiry/revocation races, stable
-  generation identity, bounded resources and errors, value-free formatting,
-  secret-free capability state, and real loopback `0x105` flush/drain/reclaim.
-  Preserve the focused T027b-2b1c and T027b-2b2-1 lifecycle, strict-push,
-  SETTINGS, CID, capacity, inbox, and `JoinSet` coverage.
-- **Out of scope:** No T027b-2b3 flow gate; CONNECT flow, target or endpoint
-  parsing, DNS, egress, opener, TCP/UDP relay, or T028 data plane; no production
-  client runtime, fronted or per-flow MAC, H2 fallback, legacy downgrade, retry,
-  public API, manifest, dependency, schema, protocol, auth, frame, wire,
-  version, `STATUS.md`, CI, remote, deployment, release, real-network, or
-  system-network change. This private feature-gated slice is not runnable H3,
-  target connectivity, relay capability, runtime readiness, or a product
-  result.
-- **Stop conditions:** Stop on any fourth product file, registry, core, client,
-  manifest, lockfile, dependency, vendor, public API, spec, config, version, or
-  status change; any server dependency on client code; registry scan, multiple
-  PSK attempt, wire-selected profile, copied cryptography or verification
-  rules, unbounded resource, secret or untrusted-value exposure, target/data-
-  plane seam, or regression in strict peer-push, close/drain, CID, capacity, or
-  actor ownership.
+- **User result:** One already authenticated private native-quiche server
+  generation may strictly accept Classic CONNECT request metadata into a
+  connection-local pending slot while its admission capability remains valid.
+  The actual limit is eight pending slots, the smaller of the authenticated
+  capability's advertised 128 flows and the existing QUIC bidirectional-stream
+  limit of eight.
+- **Scope:** Reuse the existing strict Classic CONNECT parser only after the
+  same-generation active, unrevoked, admission-deadline, hard-deadline, and
+  quota predicates pass; repeat the same capability predicate immediately
+  before committing one structured target and port; retain only generation,
+  stream, peer-write-half-close, and existing resource-limit metadata in a
+  fixed eight-slot connection-local container; and clear every slot before the
+  existing generation-wide `0x105` close lifecycle on slice-owned failure,
+  hard expiry, or revocation. This slice changes only `ROADMAP.md` and the
+  private server quiche runtime.
+- **Acceptance:** Prove zero admission before complete auth confirmation; live
+  domain, IPv4, and IPv6 request admission in both exact field orders; strict
+  pre-auth, expiry, revocation, generation, quota, malformed-field, duplicate,
+  unknown-field, method, and `more_frames` rejection; parser-to-commit time and
+  revocation race closure; eight-slot enforcement without raising transport
+  limits; DATA rejection without a body read or payload retention; first
+  Finished as a write-half-close marker only; duplicate Finished, trailers,
+  reset, STOP_SENDING, unknown-stream activity, Datagram, GOAWAY, and
+  PRIORITY_UPDATE as generation-wide failures; target clearing on hard expiry,
+  revocation, transport close, and drop; empty replacement-generation state;
+  reauthentication before replacement admission; fixed value-free formatting;
+  and preservation of auth-v3, strict-push, SETTINGS, parser, CID, capacity,
+  inbox, `JoinSet`, close/drain, and actor-ownership coverage.
+- **Out of scope:** No success response, response body, DATA read, frame-size
+  data-plane enforcement, DNS, target connection, egress, opener, relay,
+  fallback, task, channel, global registry, flow-local reset/recovery contract,
+  transport-limit increase, production client runtime, public API, manifest,
+  dependency, config, schema, spec, protocol, auth, frame, wire, version,
+  `STATUS.md`, CI, remote, deployment, release, real-network, or system-network
+  change. This private feature-gated dead foundation is not runnable H3, target
+  connectivity, relay or data-plane capability, runtime readiness, release
+  scope, or a product result.
+- **Stop conditions:** Stop before a third changed product file; any parser,
+  endpoint, core, client, manifest, lockfile, dependency, vendor, config, spec,
+  schema, protocol, auth, frame, wire, version, public API, or `STATUS.md`
+  change; any response or user-DATA read; any DNS, target, egress, opener,
+  relay, fallback, task, channel, registry, new flow-local error contract,
+  stream-limit increase, copied authentication or parser rule, unbounded
+  resource, target-value disclosure, or regression in the preserved lifecycle
+  and ownership controls.
 
-This remains a private repository-local direct-H3 authentication and generation
-capability lifecycle only.
+This remains private repository-local authenticated admission metadata only.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

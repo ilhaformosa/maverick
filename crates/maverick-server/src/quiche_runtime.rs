@@ -20,7 +20,7 @@ use maverick_core::auth_v3::{
     AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN, AUTH_V3_SERVER_CONFIRMATION_LEN,
 };
 use maverick_core::config::{
-    DirectV3ServerRoleConfig, DirectV3TransportStrategy, ServerRoleConfig,
+    DirectV3ServerRoleConfig, DirectV3TransportStrategy, ServerEgressPolicyConfig, ServerRoleConfig,
 };
 use maverick_core::frame::TargetAddr;
 use quiche::h3::NameValue;
@@ -33,6 +33,7 @@ const INITIAL_UNI_STREAM_WINDOW_BYTES: u64 = 16_384;
 const MAX_STREAM_WINDOW_BYTES: u64 = 65_536;
 const MAX_BIDI_STREAMS: u64 = 8;
 const MAX_PENDING_CLASSIC_CONNECTS: usize = MAX_BIDI_STREAMS as usize;
+pub(super) const MAX_TARGET_DISPATCH_FUTURES: usize = MAX_PENDING_CLASSIC_CONNECTS;
 const MAX_UNI_STREAMS: u64 = 8;
 const MAX_FIELD_SECTION_BYTES: u64 = 16_384;
 const QPACK_MAX_TABLE_CAPACITY: u64 = 0;
@@ -163,6 +164,13 @@ impl AuthenticatedGenerationCapability {
     fn pending_is_valid_at(&self, now: Instant) -> bool {
         !self.active && !self.revoked && now < self.admission_deadline && now < self.hard_deadline
     }
+
+    fn permits_completion_at(&self, generation: &ServerSourceConnectionId, now: Instant) -> bool {
+        self.active
+            && !self.revoked
+            && self.generation.as_bytes() == generation.as_bytes()
+            && now < self.hard_deadline
+    }
 }
 
 impl fmt::Debug for AuthenticatedGenerationCapability {
@@ -174,15 +182,71 @@ impl fmt::Debug for AuthenticatedGenerationCapability {
 struct PendingClassicConnect {
     generation: ServerSourceConnectionId,
     stream_id: u64,
-    target: TargetAddr,
+    target: Option<TargetAddr>,
     port: u16,
     peer_write_half_closed: bool,
     max_frame_size: u32,
+    dispatch_state: TargetDispatchState,
 }
 
 impl fmt::Debug for PendingClassicConnect {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("pending Classic CONNECT metadata")
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TargetDispatchState {
+    Admitted,
+    InFlight,
+    WaitingNextStage,
+}
+
+pub(super) struct TargetOpenDispatchToken {
+    generation: ServerSourceConnectionId,
+    stream_id: u64,
+    target: TargetAddr,
+    port: u16,
+    max_frame_size: u32,
+    egress_policy: ServerEgressPolicyConfig,
+    attempt_deadline: Instant,
+}
+
+impl TargetOpenDispatchToken {
+    pub(super) const fn attempt_deadline(&self) -> Instant {
+        self.attempt_deadline
+    }
+
+    pub(super) fn is_structurally_valid(&self) -> bool {
+        let target_is_present = match &self.target {
+            TargetAddr::Domain(domain) => !domain.is_empty(),
+            TargetAddr::Ipv4(_) | TargetAddr::Ipv6(_) => true,
+        };
+        let _read_only_policy = self.egress_policy;
+        target_is_present && self.port != 0 && self.max_frame_size != 0
+    }
+
+    #[cfg(test)]
+    fn stream_id(&self) -> u64 {
+        self.stream_id
+    }
+
+    pub(super) fn target(&self) -> &TargetAddr {
+        &self.target
+    }
+
+    pub(super) fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub(super) fn egress_policy(&self) -> ServerEgressPolicyConfig {
+        self.egress_policy
+    }
+}
+
+impl fmt::Debug for TargetOpenDispatchToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("private target-open dispatch token")
     }
 }
 
@@ -227,6 +291,8 @@ impl PendingClassicConnectSlots {
             || self.contains_stream(pending.stream_id)
             || pending.generation.as_bytes() != capability.generation.as_bytes()
             || pending.max_frame_size != capability.max_frame_size
+            || pending.target.is_none()
+            || pending.dispatch_state != TargetDispatchState::Admitted
         {
             return Err(RuntimeError::ClassicConnectAdmissionRejected);
         }
@@ -255,6 +321,13 @@ impl PendingClassicConnectSlots {
 
     fn stream_ids(&self) -> [Option<u64>; MAX_PENDING_CLASSIC_CONNECTS] {
         std::array::from_fn(|index| self.slots[index].as_ref().map(|pending| pending.stream_id))
+    }
+
+    fn next_admitted_index(&self) -> Option<usize> {
+        self.slots.iter().position(|slot| {
+            slot.as_ref()
+                .is_some_and(|pending| pending.dispatch_state == TargetDispatchState::Admitted)
+        })
     }
 
     fn clear(&mut self) {
@@ -1052,10 +1125,11 @@ impl ServerConnection {
         Ok(PendingClassicConnect {
             generation: self.generation,
             stream_id,
-            target,
+            target: Some(target),
             port,
             peer_write_half_closed: false,
             max_frame_size: capability.max_frame_size,
+            dispatch_state: TargetDispatchState::Admitted,
         })
     }
 
@@ -1070,6 +1144,91 @@ impl ServerConnection {
             .filter(|capability| capability.permits_admission_at(&self.generation, Instant::now()))
             .ok_or(RuntimeError::ClassicConnectAdmissionRejected)?;
         self.pending_connects.insert(pending, capability)
+    }
+
+    pub(super) fn take_target_open_dispatch(
+        &mut self,
+        now: Instant,
+    ) -> Result<Option<TargetOpenDispatchToken>, RuntimeError> {
+        let Some(slot_index) = self.pending_connects.next_admitted_index() else {
+            return Ok(None);
+        };
+        let capability = self
+            .auth
+            .capability
+            .as_ref()
+            .filter(|capability| capability.permits_admission_at(&self.generation, now))
+            .ok_or(RuntimeError::TargetOpenDispatchRejected)?;
+        let hard_deadline = capability.hard_deadline;
+        let max_frame_size = capability.max_frame_size;
+        let timeout = Duration::from_millis(self.role.direct_v3().target_open_timeout_ms());
+        let attempt_deadline = checked_attempt_deadline(now, timeout, hard_deadline)?;
+        let egress_policy = *self.role.direct_v3().target_open_egress_policy();
+        let pending = self.pending_connects.slots[slot_index]
+            .as_mut()
+            .ok_or(RuntimeError::TargetOpenDispatchRejected)?;
+        if pending.dispatch_state != TargetDispatchState::Admitted
+            || pending.generation.as_bytes() != self.generation.as_bytes()
+            || pending.max_frame_size != max_frame_size
+        {
+            return Err(RuntimeError::TargetOpenDispatchRejected);
+        }
+        let target = pending
+            .target
+            .take()
+            .ok_or(RuntimeError::TargetOpenDispatchRejected)?;
+        pending.dispatch_state = TargetDispatchState::InFlight;
+        Ok(Some(TargetOpenDispatchToken {
+            generation: pending.generation,
+            stream_id: pending.stream_id,
+            target,
+            port: pending.port,
+            max_frame_size: pending.max_frame_size,
+            egress_policy,
+            attempt_deadline,
+        }))
+    }
+
+    pub(super) fn complete_target_open_dispatch(
+        &mut self,
+        token: TargetOpenDispatchToken,
+        now: Instant,
+    ) -> Result<(), RuntimeError> {
+        let capability = self
+            .auth
+            .capability
+            .as_ref()
+            .filter(|capability| capability.permits_completion_at(&token.generation, now))
+            .ok_or(RuntimeError::TargetOpenDispatchRejected)?;
+        if now >= token.attempt_deadline || token.max_frame_size != capability.max_frame_size {
+            return Err(RuntimeError::TargetOpenDispatchRejected);
+        }
+        let pending = self
+            .pending_connects
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|pending| pending.stream_id == token.stream_id)
+            .ok_or(RuntimeError::TargetOpenDispatchRejected)?;
+        if pending.generation.as_bytes() != token.generation.as_bytes()
+            || pending.dispatch_state != TargetDispatchState::InFlight
+            || pending.target.is_some()
+            || pending.port != token.port
+        {
+            return Err(RuntimeError::TargetOpenDispatchRejected);
+        }
+        pending.dispatch_state = TargetDispatchState::WaitingNextStage;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn waiting_target_dispatch_count_for_test(&self) -> usize {
+        self.pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .filter(|pending| pending.dispatch_state == TargetDispatchState::WaitingNextStage)
+            .count()
     }
 
     fn reject_if_pending_stream_stopped(&mut self) -> Result<(), RuntimeError> {
@@ -1275,6 +1434,17 @@ impl ServerConnection {
     pub(super) fn has_role_owner(&self, expected: &Arc<ServerRoleConfig>) -> bool {
         self.role.has_owner(expected)
     }
+
+    #[cfg(test)]
+    pub(super) fn expire_authenticated_generation_for_test(&mut self) -> Result<(), RuntimeError> {
+        let capability = self
+            .auth
+            .capability
+            .as_mut()
+            .ok_or(RuntimeError::AuthenticationUnavailable)?;
+        capability.hard_deadline = Instant::now();
+        Ok(())
+    }
 }
 
 impl Drop for ServerConnection {
@@ -1303,6 +1473,7 @@ pub(super) enum RuntimeError {
     AuthenticationUnavailable,
     AuthenticationExpired,
     ClassicConnectAdmissionRejected,
+    TargetOpenDispatchRejected,
     CloseUnavailable,
 }
 
@@ -1327,6 +1498,7 @@ impl fmt::Display for RuntimeError {
             Self::AuthenticationUnavailable => "server authentication unavailable",
             Self::AuthenticationExpired => "server authentication expired",
             Self::ClassicConnectAdmissionRejected => "Classic CONNECT admission rejected",
+            Self::TargetOpenDispatchRejected => "target-open dispatch rejected",
             Self::CloseUnavailable => "server connection close unavailable",
         };
         formatter.write_str(message)
@@ -1451,6 +1623,20 @@ fn selected_expiries(
         return Err(RuntimeError::AuthenticationRejected);
     }
     Ok((admission_expiry_unix, hard_expiry_unix))
+}
+
+fn checked_attempt_deadline(
+    now: Instant,
+    timeout: Duration,
+    hard_deadline: Instant,
+) -> Result<Instant, RuntimeError> {
+    if timeout.is_zero() || now >= hard_deadline {
+        return Err(RuntimeError::TargetOpenDispatchRejected);
+    }
+    let timeout_deadline = now
+        .checked_add(timeout)
+        .ok_or(RuntimeError::TargetOpenDispatchRejected)?;
+    Ok(timeout_deadline.min(hard_deadline))
 }
 
 fn random_nonzero<const N: usize>() -> Result<[u8; N], RuntimeError> {
@@ -3264,7 +3450,7 @@ auth:
         assert_eq!(pending.stream_id, stream_id);
         assert_eq!(
             pending.target,
-            TargetAddr::Domain("example.invalid".to_owned())
+            Some(TargetAddr::Domain("example.invalid".to_owned()))
         );
         assert_eq!(pending.port, 443);
         assert!(!pending.peer_write_half_closed);
@@ -3350,7 +3536,7 @@ auth:
                 .flatten()
                 .next()
                 .expect("one pending slot");
-            assert_eq!(pending.target, expected);
+            assert_eq!(pending.target, Some(expected));
             assert_eq!(pair.server.pending_connects.len(), 1);
         }
     }
@@ -3394,7 +3580,7 @@ auth:
                 .expect("first predicate and strict parser pass");
             assert_eq!(
                 pending.target,
-                TargetAddr::Domain("example.invalid".to_owned())
+                Some(TargetAddr::Domain("example.invalid".to_owned()))
             );
             let capability = pair
                 .server
@@ -3957,6 +4143,348 @@ auth:
             "open_relay",
         ] {
             assert!(!production.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn t027b2c1_admitted_slot_has_one_shot_dispatch_and_keeps_its_quota() {
+        let mut pair = TestPair::new().expect("construct dispatch pair");
+        pair.authenticate_generation()
+            .expect("authenticate dispatch generation");
+        let headers = test_classic_connect_headers(b"dispatch-marker.invalid:443", false);
+        pair.send_classic_connect(&headers, false)
+            .expect("queue admitted CONNECT");
+        pair.client_to_server().expect("admit CONNECT metadata");
+
+        let now = Instant::now();
+        let token = pair
+            .server
+            .take_target_open_dispatch(now)
+            .expect("create dispatch token")
+            .expect("one admitted slot is dispatchable");
+        assert_eq!(pair.server.pending_connects.len(), 1);
+        assert!(pair
+            .server
+            .take_target_open_dispatch(now)
+            .expect("duplicate take is a fixed no-op")
+            .is_none());
+        assert_eq!(format!("{token:?}"), "private target-open dispatch token");
+    }
+
+    #[test]
+    fn t027b2c1_eight_in_flight_tokens_are_the_original_eight_slots() {
+        let mut pair = TestPair::new().expect("construct eight-slot pair");
+        pair.authenticate_generation()
+            .expect("authenticate eight-slot generation");
+        let headers = test_classic_connect_headers(b"bounded.invalid:443", false);
+        for _ in 0..MAX_TARGET_DISPATCH_FUTURES {
+            pair.send_classic_connect(&headers, false)
+                .expect("queue bounded CONNECT");
+            pair.client_to_server().expect("admit bounded CONNECT");
+            pair.server_to_client()
+                .expect("return bounded request-stream credit");
+        }
+        for expected_futures in 1..=MAX_TARGET_DISPATCH_FUTURES {
+            let token = pair
+                .server
+                .take_target_open_dispatch(Instant::now())
+                .expect("take admitted token")
+                .expect("one original slot remains admitted");
+            assert_eq!(token.port(), 443);
+            assert_eq!(
+                pair.server.pending_connects.len(),
+                MAX_TARGET_DISPATCH_FUTURES
+            );
+            assert_eq!(
+                pair.server
+                    .pending_connects
+                    .slots
+                    .iter()
+                    .flatten()
+                    .filter(|pending| pending.dispatch_state == TargetDispatchState::InFlight)
+                    .count(),
+                expected_futures
+            );
+        }
+        assert!(pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("all original slots are already in flight")
+            .is_none());
+        assert!(pair.send_classic_connect(&headers, false).is_err());
+        assert_eq!(pair.server.pending_connects.len(), 8);
+    }
+
+    #[test]
+    fn t027b2c1_attempt_deadline_is_one_strict_minimum() {
+        let headers = test_classic_connect_headers(b"deadline.invalid:8443", false);
+
+        let mut timeout_first = TestPair::new().expect("construct timeout-first pair");
+        timeout_first
+            .authenticate_generation()
+            .expect("authenticate timeout-first generation");
+        timeout_first
+            .send_classic_connect(&headers, false)
+            .expect("queue timeout-first CONNECT");
+        timeout_first
+            .client_to_server()
+            .expect("admit timeout-first CONNECT");
+        let now = Instant::now();
+        timeout_first
+            .server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active timeout-first capability")
+            .hard_deadline = now + Duration::from_secs(30);
+        let timeout_token = timeout_first
+            .server
+            .take_target_open_dispatch(now)
+            .expect("compute timeout-first deadline")
+            .expect("take timeout-first token");
+        assert_eq!(
+            timeout_token.attempt_deadline(),
+            now + Duration::from_secs(10)
+        );
+
+        let mut hard_first = TestPair::new().expect("construct hard-first pair");
+        hard_first
+            .authenticate_generation()
+            .expect("authenticate hard-first generation");
+        hard_first
+            .send_classic_connect(&headers, false)
+            .expect("queue hard-first CONNECT");
+        hard_first
+            .client_to_server()
+            .expect("admit hard-first CONNECT");
+        let now = Instant::now();
+        let hard_deadline = now + Duration::from_secs(3);
+        hard_first
+            .server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active hard-first capability")
+            .hard_deadline = hard_deadline;
+        let hard_token = hard_first
+            .server
+            .take_target_open_dispatch(now)
+            .expect("compute hard-first deadline")
+            .expect("take hard-first token");
+        assert_eq!(hard_token.attempt_deadline(), hard_deadline);
+        assert_eq!(hard_token.port(), 8443);
+        assert_eq!(
+            hard_token.target(),
+            &TargetAddr::Domain("deadline.invalid".to_owned())
+        );
+        assert_eq!(
+            hard_token.egress_policy(),
+            ServerEgressPolicyConfig::default()
+        );
+        assert_eq!(
+            hard_first
+                .server
+                .complete_target_open_dispatch(hard_token, hard_deadline),
+            Err(RuntimeError::TargetOpenDispatchRejected),
+            "the absolute deadline boundary is strict"
+        );
+    }
+
+    #[test]
+    fn t027b2c1_completion_rechecks_generation_revocation_and_hard_expiry() {
+        let headers = test_classic_connect_headers(b"stale.invalid:443", false);
+
+        let mut mismatch = TestPair::new().expect("construct generation-mismatch pair");
+        mismatch
+            .authenticate_generation()
+            .expect("authenticate generation-mismatch pair");
+        mismatch
+            .send_classic_connect(&headers, false)
+            .expect("queue generation-mismatch CONNECT");
+        mismatch
+            .client_to_server()
+            .expect("admit generation-mismatch CONNECT");
+        let mut token = mismatch
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take generation-mismatch token")
+            .expect("generation-mismatch token exists");
+        token.generation = ServerSourceConnectionId::new([0x77; quiche::MAX_CONN_ID_LEN]);
+        assert_eq!(
+            mismatch
+                .server
+                .complete_target_open_dispatch(token, Instant::now()),
+            Err(RuntimeError::TargetOpenDispatchRejected)
+        );
+
+        let mut revoked = TestPair::new().expect("construct revoke-race pair");
+        revoked
+            .authenticate_generation()
+            .expect("authenticate revoke-race generation");
+        revoked
+            .send_classic_connect(&headers, false)
+            .expect("queue revoke-race CONNECT");
+        revoked
+            .client_to_server()
+            .expect("admit revoke-race CONNECT");
+        let token = revoked
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take revoke-race token")
+            .expect("revoke-race token exists");
+        revoked
+            .server
+            .revoke_authenticated_generation()
+            .expect("revoke generation before completion");
+        assert_eq!(
+            revoked
+                .server
+                .complete_target_open_dispatch(token, Instant::now()),
+            Err(RuntimeError::TargetOpenDispatchRejected)
+        );
+
+        let mut hard = TestPair::new().expect("construct hard-race pair");
+        hard.authenticate_generation()
+            .expect("authenticate hard-race generation");
+        hard.send_classic_connect(&headers, false)
+            .expect("queue hard-race CONNECT");
+        hard.client_to_server().expect("admit hard-race CONNECT");
+        let token = hard
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take hard-race token")
+            .expect("hard-race token exists");
+        hard.server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active hard-race capability")
+            .hard_deadline = Instant::now();
+        assert_eq!(
+            hard.server
+                .complete_target_open_dispatch(token, Instant::now()),
+            Err(RuntimeError::TargetOpenDispatchRejected)
+        );
+    }
+
+    #[test]
+    fn t027b2c1_admission_expiry_blocks_untaken_work_but_not_in_flight_completion() {
+        let headers = test_classic_connect_headers(b"admission-boundary.invalid:443", false);
+
+        let mut untaken = TestPair::new().expect("construct untaken-expiry pair");
+        untaken
+            .authenticate_generation()
+            .expect("authenticate untaken-expiry generation");
+        untaken
+            .send_classic_connect(&headers, false)
+            .expect("queue untaken-expiry CONNECT");
+        untaken
+            .client_to_server()
+            .expect("admit untaken-expiry CONNECT");
+        untaken
+            .server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active untaken-expiry capability")
+            .admission_deadline = Instant::now();
+        assert!(matches!(
+            untaken.server.take_target_open_dispatch(Instant::now()),
+            Err(RuntimeError::TargetOpenDispatchRejected)
+        ));
+
+        let mut in_flight = TestPair::new().expect("construct in-flight-expiry pair");
+        in_flight
+            .authenticate_generation()
+            .expect("authenticate in-flight-expiry generation");
+        in_flight
+            .send_classic_connect(&headers, false)
+            .expect("queue in-flight-expiry CONNECT");
+        in_flight
+            .client_to_server()
+            .expect("admit in-flight-expiry CONNECT");
+        let token = in_flight
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take before admission expiry")
+            .expect("in-flight-expiry token exists");
+        in_flight
+            .server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active in-flight-expiry capability")
+            .admission_deadline = Instant::now();
+        in_flight
+            .server
+            .complete_target_open_dispatch(token, Instant::now())
+            .expect("admission expiry does not invalidate in-flight work");
+        assert_eq!(in_flight.server.pending_connects.len(), 1);
+        assert!(matches!(
+            in_flight.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("waiting slot remains occupied")
+                .dispatch_state,
+            TargetDispatchState::WaitingNextStage
+        ));
+    }
+
+    #[test]
+    fn t027b2c1_peer_fin_during_dispatch_updates_slot_without_staling_token() {
+        let mut pair = TestPair::new().expect("construct in-flight FIN pair");
+        pair.authenticate_generation()
+            .expect("authenticate in-flight FIN generation");
+        let headers = test_classic_connect_headers(b"fin-race.invalid:443", false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue in-flight FIN CONNECT");
+        pair.client_to_server()
+            .expect("admit in-flight FIN CONNECT");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take in-flight FIN token")
+            .expect("in-flight FIN token exists");
+        assert_eq!(pair.client.stream_send(stream_id, b"", true), Ok(0));
+        pair.client_to_server()
+            .expect("peer FIN updates the occupied in-flight slot");
+        pair.server
+            .complete_target_open_dispatch(token, Instant::now())
+            .expect("legal peer FIN does not stale the dispatch token");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("waiting slot remains occupied after peer FIN");
+        assert!(pending.peer_write_half_closed);
+        assert!(matches!(
+            pending.dispatch_state,
+            TargetDispatchState::WaitingNextStage
+        ));
+    }
+
+    #[test]
+    fn t027b2c1_dispatch_token_and_errors_are_value_free() {
+        let marker = "dispatch-secret-marker.invalid";
+        let mut pair = TestPair::new().expect("construct private-format pair");
+        pair.authenticate_generation()
+            .expect("authenticate private-format generation");
+        let headers = test_classic_connect_headers(format!("{marker}:54321").as_bytes(), false);
+        pair.send_classic_connect(&headers, false)
+            .expect("queue private-format CONNECT");
+        pair.client_to_server()
+            .expect("admit private-format CONNECT");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take private-format token")
+            .expect("private-format token exists");
+        for rendered in [
+            format!("{token:?}"),
+            RuntimeError::TargetOpenDispatchRejected.to_string(),
+            format!("{:?}", RuntimeError::TargetOpenDispatchRejected),
+        ] {
+            assert!(rendered.len() <= 64);
+            assert!(!rendered.contains(marker));
+            assert!(!rendered.contains("54321"));
         }
     }
 }

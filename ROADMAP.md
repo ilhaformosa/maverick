@@ -17,55 +17,56 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2c0 — freeze direct-v3 target-open policy before target I/O
+### T027b-2c1 — actor-owned bounded target-open dispatch lifecycle
 
-- **User result:** One strict config-v3 server role carries its explicit,
-  immutable target-open timeout and egress policy together with the already
-  validated singleton auth binding. Any future opener MUST bind to this
-  explicit policy; this slice does not implement an opener or type-level
-  enforce that runtime binding.
-- **Scope:** Require server-only `target_open.timeout_ms` in `1..=60000` and all
-  five explicit `target_open.egress` booleans (`allow_loopback`,
-  `allow_private`, `allow_link_local`, `allow_multicast`, and
-  `allow_unspecified`); retain the values in the same frozen
-  `DirectV3ServerRoleConfig`; expose read-only access; and reuse the existing
-  `ServerEgressPolicyConfig` address-classification semantics. Add exactly two
-  additive public read-only getters, `target_open_timeout_ms()` and
-  `target_open_egress_policy()`; remove no existing public function or trait.
-  Change only `ROADMAP.md`, `CONFIG.md`, the strict direct-v3 role parser, and
-  its focused core tests, plus the five existing client/server test-fixture
-  locations that parse legal config-v3 server roles; those five files receive
-  fixture text only, with no production logic or assertion change.
-- **Acceptance:** Parse the complete server role and preserve the timeout and
-  every boolean exactly; accept timeout boundaries 1 and 60000; reject a
-  missing, null, duplicate, unknown, or wrongly typed policy or nested field,
-  timeout 0 or 60001, and any client-role `target_open`; never fill an omitted
-  boolean by default; retain fixed value-free errors and Debug; preserve the
-  v1/v2 behavior and the authority, TLS path, transport, auth ID, binding, H2,
-  and H3 semantics of updated legal v3 roles; intentionally reject formerly
-  valid v3 server documents that omit `target_open`; keep all client/server
-  feature tests compatible by adding the same neutral explicit policy to their
-  existing server-role YAML fixtures; and prove the diff adds no DNS, socket,
-  opener, relay, or real I/O.
-- **Out of scope:** No DNS lookup, TCP connection, target opener, response,
-  DATA handling, relay, fallback, task, channel, server/client/SDK/CLI runtime,
-  public runtime API, manifest, lockfile, dependency, vendor, auth-v3 byte,
-  protocol, config-version, stored-profile, frame, wire, `STATUS.md`, CI,
-  remote, deployment, release, real-network, or system-network change. This is
-  public parser/getter pre-runtime config foundation, not runnable H3, target
-  connectivity, runtime authentication, release scope, or a product result.
-- **Stop conditions:** Stop before a tenth changed file; any manifest,
-  lockfile, dependency, vendor, production server/client, SDK, CLI, config-v1,
-  policy-only config-v2, stored-profile, auth, frame, wire, protocol, version,
-  public runtime API, or `STATUS.md` change; any non-fixture change in the five
-  added client/server files; any policy inferred from v1, v2, wire data, target
-  data, or environment; any copied IP-classification rule; any DNS, socket,
-  opener, response, DATA, relay, or real I/O; any mutable policy exposure, new
-  Default or generic Serde surface, value-bearing Debug, or private-value
-  disclosure.
+- **User result:** Each private direct-v3 H3 connection actor owns one fixed,
+  cancellable collection of at most eight directly polled target-open dispatch
+  futures. Slow synthetic work cannot block that actor's UDP, QUIC timer, or
+  bounded flush progress. Ordinary actor termination and forced parent abort
+  both synchronously drop the collection to zero before the parent task is
+  joined and its registry capacity can be reclaimed.
+- **Scope:** Keep admitted, in-flight, and waiting-next-stage work inside the
+  existing eight `PendingClassicConnect` slots; add one-shot dispatch state and
+  an owned, value-free-Debug token containing the structured target, port,
+  stream, generation, frozen read-only egress facts, and one absolute attempt
+  deadline. Derive that deadline once as the checked minimum of the T027b-2c0
+  public config-v3 `target_open` timeout and the authenticated generation's
+  hard deadline. Give each connection actor a private `FuturesUnordered`
+  collection capped at eight and a minimal injectable synthetic future seam;
+  create no per-dispatch Tokio task, and keep the non-test path unavailable and
+  fail closed.
+- **Acceptance:** Dispatch an admitted stream exactly once; recheck the same
+  active, unrevoked generation plus strict admission and hard bounds before
+  dispatch; retain all eight slots while their futures are active; keep actor
+  protocol work moving while eight synthetic attempts block; process ready
+  completions in bounded rounds; recheck generation, revocation, hard expiry,
+  and the absolute attempt deadline before accepting a completion; catch a
+  future error or panic at the actor-owned polling boundary, fail the
+  generation, and synchronously drop siblings. Drop every dispatch future on
+  endpoint cancel, inbox close, hard expiry, revocation, peer or local close,
+  actor failure, ordinary endpoint shutdown, and shutdown-budget forced parent
+  abort. Observe the parent task join only after those drops, then reclaim its
+  registry entry. Errors, Debug, and panic text remain fixed and contain no
+  target, port, address, policy, credential, backend error, or other private
+  value.
+- **Out of scope:** No DNS, address resolution, TCP target connection, real
+  opener, target socket or listener, success response, user DATA, relay,
+  fallback, flow-local recovery or reset, slot reuse, public runtime API,
+  manifest, lockfile, dependency, vendor, registry, relay/runtime-metrics,
+  core/config, client, SDK, CLI, `STATUS.md`, CI, remote, deployment, release,
+  real-network, credential, infrastructure, or system-network work. T027b-2c0's
+  public config policy already exists; this slice is private feature-gated
+  lifecycle foundation and still provides no runtime opener or target I/O.
+- **Stop conditions:** Stop before a fourth changed file; any need for real
+  target I/O, an increase above eight, a detached task, global registry,
+  unbounded queue or collection, shared mutable `ServerConnection`, policy
+  inference, staged deadline reset, success response, user DATA retention,
+  relay/fallback call, slot reuse, public API, or change to `STATUS.md`,
+  manifests, dependencies, vendor, registry, core/config, client, SDK, or CLI.
 
-This remains repository-local work on public parser/getter pre-runtime config
-foundation only.
+This remains repository-local private lifecycle foundation only. Synthetic
+tests and local loopback evidence are not a sandbox, product runtime, target
+connectivity result, release result, or product result.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

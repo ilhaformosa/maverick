@@ -17,47 +17,46 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2b1a — bounded server CID registry and synchronous packet router
+### T027b-2b1b — bounded local UDP endpoint and connection actors
 
-- **User result:** `maverick-server` can privately route one bounded packet at a
-  time among at most eight server-owned native-quiche connections. This is only
-  a local foundation parking-and-routing table; it is not a listener, server
-  endpoint, authenticated runtime, data plane, or user-visible product result.
-- **Scope:** Add one private synchronous CID registry around the existing
-  single-connection engine. Keep packets fixed at 1,350 bytes, active
-  connections at eight, connections per source IP at two, aliases per
-  connection at two, total route keys at sixteen, server-SCID collision attempts
-  at four, and timeout sweep work at eight. Generate one stable server-owned
-  SCID with `OsRng`, register it together with the client Initial DCID alias,
-  route exact `SocketAddr` matches, and remove both aliases and source capacity
-  atomically when a connection is reclaimed. Reuse no second source-count table.
-- **Acceptance:** Retain the focused red-to-green result. Prove two synthetic
-  clients receive distinct live server SCIDs and reach H3 without cross-routing;
-  Initial retransmission reuses one connection; later server-SCID packets route;
-  supported tokenless Initial envelope rules are exact; unknown, malformed,
-  unsupported, token-bearing, and wrong-address packets do not grow state;
-  global and per-source-IP caps apply before connection creation; RNG failure
-  and four collisions leave no partial entry; cleanup restores capacity; live
-  `source_ids()` remains exactly one and matches the registered server SCID; and
-  fixed private errors, synchronous APIs, default, legacy H3, client foundation,
-  strict-push, lint, dependency, and local product gates remain green.
-- **Out of scope:** No UDP socket or listener, task, channel, Retry or address
-  validation, Version Negotiation, Stateless Reset, CID rotation or retirement,
-  NAT rebinding, migration, multipath, auth-v3, ClientControl,
-  ServerConfirmation, policy, lease, quota, parser caller, target, egress, DNS,
-  opener, TCP stream, relay, metrics, public API, config, protocol, frame, wire,
-  schema, version, `STATUS.md`, CI, remote, deployment, release, or
-  system-network change. The capacity caps bound damage only; without Retry they
-  do not prove address ownership or spoofing-DoS resistance.
-- **Stop conditions:** Stop on a fifth changed file, any manifest, lockfile, or
+- **User result:** `maverick-server` can privately run one local-only native-
+  quiche UDP endpoint whose bounded per-connection actors own their connection
+  state. This is repository-local lifecycle and routing foundation, not an
+  authenticated runtime, data plane, or user-visible product result.
+- **Scope:** Keep one endpoint task as the sole UDP receive loop, CID registry,
+  and actor `JoinSet` owner. Move each accepted `ServerConnection` into exactly
+  one actor with an inbox of four packets. Route with `try_send`, keep the
+  existing registry as the only global/per-source capacity fact, receive at
+  most 1,351 bytes to reject oversize datagrams, flush at most sixteen outbound
+  packets per actor round, use one absolute two-second socket-send deadline for
+  that entire round, cap handshake wall time and QUIC idle time at five seconds,
+  and use a two-second graceful cancel/join deadline. At that deadline, abort
+  remaining actors, drain the `JoinSet` empty, reclaim joined routes, and report
+  the exceeded budget rather than returning with live work. Bind only
+  `127.0.0.1:0` through a private test seam.
+- **Acceptance:** Retain focused red-to-green evidence. Prove real loopback UDP
+  Initial creation and later server-SCID routing for two isolated clients;
+  queue-full and oversize drops; exact-address routing; global/per-source caps
+  and post-join reuse; fair sixteen-packet flush rounds; cancellation and timer
+  bounds; joined cleanup after normal exit, panic, timeout, and shutdown; fixed
+  privacy-safe socket/actor errors; exclusive `ServerConnection` ownership;
+  and unchanged default, legacy H3, client foundation, strict-push, dependency,
+  lint, and local product gates.
+- **Out of scope:** No Retry or address validation, Version Negotiation,
+  Stateless Reset, CID rotation or retirement, NAT rebinding, migration,
+  multipath, auth-v3, ClientControl, ServerConfirmation, policy, parser caller,
+  target, egress, DNS, opener, TCP stream, relay, metrics, public API, config,
+  protocol, frame, wire, schema, version, `STATUS.md`, CI, remote, deployment,
+  release, real network, or system-network change. Capacity caps still do not
+  prove peer-address ownership or spoofing-DoS resistance.
+- **Stop conditions:** Stop on a sixth changed file, any manifest, lockfile, or
   dependency change, a server-to-client production dependency, any public
-  third-party type, a need for a socket/listener/task/channel/auth/parser/target/
-  relay seam, more than one server SCID per connection, an unbounded collection
-  or loop, an async router, a default or legacy-H3 behavior change, or any
-  required regression failure.
+  third-party type, a need for auth/parser/target/relay work, an unbounded
+  collection, queue, wait, flush, or shutdown, shared-lock connection state, a
+  default or legacy-H3 behavior change, or any required regression failure.
 
-This registry remains local foundation only. T027b-2b1b, including any real UDP
-listener or driver, is deferred and not started by this slice.
+This endpoint remains local foundation only. T027b-2b2 is deferred and is not
+started by this slice.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

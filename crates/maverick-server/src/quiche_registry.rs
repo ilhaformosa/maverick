@@ -1,12 +1,16 @@
 //! Private bounded CID registry for the native-quiche server foundation.
 //!
-//! This is a synchronous, packet-driven routing seam. It owns no socket, task,
-//! channel, Retry token, address-validation claim, target connection, or data
-//! plane. The fixed connection caps only bound damage from unauthenticated
-//! Initial packets; without Retry they do not prove peer-address ownership or
-//! provide spoofing-DoS resistance. CID rotation, retirement, migration, and
-//! multipath remain deferred. Existing routes require the exact original
-//! `SocketAddr`; NAT rebinding is deliberately unsupported in this slice.
+//! This module provides synchronous packet routing and contains no socket, task
+//! spawn, or await point. An active actor entry holds only its bounded sender and
+//! task ID, never its `ServerConnection`. The retained synchronous foundation
+//! path owns its connection in a mutually exclusive enum branch, so the two
+//! ownership forms cannot coexist in one slot. The registry owns no Retry token,
+//! address-validation claim, target connection, or data plane. The fixed
+//! connection caps only bound damage from unauthenticated Initial packets;
+//! without Retry they do not prove peer-address ownership or provide
+//! spoofing-DoS resistance. CID rotation, retirement, migration, and multipath
+//! remain deferred. Existing routes require the exact original `SocketAddr`;
+//! NAT rebinding is deliberately unsupported in this slice.
 
 #![forbid(unsafe_code)]
 
@@ -15,25 +19,27 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use rand::{rngs::OsRng, TryRngCore};
+use tokio::sync::mpsc;
+use tokio::task::Id;
 
 use crate::quiche_runtime::{
     PacketMeta, ServerConnection, ServerConnectionConfig, ServerCredentials,
     ServerSourceConnectionId, MAX_PACKET_BYTES,
 };
 
-const MAX_ACTIVE_CONNECTIONS: usize = 8;
-const MAX_CONNECTIONS_PER_SOURCE: usize = 2;
+pub(super) const MAX_ACTIVE_CONNECTIONS: usize = 8;
+pub(super) const MAX_CONNECTIONS_PER_SOURCE: usize = 2;
 const MAX_ALIASES_PER_CONNECTION: usize = 2;
 const MAX_ROUTE_KEYS: usize = MAX_ACTIVE_CONNECTIONS * MAX_ALIASES_PER_CONNECTION;
 const MAX_SCID_ATTEMPTS: usize = 4;
 const MAX_TIMEOUT_SWEEP: usize = MAX_ACTIVE_CONNECTIONS;
 const MIN_INITIAL_DCID_LEN: usize = 8;
 
-trait ConnectionIdGenerator {
+pub(super) trait ConnectionIdGenerator {
     fn try_fill(&mut self, output: &mut [u8; quiche::MAX_CONN_ID_LEN]) -> Result<(), ()>;
 }
 
-struct OsConnectionIdGenerator;
+pub(super) struct OsConnectionIdGenerator;
 
 impl ConnectionIdGenerator for OsConnectionIdGenerator {
     fn try_fill(&mut self, output: &mut [u8; quiche::MAX_CONN_ID_LEN]) -> Result<(), ()> {
@@ -70,14 +76,24 @@ struct ParsedPacket {
     can_create_connection: bool,
 }
 
+enum ConnectionOwner {
+    Synchronous {
+        connection: Box<ServerConnection>,
+        server_source_id: ServerSourceConnectionId,
+    },
+    Actor {
+        sender: mpsc::Sender<ActorPacket>,
+        task_id: Id,
+    },
+}
+
 struct ConnectionEntry {
     aliases: [RouteConnectionId; MAX_ALIASES_PER_CONNECTION],
     source: SocketAddr,
-    server_source_id: ServerSourceConnectionId,
-    connection: ServerConnection,
+    owner: ConnectionOwner,
 }
 
-struct ConnectionRegistry<G = OsConnectionIdGenerator> {
+pub(super) struct ConnectionRegistry<G = OsConnectionIdGenerator> {
     config: ServerConnectionConfig,
     generator: G,
     entries: [Option<ConnectionEntry>; MAX_ACTIVE_CONNECTIONS],
@@ -85,7 +101,7 @@ struct ConnectionRegistry<G = OsConnectionIdGenerator> {
 }
 
 impl ConnectionRegistry<OsConnectionIdGenerator> {
-    fn new(credentials: ServerCredentials<'_>) -> Result<Self, RegistryError> {
+    pub(super) fn new(credentials: ServerCredentials<'_>) -> Result<Self, RegistryError> {
         Self::with_generator(credentials, OsConnectionIdGenerator)
     }
 }
@@ -135,23 +151,25 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             let Some(entry) = self.entries[index].as_mut() else {
                 continue;
             };
-            if !entry
-                .connection
-                .has_stable_source_connection_id(&entry.server_source_id)
-            {
+            let ConnectionOwner::Synchronous {
+                connection,
+                server_source_id,
+            } = &mut entry.owner
+            else {
+                return Err(RegistryError::ConnectionUnavailable);
+            };
+            if !connection.has_stable_source_connection_id(server_source_id) {
                 self.entries[index] = None;
                 return Err(RegistryError::StableConnectionIdUnavailable);
             }
-            if entry.connection.is_terminating() {
+            if connection.is_terminating() {
                 self.entries[index] = None;
                 continue;
             }
 
-            let result = entry.connection.next_packet(packet);
-            let stable = entry
-                .connection
-                .has_stable_source_connection_id(&entry.server_source_id);
-            let terminating = entry.connection.is_terminating();
+            let result = connection.next_packet(packet);
+            let stable = connection.has_stable_source_connection_id(server_source_id);
+            let terminating = connection.is_terminating();
 
             if !stable {
                 self.entries[index] = None;
@@ -185,18 +203,22 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             let Some(entry) = self.entries[index].as_ref() else {
                 continue;
             };
-            if !entry
-                .connection
-                .has_stable_source_connection_id(&entry.server_source_id)
-            {
+            let ConnectionOwner::Synchronous {
+                connection,
+                server_source_id,
+            } = &entry.owner
+            else {
+                return Err(RegistryError::ConnectionUnavailable);
+            };
+            if !connection.has_stable_source_connection_id(server_source_id) {
                 self.entries[index] = None;
                 return Err(RegistryError::StableConnectionIdUnavailable);
             }
-            if entry.connection.is_terminating() {
+            if connection.is_terminating() {
                 self.entries[index] = None;
                 continue;
             }
-            if let Some(timeout) = entry.connection.next_timeout() {
+            if let Some(timeout) = connection.next_timeout() {
                 next = Some(next.map_or(timeout, |current: Duration| current.min(timeout)));
             }
         }
@@ -209,24 +231,27 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             let Some(entry) = self.entries[index].as_mut() else {
                 continue;
             };
-            if !entry
-                .connection
-                .has_stable_source_connection_id(&entry.server_source_id)
-            {
+            let ConnectionOwner::Synchronous {
+                connection,
+                server_source_id,
+            } = &mut entry.owner
+            else {
+                failure.get_or_insert(RegistryError::ConnectionUnavailable);
+                continue;
+            };
+            if !connection.has_stable_source_connection_id(server_source_id) {
                 self.entries[index] = None;
                 failure.get_or_insert(RegistryError::StableConnectionIdUnavailable);
                 continue;
             }
-            if entry.connection.is_terminating() {
+            if connection.is_terminating() {
                 self.entries[index] = None;
                 continue;
             }
 
-            let result = entry.connection.on_timeout();
-            let stable = entry
-                .connection
-                .has_stable_source_connection_id(&entry.server_source_id);
-            let terminating = entry.connection.is_terminating();
+            let result = connection.on_timeout();
+            let stable = connection.has_stable_source_connection_id(server_source_id);
+            let terminating = connection.is_terminating();
             if result.is_err() || !stable || terminating {
                 self.entries[index] = None;
             }
@@ -257,19 +282,26 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             let entry = self.entries[index]
                 .as_ref()
                 .expect("route index must contain a connection");
-            entry
-                .connection
-                .has_stable_source_connection_id(&entry.server_source_id)
+            let ConnectionOwner::Synchronous {
+                connection,
+                server_source_id,
+            } = &entry.owner
+            else {
+                return Err(RegistryError::ConnectionUnavailable);
+            };
+            connection.has_stable_source_connection_id(server_source_id)
         };
         if !stable {
             self.entries[index] = None;
             return Err(RegistryError::StableConnectionIdUnavailable);
         }
-        let result = self.entries[index]
+        let entry = self.entries[index]
             .as_mut()
-            .expect("route index must contain a connection")
-            .connection
-            .close();
+            .expect("route index must contain a connection");
+        let ConnectionOwner::Synchronous { connection, .. } = &mut entry.owner else {
+            return Err(RegistryError::ConnectionUnavailable);
+        };
+        let result = connection.close();
         self.entries[index] = None;
         result
             .map(|()| true)
@@ -286,10 +318,14 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
         let entry = self.entries[index]
             .as_mut()
             .expect("route index must contain a connection");
-        if !entry
-            .connection
-            .has_stable_source_connection_id(&entry.server_source_id)
-        {
+        let ConnectionOwner::Synchronous {
+            connection,
+            server_source_id,
+        } = &mut entry.owner
+        else {
+            return Err(RegistryError::ConnectionUnavailable);
+        };
+        if !connection.has_stable_source_connection_id(server_source_id) {
             self.entries[index] = None;
             return Err(RegistryError::StableConnectionIdUnavailable);
         }
@@ -297,11 +333,9 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             return Ok(InboundDisposition::Dropped);
         }
 
-        let result = entry.connection.receive_packet(packet, length, meta);
-        let stable = entry
-            .connection
-            .has_stable_source_connection_id(&entry.server_source_id);
-        let terminating = entry.connection.is_terminating();
+        let result = connection.receive_packet(packet, length, meta);
+        let stable = connection.has_stable_source_connection_id(server_source_id);
+        let terminating = connection.is_terminating();
         if !stable || terminating {
             self.entries[index] = None;
         }
@@ -351,8 +385,10 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
         self.entries[slot] = Some(ConnectionEntry {
             aliases: [client_initial_dcid, server_route],
             source: meta.from,
-            server_source_id,
-            connection,
+            owner: ConnectionOwner::Synchronous {
+                connection: Box::new(connection),
+                server_source_id,
+            },
         });
         Ok(InboundDisposition::Created)
     }
@@ -402,17 +438,138 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
             .count()
     }
 
+    pub(super) fn receive_actor_packet(
+        &mut self,
+        mut packet: [u8; MAX_PACKET_BYTES],
+        length: usize,
+        meta: PacketMeta,
+    ) -> Result<ActorInboundDisposition, RegistryError> {
+        let Some(parsed) = parse_packet(&mut packet, length) else {
+            return Ok(ActorInboundDisposition::Dropped);
+        };
+
+        if let Some(index) = self.find_route(&parsed.destination) {
+            let entry = self.entries[index]
+                .as_ref()
+                .expect("route index must contain a connection");
+            if entry.source != meta.from {
+                return Ok(ActorInboundDisposition::Dropped);
+            }
+            let ConnectionOwner::Actor { sender, .. } = &entry.owner else {
+                return Err(RegistryError::ActorUnavailable);
+            };
+            return match sender.try_send(ActorPacket {
+                bytes: packet,
+                length,
+                meta,
+            }) {
+                Ok(()) => Ok(ActorInboundDisposition::Routed),
+                Err(mpsc::error::TrySendError::Full(_)) => Ok(ActorInboundDisposition::QueueFull),
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(RegistryError::ActorUnavailable),
+            };
+        }
+        if !parsed.can_create_connection {
+            return Ok(ActorInboundDisposition::Dropped);
+        }
+        if self.connection_count() >= MAX_ACTIVE_CONNECTIONS
+            || self.source_count(meta.from) >= MAX_CONNECTIONS_PER_SOURCE
+        {
+            return Err(RegistryError::CapacityUnavailable);
+        }
+
+        let slot = self
+            .entries
+            .iter()
+            .position(Option::is_none)
+            .ok_or(RegistryError::CapacityUnavailable)?;
+        let server_source_id = self.generate_source_connection_id(&parsed.destination)?;
+        let server_route = RouteConnectionId::from_slice(server_source_id.as_bytes())
+            .ok_or(RegistryError::ConnectionIdUnavailable)?;
+        let connection = ServerConnection::accept_initial(
+            &mut self.config,
+            server_source_id,
+            &mut packet,
+            length,
+            meta,
+        )
+        .map_err(|_| RegistryError::ConnectionUnavailable)?;
+        if !connection.has_stable_source_connection_id(&server_source_id)
+            || connection.is_terminating()
+        {
+            return Err(RegistryError::StableConnectionIdUnavailable);
+        }
+
+        Ok(ActorInboundDisposition::Created(Box::new(ActorAdmission {
+            slot: ConnectionSlot(slot),
+            aliases: [parsed.destination, server_route],
+            source: meta.from,
+            server_source_id,
+            connection,
+        })))
+    }
+
+    pub(super) fn activate_actor(
+        &mut self,
+        pending: PendingActorRoute,
+        sender: mpsc::Sender<ActorPacket>,
+        task_id: Id,
+    ) -> Result<(), RegistryError> {
+        let index = pending.slot.0;
+        if index >= MAX_ACTIVE_CONNECTIONS || self.entries[index].is_some() {
+            return Err(RegistryError::ActorUnavailable);
+        }
+        self.entries[index] = Some(ConnectionEntry {
+            aliases: pending.aliases,
+            source: pending.source,
+            owner: ConnectionOwner::Actor { sender, task_id },
+        });
+        Ok(())
+    }
+
+    pub(super) fn reclaim_joined_actor(&mut self, task_id: Id) -> Option<ConnectionSlot> {
+        let index = self.entries.iter().position(|entry| {
+            matches!(
+                entry.as_ref().map(|entry| &entry.owner),
+                Some(ConnectionOwner::Actor {
+                    task_id: entry_task_id,
+                    ..
+                }) if *entry_task_id == task_id
+            )
+        })?;
+        self.entries[index] = None;
+        Some(ConnectionSlot(index))
+    }
+
+    pub(super) fn actor_count(&self) -> usize {
+        self.connection_count()
+    }
+
+    pub(super) fn reclaim_all_joined_actors(&mut self) {
+        for entry in &mut self.entries {
+            if entry
+                .as_ref()
+                .is_some_and(|entry| matches!(&entry.owner, ConnectionOwner::Actor { .. }))
+            {
+                *entry = None;
+            }
+        }
+    }
+
     #[cfg(test)]
     fn server_source_id_for_route(&self, route: &[u8]) -> Option<[u8; quiche::MAX_CONN_ID_LEN]> {
         let route = RouteConnectionId::from_slice(route)?;
         let entry = self.entries[self.find_route(&route)?].as_ref()?;
-        if !entry
-            .connection
-            .has_stable_source_connection_id(&entry.server_source_id)
-        {
+        let ConnectionOwner::Synchronous {
+            connection,
+            server_source_id,
+        } = &entry.owner
+        else {
+            return None;
+        };
+        if !connection.has_stable_source_connection_id(server_source_id) {
             return None;
         }
-        entry.server_source_id.as_bytes().try_into().ok()
+        server_source_id.as_bytes().try_into().ok()
     }
 
     #[cfg(test)]
@@ -423,11 +580,15 @@ impl<G: ConnectionIdGenerator> ConnectionRegistry<G> {
         self.find_route(&route)
             .and_then(|index| self.entries[index].as_ref())
             .is_some_and(|entry| {
-                entry
-                    .connection
-                    .has_stable_source_connection_id(&entry.server_source_id)
-                    && entry.connection.is_established()
-                    && entry.connection.h3_is_ready()
+                matches!(
+                    &entry.owner,
+                    ConnectionOwner::Synchronous {
+                        connection,
+                        server_source_id,
+                    } if connection.has_stable_source_connection_id(server_source_id)
+                            && connection.is_established()
+                            && connection.h3_is_ready()
+                )
             })
     }
 }
@@ -469,12 +630,75 @@ enum InboundDisposition {
     Created,
 }
 
+pub(super) struct ActorPacket {
+    pub(super) bytes: [u8; MAX_PACKET_BYTES],
+    pub(super) length: usize,
+    pub(super) meta: PacketMeta,
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum RegistryError {
+pub(super) struct ConnectionSlot(usize);
+
+impl ConnectionSlot {
+    pub(super) fn index(self) -> usize {
+        self.0
+    }
+}
+
+pub(super) struct ActorAdmission {
+    slot: ConnectionSlot,
+    aliases: [RouteConnectionId; MAX_ALIASES_PER_CONNECTION],
+    source: SocketAddr,
+    server_source_id: ServerSourceConnectionId,
+    connection: ServerConnection,
+}
+
+impl ActorAdmission {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        PendingActorRoute,
+        ServerConnection,
+        ServerSourceConnectionId,
+    ) {
+        (
+            PendingActorRoute {
+                slot: self.slot,
+                aliases: self.aliases,
+                source: self.source,
+            },
+            self.connection,
+            self.server_source_id,
+        )
+    }
+}
+
+pub(super) struct PendingActorRoute {
+    slot: ConnectionSlot,
+    aliases: [RouteConnectionId; MAX_ALIASES_PER_CONNECTION],
+    source: SocketAddr,
+}
+
+impl PendingActorRoute {
+    pub(super) fn slot(&self) -> ConnectionSlot {
+        self.slot
+    }
+}
+
+pub(super) enum ActorInboundDisposition {
+    Dropped,
+    Routed,
+    QueueFull,
+    Created(Box<ActorAdmission>),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum RegistryError {
     ConfigurationUnavailable,
     CapacityUnavailable,
     ConnectionIdUnavailable,
     ConnectionUnavailable,
+    ActorUnavailable,
     PacketRejected,
     PacketUnavailable,
     StableConnectionIdUnavailable,
@@ -488,6 +712,7 @@ impl fmt::Display for RegistryError {
             Self::CapacityUnavailable => "server registry capacity unavailable",
             Self::ConnectionIdUnavailable => "server connection identifier unavailable",
             Self::ConnectionUnavailable => "server registry connection unavailable",
+            Self::ActorUnavailable => "server registry actor unavailable",
             Self::PacketRejected => "server registry packet rejected",
             Self::PacketUnavailable => "server registry packet unavailable",
             Self::StableConnectionIdUnavailable => {
@@ -1167,12 +1392,13 @@ mod tests {
         let index = registry
             .find_route(&route)
             .expect("route exists before close");
-        registry.entries[index]
+        let entry = registry.entries[index]
             .as_mut()
-            .expect("connection entry exists")
-            .connection
-            .close()
-            .expect("mark connection terminating");
+            .expect("connection entry exists");
+        let ConnectionOwner::Synchronous { connection, .. } = &mut entry.owner else {
+            panic!("test entry must use synchronous ownership");
+        };
+        connection.close().expect("mark connection terminating");
         registry.on_timeout().expect("bounded timeout sweep");
         assert_eq!(registry.connection_count(), 0);
         assert_eq!(registry.route_count(), 0);
@@ -1213,6 +1439,7 @@ mod tests {
             RegistryError::CapacityUnavailable,
             RegistryError::ConnectionIdUnavailable,
             RegistryError::ConnectionUnavailable,
+            RegistryError::ActorUnavailable,
             RegistryError::PacketRejected,
             RegistryError::PacketUnavailable,
             RegistryError::StableConnectionIdUnavailable,

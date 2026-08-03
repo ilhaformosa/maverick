@@ -181,6 +181,14 @@ tls:
 maverick:
   tunnel_path: "/direct-v3"
   expected_authority: "origin.invalid"
+target_open:
+  timeout_ms: 10000
+  egress:
+    allow_loopback: false
+    allow_private: false
+    allow_link_local: false
+    allow_multicast: false
+    allow_unspecified: false
 auth:
   minimum: direct_v3_only
   direct_v3:
@@ -199,6 +207,30 @@ independent byte-exact trusted expected authority. It belongs to the same
 already validated role config as the singleton binding; request authority and
 live SNI are future comparison inputs only and may never select a profile, PSK,
 credential tuple, route, target, backend, or authority.
+
+`target_open` is required only on the server role and belongs to that same
+frozen `DirectV3ServerRoleConfig`. `timeout_ms` is an explicit `u64` from 1
+through 60000 milliseconds. Its five `egress` booleans are all required:
+`allow_loopback`, `allow_private`, `allow_link_local`, `allow_multicast`, and
+`allow_unspecified`. Missing values are errors; no Default, client setting,
+v1/v2 value, wire field, target metadata, or environment value may fill them.
+The role exposes the timeout and a shared reference to the existing
+`ServerEgressPolicyConfig` through read-only getters, so its established IP
+classification semantics remain the single implementation.
+
+Parsing this policy performs no DNS lookup, socket creation, target open, or
+other I/O. A client role containing `target_open` is invalid. The policy does
+not make H3, target connectivity, authentication, responses, DATA handling, or
+relay runnable; a future runtime must separately bind any opener to the same
+validated role before target I/O.
+
+This is an observable compatibility tightening of the public pre-runtime
+server config schema. The parent revision accepted otherwise-valid config-v3
+server YAML without `target_open`; this parser intentionally rejects those
+documents. There is no automatic migration, fallback, or default. Config v1
+and policy-only config v2 behavior are unchanged. An otherwise-valid config-v3
+server document can continue to parse after adding the exact known
+`target_open.timeout_ms` and five `target_open.egress` fields required above.
 
 ### Trusted expected-authority syntax
 
@@ -221,8 +253,9 @@ Config v3 rejects `mode`, `users`, legacy `credential_id`/`secret` placement,
 `auth.v2`, channel-binding toggles, rotation, TLS-terminating fronting, CDN or
 WebSocket fields, Auto, fallback, multiple bindings, and mixed v1/v2 fields.
 Stored profiles, SDK materialization, secret stores, generation state, wire
-parsing, runtime auth, timers, revocation, flows, targets, and data-plane work
-remain outside this schema slice.
+parsing, runtime auth, runtime timers, revocation, DNS results, target
+addresses, open attempts, flows, and data-plane work remain outside this
+schema slice.
 
 ## Config v2 policy semantic contract
 

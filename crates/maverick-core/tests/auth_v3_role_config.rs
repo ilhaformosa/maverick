@@ -94,6 +94,14 @@ tls:
 maverick:
   tunnel_path: "/synthetic-direct-v3-server"
   expected_authority: "{SERVER_AUTHORITY}"
+target_open:
+  timeout_ms: 10000
+  egress:
+    allow_loopback: false
+    allow_private: false
+    allow_link_local: false
+    allow_multicast: false
+    allow_unspecified: false
 auth:
   minimum: direct_v3_only
   direct_v3:
@@ -288,6 +296,181 @@ fn config_v3_server_requires_trusted_expected_authority() {
         "",
     );
     assert_valid_server_rejection(&input);
+}
+
+#[test]
+fn config_v3_server_accepts_explicit_target_open_policy() {
+    let config = ServerRoleConfig::from_yaml_str(&server_yaml("h3")).unwrap();
+    let role = config.direct_v3().unwrap();
+    assert_eq!(role.target_open_timeout_ms(), 10_000);
+    let egress = role.target_open_egress_policy();
+    assert!(!egress.allow_loopback);
+    assert!(!egress.allow_private);
+    assert!(!egress.allow_link_local);
+    assert!(!egress.allow_multicast);
+    assert!(!egress.allow_unspecified);
+}
+
+#[test]
+fn config_v3_server_requires_complete_strict_target_open_policy() {
+    let base = server_yaml("h3");
+    let mut cases = vec![
+        replace_yaml_block(&base, "target_open:\n", Some("auth:\n"), ""),
+        replace_yaml_block(
+            &base,
+            "target_open:\n",
+            Some("auth:\n"),
+            "target_open: null\n",
+        ),
+        base.replace("  timeout_ms: 10000\n", ""),
+        base.replace("  timeout_ms: 10000", "  timeout_ms: null"),
+        replace_yaml_block(&base, "  egress:\n", Some("auth:\n"), ""),
+        replace_yaml_block(&base, "  egress:\n", Some("auth:\n"), "  egress: null\n"),
+        base.replace(
+            "  timeout_ms: 10000",
+            "  timeout_ms: 10000\n  unknown_target_open: false",
+        ),
+        base.replace(
+            "    allow_loopback: false",
+            "    allow_loopback: false\n    unknown_egress: false",
+        ),
+        base.replace("  timeout_ms: 10000", "  timeout_ms: \"10000\""),
+        base.replace("    allow_loopback: false", "    allow_loopback: 0"),
+        base.replace("  timeout_ms: 10000", "  timeout_ms: 0"),
+        base.replace("  timeout_ms: 10000", "  timeout_ms: 60001"),
+    ];
+
+    for field in [
+        "allow_loopback",
+        "allow_private",
+        "allow_link_local",
+        "allow_multicast",
+        "allow_unspecified",
+    ] {
+        cases.push(base.replace(&format!("    {field}: false\n"), ""));
+        cases.push(base.replace(
+            &format!("    {field}: false"),
+            &format!("    {field}: null"),
+        ));
+    }
+
+    for input in cases {
+        assert_valid_server_rejection(&input);
+    }
+}
+
+#[test]
+fn config_v3_server_rejects_duplicate_target_open_fields() {
+    let base = server_yaml("h3");
+    let duplicate_block = r#"target_open:
+  timeout_ms: 10000
+  egress:
+    allow_loopback: false
+    allow_private: false
+    allow_link_local: false
+    allow_multicast: false
+    allow_unspecified: false
+"#;
+    let cases = [
+        base.replace("auth:\n", &format!("{duplicate_block}auth:\n")),
+        base.replace(
+            "  timeout_ms: 10000",
+            "  timeout_ms: 10000\n  timeout_ms: 10000",
+        ),
+        base.replace(
+            "    allow_private: false",
+            "    allow_private: false\n    allow_private: false",
+        ),
+    ];
+
+    for input in cases {
+        assert_server_rejection(&input);
+    }
+}
+
+#[test]
+fn config_v3_server_accepts_target_open_timeout_boundaries() {
+    for timeout_ms in [1, 60_000] {
+        let input = server_yaml("h2").replace(
+            "  timeout_ms: 10000",
+            &format!("  timeout_ms: {timeout_ms}"),
+        );
+        let config = ServerRoleConfig::from_yaml_str(&input).unwrap();
+        assert_eq!(
+            config.direct_v3().unwrap().target_open_timeout_ms(),
+            timeout_ms
+        );
+    }
+}
+
+#[test]
+fn config_v3_server_preserves_each_explicit_target_open_egress_bool() {
+    let fields = [
+        "allow_loopback",
+        "allow_private",
+        "allow_link_local",
+        "allow_multicast",
+        "allow_unspecified",
+    ];
+
+    for expected_true in fields {
+        let input = server_yaml("h3").replace(
+            &format!("    {expected_true}: false"),
+            &format!("    {expected_true}: true"),
+        );
+        let config = ServerRoleConfig::from_yaml_str(&input).unwrap();
+        let egress = config.direct_v3().unwrap().target_open_egress_policy();
+        let actual = [
+            ("allow_loopback", egress.allow_loopback),
+            ("allow_private", egress.allow_private),
+            ("allow_link_local", egress.allow_link_local),
+            ("allow_multicast", egress.allow_multicast),
+            ("allow_unspecified", egress.allow_unspecified),
+        ];
+        for (field, value) in actual {
+            assert_eq!(value, field == expected_true, "wrong value for {field}");
+        }
+    }
+}
+
+#[test]
+fn config_v3_client_rejects_server_only_target_open_policy() {
+    let input = client_yaml("h3").replace(
+        "auth:\n",
+        r#"target_open:
+  timeout_ms: 10000
+  egress:
+    allow_loopback: false
+    allow_private: false
+    allow_link_local: false
+    allow_multicast: false
+    allow_unspecified: false
+auth:
+"#,
+    );
+    assert_valid_client_rejection(&input);
+}
+
+#[test]
+fn target_open_errors_and_role_debug_remain_fixed_and_value_free() {
+    let marker = "SYNTHETIC_PRIVATE_TARGET_OPEN_MARKER_DO_NOT_ECHO";
+    let input =
+        server_yaml("h3").replace("  timeout_ms: 10000", &format!("  timeout_ms: {marker}"));
+    let error = ServerRoleConfig::from_yaml_str(&input).unwrap_err();
+    let display = error.to_string();
+    let debug = format!("{error:?}");
+    assert_eq!(display, SERVER_ERROR);
+    assert!(error.source().is_none());
+    assert!(!display.contains(marker));
+    assert!(!debug.contains(marker));
+    assert!(display.len() <= 128);
+    assert!(debug.len() <= 160);
+
+    let role = ServerRoleConfig::from_yaml_str(&server_yaml("h3")).unwrap();
+    let debug = format!("{:?}", role.direct_v3().unwrap());
+    for forbidden in ["10000", "allow_loopback", "false", SERVER_AUTHORITY] {
+        assert!(!debug.contains(forbidden));
+    }
 }
 
 #[test]

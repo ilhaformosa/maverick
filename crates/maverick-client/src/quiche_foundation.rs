@@ -1928,6 +1928,14 @@ tls:
 maverick:
   tunnel_path: "{T026C_CONTROL_PATH}"
   expected_authority: "{T026C_AUTHORITY}"
+target_open:
+  timeout_ms: 10000
+  egress:
+    allow_loopback: false
+    allow_private: false
+    allow_link_local: false
+    allow_multicast: false
+    allow_unspecified: false
 auth:
   minimum: direct_v3_only
   direct_v3:

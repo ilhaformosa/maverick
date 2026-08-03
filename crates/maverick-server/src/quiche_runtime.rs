@@ -2157,6 +2157,14 @@ tls:
 maverick:
   tunnel_path: "/direct-v3"
   expected_authority: "{expected_authority}"
+target_open:
+  timeout_ms: 10000
+  egress:
+    allow_loopback: false
+    allow_private: false
+    allow_link_local: false
+    allow_multicast: false
+    allow_unspecified: false
 auth:
   minimum: direct_v3_only
   direct_v3:

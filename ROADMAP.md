@@ -17,55 +17,55 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2b3 — authenticated Classic CONNECT admission metadata gate
+### T027b-2c0 — freeze direct-v3 target-open policy before target I/O
 
-- **User result:** One already authenticated private native-quiche server
-  generation may strictly accept Classic CONNECT request metadata into a
-  connection-local pending slot while its admission capability remains valid.
-  The actual limit is eight pending slots, the smaller of the authenticated
-  capability's advertised 128 flows and the existing QUIC bidirectional-stream
-  limit of eight.
-- **Scope:** Reuse the existing strict Classic CONNECT parser only after the
-  same-generation active, unrevoked, admission-deadline, hard-deadline, and
-  quota predicates pass; repeat the same capability predicate immediately
-  before committing one structured target and port; retain only generation,
-  stream, peer-write-half-close, and existing resource-limit metadata in a
-  fixed eight-slot connection-local container; and clear every slot before the
-  existing generation-wide `0x105` close lifecycle on slice-owned failure,
-  hard expiry, or revocation. This slice changes only `ROADMAP.md` and the
-  private server quiche runtime.
-- **Acceptance:** Prove zero admission before complete auth confirmation; live
-  domain, IPv4, and IPv6 request admission in both exact field orders; strict
-  pre-auth, expiry, revocation, generation, quota, malformed-field, duplicate,
-  unknown-field, method, and `more_frames` rejection; parser-to-commit time and
-  revocation race closure; eight-slot enforcement without raising transport
-  limits; DATA rejection without a body read or payload retention; first
-  Finished as a write-half-close marker only; duplicate Finished, trailers,
-  reset, STOP_SENDING, unknown-stream activity, Datagram, GOAWAY, and
-  PRIORITY_UPDATE as generation-wide failures; target clearing on hard expiry,
-  revocation, transport close, and drop; empty replacement-generation state;
-  reauthentication before replacement admission; fixed value-free formatting;
-  and preservation of auth-v3, strict-push, SETTINGS, parser, CID, capacity,
-  inbox, `JoinSet`, close/drain, and actor-ownership coverage.
-- **Out of scope:** No success response, response body, DATA read, frame-size
-  data-plane enforcement, DNS, target connection, egress, opener, relay,
-  fallback, task, channel, global registry, flow-local reset/recovery contract,
-  transport-limit increase, production client runtime, public API, manifest,
-  dependency, config, schema, spec, protocol, auth, frame, wire, version,
-  `STATUS.md`, CI, remote, deployment, release, real-network, or system-network
-  change. This private feature-gated dead foundation is not runnable H3, target
-  connectivity, relay or data-plane capability, runtime readiness, release
-  scope, or a product result.
-- **Stop conditions:** Stop before a third changed product file; any parser,
-  endpoint, core, client, manifest, lockfile, dependency, vendor, config, spec,
-  schema, protocol, auth, frame, wire, version, public API, or `STATUS.md`
-  change; any response or user-DATA read; any DNS, target, egress, opener,
-  relay, fallback, task, channel, registry, new flow-local error contract,
-  stream-limit increase, copied authentication or parser rule, unbounded
-  resource, target-value disclosure, or regression in the preserved lifecycle
-  and ownership controls.
+- **User result:** One strict config-v3 server role carries its explicit,
+  immutable target-open timeout and egress policy together with the already
+  validated singleton auth binding. Any future opener MUST bind to this
+  explicit policy; this slice does not implement an opener or type-level
+  enforce that runtime binding.
+- **Scope:** Require server-only `target_open.timeout_ms` in `1..=60000` and all
+  five explicit `target_open.egress` booleans (`allow_loopback`,
+  `allow_private`, `allow_link_local`, `allow_multicast`, and
+  `allow_unspecified`); retain the values in the same frozen
+  `DirectV3ServerRoleConfig`; expose read-only access; and reuse the existing
+  `ServerEgressPolicyConfig` address-classification semantics. Add exactly two
+  additive public read-only getters, `target_open_timeout_ms()` and
+  `target_open_egress_policy()`; remove no existing public function or trait.
+  Change only `ROADMAP.md`, `CONFIG.md`, the strict direct-v3 role parser, and
+  its focused core tests, plus the five existing client/server test-fixture
+  locations that parse legal config-v3 server roles; those five files receive
+  fixture text only, with no production logic or assertion change.
+- **Acceptance:** Parse the complete server role and preserve the timeout and
+  every boolean exactly; accept timeout boundaries 1 and 60000; reject a
+  missing, null, duplicate, unknown, or wrongly typed policy or nested field,
+  timeout 0 or 60001, and any client-role `target_open`; never fill an omitted
+  boolean by default; retain fixed value-free errors and Debug; preserve the
+  v1/v2 behavior and the authority, TLS path, transport, auth ID, binding, H2,
+  and H3 semantics of updated legal v3 roles; intentionally reject formerly
+  valid v3 server documents that omit `target_open`; keep all client/server
+  feature tests compatible by adding the same neutral explicit policy to their
+  existing server-role YAML fixtures; and prove the diff adds no DNS, socket,
+  opener, relay, or real I/O.
+- **Out of scope:** No DNS lookup, TCP connection, target opener, response,
+  DATA handling, relay, fallback, task, channel, server/client/SDK/CLI runtime,
+  public runtime API, manifest, lockfile, dependency, vendor, auth-v3 byte,
+  protocol, config-version, stored-profile, frame, wire, `STATUS.md`, CI,
+  remote, deployment, release, real-network, or system-network change. This is
+  public parser/getter pre-runtime config foundation, not runnable H3, target
+  connectivity, runtime authentication, release scope, or a product result.
+- **Stop conditions:** Stop before a tenth changed file; any manifest,
+  lockfile, dependency, vendor, production server/client, SDK, CLI, config-v1,
+  policy-only config-v2, stored-profile, auth, frame, wire, protocol, version,
+  public runtime API, or `STATUS.md` change; any non-fixture change in the five
+  added client/server files; any policy inferred from v1, v2, wire data, target
+  data, or environment; any copied IP-classification rule; any DNS, socket,
+  opener, response, DATA, relay, or real I/O; any mutable policy exposure, new
+  Default or generic Serde surface, value-bearing Debug, or private-value
+  disclosure.
 
-This remains private repository-local authenticated admission metadata only.
+This remains repository-local work on public parser/getter pre-runtime config
+foundation only.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

@@ -20,11 +20,13 @@ use crate::auth_v3::{
 };
 use crate::error::{Error, Result};
 
-use super::{validate_cert_pin, SecretString};
+use super::{validate_cert_pin, SecretString, ServerEgressPolicyConfig};
 
 const INVALID_CLIENT_ROLE: &str = "invalid config v3 client role";
 const INVALID_SERVER_ROLE: &str = "invalid config v3 server role";
 const MAX_DNS_HOSTNAME_LEN: usize = 253;
+const MIN_TARGET_OPEN_TIMEOUT_MS: u64 = 1;
+const MAX_TARGET_OPEN_TIMEOUT_MS: u64 = 60_000;
 
 /// Explicit pre-runtime carrier choice in config schema 3.
 ///
@@ -177,6 +179,8 @@ pub struct DirectV3ServerRoleConfig {
     key_path: PathBuf,
     tunnel_path: String,
     expected_authority: String,
+    target_open_timeout_ms: u64,
+    target_open_egress_policy: ServerEgressPolicyConfig,
     binding: AuthV3SingletonBinding,
 }
 
@@ -209,6 +213,16 @@ impl DirectV3ServerRoleConfig {
     /// Return the byte-exact trusted authority selected before any I/O.
     pub fn expected_authority(&self) -> &str {
         &self.expected_authority
+    }
+
+    /// Return the explicit upper bound for one future target-open attempt.
+    pub const fn target_open_timeout_ms(&self) -> u64 {
+        self.target_open_timeout_ms
+    }
+
+    /// Borrow the existing server egress policy selected before target I/O.
+    pub const fn target_open_egress_policy(&self) -> &ServerEgressPolicyConfig {
+        &self.target_open_egress_policy
     }
 
     /// Borrow the capability selected locally before any auth-v3 wire byte.
@@ -287,6 +301,8 @@ pub(super) fn parse_server_role_config(input: &str) -> Result<DirectV3ServerRole
         || !valid_path(&wire.tls.key_path)
         || !valid_tunnel_path(&wire.maverick.tunnel_path)
         || !valid_expected_authority(&wire.maverick.expected_authority.0)
+        || !(MIN_TARGET_OPEN_TIMEOUT_MS..=MAX_TARGET_OPEN_TIMEOUT_MS)
+            .contains(&wire.target_open.timeout_ms)
     {
         return Err(invalid_server_role());
     }
@@ -300,6 +316,14 @@ pub(super) fn parse_server_role_config(input: &str) -> Result<DirectV3ServerRole
         key_path: wire.tls.key_path,
         tunnel_path: wire.maverick.tunnel_path,
         expected_authority: wire.maverick.expected_authority.0,
+        target_open_timeout_ms: wire.target_open.timeout_ms,
+        target_open_egress_policy: ServerEgressPolicyConfig {
+            allow_loopback: wire.target_open.egress.allow_loopback,
+            allow_private: wire.target_open.egress.allow_private,
+            allow_link_local: wire.target_open.egress.allow_link_local,
+            allow_multicast: wire.target_open.egress.allow_multicast,
+            allow_unspecified: wire.target_open.egress.allow_unspecified,
+        },
         binding,
     })
 }
@@ -442,6 +466,7 @@ struct ServerRoleWire {
     listen: SocketAddr,
     tls: ServerTlsWire,
     maverick: ServerMaverickWire,
+    target_open: TargetOpenWire,
     auth: AuthWire,
 }
 
@@ -549,6 +574,23 @@ struct ServerTlsWire {
 struct ServerMaverickWire {
     tunnel_path: String,
     expected_authority: ExpectedAuthorityWire,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetOpenWire {
+    timeout_ms: u64,
+    egress: TargetOpenEgressWire,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetOpenEgressWire {
+    allow_loopback: bool,
+    allow_private: bool,
+    allow_link_local: bool,
+    allow_multicast: bool,
+    allow_unspecified: bool,
 }
 
 struct ExpectedAuthorityWire(String);

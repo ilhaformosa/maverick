@@ -39,6 +39,7 @@ const INITIAL_UNI_STREAM_WINDOW_BYTES: u64 = 16_384;
 const MAX_STREAM_WINDOW_BYTES: u64 = 65_536;
 const MAX_BIDI_STREAMS: u64 = 8;
 const MAX_PENDING_CLASSIC_CONNECTS: usize = MAX_BIDI_STREAMS as usize;
+const MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION: usize = 128;
 pub(super) const MAX_TARGET_DISPATCH_FUTURES: usize = MAX_PENDING_CLASSIC_CONNECTS;
 const TARGET_TO_CLIENT_BUFFER_BYTES: usize = 16 * 1024;
 const CLIENT_TO_TARGET_BUFFER_BYTES: usize = 16 * 1024;
@@ -57,6 +58,10 @@ const _: () = assert!(
 const _: () =
     assert!(TARGET_IO_MAX_OPERATION_BYTES * MAX_TARGET_IO_OPERATIONS_PER_ROUND <= 64 * 1024);
 const MAX_UNI_STREAMS: u64 = 8;
+// Current quiche H3 uses peer uni ordinals 0..=3 for control, QPACK, and one
+// GREASE stream. Reject a higher ordinal before H3 can silently drain it.
+const MAX_PEER_UNI_STREAMS_PER_GENERATION: u64 = 4;
+const _: () = assert!(MAX_PEER_UNI_STREAMS_PER_GENERATION <= MAX_UNI_STREAMS);
 const MAX_FIELD_SECTION_BYTES: u64 = 16_384;
 const QPACK_MAX_TABLE_CAPACITY: u64 = 0;
 const QPACK_BLOCKED_STREAMS: u64 = 0;
@@ -933,6 +938,7 @@ pub(super) struct ServerConnection {
     generation: ServerSourceConnectionId,
     auth: ServerAuthMachine,
     pending_connects: PendingClassicConnectSlots,
+    classic_connect_admissions: usize,
     target_io_cursor: usize,
     #[cfg(test)]
     auth_body_read_calls: usize,
@@ -1006,6 +1012,7 @@ impl ServerConnection {
             generation: source_connection_id,
             auth: ServerAuthMachine::fresh(),
             pending_connects: PendingClassicConnectSlots::empty(),
+            classic_connect_admissions: 0,
             target_io_cursor: 0,
             #[cfg(test)]
             auth_body_read_calls: 0,
@@ -1203,6 +1210,7 @@ impl ServerConnection {
         let mut events = 0_usize;
         loop {
             self.enforce_authenticated_lifecycle_at(Instant::now())?;
+            self.enforce_peer_uni_stream_id_bound()?;
             if self.transport.dgram_recv_front_len().is_some() {
                 return self.reject_with(RuntimeError::PreAuthApplicationActivity);
             }
@@ -1240,6 +1248,16 @@ impl ServerConnection {
                 }
             }
         }
+    }
+
+    fn enforce_peer_uni_stream_id_bound(&mut self) -> Result<(), RuntimeError> {
+        let exceeded = self.transport.readable().any(|stream_id| {
+            stream_id & 0b11 == 0b10 && stream_id >> 2 >= MAX_PEER_UNI_STREAMS_PER_GENERATION
+        });
+        if exceeded {
+            return self.reject_with(RuntimeError::PreAuthApplicationActivity);
+        }
+        Ok(())
     }
 
     fn refresh_peer_settings(&mut self, h3: &quiche::h3::Connection) -> Result<(), RuntimeError> {
@@ -1408,6 +1426,9 @@ impl ServerConnection {
         headers: &[quiche::h3::Header],
         more_frames: bool,
     ) -> Result<PendingClassicConnect, RuntimeError> {
+        if self.classic_connect_admissions >= MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION {
+            return Err(RuntimeError::ClassicConnectAdmissionRejected);
+        }
         let capability = self
             .auth
             .capability
@@ -1458,13 +1479,20 @@ impl ServerConnection {
         &mut self,
         pending: PendingClassicConnect,
     ) -> Result<(), RuntimeError> {
+        let next_admission_count = self
+            .classic_connect_admissions
+            .checked_add(1)
+            .filter(|count| *count <= MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION)
+            .ok_or(RuntimeError::ClassicConnectAdmissionRejected)?;
         let capability = self
             .auth
             .capability
             .as_ref()
             .filter(|capability| capability.permits_admission_at(&self.generation, Instant::now()))
             .ok_or(RuntimeError::ClassicConnectAdmissionRejected)?;
-        self.pending_connects.insert(pending, capability)
+        self.pending_connects.insert(pending, capability)?;
+        self.classic_connect_admissions = next_admission_count;
+        Ok(())
     }
 
     pub(super) fn take_target_open_dispatch(
@@ -2127,6 +2155,58 @@ impl ServerConnection {
             .ok_or(RuntimeError::ClassicConnectDataRejected)?;
         pending.lifecycle = terminal_lifecycle;
         drop(original_target);
+        if terminal_lifecycle == ClassicConnectLifecycle::ApplicationTerminalCollectionConfirmed {
+            self.reclaim_application_terminal_collection_confirmed_slot(slot_index, now)?;
+        }
+        Ok(())
+    }
+
+    fn reclaim_application_terminal_collection_confirmed_slot(
+        &mut self,
+        slot_index: usize,
+        now: Instant,
+    ) -> Result<(), RuntimeError> {
+        let capability = self
+            .auth
+            .capability
+            .as_ref()
+            .filter(|capability| capability.permits_response_at(&self.generation, now))
+            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        let pending = self
+            .pending_connects
+            .slots
+            .get(slot_index)
+            .and_then(Option::as_ref)
+            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        let stream_id = pending.stream_id;
+        if pending.generation != self.generation
+            || pending.max_frame_size != capability.max_frame_size
+            || pending.lifecycle != ClassicConnectLifecycle::ApplicationTerminalCollectionConfirmed
+            || !pending.peer_write_half_closed
+            || pending.upload_state != UploadDispatchState::WriteHalfClosed
+            || pending.dispatch_state != TargetDispatchState::ResponseFinAccepted
+            || pending.target.is_some()
+            || pending.opened_target.is_some()
+            || pending.target_payload.iter().any(|byte| *byte != 0)
+            || pending.upload_payload.iter().any(|byte| *byte != 0)
+            || self
+                .pending_connects
+                .slots
+                .iter()
+                .flatten()
+                .filter(|candidate| candidate.stream_id == stream_id)
+                .count()
+                != 1
+            || self.transport.stream_capacity(stream_id)
+                != Err(quiche::Error::InvalidStreamState(stream_id))
+        {
+            return Err(RuntimeError::ClassicConnectDataRejected);
+        }
+
+        let reclaimed = self.pending_connects.slots[slot_index]
+            .take()
+            .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+        drop(reclaimed);
         Ok(())
     }
 
@@ -2558,6 +2638,14 @@ impl ServerConnection {
                             return self.reject_with(RuntimeError::ClassicConnectAdmissionRejected);
                         }
                     };
+                    if pending.lifecycle
+                        == ClassicConnectLifecycle::ApplicationTerminalCollectionConfirmed
+                    {
+                        self.reclaim_application_terminal_collection_confirmed_slot(
+                            slot_index,
+                            Instant::now(),
+                        )?;
+                    }
                 }
                 Err(_) => {
                     return self.reject_with(RuntimeError::ClassicConnectAdmissionRejected);
@@ -2733,6 +2821,7 @@ impl ServerConnection {
 
     fn clear_generation_state(&mut self) {
         self.pending_connects.clear();
+        self.classic_connect_admissions = 0;
         self.auth.fail();
     }
 
@@ -3251,6 +3340,74 @@ mod tests {
         );
         assert!(pending.opened_target.is_none());
         (pair, stream_id, peer)
+    }
+
+    async fn complete_and_reclaim_empty_connect(pair: &mut TestPair, authority: &[u8]) -> u64 {
+        use tokio::io::AsyncWriteExt;
+
+        let headers = test_classic_connect_headers(authority, false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue one sequential lifetime CONNECT");
+        pair.client_to_server()
+            .expect("admit one sequential lifetime CONNECT");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take one sequential lifetime dispatch")
+            .expect("one sequential lifetime dispatch exists");
+        let (opened_target, mut target_peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(token, opened_target, Instant::now())
+            .expect("handoff one sequential lifetime target");
+        pair.server
+            .drive_h3()
+            .expect("accept one sequential lifetime response");
+        pair.server_to_client()
+            .expect("deliver one sequential lifetime response");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("observe one sequential lifetime response"));
+        assert_eq!(pair.client.stream_send(stream_id, b"", true), Ok(0));
+        pair.client_to_server()
+            .expect("deliver one sequential lifetime request FIN");
+        target_peer
+            .shutdown()
+            .await
+            .expect("close one sequential lifetime target response half");
+        let ready =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("one sequential lifetime target EOF becomes ready")
+                .expect("one sequential lifetime target signal is usable");
+        pair.server
+            .drive_target_io_round(Some(ready))
+            .expect("one sequential lifetime flow reaches application terminal");
+        pair.poll_exact_classic_connect_finishes(&[stream_id])
+            .expect("collect one sequential lifetime response FIN");
+        pair.server
+            .observe_pending_stream_lifecycle(false)
+            .expect("reclaim one sequential lifetime slot");
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        assert!(pair.server.pending_connects.slots[0].is_none());
+        pair.server_to_client()
+            .expect("return normal stream credit after sequential reclaim");
+        stream_id
+    }
+
+    fn duplicate_target_open_dispatch_token_for_test(
+        token: &TargetOpenDispatchToken,
+    ) -> TargetOpenDispatchToken {
+        TargetOpenDispatchToken {
+            generation: token.generation,
+            stream_id: token.stream_id,
+            slot_index: token.slot_index,
+            target: token.target.clone(),
+            port: token.port,
+            max_frame_size: token.max_frame_size,
+            egress_policy: token.egress_policy,
+            attempt_deadline: token.attempt_deadline,
+        }
     }
 
     async fn response_accepted_pair_with_blocked_target(
@@ -3963,6 +4120,51 @@ mod tests {
                     Err(_) => return Err(RuntimeError::ClassicConnectDataRejected),
                 }
             }
+        }
+
+        fn poll_exact_classic_connect_finishes(
+            &mut self,
+            expected_streams: &[u64],
+        ) -> Result<(), RuntimeError> {
+            let mut seen = vec![false; expected_streams.len()];
+            for _ in 0..MAX_SHUTTLE_STEPS {
+                self.server_to_client()?;
+                let h3 = self.client_h3.as_mut().ok_or(RuntimeError::H3Unavailable)?;
+                loop {
+                    match h3.poll(&mut self.client) {
+                        Ok((stream_id, quiche::h3::Event::Data))
+                            if expected_streams.contains(&stream_id) =>
+                        {
+                            let mut body = [0_u8; 1];
+                            match h3.recv_body(&mut self.client, stream_id, &mut body) {
+                                Err(quiche::h3::Error::Done) => {}
+                                Ok(_) | Err(_) => {
+                                    return Err(RuntimeError::ClassicConnectDataRejected);
+                                }
+                            }
+                        }
+                        Ok((stream_id, quiche::h3::Event::Finished)) => {
+                            let index = expected_streams
+                                .iter()
+                                .position(|expected| *expected == stream_id)
+                                .ok_or(RuntimeError::ClassicConnectDataRejected)?;
+                            if std::mem::replace(&mut seen[index], true) {
+                                return Err(RuntimeError::ClassicConnectDataRejected);
+                            }
+                        }
+                        Ok(_) | Err(quiche::h3::Error::StreamBlocked) => {
+                            return Err(RuntimeError::ClassicConnectDataRejected);
+                        }
+                        Err(quiche::h3::Error::Done) => break,
+                        Err(_) => return Err(RuntimeError::ClassicConnectDataRejected),
+                    }
+                }
+                self.client_to_server()?;
+                if seen.iter().all(|finished| *finished) {
+                    return Ok(());
+                }
+            }
+            Err(RuntimeError::ClassicConnectDataRejected)
         }
 
         fn collect_confirmation(
@@ -7313,6 +7515,437 @@ auth:
     }
 
     #[tokio::test]
+    async fn t027b2d4b_application_terminal_collection_reclaims_exact_slot() {
+        let (mut pair, stream_id, _peer) =
+            application_terminal_pair(b"reclaim-terminal.invalid:443").await;
+        assert_eq!(pair.server.pending_connects.len(), 1);
+
+        assert!(pair
+            .server_transport_to_client_without_h3_drive()
+            .expect("send the final response before returning its ACK"));
+        let mut body = Vec::new();
+        assert!(pair
+            .poll_classic_connect_body(stream_id, &mut body)
+            .expect("client consumes the final response"));
+        assert!(body.is_empty());
+        assert!(pair
+            .client_transport_to_server_without_h3_drive()
+            .expect("return the final response ACK without server H3 drive"));
+
+        pair.server.target_io_cursor = 7;
+        pair.server
+            .observe_pending_stream_lifecycle(false)
+            .expect("an exact collected application terminal is reclaimable");
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        assert!(pair.server.pending_connects.slots[0].is_none());
+        assert_eq!(pair.server.target_io_cursor, 7);
+    }
+
+    #[tokio::test]
+    async fn t027b2d4b_reused_slot_rejects_old_ready_signal_before_new_flow_io() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut pair, old_stream, mut old_peer) =
+            response_accepted_pair(b"stale-ready-old.invalid:443").await;
+        pair.server_to_client()
+            .expect("deliver the old response before terminal state");
+        assert!(pair
+            .poll_exact_classic_connect_success(old_stream)
+            .expect("observe the old response"));
+        assert_eq!(pair.client.stream_send(old_stream, b"", true), Ok(0));
+        pair.client_to_server().expect("record the old request FIN");
+        old_peer
+            .shutdown()
+            .await
+            .expect("make the old target EOF readable");
+        let old_signal =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("old target EOF becomes ready")
+                .expect("old target readiness carries frozen identity");
+        pair.server
+            .drive_target_io_round(Some(old_signal))
+            .expect("the old signal reaches application terminal state once");
+
+        assert!(pair
+            .server_transport_to_client_without_h3_drive()
+            .expect("send the old response FIN"));
+        let mut body = Vec::new();
+        assert!(pair
+            .poll_classic_connect_body(old_stream, &mut body)
+            .expect("consume the old response FIN"));
+        assert!(body.is_empty());
+        assert!(pair
+            .client_transport_to_server_without_h3_drive()
+            .expect("return the old response FIN ACK"));
+        pair.server
+            .observe_pending_stream_lifecycle(false)
+            .expect("reclaim the old exact slot");
+        assert!(pair.server.pending_connects.slots[0].is_none());
+        pair.server_to_client()
+            .expect("return stream credit after old collection");
+
+        let headers = test_classic_connect_headers(b"stale-ready-new.invalid:443", false);
+        let new_stream = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue a different stream into the reclaimed slot");
+        assert_ne!(new_stream, old_stream);
+        pair.client_to_server()
+            .expect("admit the different stream into the reclaimed slot");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take the new exact-slot dispatch")
+            .expect("new exact-slot dispatch exists");
+        assert_eq!(token.slot_index, 0);
+        assert_eq!(token.stream_id, new_stream);
+        let (opened, new_peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(token, opened, Instant::now())
+            .expect("install only the new target into reused slot zero");
+
+        let cursor_before = pair.server.target_io_cursor;
+        let counters_before = (
+            pair.server.target_read_calls,
+            pair.server.target_send_body_calls,
+            pair.server.upload_recv_body_calls,
+            pair.server.target_write_calls,
+            pair.server.target_shutdown_calls,
+        );
+        assert_eq!(
+            pair.server
+                .drive_target_io_round(Some(old_signal))
+                .expect_err("the old readiness identity cannot touch the new stream"),
+            RuntimeError::ClassicConnectDataRejected
+        );
+        assert_eq!(pair.server.target_io_cursor, cursor_before);
+        assert_eq!(
+            (
+                pair.server.target_read_calls,
+                pair.server.target_send_body_calls,
+                pair.server.upload_recv_body_calls,
+                pair.server.target_write_calls,
+                pair.server.target_shutdown_calls,
+            ),
+            counters_before
+        );
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        assert_ne!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+        assert_target_peer_eof(new_peer).await;
+    }
+
+    #[tokio::test]
+    async fn t027b2d4b_reused_slot_rejects_duplicated_old_open_completion() {
+        use tokio::io::AsyncWriteExt;
+
+        let mut pair = TestPair::new().expect("construct stale-completion pair");
+        pair.authenticate_generation()
+            .expect("authenticate stale-completion pair");
+        let old_headers = test_classic_connect_headers(b"stale-open-old.invalid:443", false);
+        let old_stream = pair
+            .send_classic_connect(&old_headers, false)
+            .expect("queue the old CONNECT");
+        pair.client_to_server().expect("admit the old CONNECT");
+        let old_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take the old target-open token")
+            .expect("old target-open token exists");
+        let stale_token = duplicate_target_open_dispatch_token_for_test(&old_token);
+        let (old_opened, mut old_peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(old_token, old_opened, Instant::now())
+            .expect("complete the one real old target open");
+        pair.server.drive_h3().expect("accept the old response");
+        pair.server_to_client().expect("deliver the old response");
+        assert!(pair
+            .poll_exact_classic_connect_success(old_stream)
+            .expect("observe the old response"));
+        assert_eq!(pair.client.stream_send(old_stream, b"", true), Ok(0));
+        pair.client_to_server().expect("record the old request FIN");
+        old_peer
+            .shutdown()
+            .await
+            .expect("make the old target EOF readable");
+        let old_signal =
+            tokio::time::timeout(Duration::from_secs(1), pair.server.wait_target_io_ready())
+                .await
+                .expect("old target EOF becomes ready")
+                .expect("old terminal signal is usable");
+        pair.server
+            .drive_target_io_round(Some(old_signal))
+            .expect("the old flow reaches application terminal");
+        assert!(pair
+            .server_transport_to_client_without_h3_drive()
+            .expect("send the old response FIN"));
+        let mut body = Vec::new();
+        assert!(pair
+            .poll_classic_connect_body(old_stream, &mut body)
+            .expect("consume the old response FIN"));
+        assert!(pair
+            .client_transport_to_server_without_h3_drive()
+            .expect("return the old response FIN ACK"));
+        pair.server
+            .observe_pending_stream_lifecycle(false)
+            .expect("reclaim the old slot");
+        pair.server_to_client()
+            .expect("return stream credit after reclaim");
+
+        let new_headers = test_classic_connect_headers(b"stale-open-new.invalid:443", false);
+        let new_stream = pair
+            .send_classic_connect(&new_headers, false)
+            .expect("queue a new stream into the reclaimed slot");
+        assert_ne!(new_stream, old_stream);
+        pair.client_to_server().expect("admit the new stream");
+        let new_token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take the new target-open token")
+            .expect("new target-open token exists");
+        assert_eq!(new_token.slot_index, stale_token.slot_index);
+        assert_eq!(new_token.stream_id, new_stream);
+
+        let (stale_opened, stale_peer) = connected_target_pair().await;
+        assert_eq!(
+            pair.server
+                .complete_target_open_dispatch(stale_token, stale_opened, Instant::now()),
+            Err(RuntimeError::TargetOpenDispatchRejected)
+        );
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("stale completion leaves the new slot occupied");
+        assert_eq!(pending.stream_id, new_stream);
+        assert_eq!(pending.dispatch_state, TargetDispatchState::InFlight);
+        assert!(pending.opened_target.is_none());
+        assert_target_peer_eof(stale_peer).await;
+        drop(new_token);
+    }
+
+    #[tokio::test]
+    async fn t027b2d4b_reclaim_requires_exact_terminal_collection_and_zero_state() {
+        let (mut not_collected, _stream_id, _peer) =
+            application_terminal_pair(b"reclaim-not-collected.invalid:443").await;
+        assert_eq!(
+            not_collected
+                .server
+                .reclaim_application_terminal_collection_confirmed_slot(0, Instant::now()),
+            Err(RuntimeError::ClassicConnectDataRejected)
+        );
+        assert_eq!(not_collected.server.pending_connects.len(), 1);
+        assert_eq!(
+            not_collected.server.pending_connects.slots[0]
+                .as_ref()
+                .expect("uncollected terminal remains occupied")
+                .lifecycle,
+            ClassicConnectLifecycle::ApplicationTerminal
+        );
+
+        let (mut dirty, stream_id, _peer) =
+            application_terminal_pair(b"reclaim-dirty.invalid:443").await;
+        assert!(dirty
+            .server_transport_to_client_without_h3_drive()
+            .expect("send dirty-case response FIN"));
+        let mut body = Vec::new();
+        assert!(dirty
+            .poll_classic_connect_body(stream_id, &mut body)
+            .expect("consume dirty-case response FIN"));
+        assert!(dirty
+            .client_transport_to_server_without_h3_drive()
+            .expect("return dirty-case response FIN ACK"));
+        assert_eq!(
+            dirty.server.transport.stream_capacity(stream_id),
+            Err(quiche::Error::InvalidStreamState(stream_id))
+        );
+        let pending = dirty.server.pending_connects.slots[0]
+            .as_mut()
+            .expect("dirty terminal slot remains present before direct reclaim");
+        pending.lifecycle = ClassicConnectLifecycle::ApplicationTerminalCollectionConfirmed;
+        pending.upload_payload[0] = 0x5a;
+        assert_eq!(
+            dirty
+                .server
+                .reclaim_application_terminal_collection_confirmed_slot(0, Instant::now()),
+            Err(RuntimeError::ClassicConnectDataRejected)
+        );
+        let pending = dirty.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("dirty terminal cannot be reclaimed");
+        assert_eq!(pending.upload_payload[0], 0x5a);
+        assert_eq!(
+            pending.lifecycle,
+            ClassicConnectLifecycle::ApplicationTerminalCollectionConfirmed
+        );
+    }
+
+    #[tokio::test]
+    async fn t027b2d4b_generation_lifetime_admission_budget_is_checked_and_bounded() {
+        let headers = test_classic_connect_headers(b"lifetime-budget.invalid:443", false);
+
+        let mut failed = TestPair::new().expect("construct failed-insert budget pair");
+        failed
+            .authenticate_generation()
+            .expect("authenticate failed-insert budget pair");
+        let mut invalid = failed
+            .server
+            .prepare_classic_connect(4, &headers, true)
+            .expect("prepare one structurally valid budget candidate");
+        invalid.target = None;
+        assert_eq!(
+            failed.server.commit_classic_connect(invalid),
+            Err(RuntimeError::ClassicConnectAdmissionRejected)
+        );
+        assert_eq!(failed.server.classic_connect_admissions, 0);
+
+        let checked = failed
+            .server
+            .prepare_classic_connect(8, &headers, true)
+            .expect("prepare one candidate before forcing checked overflow");
+        failed.server.classic_connect_admissions = usize::MAX;
+        assert_eq!(
+            failed.server.commit_classic_connect(checked),
+            Err(RuntimeError::ClassicConnectAdmissionRejected)
+        );
+        assert_eq!(failed.server.classic_connect_admissions, usize::MAX);
+        assert_eq!(failed.server.pending_connects.len(), 0);
+        failed.server.clear_generation_state();
+        assert_eq!(failed.server.classic_connect_admissions, 0);
+
+        let mut bounded = TestPair::new().expect("construct lifetime-budget pair");
+        bounded
+            .authenticate_generation()
+            .expect("authenticate lifetime-budget pair");
+        bounded.server.classic_connect_admissions =
+            MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION - 1;
+        let last = bounded
+            .server
+            .prepare_classic_connect(4, &headers, true)
+            .expect("the final lifetime admission can be prepared");
+        bounded
+            .server
+            .commit_classic_connect(last)
+            .expect("the final lifetime admission can be committed");
+        assert_eq!(
+            bounded.server.classic_connect_admissions,
+            MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION
+        );
+        assert!(matches!(
+            bounded.server.prepare_classic_connect(8, &headers, true),
+            Err(RuntimeError::ClassicConnectAdmissionRejected)
+        ));
+        assert_eq!(bounded.server.pending_connects.len(), 1);
+        bounded.server.clear_generation_state();
+        assert_eq!(bounded.server.classic_connect_admissions, 0);
+        assert_eq!(bounded.server.pending_connects.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn t027b2d4b_real_h3_lifetime_accepts_128_and_rejects_129() {
+        let mut pair = TestPair::new().expect("construct real lifetime pair");
+        pair.authenticate_generation()
+            .expect("authenticate real lifetime pair");
+        let mut admitted_streams =
+            Vec::with_capacity(MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION);
+
+        for expected_count in 1..=MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION {
+            let stream_id =
+                complete_and_reclaim_empty_connect(&mut pair, b"real-lifetime-budget.invalid:443")
+                    .await;
+            admitted_streams.push(stream_id);
+            assert_eq!(pair.server.classic_connect_admissions, expected_count);
+            assert_eq!(
+                pair.server.transport.stream_capacity(stream_id),
+                Err(quiche::Error::InvalidStreamState(stream_id))
+            );
+        }
+        assert_eq!(
+            admitted_streams
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION
+        );
+        assert_ne!(admitted_streams[126], admitted_streams[127]);
+        assert_eq!(
+            pair.server.classic_connect_admissions,
+            MAX_CLASSIC_CONNECT_ADMISSIONS_PER_GENERATION
+        );
+
+        let rejected_headers =
+            test_classic_connect_headers(b"real-lifetime-rejected.invalid:443", false);
+        let rejected_stream = pair
+            .send_classic_connect(&rejected_headers, false)
+            .expect("the transport can carry the 129th request to the runtime gate");
+        assert!(!admitted_streams.contains(&rejected_stream));
+        assert_eq!(
+            pair.client_to_server()
+                .expect_err("the 129th real H3 admission closes the generation"),
+            RuntimeError::ClassicConnectAdmissionRejected
+        );
+        assert_ne!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        assert_eq!(pair.server.classic_connect_admissions, 0);
+    }
+
+    #[test]
+    fn t027b2d4b_peer_uni_stream_beyond_fixed_h3_footprint_fails_before_drain() {
+        let mut pair = TestPair::new().expect("construct peer-uni budget pair");
+        pair.authenticate_generation()
+            .expect("authenticate peer-uni budget pair");
+
+        let first_peer_uni_stream_beyond_control_qpack_and_grease = 18_u64;
+        assert_eq!(
+            pair.client.stream_send(
+                first_peer_uni_stream_beyond_control_qpack_and_grease,
+                &[0x21],
+                true,
+            ),
+            Ok(1)
+        );
+        assert_eq!(
+            pair.client_to_server()
+                .expect_err("a peer uni stream beyond the fixed footprint closes the generation"),
+            RuntimeError::PreAuthApplicationActivity
+        );
+        assert_eq!(pair.server.classic_connect_admissions, 0);
+        assert!(pair
+            .server
+            .transport
+            .stream_capacity(first_peer_uni_stream_beyond_control_qpack_and_grease)
+            .is_ok());
+        assert_ne!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+    }
+
+    #[test]
+    fn t027b2d4b_pre_auth_peer_uni_overflow_cannot_cycle_before_control() {
+        let mut pair = TestPair::new().expect("construct pre-auth peer-uni pair");
+        pair.drive_until_h3()
+            .expect("reach the H3 gate without authenticating");
+        assert!(!pair.server.is_authenticated());
+
+        let first_peer_uni_stream_beyond_control_qpack_and_grease = 18_u64;
+        assert_eq!(
+            pair.client.stream_send(
+                first_peer_uni_stream_beyond_control_qpack_and_grease,
+                &[0x21],
+                true,
+            ),
+            Ok(1)
+        );
+        assert_eq!(
+            pair.client_to_server()
+                .expect_err("pre-auth peer-uni overflow closes before H3 drain"),
+            RuntimeError::PreAuthApplicationActivity
+        );
+        assert!(pair
+            .server
+            .transport
+            .stream_capacity(first_peer_uni_stream_beyond_control_qpack_and_grease)
+            .is_ok());
+        assert_ne!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+    }
+
+    #[tokio::test]
     async fn t027b2d4a_deferred_finished_still_observes_stop_before_target_io() {
         use tokio::io::AsyncWriteExt;
 
@@ -7382,7 +8015,7 @@ auth:
     }
 
     #[tokio::test]
-    async fn t027b2d4a_terminal_collection_marks_tombstone_and_stop_closes_generation() {
+    async fn t027b2d4b_terminal_collection_reclaims_slot_and_stop_closes_generation() {
         let (mut collected, stream_id, _peer) =
             application_terminal_pair(b"collection-mark.invalid:443").await;
         assert!(collected
@@ -7398,16 +8031,9 @@ auth:
         collected
             .server
             .observe_pending_stream_lifecycle(false)
-            .expect("known application-terminal stream confirms normal collection");
-        let tombstone = collected.server.pending_connects.slots[0]
-            .as_ref()
-            .expect("collection-confirmed tombstone remains quota-occupying");
-        assert_eq!(
-            tombstone.lifecycle,
-            ClassicConnectLifecycle::ApplicationTerminalCollectionConfirmed
-        );
-        assert!(tombstone.opened_target.is_none());
-        assert_eq!(collected.server.pending_connects.len(), 1);
+            .expect("known application-terminal stream confirms collection and reclaims");
+        assert!(collected.server.pending_connects.slots[0].is_none());
+        assert_eq!(collected.server.pending_connects.len(), 0);
 
         let (mut stopped, stopped_stream, _peer) =
             application_terminal_pair(b"terminal-stop-close.invalid:443").await;
@@ -7430,10 +8056,10 @@ auth:
     }
 
     #[tokio::test]
-    async fn t027b2d4a_eight_terminal_tombstones_stay_bounded_and_reject_ninth_slot() {
+    async fn t027b2d4b_eight_terminal_slots_reclaim_and_reuse_the_fixed_window() {
         use tokio::io::AsyncWriteExt;
 
-        let (mut pair, _stream_ids, mut peers) =
+        let (mut pair, stream_ids, mut peers) =
             eight_shutdown_pending_pair(b"eight-terminal.invalid:443").await;
         for peer in &mut peers {
             peer.shutdown()
@@ -7501,6 +8127,80 @@ auth:
                 0
             );
         }
+
+        pair.poll_exact_classic_connect_finishes(&stream_ids)
+            .expect("shuttle and consume each exact response FIN once");
+        pair.server
+            .observe_pending_stream_lifecycle(false)
+            .expect("collect and reclaim all eight terminal streams");
+        assert_eq!(pair.server.pending_connects.len(), 0);
+        assert!(pair
+            .server
+            .pending_connects
+            .slots
+            .iter()
+            .all(Option::is_none));
+        assert_eq!(
+            pair.server.classic_connect_admissions,
+            MAX_PENDING_CLASSIC_CONNECTS
+        );
+        for old_stream_id in &stream_ids {
+            assert_eq!(
+                pair.server.transport.stream_capacity(*old_stream_id),
+                Err(quiche::Error::InvalidStreamState(*old_stream_id))
+            );
+        }
+
+        pair.server_to_client()
+            .expect("return normal QUIC stream credit after collection");
+        let headers = test_classic_connect_headers(b"eight-reused.invalid:443", false);
+        let mut reused_stream_ids = Vec::with_capacity(MAX_PENDING_CLASSIC_CONNECTS);
+        let mut retained_tokens = Vec::with_capacity(MAX_PENDING_CLASSIC_CONNECTS);
+        for expected_slot in 0..MAX_PENDING_CLASSIC_CONNECTS {
+            let reused_stream_id = pair
+                .send_classic_connect(&headers, false)
+                .expect("queue one new CONNECT after terminal collection");
+            assert!(!stream_ids.contains(&reused_stream_id));
+            pair.client_to_server()
+                .expect("admit one new CONNECT on the same generation");
+            let token = pair
+                .server
+                .take_target_open_dispatch(Instant::now())
+                .expect("take one reused-slot dispatch")
+                .expect("one reused-slot dispatch exists");
+            assert_eq!(token.slot_index, expected_slot);
+            assert_eq!(token.stream_id, reused_stream_id);
+            reused_stream_ids.push(reused_stream_id);
+            retained_tokens.push(token);
+        }
+        assert_eq!(
+            pair.server.classic_connect_admissions,
+            MAX_PENDING_CLASSIC_CONNECTS * 2
+        );
+        assert_eq!(
+            pair.server.pending_connects.len(),
+            MAX_PENDING_CLASSIC_CONNECTS
+        );
+        assert_eq!(
+            reused_stream_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            MAX_PENDING_CLASSIC_CONNECTS
+        );
+        for old_stream_id in &stream_ids {
+            assert_eq!(
+                pair.server.transport.stream_capacity(*old_stream_id),
+                Err(quiche::Error::InvalidStreamState(*old_stream_id))
+            );
+        }
+        let overflow = test_classic_connect_headers(b"reused-overflow.invalid:443", false);
+        assert!(matches!(
+            pair.server.prepare_classic_connect(10_000, &overflow, true),
+            Err(RuntimeError::ClassicConnectAdmissionRejected)
+        ));
+        drop(retained_tokens);
     }
 
     #[tokio::test]
@@ -8005,22 +8705,8 @@ auth:
                 .kind(),
             std::io::ErrorKind::UnexpectedEof
         );
-        let pending = pair.server.pending_connects.slots[0]
-            .as_ref()
-            .expect("orthogonal slot remains occupied");
-        assert_eq!(
-            pending.dispatch_state,
-            TargetDispatchState::ResponseFinAccepted
-        );
-        assert_eq!(pending.upload_state, UploadDispatchState::WriteHalfClosed);
-        assert_eq!(
-            pending.lifecycle,
-            ClassicConnectLifecycle::ApplicationTerminalCollectionConfirmed
-        );
-        assert!(pending.opened_target.is_none());
-        assert!(pending.target_payload.iter().all(|byte| *byte == 0));
-        assert!(pending.upload_payload.iter().all(|byte| *byte == 0));
-        assert_eq!(pair.server.pending_connects.len(), 1);
+        assert!(pair.server.pending_connects.slots[0].is_none());
+        assert_eq!(pair.server.pending_connects.len(), 0);
     }
 
     #[tokio::test]

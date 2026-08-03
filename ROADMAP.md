@@ -17,60 +17,68 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2d4a — terminal lifecycle and generation-bound slot identity
+### T027b-2d4b — bounded terminal slot reclaim and same-generation reuse
 
-- **User result:** A private Classic CONNECT drops its original target socket
-  only after request FIN and every buffered upload have reached target write-half
-  shutdown, while target EOF, every buffered download byte, and response FIN
-  have reached local quiche acceptance. The fixed slot then remains an
-  unreusable tombstone carrying the old generation and stream identity; late
-  readiness or transport state cannot be mistaken for another flow.
-- **Scope:** Keep exactly eight fixed slots, one unsplit target socket owner per
-  active slot, the existing independent 16 KiB buffers, and the shared
-  four-operation/64-KiB rotating I/O round. Freeze generation, H3 stream, slot,
-  and direction in every externally returned target-readiness signal, and bind
-  each target-open completion token to its exact slot. Model application
-  terminal state separately from quiche transport collection. A known opened
-  stream may record transport collection before target upload finishes only
-  after request `Finished`, local response-FIN acceptance, exact live identity,
-  and exact `InvalidStreamState` all agree. It retains the socket and can finish
-  only its existing bounded upload/write/shutdown work. The small pre-poll
-  exception that lets an already queued H3 `Finished` become visible is followed
-  in the same H3 drive by a non-deferred transport check.
-- **Acceptance:** Prove with real loopback transport that an unacknowledged
-  response FIN leaves the old stream present, a real pre-collection
-  `STOP_SENDING` returns `StreamStopped` and closes the generation, and a fully
-  acknowledged known stream becomes exact `InvalidStreamState`. Preserve the
-  valid target-EOF/response-FIN-before-request-FIN order: record narrowly
-  confirmed transport collection, finish the exact upload and target shutdown,
-  then drop the socket once and retain a collection-confirmed tombstone. Prove a
-  STOP arriving in the deferred-`Finished` window is rejected before target I/O.
-  Prove every other premature `InvalidStreamState` fails closed. Prove wrong or
-  stale generation, stream, slot, direction, out-of-range slot, duplicate signal,
-  non-active early return, and wrong/out-of-order target-open completion reject
-  before cursor, H3, socket, buffer, or state mutation. Eight terminal tombstones
-  remain bounded, still reject a ninth flow, and cannot poison another active
-  slot's readiness. Preserve all T027b-2d0 through T027b-2d3, T027b-2c4/2c5,
+- **User result:** A private Classic CONNECT returns its fixed slot only after
+  both the application work and the exact quiche stream collection are
+  complete. Another stream on the same authenticated generation can then reuse
+  that slot, while an old readiness signal, target-open completion, or stream ID
+  can never act on the new flow.
+- **Scope:** Preserve exactly eight fixed live slots, one unsplit target socket
+  owner per active slot, the two independent 16 KiB buffers, the existing
+  16-position fairness cursor, and the shared four-operation/64-KiB I/O round.
+  Use one synchronous reclaim helper for both legal terminal orderings. Before
+  `take()` of the exact slot, revalidate the active capability, generation,
+  stream, frame limit, unique live identity, request FIN, target write-half
+  shutdown, response-FIN acceptance, absent target socket, zeroed buffers, and
+  exact `InvalidStreamState(stream_id)`. `StreamStopped` and every other result
+  fail closed. Add a checked scalar lifetime budget of 128 successful Classic
+  CONNECT admissions per generation. Separately freeze the current peer
+  unidirectional H3 footprint to its first four monotonically numbered stream
+  IDs (control, two QPACK streams, and quiche GREASE); reject a higher peer-uni
+  ordinal from transport readability before H3 can silently drain and collect
+  it. Together these rules bound quiche's collected-stream set. Failed Classic
+  insertion does not consume its counter and generation cleanup resets it. Do
+  not add a retired-ID map, registry, epoch, timer, task, channel, or second
+  socket owner.
+- **Acceptance:** Keep an application-terminal stream in its slot until exact
+  collection, so a real late `STOP_SENDING` still closes the generation. Prove
+  both orderings: application terminal followed by collection, and transport
+  collection followed by the final bounded upload/shutdown work. Prove exact
+  collection reclaims in the same synchronous call. With real loopback H3,
+  occupy all eight slots and reject a ninth, collect all eight, reclaim them,
+  then admit eight different stream IDs on the same generation into the same
+  fixed slot indexes. Every old ID remains `InvalidStreamState`. Prove stale
+  readiness and a duplicated old target-open token reject before cursor, H3,
+  socket, buffer, or new-slot mutation. Prove the lifetime counter's failed
+  insertion, 127-to-128 success, 129th rejection, checked arithmetic, and reset
+  on generation cleanup. Prove the first peer uni stream above the frozen H3
+  footprint is accepted by the QUIC concurrency window but rejected before H3
+  drain/collection, without consuming a Classic admission. Preserve the fixed
+  memory/I/O budgets and all T027b-2d0 through T027b-2d4a, T027b-2c4/2c5,
   direct-v3 auth, actor, EOF, flush, join, teardown, opener, privacy, and
   source-shape gates.
-- **Out of scope:** T027b-2d4b slot reclaim/reuse remains a later independent
-  candidate and may use only an application-terminal, collection-confirmed
-  tombstone. This slice never clears or reallocates a terminal slot. Domain DNS,
-  a product caller, runtime readiness, new timers, polling, tasks, channels,
-  registries, maps, epochs, schedulers, metrics, socket splitting or a second
-  owner, vendor changes, public API, config, schema, wire or version changes,
-  dependencies, manifests, lockfiles, core, client, SDK, CLI, `STATUS.md`, CI,
-  remote, deployment, release, real-network, credential, infrastructure, and
+- **Out of scope:** This slice does not promise unbounded sequential streams;
+  reaching the fixed lifetime budget closes further Classic CONNECT admission
+  for that generation. Unknown peer-uni extension streams above the frozen
+  footprint are intentionally not an extension mechanism in this strict
+  private foundation. Domain DNS, a product caller, runtime readiness, peer
+  receipt proof, new timers, polling sleeps, tasks, channels, registries, maps,
+  epochs, schedulers, metrics, socket splitting or a second owner, vendor
+  changes, public API, config, schema, wire or version changes, dependencies,
+  manifests, lockfiles, core, client, SDK, CLI, `STATUS.md`, CI, remote,
+  deployment, release, real-network, credential, infrastructure, and
   system-network work remain deferred.
 - **Stop conditions:** Stop before any file outside `ROADMAP.md`,
   `crates/maverick-server/src/quiche_runtime.rs`, and
-  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if public quiche
-  facts cannot keep normal collection distinct from observable `STOP_SENDING`;
-  if an identity mismatch can reach an early success, cursor movement, H3 or
-  socket I/O, or state mutation; if target cleanup requires a second operation
-  budget or owner; if this slice requires slot reuse, a timer, polling sleep,
-  saved future, task, channel, growing registry, unsafe code, vendor patch,
-  dependency, public surface, fourth file, or `STATUS.md` change.
+  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if exact
+  `InvalidStreamState` cannot be rechecked immediately before reclaim; if an
+  application-terminal but uncollected slot must be reused; if quiche can
+  recreate a collected stream ID; if stale identity can reach cursor, H3,
+  socket, buffer, or state mutation; if cleanup or reuse requires another
+  operation budget, owner, dynamic registry, epoch, timer, polling sleep, saved
+  future, task, channel, unsafe code, vendor patch, dependency, public surface,
+  fourth file, or `STATUS.md` change.
 
 This remains repository-local, private, feature-gated, and temporarily limited
 to IP-literal production target opening. It is a local bidirectional foundation

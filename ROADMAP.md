@@ -17,49 +17,50 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2b2-1 — direct-H3 server role, SNI, and SETTINGS foundation
+### T027b-2b2-2 — direct-H3 server auth-v3 generation runtime
 
-- **User result:** The private native-quiche server foundation freezes one
-  trusted config-v3 direct-H3 server role before certificate access, UDP bind,
-  or other I/O. Every admitted connection retains that same role owner, checks
-  the live TLS SNI byte for byte, and becomes pre-auth foundation-ready only
-  after actual peer SETTINGS processing proves the fixed bounded H3 contract.
-- **Scope:** Keep one private `Arc<ServerRoleConfig>` owner across endpoint,
-  registry, connection config, and connection actor ownership. Require exact
-  live SNI, QUIC Datagram queues of 32/32, a 16-KiB field-section limit, zero
-  QPACK table and blocked streams, Extended CONNECT, H3 Datagram, and the peer
-  QUIC Datagram transport parameter. Poll mandatory H3 work while treating a
-  missing peer SETTINGS record as not ready, and reject every application H3
-  event or readable QUIC Datagram before authentication with fixed,
-  privacy-safe connection closure.
-- **Acceptance:** Retain red-to-green evidence for the former disabled
-  Datagram and Extended CONNECT settings and H3-object-only readiness; reject
-  legacy and direct-H2 roles before certificate or bind work; prove one Arc
-  owner reaches each connection; cover missing, case-mismatched, different, and
-  exact SNI; use live quiche peers to prove readiness waits for processed
-  SETTINGS and to reject every peer fault representable by the live API; drive
-  the production validator across every missing or mismatched required setting;
-  keep SETTINGS and QPACK handling internal; reject pre-auth Datagrams,
-  ordinary requests, and auth-shaped POST requests with code `0x105` and an
-  empty reason; retain the five-second handshake wall deadline while waiting;
-  and preserve all existing termination, CID, source/global-capacity, bounded
-  flush, actor-inbox, and `JoinSet` tests.
-- **Out of scope:** No ClientControl, ServerConfirmation, exporter, PSK, MAC,
-  expiry, capability, or authentication state; no request authority or path
-  authentication parser; no CONNECT, flow admission, target, DNS, egress,
-  opener, TCP, relay, metric, data plane, public runtime/config/SDK/CLI API,
-  schema, protocol, frame, wire, version, `STATUS.md`, CI, remote, deployment,
-  release, real network, or system-network change. This foundation is not user
-  H3, target connectivity, relay capability, or a product result.
-- **Stop conditions:** Stop on a fifth changed file, manifest, lockfile,
-  dependency, vendor, core, client, SDK, CLI, spec, config, or status change;
-  any need to make the public role cloneable or add a public extraction API;
-  a server dependency on the client; global auth state, an unbounded resource,
-  auth or data-plane work; unavailable live SNI or peer SETTINGS; or any legacy
-  H3, strict-push, privacy, lifecycle, CID, capacity, or `JoinSet` regression.
+- **User result:** One private native-quiche server connection authenticates
+  its one physical generation exactly once after the existing role, live SNI,
+  TLS 1.3, ALPN, and peer-SETTINGS gates. Only complete acceptance of the exact
+  320-byte confirmation body with final FIN installs a minimal, secret-free
+  authenticated-generation capability.
+- **Scope:** Preselect the singleton trusted local profile before wire input;
+  accept only the frozen POST control request on one stream; export the frozen
+  32-byte auth-v3 value from that same live TLS connection; delegate control
+  verification and confirmation encoding to core; retry only identical
+  response headers and the remaining confirmation suffix; enforce a fixed
+  ten-second auth wall plus the frozen credential-capped admission and hard
+  expiries; and use the existing `0x105` empty-reason close, flush, drain, and
+  actor-reclaim lifecycle for slice-owned failures.
+- **Acceptance:** Prove live same-generation success, exact
+  SETTINGS-before-Headers ordering, fixed 256/320-byte shapes, fragmented
+  request collection, blocked and partial response retry, final-FIN-only
+  activation, duplicate and second-stream rejection, reset/stop rejection,
+  wrong live exporter/profile and wire-field rejection, Datagram and other
+  pre-auth activity rejection,
+  an activity-independent wall deadline, expiry/revocation races, stable
+  generation identity, bounded resources and errors, value-free formatting,
+  secret-free capability state, and real loopback `0x105` flush/drain/reclaim.
+  Preserve the focused T027b-2b1c and T027b-2b2-1 lifecycle, strict-push,
+  SETTINGS, CID, capacity, inbox, and `JoinSet` coverage.
+- **Out of scope:** No T027b-2b3 flow gate; CONNECT flow, target or endpoint
+  parsing, DNS, egress, opener, TCP/UDP relay, or T028 data plane; no production
+  client runtime, fronted or per-flow MAC, H2 fallback, legacy downgrade, retry,
+  public API, manifest, dependency, schema, protocol, auth, frame, wire,
+  version, `STATUS.md`, CI, remote, deployment, release, real-network, or
+  system-network change. This private feature-gated slice is not runnable H3,
+  target connectivity, relay capability, runtime readiness, or a product
+  result.
+- **Stop conditions:** Stop on any fourth product file, registry, core, client,
+  manifest, lockfile, dependency, vendor, public API, spec, config, version, or
+  status change; any server dependency on client code; registry scan, multiple
+  PSK attempt, wire-selected profile, copied cryptography or verification
+  rules, unbounded resource, secret or untrusted-value exposure, target/data-
+  plane seam, or regression in strict peer-push, close/drain, CID, capacity, or
+  actor ownership.
 
-This remains a private repository-local role/SNI/peer-SETTINGS and pre-auth
-rejection foundation only.
+This remains a private repository-local direct-H3 authentication and generation
+capability lifecycle only.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

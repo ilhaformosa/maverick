@@ -25,6 +25,8 @@ use tokio::time::{timeout_at, Instant};
 use crate::quiche_registry::{
     ActorInboundDisposition, ActorPacket, ConnectionRegistry, RegistryError,
 };
+#[cfg(test)]
+use crate::quiche_runtime::AUTH_WALL_TIMEOUT;
 use crate::quiche_runtime::{
     ConnectionLifecycle, FrozenDirectV3ServerRole, PacketMeta, ServerConnection, MAX_PACKET_BYTES,
 };
@@ -1337,6 +1339,7 @@ fallback:
         assert_eq!(SOCKET_RECV_BYTES, 1_351);
         assert_eq!(MAX_OUTBOUND_PACKETS_PER_ROUND, 16);
         assert_eq!(HANDSHAKE_TIMEOUT.as_secs(), 5);
+        assert_eq!(AUTH_WALL_TIMEOUT.as_secs(), 10);
         assert_eq!(MAX_IDLE_TIMEOUT.as_secs(), 5);
         assert_eq!(SOCKET_SEND_TIMEOUT.as_secs(), 2);
         assert_eq!(ACTOR_TERMINATION_BUDGET.as_millis(), 1_500);
@@ -1935,6 +1938,54 @@ fallback:
 
         let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
         endpoint_result.expect("cancel endpoint joins every connection actor");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+    }
+
+    #[tokio::test]
+    async fn t027b2b2_2_auth_wall_flushes_105_and_reclaims_real_actor() {
+        let credentials = TestCredentials::new();
+        let (mut endpoint, cancel) = Endpoint::bind_test(credentials.server_role())
+            .await
+            .expect("bind auth-wall endpoint");
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xb2).await;
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            let started = Instant::now();
+            timeout(AUTH_WALL_TIMEOUT + Duration::from_secs(3), async {
+                loop {
+                    client
+                        .connection
+                        .send_ack_eliciting()
+                        .expect("pre-auth activity remains bounded");
+                    client.send_pending().await;
+                    client.receive_available().await;
+                    if client.connection.peer_error().is_some() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("absolute auth wall closes despite continuing activity");
+            let elapsed = Instant::now().duration_since(started);
+            assert!(elapsed >= AUTH_WALL_TIMEOUT - Duration::from_secs(1));
+            assert!(elapsed < AUTH_WALL_TIMEOUT + ACTOR_TERMINATION_BUDGET);
+            let peer_error = client
+                .connection
+                .peer_error()
+                .expect("real peer receives auth-wall close");
+            assert!(peer_error.is_app);
+            assert_eq!(peer_error.error_code, 0x105);
+            assert!(peer_error.reason.is_empty());
+            cancel.send(true).expect("stop endpoint after actor close");
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("auth-wall endpoint reclaims its actor");
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
         assert!(endpoint.unregistered_actor.is_none());

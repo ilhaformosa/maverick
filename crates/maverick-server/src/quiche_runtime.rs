@@ -10,12 +10,19 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use boring::ssl::{SslRef, SslVersion};
+use maverick_core::auth_v3::{
+    encode_auth_v3_server_confirmation, verify_auth_v3_client_control, AuthV3Carrier,
+    AuthV3ServerConfirmationInput, AuthV3TlsVersion, AUTH_V3_CLIENT_CONTROL_LEN,
+    AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN, AUTH_V3_SERVER_CONFIRMATION_LEN,
+};
 use maverick_core::config::{
     DirectV3ServerRoleConfig, DirectV3TransportStrategy, ServerRoleConfig,
 };
+use quiche::h3::NameValue;
+use rand::{rngs::OsRng, TryRngCore};
 
 pub(super) const MAX_PACKET_BYTES: usize = 1_350;
 const INITIAL_CONNECTION_WINDOW_BYTES: u64 = 1_048_576;
@@ -34,6 +41,13 @@ const ACTIVE_CONNECTION_ID_LIMIT: u64 = 2;
 const PATH_CHALLENGE_QUEUE_LIMIT: usize = 3;
 const MAX_IDLE_TIMEOUT_MILLIS: u64 = 5_000;
 const PRE_AUTH_CLOSE_CODE: u64 = 0x105;
+pub(super) const AUTH_WALL_TIMEOUT: Duration = Duration::from_secs(10);
+const AUTH_CONTENT_TYPE: &[u8] = b"application/maverick-auth-v3";
+const AUTH_ADMISSION_LIFETIME_SECONDS: u64 = 1_800;
+const AUTH_HARD_LIFETIME_SECONDS: u64 = 86_400;
+const AUTH_MAX_FRAME_SIZE: u32 = 65_536;
+const AUTH_MAX_CONCURRENT_FLOWS: u32 = 128;
+const MAX_H3_EVENTS_PER_DRIVE: usize = 8;
 const SETTINGS_QPACK_MAX_TABLE_CAPACITY: u64 = 0x1;
 const SETTINGS_MAX_FIELD_SECTION_SIZE: u64 = 0x6;
 const SETTINGS_QPACK_BLOCKED_STREAMS: u64 = 0x7;
@@ -57,6 +71,7 @@ impl FrozenDirectV3ServerRole {
         if owner.version() != 3 || direct.transport_strategy() != DirectV3TransportStrategy::H3 {
             return Err(RuntimeError::RoleUnavailable);
         }
+        let _preselected_before_io = direct.preselected_profile();
         Ok(Self { owner })
     }
 
@@ -70,6 +85,10 @@ impl FrozenDirectV3ServerRole {
         self.direct_v3().expected_authority().as_bytes()
     }
 
+    fn tunnel_path(&self) -> &[u8] {
+        self.direct_v3().tunnel_path().as_bytes()
+    }
+
     pub(super) fn listen(&self) -> SocketAddr {
         self.direct_v3().listen()
     }
@@ -77,6 +96,319 @@ impl FrozenDirectV3ServerRole {
     #[cfg(test)]
     pub(super) fn has_owner(&self, expected: &Arc<ServerRoleConfig>) -> bool {
         Arc::ptr_eq(&self.owner, expected)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerAuthState {
+    Fresh,
+    Authenticating,
+    SendingConfirmation,
+    Authenticated,
+    Failed,
+}
+
+struct AuthenticatedGenerationCapability {
+    generation: ServerSourceConnectionId,
+    session_id: [u8; 16],
+    credential_epoch: u64,
+    admission_expiry_unix: u64,
+    hard_expiry_unix: u64,
+    admission_deadline: Instant,
+    hard_deadline: Instant,
+    active: bool,
+    revoked: bool,
+    carrier: AuthV3Carrier,
+    max_frame_size: u32,
+    max_concurrent_flows: u32,
+}
+
+impl AuthenticatedGenerationCapability {
+    fn activate_at(mut self, now: Instant) -> Result<Self, RuntimeError> {
+        if self.active
+            || self.revoked
+            || now >= self.admission_deadline
+            || now >= self.hard_deadline
+        {
+            return Err(RuntimeError::AuthenticationExpired);
+        }
+        self.active = true;
+        Ok(self)
+    }
+
+    fn is_active_at(&self, now: Instant) -> bool {
+        self.active && !self.revoked && now < self.hard_deadline
+    }
+
+    fn revoke(&mut self) {
+        self.active = false;
+        self.revoked = true;
+    }
+
+    fn pending_deadline(&self) -> Instant {
+        self.admission_deadline.min(self.hard_deadline)
+    }
+
+    fn pending_is_valid_at(&self, now: Instant) -> bool {
+        !self.active && !self.revoked && now < self.admission_deadline && now < self.hard_deadline
+    }
+}
+
+impl fmt::Debug for AuthenticatedGenerationCapability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("authenticated server generation capability")
+    }
+}
+
+struct ServerAuthMachine {
+    state: ServerAuthState,
+    wall_deadline: Option<Instant>,
+    stream_id: Option<u64>,
+    control: [u8; AUTH_V3_CLIENT_CONTROL_LEN],
+    control_len: usize,
+    exporter: [u8; AUTH_V3_EXPORTER_LEN],
+    confirmation: [u8; AUTH_V3_SERVER_CONFIRMATION_LEN],
+    confirmation_headers_sent: bool,
+    confirmation_offset: usize,
+    pending: Option<AuthenticatedGenerationCapability>,
+    capability: Option<AuthenticatedGenerationCapability>,
+}
+
+impl ServerAuthMachine {
+    fn fresh() -> Self {
+        Self {
+            state: ServerAuthState::Fresh,
+            wall_deadline: None,
+            stream_id: None,
+            control: [0; AUTH_V3_CLIENT_CONTROL_LEN],
+            control_len: 0,
+            exporter: [0; AUTH_V3_EXPORTER_LEN],
+            confirmation: [0; AUTH_V3_SERVER_CONFIRMATION_LEN],
+            confirmation_headers_sent: false,
+            confirmation_offset: 0,
+            pending: None,
+            capability: None,
+        }
+    }
+
+    fn transition(&mut self, next: ServerAuthState) -> Result<(), RuntimeError> {
+        let legal = matches!(
+            (self.state, next),
+            (ServerAuthState::Fresh, ServerAuthState::Authenticating)
+                | (
+                    ServerAuthState::Authenticating,
+                    ServerAuthState::SendingConfirmation
+                )
+                | (
+                    ServerAuthState::SendingConfirmation,
+                    ServerAuthState::Authenticated
+                )
+        );
+        if !legal {
+            return Err(RuntimeError::AuthenticationRejected);
+        }
+        self.state = next;
+        Ok(())
+    }
+
+    fn start(
+        &mut self,
+        stream_id: u64,
+        exporter: [u8; AUTH_V3_EXPORTER_LEN],
+    ) -> Result<(), RuntimeError> {
+        self.transition(ServerAuthState::Authenticating)?;
+        self.stream_id = Some(stream_id);
+        self.exporter = exporter;
+        Ok(())
+    }
+
+    fn enter_gate(&mut self, now: Instant) -> Result<(), RuntimeError> {
+        if self.state != ServerAuthState::Fresh {
+            return Ok(());
+        }
+        if self.wall_deadline.is_none() {
+            self.wall_deadline = now.checked_add(AUTH_WALL_TIMEOUT);
+        }
+        self.wall_deadline
+            .is_some()
+            .then_some(())
+            .ok_or(RuntimeError::AuthenticationUnavailable)
+    }
+
+    fn install_confirmation(
+        &mut self,
+        confirmation: [u8; AUTH_V3_SERVER_CONFIRMATION_LEN],
+        pending: AuthenticatedGenerationCapability,
+    ) -> Result<(), RuntimeError> {
+        self.transition(ServerAuthState::SendingConfirmation)?;
+        self.control.fill(0);
+        self.control_len = 0;
+        self.exporter.fill(0);
+        self.confirmation = confirmation;
+        self.confirmation_headers_sent = false;
+        self.confirmation_offset = 0;
+        self.pending = Some(pending);
+        Ok(())
+    }
+
+    fn authenticate(&mut self, now: Instant) -> Result<(), RuntimeError> {
+        if !self.confirmation_headers_sent
+            || self.confirmation_offset != AUTH_V3_SERVER_CONFIRMATION_LEN
+        {
+            return Err(RuntimeError::AuthenticationRejected);
+        }
+        if self.wall_deadline.is_some_and(|deadline| now >= deadline) {
+            return Err(RuntimeError::AuthenticationExpired);
+        }
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or(RuntimeError::AuthenticationRejected)?;
+        if !pending.pending_is_valid_at(now) {
+            return Err(RuntimeError::AuthenticationExpired);
+        }
+        let pending = self
+            .pending
+            .take()
+            .ok_or(RuntimeError::AuthenticationRejected)?;
+        let capability = pending.activate_at(now)?;
+        self.transition(ServerAuthState::Authenticated)?;
+        self.confirmation.fill(0);
+        self.wall_deadline = None;
+        self.capability = Some(capability);
+        Ok(())
+    }
+
+    fn mark_confirmation_headers_sent(&mut self) -> Result<(), RuntimeError> {
+        if self.state != ServerAuthState::SendingConfirmation || self.confirmation_headers_sent {
+            return Err(RuntimeError::AuthenticationRejected);
+        }
+        self.confirmation_headers_sent = true;
+        Ok(())
+    }
+
+    fn record_confirmation_write(
+        &mut self,
+        written: usize,
+        requested: usize,
+    ) -> Result<bool, RuntimeError> {
+        let remaining = AUTH_V3_SERVER_CONFIRMATION_LEN
+            .checked_sub(self.confirmation_offset)
+            .ok_or(RuntimeError::AuthenticationRejected)?;
+        if self.state != ServerAuthState::SendingConfirmation
+            || !self.confirmation_headers_sent
+            || written == 0
+            || written > requested
+            || requested != remaining
+        {
+            return Err(RuntimeError::AuthenticationRejected);
+        }
+        self.confirmation_offset += written;
+        Ok(written == requested)
+    }
+
+    fn fail(&mut self) {
+        self.clear_buffers();
+        if let Some(pending) = self.pending.as_mut() {
+            pending.revoke();
+        }
+        if let Some(capability) = self.capability.as_mut() {
+            capability.revoke();
+        }
+        self.pending = None;
+        self.capability = None;
+        self.wall_deadline = None;
+        self.stream_id = None;
+        self.state = ServerAuthState::Failed;
+    }
+
+    fn revoke(&mut self) {
+        if let Some(pending) = self.pending.as_mut() {
+            pending.revoke();
+        }
+        if let Some(capability) = self.capability.as_mut() {
+            capability.revoke();
+        }
+    }
+
+    fn clear_buffers(&mut self) {
+        self.control.fill(0);
+        self.control_len = 0;
+        self.exporter.fill(0);
+        self.confirmation.fill(0);
+        self.confirmation_headers_sent = false;
+        self.confirmation_offset = 0;
+    }
+
+    fn bound_stream(&self) -> Result<u64, RuntimeError> {
+        self.stream_id.ok_or(RuntimeError::AuthenticationRejected)
+    }
+
+    fn is_authenticated(&self) -> bool {
+        self.state == ServerAuthState::Authenticated
+            && self
+                .capability
+                .as_ref()
+                .is_some_and(|capability| capability.is_active_at(Instant::now()))
+    }
+
+    fn capability_deadline(&self) -> Option<Instant> {
+        let pending = self
+            .pending
+            .as_ref()
+            .filter(|capability| !capability.active && !capability.revoked)
+            .map(AuthenticatedGenerationCapability::pending_deadline);
+        let active = self
+            .capability
+            .as_ref()
+            .filter(|capability| capability.active && !capability.revoked)
+            .map(|capability| capability.hard_deadline);
+        match (pending, active) {
+            (Some(pending), Some(active)) => Some(pending.min(active)),
+            (Some(pending), None) => Some(pending),
+            (None, Some(active)) => Some(active),
+            (None, None) => None,
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        match (self.wall_deadline, self.capability_deadline()) {
+            (Some(wall), Some(capability)) => Some(wall.min(capability)),
+            (Some(wall), None) => Some(wall),
+            (None, Some(capability)) => Some(capability),
+            (None, None) => None,
+        }
+    }
+
+    fn is_expired_at(&self, now: Instant) -> bool {
+        self.wall_deadline.is_some_and(|deadline| now >= deadline)
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| !pending.pending_is_valid_at(now))
+            || self
+                .capability
+                .as_ref()
+                .is_some_and(|capability| !capability.is_active_at(now))
+    }
+}
+
+impl Drop for ServerAuthMachine {
+    fn drop(&mut self) {
+        self.revoke();
+        self.clear_buffers();
+    }
+}
+
+impl fmt::Debug for ServerAuthMachine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.state {
+            ServerAuthState::Fresh => "fresh server authentication state",
+            ServerAuthState::Authenticating => "authenticating server state",
+            ServerAuthState::SendingConfirmation => "sending server confirmation state",
+            ServerAuthState::Authenticated => "authenticated server state",
+            ServerAuthState::Failed => "failed server authentication state",
+        })
     }
 }
 
@@ -157,6 +489,8 @@ pub(super) struct ServerConnection {
     h3_config: Option<quiche::h3::Config>,
     h3: Option<quiche::h3::Connection>,
     role: FrozenDirectV3ServerRole,
+    generation: ServerSourceConnectionId,
+    auth: ServerAuthMachine,
     pre_auth_foundation: PreAuthFoundationState,
     local_address: SocketAddr,
     peer_address: SocketAddr,
@@ -212,6 +546,8 @@ impl ServerConnection {
             h3_config: Some(bounded_h3_config()?),
             h3: None,
             role: config.role.clone(),
+            generation: source_connection_id,
+            auth: ServerAuthMachine::fresh(),
             pre_auth_foundation: PreAuthFoundationState::AwaitingHandshake,
             local_address: meta.to,
             peer_address: meta.from,
@@ -230,6 +566,7 @@ impl ServerConnection {
         length: usize,
         meta: PacketMeta,
     ) -> Result<(), RuntimeError> {
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
         if self.lifecycle() == ConnectionLifecycle::Closed {
             return Err(RuntimeError::PacketRejected);
         }
@@ -244,8 +581,14 @@ impl ServerConnection {
             },
         ) {
             Ok(_) | Err(quiche::Error::Done) => {}
-            Err(_) => return Err(RuntimeError::PacketRejected),
+            Err(_) => {
+                if self.lifecycle() != ConnectionLifecycle::Active {
+                    self.auth.fail();
+                }
+                return Err(RuntimeError::PacketRejected);
+            }
         }
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
         self.drive_h3()
     }
 
@@ -253,7 +596,9 @@ impl ServerConnection {
         &mut self,
         packet: &mut [u8; MAX_PACKET_BYTES],
     ) -> Result<Option<(usize, PacketMeta)>, RuntimeError> {
-        match self.transport.send(packet) {
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
+        self.drive_h3()?;
+        let result = match self.transport.send(packet) {
             Ok((length, info)) => {
                 if length > MAX_PACKET_BYTES
                     || info.from != self.local_address
@@ -271,15 +616,29 @@ impl ServerConnection {
             }
             Err(quiche::Error::Done) => Ok(None),
             Err(_) => Err(RuntimeError::PacketUnavailable),
-        }
+        };
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
+        result
     }
 
     pub(super) fn next_timeout(&self) -> Option<Duration> {
-        self.transport.timeout()
+        let transport = self.transport.timeout();
+        let auth = self
+            .auth
+            .next_deadline()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        match (transport, auth) {
+            (Some(transport), Some(auth)) => Some(transport.min(auth)),
+            (Some(transport), None) => Some(transport),
+            (None, Some(auth)) => Some(auth),
+            (None, None) => None,
+        }
     }
 
     pub(super) fn on_timeout(&mut self) -> Result<(), RuntimeError> {
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
         self.transport.on_timeout();
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
         self.drive_h3()
     }
 
@@ -289,6 +648,10 @@ impl ServerConnection {
 
     pub(super) fn pre_auth_foundation_ready(&self) -> bool {
         self.pre_auth_foundation.is_ready()
+    }
+
+    pub(super) fn is_authenticated(&self) -> bool {
+        self.lifecycle() == ConnectionLifecycle::Active && self.auth.is_authenticated()
     }
 
     pub(super) fn lifecycle(&self) -> ConnectionLifecycle {
@@ -304,6 +667,7 @@ impl ServerConnection {
     }
 
     pub(super) fn close(&mut self) -> Result<(), RuntimeError> {
+        self.auth.fail();
         if self.lifecycle() != ConnectionLifecycle::Active {
             return Ok(());
         }
@@ -314,6 +678,11 @@ impl ServerConnection {
     }
 
     pub(super) fn reject_pre_auth(&mut self) -> Result<(), RuntimeError> {
+        self.reject_generation()
+    }
+
+    pub(super) fn reject_generation(&mut self) -> Result<(), RuntimeError> {
+        self.auth.fail();
         if self.lifecycle() != ConnectionLifecycle::Active {
             return Ok(());
         }
@@ -324,30 +693,16 @@ impl ServerConnection {
     }
 
     fn drive_h3(&mut self) -> Result<(), RuntimeError> {
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
         if self.lifecycle() != ConnectionLifecycle::Active {
             return Ok(());
         }
         if self.transport.is_in_early_data() {
-            self.fail_closed(PRE_AUTH_CLOSE_CODE);
-            return Err(RuntimeError::EarlyDataRejected);
+            return self.reject_with(RuntimeError::EarlyDataRejected);
         }
 
         if self.transport.is_established() && self.h3.is_none() {
-            if self.transport.application_proto() != b"h3" {
-                self.fail_closed(PRE_AUTH_CLOSE_CODE);
-                return Err(RuntimeError::AlpnRejected);
-            }
-            let tls: &mut SslRef = self.transport.as_mut();
-            if tls.version2() != Some(SslVersion::TLS1_3) {
-                self.fail_closed(PRE_AUTH_CLOSE_CODE);
-                return Err(RuntimeError::TlsVersionRejected);
-            }
-            if self.transport.server_name().map(str::as_bytes)
-                != Some(self.role.expected_authority())
-            {
-                self.fail_closed(PRE_AUTH_CLOSE_CODE);
-                return Err(RuntimeError::ServerNameRejected);
-            }
+            self.validate_live_tls_facts()?;
             let h3_config = self.h3_config.take().ok_or(RuntimeError::H3Unavailable)?;
             self.h3 = Some(
                 quiche::h3::Connection::with_transport(&mut self.transport, &h3_config)
@@ -356,45 +711,318 @@ impl ServerConnection {
             self.pre_auth_foundation.h3_initialized();
         }
 
-        let Some(h3) = self.h3.as_mut() else {
+        let Some(mut h3) = self.h3.take() else {
             return Ok(());
         };
+        let result = self.drive_h3_events(&mut h3);
+        self.h3 = Some(h3);
+        if let Err(error) = result {
+            if error != RuntimeError::H3Unavailable
+                && self.lifecycle() == ConnectionLifecycle::Active
+            {
+                self.fail_closed(PRE_AUTH_CLOSE_CODE);
+            }
+        }
+        result
+    }
 
-        if self.transport.dgram_recv_front_len().is_some() {
-            self.fail_closed(PRE_AUTH_CLOSE_CODE);
-            return Err(RuntimeError::PreAuthApplicationActivity);
+    fn drive_h3_events(&mut self, h3: &mut quiche::h3::Connection) -> Result<(), RuntimeError> {
+        let mut events = 0_usize;
+        loop {
+            self.enforce_authenticated_lifecycle_at(Instant::now())?;
+            if self.transport.dgram_recv_front_len().is_some() {
+                return self.reject_with(RuntimeError::PreAuthApplicationActivity);
+            }
+
+            let event = h3.poll(&mut self.transport);
+            if self.transport.dgram_recv_front_len().is_some() {
+                return self.reject_with(RuntimeError::PreAuthApplicationActivity);
+            }
+
+            match event {
+                Ok((stream_id, event)) => {
+                    if let Err(error) = observe_h3_application_event(&mut events) {
+                        return self.reject_with(error);
+                    }
+                    self.refresh_peer_settings(h3)?;
+                    if !self.pre_auth_foundation.is_ready() {
+                        return self.reject_with(RuntimeError::PeerSettingsRejected);
+                    }
+                    self.handle_h3_event(h3, stream_id, event)?;
+                    self.drive_confirmation(h3)?;
+                }
+                Err(quiche::h3::Error::Done) => {
+                    self.refresh_peer_settings(h3)?;
+                    self.drive_confirmation(h3)?;
+                    return Ok(());
+                }
+                Err(_) => {
+                    // quiche can already have selected its own H3 wire error for a
+                    // malformed frame. Do not replace that fact with a 0x105 claim.
+                    self.auth.fail();
+                    return Err(RuntimeError::H3Unavailable);
+                }
+            }
         }
-        let event = h3.poll(&mut self.transport);
-        if self.transport.dgram_recv_front_len().is_some() {
-            self.fail_closed(PRE_AUTH_CLOSE_CODE);
-            return Err(RuntimeError::PreAuthApplicationActivity);
+    }
+
+    fn refresh_peer_settings(&mut self, h3: &quiche::h3::Connection) -> Result<(), RuntimeError> {
+        if self.pre_auth_foundation.is_ready() {
+            return self.auth.enter_gate(Instant::now());
         }
+        let Some(raw_settings) = h3.peer_settings_raw() else {
+            return Ok(());
+        };
+        if !peer_settings_match(h3, &self.transport, raw_settings) {
+            return self.reject_with(RuntimeError::PeerSettingsRejected);
+        }
+        self.pre_auth_foundation.peer_settings_verified();
+        self.auth.enter_gate(Instant::now())
+    }
+
+    fn handle_h3_event(
+        &mut self,
+        h3: &mut quiche::h3::Connection,
+        stream_id: u64,
+        event: quiche::h3::Event,
+    ) -> Result<(), RuntimeError> {
         match event {
-            Ok((_stream_id, _event)) => {
-                self.fail_closed(PRE_AUTH_CLOSE_CODE);
-                return Err(RuntimeError::PreAuthApplicationActivity);
+            quiche::h3::Event::Headers { list, more_frames } => {
+                if self.auth.state != ServerAuthState::Fresh {
+                    return self.reject_with(RuntimeError::AuthenticationRejected);
+                }
+                let exact = exact_auth_request_headers(
+                    &list,
+                    self.role.expected_authority(),
+                    self.role.tunnel_path(),
+                );
+                if !exact {
+                    return self.reject_with(RuntimeError::PreAuthApplicationActivity);
+                }
+                if !more_frames {
+                    return self.reject_with(RuntimeError::AuthenticationRejected);
+                }
+                let exporter = self.observe_live_auth_exporter()?;
+                if let Err(error) = self.auth.start(stream_id, exporter) {
+                    return self.reject_with(error);
+                }
+                Ok(())
             }
-            Err(quiche::h3::Error::Done) => {}
-            Err(_) => {
-                self.fail_closed(PRE_AUTH_CLOSE_CODE);
-                return Err(RuntimeError::H3Unavailable);
+            quiche::h3::Event::Data => self.receive_auth_body(h3, stream_id),
+            quiche::h3::Event::Finished => {
+                if self.auth.state != ServerAuthState::Authenticating
+                    || self.auth.bound_stream()? != stream_id
+                    || self.auth.control_len != AUTH_V3_CLIENT_CONTROL_LEN
+                {
+                    return self.reject_with(RuntimeError::AuthenticationRejected);
+                }
+                self.finish_authentication_request()
+            }
+            quiche::h3::Event::Reset(_)
+            | quiche::h3::Event::PriorityUpdate
+            | quiche::h3::Event::GoAway => {
+                self.reject_with(RuntimeError::PreAuthApplicationActivity)
             }
         }
+    }
 
-        if !self.pre_auth_foundation.is_ready() {
-            let Some(raw_settings) = h3.peer_settings_raw() else {
-                return Ok(());
+    fn receive_auth_body(
+        &mut self,
+        h3: &mut quiche::h3::Connection,
+        stream_id: u64,
+    ) -> Result<(), RuntimeError> {
+        if self.auth.state != ServerAuthState::Authenticating
+            || self.auth.bound_stream()? != stream_id
+        {
+            return self.reject_with(RuntimeError::AuthenticationRejected);
+        }
+        loop {
+            let read = if self.auth.control_len < AUTH_V3_CLIENT_CONTROL_LEN {
+                h3.recv_body(
+                    &mut self.transport,
+                    stream_id,
+                    &mut self.auth.control[self.auth.control_len..],
+                )
+            } else {
+                let mut overflow = [0_u8; 1];
+                h3.recv_body(&mut self.transport, stream_id, &mut overflow)
             };
-            if !peer_settings_match(h3, &self.transport, raw_settings) {
-                self.fail_closed(PRE_AUTH_CLOSE_CODE);
-                return Err(RuntimeError::PeerSettingsRejected);
+            match read {
+                Ok(0) => return self.reject_with(RuntimeError::AuthenticationRejected),
+                Ok(length) if self.auth.control_len < AUTH_V3_CLIENT_CONTROL_LEN => {
+                    self.auth.control_len = self
+                        .auth
+                        .control_len
+                        .checked_add(length)
+                        .filter(|length| *length <= AUTH_V3_CLIENT_CONTROL_LEN)
+                        .ok_or(RuntimeError::AuthenticationRejected)?;
+                }
+                Ok(_) => return self.reject_with(RuntimeError::AuthenticationRejected),
+                Err(quiche::h3::Error::Done) => return Ok(()),
+                Err(_) => return self.reject_with(RuntimeError::AuthenticationRejected),
             }
-            self.pre_auth_foundation.peer_settings_verified();
+        }
+    }
+
+    fn finish_authentication_request(&mut self) -> Result<(), RuntimeError> {
+        self.validate_live_tls_facts()?;
+        let now_unix = trusted_now_unix()?;
+        let monotonic_now = Instant::now();
+        let exporter = self.auth.exporter;
+        let preselected = self.role.direct_v3().preselected_profile();
+        let context = preselected.trusted_connection_context(
+            AuthV3Carrier::H3,
+            AuthV3TlsVersion::Tls13,
+            true,
+            false,
+            &exporter,
+            true,
+            Some(&[]),
+            self.role.direct_v3().tunnel_path(),
+        );
+        let verified = verify_auth_v3_client_control(
+            &self.auth.control,
+            &preselected.trusted_profile(),
+            &context,
+            now_unix,
+        )
+        .map_err(|_| RuntimeError::AuthenticationRejected)?;
+        let credential_epoch = verified.credential_epoch();
+        let (admission_expiry_unix, hard_expiry_unix) =
+            selected_expiries(now_unix, verified.credential_not_after_unix())?;
+        let admission_deadline = monotonic_now
+            .checked_add(Duration::from_secs(admission_expiry_unix - now_unix))
+            .ok_or(RuntimeError::AuthenticationUnavailable)?;
+        let hard_deadline = monotonic_now
+            .checked_add(Duration::from_secs(hard_expiry_unix - now_unix))
+            .ok_or(RuntimeError::AuthenticationUnavailable)?;
+        let server_nonce = random_nonzero::<32>()?;
+        let session_id = random_nonzero::<16>()?;
+        let confirmation = encode_auth_v3_server_confirmation(
+            verified,
+            &context,
+            &AuthV3ServerConfirmationInput::new(
+                now_unix,
+                admission_expiry_unix,
+                hard_expiry_unix,
+                server_nonce,
+                session_id,
+                AUTH_MAX_FRAME_SIZE,
+                AUTH_MAX_CONCURRENT_FLOWS,
+            ),
+        )
+        .map_err(|_| RuntimeError::AuthenticationRejected)?;
+        let pending = AuthenticatedGenerationCapability {
+            generation: self.generation,
+            session_id,
+            credential_epoch,
+            admission_expiry_unix,
+            hard_expiry_unix,
+            admission_deadline,
+            hard_deadline,
+            active: false,
+            revoked: false,
+            carrier: AuthV3Carrier::H3,
+            max_frame_size: AUTH_MAX_FRAME_SIZE,
+            max_concurrent_flows: AUTH_MAX_CONCURRENT_FLOWS,
+        };
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
+        self.auth.install_confirmation(confirmation, pending)
+    }
+
+    fn drive_confirmation(&mut self, h3: &mut quiche::h3::Connection) -> Result<(), RuntimeError> {
+        if self.auth.state != ServerAuthState::SendingConfirmation {
+            return Ok(());
+        }
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
+        let stream_id = self.auth.bound_stream()?;
+        if !self.auth.confirmation_headers_sent {
+            match h3.send_response(
+                &mut self.transport,
+                stream_id,
+                &auth_confirmation_headers(),
+                false,
+            ) {
+                Ok(()) => self.auth.mark_confirmation_headers_sent()?,
+                Err(quiche::h3::Error::StreamBlocked) => {
+                    self.enforce_authenticated_lifecycle_at(Instant::now())?;
+                    return Ok(());
+                }
+                Err(_) => return self.reject_with(RuntimeError::AuthenticationRejected),
+            }
+        }
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
+        let offset = self.auth.confirmation_offset;
+        let requested = AUTH_V3_SERVER_CONFIRMATION_LEN
+            .checked_sub(offset)
+            .ok_or(RuntimeError::AuthenticationRejected)?;
+        if requested == 0 {
+            return self.reject_with(RuntimeError::AuthenticationRejected);
+        }
+        let send = h3.send_body(
+            &mut self.transport,
+            stream_id,
+            &self.auth.confirmation[offset..],
+            true,
+        );
+        self.enforce_authenticated_lifecycle_at(Instant::now())?;
+        match send {
+            Ok(0) => self.reject_with(RuntimeError::AuthenticationRejected),
+            Ok(written) if written <= requested => {
+                if self.auth.record_confirmation_write(written, requested)? {
+                    self.auth.authenticate(Instant::now())?;
+                }
+                Ok(())
+            }
+            Ok(_) => self.reject_with(RuntimeError::AuthenticationRejected),
+            Err(quiche::h3::Error::Done | quiche::h3::Error::StreamBlocked) => Ok(()),
+            Err(_) => self.reject_with(RuntimeError::AuthenticationRejected),
+        }
+    }
+
+    fn validate_live_tls_facts(&mut self) -> Result<(), RuntimeError> {
+        if self.transport.application_proto() != b"h3" {
+            return self.reject_with(RuntimeError::AlpnRejected);
+        }
+        let tls: &mut SslRef = self.transport.as_mut();
+        if tls.version2() != Some(SslVersion::TLS1_3) {
+            return self.reject_with(RuntimeError::TlsVersionRejected);
+        }
+        if self.transport.server_name().map(str::as_bytes) != Some(self.role.expected_authority()) {
+            return self.reject_with(RuntimeError::ServerNameRejected);
         }
         Ok(())
     }
 
+    fn observe_live_auth_exporter(&mut self) -> Result<[u8; AUTH_V3_EXPORTER_LEN], RuntimeError> {
+        self.validate_live_tls_facts()?;
+        let label = std::str::from_utf8(AUTH_V3_EXPORTER_LABEL)
+            .map_err(|_| RuntimeError::AuthenticationUnavailable)?;
+        let mut exporter = [0_u8; AUTH_V3_EXPORTER_LEN];
+        let tls: &mut SslRef = self.transport.as_mut();
+        tls.export_keying_material(&mut exporter, label, Some(&[]))
+            .map_err(|_| RuntimeError::AuthenticationUnavailable)?;
+        Ok(exporter)
+    }
+
+    fn enforce_authenticated_lifecycle_at(&mut self, now: Instant) -> Result<(), RuntimeError> {
+        if self.lifecycle() != ConnectionLifecycle::Active {
+            self.auth.fail();
+            return Ok(());
+        }
+        if self.auth.is_expired_at(now) {
+            return self.reject_with(RuntimeError::AuthenticationExpired);
+        }
+        Ok(())
+    }
+
+    fn reject_with<T>(&mut self, error: RuntimeError) -> Result<T, RuntimeError> {
+        self.fail_closed(PRE_AUTH_CLOSE_CODE);
+        Err(error)
+    }
+
     fn fail_closed(&mut self, code: u64) {
+        self.auth.fail();
         if self.lifecycle() == ConnectionLifecycle::Active {
             let _ = self.transport.close(true, code, b"");
         }
@@ -435,8 +1063,12 @@ pub(super) enum RuntimeError {
     TlsVersionRejected,
     ServerNameRejected,
     H3Unavailable,
+    H3EventBudgetExhausted,
     PeerSettingsRejected,
     PreAuthApplicationActivity,
+    AuthenticationRejected,
+    AuthenticationUnavailable,
+    AuthenticationExpired,
     CloseUnavailable,
 }
 
@@ -454,8 +1086,12 @@ impl fmt::Display for RuntimeError {
             Self::TlsVersionRejected => "server TLS version rejected",
             Self::ServerNameRejected => "server TLS name rejected",
             Self::H3Unavailable => "server H3 state unavailable",
+            Self::H3EventBudgetExhausted => "server H3 event budget exhausted",
             Self::PeerSettingsRejected => "server peer settings rejected",
             Self::PreAuthApplicationActivity => "pre-authentication application activity rejected",
+            Self::AuthenticationRejected => "server authentication rejected",
+            Self::AuthenticationUnavailable => "server authentication unavailable",
+            Self::AuthenticationExpired => "server authentication expired",
             Self::CloseUnavailable => "server connection close unavailable",
         };
         formatter.write_str(message)
@@ -478,6 +1114,16 @@ fn peer_settings_match(
             .and_then(|params| params.max_datagram_frame_size),
     }
     .matches_required()
+}
+
+fn observe_h3_application_event(events: &mut usize) -> Result<(), RuntimeError> {
+    *events = events
+        .checked_add(1)
+        .ok_or(RuntimeError::H3EventBudgetExhausted)?;
+    if *events >= MAX_H3_EVENTS_PER_DRIVE {
+        return Err(RuntimeError::H3EventBudgetExhausted);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -514,6 +1160,76 @@ impl fmt::Debug for RuntimeError {
 }
 
 impl std::error::Error for RuntimeError {}
+
+fn exact_auth_request_headers(
+    headers: &[quiche::h3::Header],
+    expected_authority: &[u8],
+    expected_path: &[u8],
+) -> bool {
+    let expected: [(&[u8], &[u8]); 6] = [
+        (b":method", b"POST"),
+        (b":scheme", b"https"),
+        (b":authority", expected_authority),
+        (b":path", expected_path),
+        (b"content-type", AUTH_CONTENT_TYPE),
+        (b"content-length", b"256"),
+    ];
+    headers.len() == expected.len()
+        && headers
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.name() == expected.0 && actual.value() == expected.1)
+}
+
+fn auth_confirmation_headers() -> [quiche::h3::Header; 3] {
+    [
+        quiche::h3::Header::new(b":status", b"200"),
+        quiche::h3::Header::new(b"content-type", AUTH_CONTENT_TYPE),
+        quiche::h3::Header::new(b"content-length", b"320"),
+    ]
+}
+
+fn trusted_now_unix() -> Result<u64, RuntimeError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| RuntimeError::AuthenticationUnavailable)
+}
+
+fn selected_expiries(
+    now_unix: u64,
+    credential_not_after_unix: u64,
+) -> Result<(u64, u64), RuntimeError> {
+    let hard_expiry_unix = now_unix
+        .checked_add(AUTH_HARD_LIFETIME_SECONDS)
+        .map_or(credential_not_after_unix, |limit| {
+            limit.min(credential_not_after_unix)
+        });
+    if hard_expiry_unix.saturating_sub(now_unix) < 2 {
+        return Err(RuntimeError::AuthenticationRejected);
+    }
+    let admission_limit = now_unix
+        .checked_add(AUTH_ADMISSION_LIFETIME_SECONDS)
+        .ok_or(RuntimeError::AuthenticationUnavailable)?;
+    let admission_expiry_unix = admission_limit.min(hard_expiry_unix - 1);
+    if admission_expiry_unix <= now_unix {
+        return Err(RuntimeError::AuthenticationRejected);
+    }
+    Ok((admission_expiry_unix, hard_expiry_unix))
+}
+
+fn random_nonzero<const N: usize>() -> Result<[u8; N], RuntimeError> {
+    for _ in 0..4 {
+        let mut bytes = [0_u8; N];
+        OsRng
+            .try_fill_bytes(&mut bytes)
+            .map_err(|_| RuntimeError::AuthenticationUnavailable)?;
+        if bytes.iter().any(|byte| *byte != 0) {
+            return Ok(bytes);
+        }
+    }
+    Err(RuntimeError::AuthenticationUnavailable)
+}
 
 fn private_path(path: &Path) -> Result<&str, RuntimeError> {
     path.to_str().ok_or(RuntimeError::ConfigurationUnavailable)
@@ -573,6 +1289,8 @@ pub(super) fn bounded_h3_config() -> Result<quiche::h3::Config, RuntimeError> {
 
 #[cfg(test)]
 mod tests {
+    use maverick_core::auth_v3::{encode_auth_v3_client_control, AuthV3ClientControlInput};
+
     use super::*;
 
     const CLIENT_ADDRESS: SocketAddr =
@@ -615,6 +1333,24 @@ mod tests {
         server: ServerConnection,
     }
 
+    struct ConfirmationProgress {
+        body: [u8; AUTH_V3_SERVER_CONFIRMATION_LEN],
+        offset: usize,
+        headers_seen: bool,
+        finished: bool,
+    }
+
+    impl ConfirmationProgress {
+        fn empty() -> Self {
+            Self {
+                body: [0; AUTH_V3_SERVER_CONFIRMATION_LEN],
+                offset: 0,
+                headers_seen: false,
+                finished: false,
+            }
+        }
+    }
+
     impl TestPair {
         fn new() -> Result<Self, RuntimeError> {
             Self::with_server_name("localhost", Some("localhost"))
@@ -636,6 +1372,57 @@ mod tests {
             offered_server_name: Option<&str>,
             fault: PeerSettingsFault,
         ) -> Result<Self, RuntimeError> {
+            Self::with_options(
+                expected_authority,
+                offered_server_name,
+                fault,
+                INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                quiche::h3::APPLICATION_PROTOCOL,
+                MAX_IDLE_TIMEOUT_MILLIS,
+            )
+        }
+
+        fn with_response_window(response_window: u64) -> Result<Self, RuntimeError> {
+            Self::with_options(
+                "localhost",
+                Some("localhost"),
+                PeerSettingsFault::None,
+                response_window,
+                quiche::h3::APPLICATION_PROTOCOL,
+                MAX_IDLE_TIMEOUT_MILLIS,
+            )
+        }
+
+        fn with_negotiated_alpn(alpn: &[&[u8]]) -> Result<Self, RuntimeError> {
+            Self::with_options(
+                "localhost",
+                Some("localhost"),
+                PeerSettingsFault::None,
+                INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                alpn,
+                MAX_IDLE_TIMEOUT_MILLIS,
+            )
+        }
+
+        fn with_idle_timeout(idle_timeout_millis: u64) -> Result<Self, RuntimeError> {
+            Self::with_options(
+                "localhost",
+                Some("localhost"),
+                PeerSettingsFault::None,
+                INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                quiche::h3::APPLICATION_PROTOCOL,
+                idle_timeout_millis,
+            )
+        }
+
+        fn with_options(
+            expected_authority: &str,
+            offered_server_name: Option<&str>,
+            fault: PeerSettingsFault,
+            response_window: u64,
+            alpn: &[&[u8]],
+            idle_timeout_millis: u64,
+        ) -> Result<Self, RuntimeError> {
             let directory =
                 tempfile::tempdir().map_err(|_| RuntimeError::ConfigurationUnavailable)?;
             let certificate_path = directory.path().join("cert.pem");
@@ -647,11 +1434,30 @@ mod tests {
             std::fs::write(&key_path, certified.key_pair.serialize_pem())
                 .map_err(|_| RuntimeError::ConfigurationUnavailable)?;
 
-            let owner = test_server_role(&certificate_path, &key_path, expected_authority, "h3")?;
+            let owner = test_server_role(
+                &certificate_path,
+                &key_path,
+                expected_authority,
+                "h3",
+                7,
+                "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+            )?;
             let role = FrozenDirectV3ServerRole::new(owner)?;
             let mut server_config = ServerConnectionConfig::new(role)?;
+            server_config
+                .transport
+                .set_max_idle_timeout(idle_timeout_millis);
+            server_config
+                .transport
+                .set_application_protos(alpn)
+                .map_err(|_| RuntimeError::ConfigurationUnavailable)?;
             let mut client_config = bounded_transport_config()?;
             client_config.verify_peer(false);
+            client_config.set_max_idle_timeout(idle_timeout_millis);
+            client_config.set_initial_max_stream_data_bidi_local(response_window);
+            client_config
+                .set_application_protos(alpn)
+                .map_err(|_| RuntimeError::ConfigurationUnavailable)?;
             if matches!(fault, PeerSettingsFault::DatagramMissing) {
                 client_config.enable_dgram(false, 0, 0);
             }
@@ -841,6 +1647,156 @@ mod tests {
             self.send_pre_auth_headers(&headers)
         }
 
+        fn live_client_control(
+            &mut self,
+        ) -> Result<[u8; AUTH_V3_CLIENT_CONTROL_LEN], RuntimeError> {
+            let label = std::str::from_utf8(AUTH_V3_EXPORTER_LABEL)
+                .map_err(|_| RuntimeError::AuthenticationUnavailable)?;
+            let mut exporter = [0_u8; AUTH_V3_EXPORTER_LEN];
+            if self.client.application_proto() != b"h3" {
+                return Err(RuntimeError::AuthenticationUnavailable);
+            }
+            let tls: &mut SslRef = self.client.as_mut();
+            if tls.version2() != Some(SslVersion::TLS1_3) {
+                return Err(RuntimeError::AuthenticationUnavailable);
+            }
+            tls.export_keying_material(&mut exporter, label, Some(&[]))
+                .map_err(|_| RuntimeError::AuthenticationUnavailable)?;
+            self.client_control_with_exporter(&exporter)
+        }
+
+        fn client_control_with_exporter(
+            &self,
+            exporter: &[u8; AUTH_V3_EXPORTER_LEN],
+        ) -> Result<[u8; AUTH_V3_CLIENT_CONTROL_LEN], RuntimeError> {
+            let preselected = self.server.role.direct_v3().preselected_profile();
+            let context = preselected.trusted_connection_context(
+                AuthV3Carrier::H3,
+                AuthV3TlsVersion::Tls13,
+                true,
+                false,
+                exporter,
+                true,
+                Some(&[]),
+                self.server.role.direct_v3().tunnel_path(),
+            );
+            encode_auth_v3_client_control(
+                &preselected.trusted_profile(),
+                &context,
+                &AuthV3ClientControlInput::new(AuthV3Carrier::H3, trusted_now_unix()?, [0x6b; 32]),
+            )
+            .map_err(|_| RuntimeError::AuthenticationUnavailable)
+        }
+
+        fn send_auth_control(&mut self, control: &[u8], fin: bool) -> Result<u64, RuntimeError> {
+            self.send_auth_fragments(&[control], fin)
+        }
+
+        fn send_auth_fragments(
+            &mut self,
+            fragments: &[&[u8]],
+            final_fin: bool,
+        ) -> Result<u64, RuntimeError> {
+            let headers = test_auth_request_headers();
+            let h3 = self.client_h3.as_mut().ok_or(RuntimeError::H3Unavailable)?;
+            let stream_id = h3
+                .send_request(&mut self.client, &headers, false)
+                .map_err(|_| RuntimeError::H3Unavailable)?;
+            for (index, fragment) in fragments.iter().enumerate() {
+                let fin = final_fin && index + 1 == fragments.len();
+                let written = h3
+                    .send_body(&mut self.client, stream_id, fragment, fin)
+                    .map_err(|_| RuntimeError::H3Unavailable)?;
+                if written != fragment.len() {
+                    return Err(RuntimeError::PacketUnavailable);
+                }
+            }
+            Ok(stream_id)
+        }
+
+        fn send_auth_headers_only(&mut self) -> Result<u64, RuntimeError> {
+            let headers = test_auth_request_headers();
+            self.client_h3
+                .as_mut()
+                .ok_or(RuntimeError::H3Unavailable)?
+                .send_request(&mut self.client, &headers, false)
+                .map_err(|_| RuntimeError::H3Unavailable)
+        }
+
+        fn collect_confirmation(
+            &mut self,
+            expected_stream: u64,
+        ) -> Result<[u8; AUTH_V3_SERVER_CONFIRMATION_LEN], RuntimeError> {
+            let mut progress = ConfirmationProgress::empty();
+            for _ in 0..MAX_SHUTTLE_STEPS {
+                self.server_to_client()?;
+                self.poll_confirmation(expected_stream, &mut progress)?;
+                if progress.finished {
+                    return Ok(progress.body);
+                }
+                self.client_to_server()?;
+            }
+            Err(RuntimeError::AuthenticationUnavailable)
+        }
+
+        fn poll_confirmation(
+            &mut self,
+            expected_stream: u64,
+            progress: &mut ConfirmationProgress,
+        ) -> Result<(), RuntimeError> {
+            let h3 = self.client_h3.as_mut().ok_or(RuntimeError::H3Unavailable)?;
+            loop {
+                match h3.poll(&mut self.client) {
+                    Ok((stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
+                        if stream_id != expected_stream
+                            || progress.headers_seen
+                            || !more_frames
+                            || list.len() != 3
+                            || list[0].name() != b":status"
+                            || list[0].value() != b"200"
+                            || list[1].name() != b"content-type"
+                            || list[1].value() != AUTH_CONTENT_TYPE
+                            || list[2].name() != b"content-length"
+                            || list[2].value() != b"320"
+                        {
+                            return Err(RuntimeError::AuthenticationRejected);
+                        }
+                        progress.headers_seen = true;
+                    }
+                    Ok((stream_id, quiche::h3::Event::Data)) => {
+                        if stream_id != expected_stream || progress.offset >= progress.body.len() {
+                            return Err(RuntimeError::AuthenticationRejected);
+                        }
+                        loop {
+                            match h3.recv_body(
+                                &mut self.client,
+                                stream_id,
+                                &mut progress.body[progress.offset..],
+                            ) {
+                                Ok(length) if length > 0 => progress.offset += length,
+                                Ok(_) => return Err(RuntimeError::AuthenticationRejected),
+                                Err(quiche::h3::Error::Done) => break,
+                                Err(_) => return Err(RuntimeError::AuthenticationRejected),
+                            }
+                        }
+                    }
+                    Ok((stream_id, quiche::h3::Event::Finished)) => {
+                        if stream_id != expected_stream
+                            || !progress.headers_seen
+                            || progress.offset != progress.body.len()
+                            || progress.finished
+                        {
+                            return Err(RuntimeError::AuthenticationRejected);
+                        }
+                        progress.finished = true;
+                    }
+                    Ok(_) => return Err(RuntimeError::AuthenticationRejected),
+                    Err(quiche::h3::Error::Done) => return Ok(()),
+                    Err(_) => return Err(RuntimeError::H3Unavailable),
+                }
+            }
+        }
+
         fn deliver_close_to_client(&mut self) {
             self.server_to_client()
                 .expect("deliver fixed pre-authentication close in memory");
@@ -887,11 +1843,24 @@ mod tests {
         Ok(config)
     }
 
+    fn test_auth_request_headers() -> [quiche::h3::Header; 6] {
+        [
+            quiche::h3::Header::new(b":method", b"POST"),
+            quiche::h3::Header::new(b":scheme", b"https"),
+            quiche::h3::Header::new(b":authority", b"localhost"),
+            quiche::h3::Header::new(b":path", b"/direct-v3"),
+            quiche::h3::Header::new(b"content-type", AUTH_CONTENT_TYPE),
+            quiche::h3::Header::new(b"content-length", b"256"),
+        ]
+    }
+
     fn test_server_role(
         certificate_path: &Path,
         key_path: &Path,
         expected_authority: &str,
         transport_strategy: &str,
+        credential_epoch: u64,
+        secret: &str,
     ) -> Result<Arc<ServerRoleConfig>, RuntimeError> {
         let yaml = format!(
             r#"version: 3
@@ -917,9 +1886,9 @@ auth:
       deployment_profile_id: "MzMzMzMzMzMzMzMzMzMzMw"
       credential_namespace_id: "RERERERERERERERERERERA"
       server_identity_id: "VVVVVVVVVVVVVVVVVVVVVQ"
-      credential_epoch: 7
+      credential_epoch: {credential_epoch}
       credential_not_after_unix: 1800172800
-      secret: "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+      secret: "{secret}"
 "#,
             certificate_path.display(),
             key_path.display(),
@@ -1116,6 +2085,19 @@ auth:
     }
 
     #[test]
+    fn t027b2b2_2_live_negotiated_alpn_cannot_be_replaced_by_expected_config() {
+        let mut pair = TestPair::with_negotiated_alpn(&[b"h2"])
+            .expect("construct non-H3 negotiated test pair");
+        let error = pair
+            .drive_until_h3()
+            .expect_err("live non-H3 ALPN must fail before auth");
+        assert_eq!(error, RuntimeError::AlpnRejected);
+        assert!(!pair.server.pre_auth_foundation_ready());
+        assert!(!pair.server.is_authenticated());
+        pair.deliver_close_to_client();
+    }
+
+    #[test]
     fn t027b2b2_1_mandatory_settings_and_qpack_work_remain_internal() {
         let mut pair = TestPair::new().expect("construct bounded in-memory pair");
         pair.drive_until_h3()
@@ -1152,22 +2134,15 @@ auth:
     }
 
     #[test]
-    fn t027b2b2_1_auth_shaped_post_is_still_rejected_before_auth_exists() {
+    fn t027b2b2_2_auth_headers_with_immediate_fin_fail_closed() {
         let mut pair = TestPair::new().expect("construct bounded in-memory pair");
         pair.drive_until_h3()
             .expect("drive bounded in-memory pair through peer SETTINGS");
-        let headers = [
-            quiche::h3::Header::new(b":method", b"POST"),
-            quiche::h3::Header::new(b":scheme", b"https"),
-            quiche::h3::Header::new(b":authority", b"localhost"),
-            quiche::h3::Header::new(b":path", b"/direct-v3"),
-            quiche::h3::Header::new(b"content-type", b"application/maverick-auth-v3"),
-            quiche::h3::Header::new(b"content-length", b"256"),
-        ];
+        let headers = test_auth_request_headers();
         let error = pair
             .send_pre_auth_headers(&headers)
             .expect("receive fixed auth-shaped request rejection");
-        assert_eq!(error, RuntimeError::PreAuthApplicationActivity);
+        assert_eq!(error, RuntimeError::AuthenticationRejected);
         pair.deliver_close_to_client();
     }
 
@@ -1251,5 +2226,723 @@ auth:
         let on_timeout: OnTimeoutFn = ServerConnection::on_timeout;
         let _ = (receive_packet, next_packet, next_timeout, on_timeout);
         assert_eq!(MAX_PACKET_BYTES, 1_350);
+    }
+
+    #[test]
+    fn t027b2b2_2_auth_state_contract_is_explicit_and_value_free() {
+        let phases = [
+            ServerAuthState::Fresh,
+            ServerAuthState::Authenticating,
+            ServerAuthState::SendingConfirmation,
+            ServerAuthState::Authenticated,
+            ServerAuthState::Failed,
+        ];
+        assert_eq!(
+            phases.map(|phase| format!("{phase:?}")),
+            [
+                "Fresh",
+                "Authenticating",
+                "SendingConfirmation",
+                "Authenticated",
+                "Failed",
+            ]
+        );
+        assert_eq!(
+            format!("{:?}", ServerAuthMachine::fresh()),
+            "fresh server authentication state"
+        );
+    }
+
+    #[test]
+    fn t027b2b2_2_exact_live_auth_happy_path_installs_capability_after_final_fin() {
+        let mut pair = TestPair::new().expect("construct bounded in-memory pair");
+        pair.drive_until_h3()
+            .expect("drive same live generation through required SETTINGS");
+        let generation = pair.server.generation;
+        let control = pair
+            .live_client_control()
+            .expect("encode exact control from the live client exporter");
+        let stream_id = pair
+            .send_auth_control(&control, true)
+            .expect("queue exact auth stream");
+        assert!(!pair.server.is_authenticated());
+        pair.client_to_server()
+            .expect("deliver exact control on the same live generation");
+        assert!(pair.server.is_authenticated());
+        let capability = pair
+            .server
+            .auth
+            .capability
+            .as_ref()
+            .expect("final H3 body plus FIN installs capability");
+        assert_eq!(capability.generation.as_bytes(), generation.as_bytes());
+        assert!(capability.session_id.iter().any(|byte| *byte != 0));
+        assert_eq!(capability.credential_epoch, 7);
+        assert!(capability.active);
+        assert!(!capability.revoked);
+        assert_eq!(capability.carrier, AuthV3Carrier::H3);
+        assert_eq!(capability.max_frame_size, 65_536);
+        assert_eq!(capability.max_concurrent_flows, 128);
+        assert_eq!(
+            format!("{capability:?}"),
+            "authenticated server generation capability"
+        );
+        assert!(capability.admission_expiry_unix < capability.hard_expiry_unix);
+        assert!(capability.admission_deadline < capability.hard_deadline);
+        let confirmation = pair
+            .collect_confirmation(stream_id)
+            .expect("receive exact 320-byte confirmation with final FIN");
+        assert_eq!(confirmation.len(), AUTH_V3_SERVER_CONFIRMATION_LEN);
+        assert_eq!(pair.server.auth.state, ServerAuthState::Authenticated);
+        assert!(pair.server.auth.control.iter().all(|byte| *byte == 0));
+        assert!(pair.server.auth.exporter.iter().all(|byte| *byte == 0));
+        assert!(pair.server.auth.confirmation.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn t027b2b2_2_same_batch_settings_are_installed_before_first_headers() {
+        let mut pair = TestPair::new().expect("construct bounded pair");
+        pair.drive_until_h3_initialized_before_peer_settings()
+            .expect("initialize H3 before server processes peer SETTINGS");
+        assert!(!pair.server.pre_auth_foundation_ready());
+        let control = pair.live_client_control().expect("encode live control");
+        pair.send_auth_control(&control, true)
+            .expect("queue SETTINGS followed by first auth request");
+        pair.client_to_server()
+            .expect("same drive validates SETTINGS before accepting Headers");
+        assert!(pair.server.pre_auth_foundation_ready());
+        assert!(pair.server.is_authenticated());
+        assert_eq!(pair.server.auth.state, ServerAuthState::Authenticated);
+    }
+
+    #[test]
+    fn t027b2b2_2_confirmation_progress_never_authenticates_early() {
+        let now = Instant::now();
+        let mut auth = ServerAuthMachine::fresh();
+        auth.enter_gate(now).expect("start absolute auth wall");
+        auth.start(0, [0x91; AUTH_V3_EXPORTER_LEN])
+            .expect("occupy one auth stream");
+        let pending = AuthenticatedGenerationCapability {
+            generation: ServerSourceConnectionId::new(SERVER_SOURCE_CONNECTION_ID),
+            session_id: [0x82; 16],
+            credential_epoch: 7,
+            admission_expiry_unix: 10_100,
+            hard_expiry_unix: 10_200,
+            admission_deadline: now + Duration::from_secs(5),
+            hard_deadline: now + Duration::from_secs(6),
+            active: false,
+            revoked: false,
+            carrier: AuthV3Carrier::H3,
+            max_frame_size: AUTH_MAX_FRAME_SIZE,
+            max_concurrent_flows: AUTH_MAX_CONCURRENT_FLOWS,
+        };
+        auth.install_confirmation([0x73; AUTH_V3_SERVER_CONFIRMATION_LEN], pending)
+            .expect("install one fixed confirmation");
+
+        assert_eq!(auth.state, ServerAuthState::SendingConfirmation);
+        assert_eq!(
+            auth.next_deadline(),
+            Some(now + Duration::from_secs(5)),
+            "pending admission must be scheduled before the fixed auth wall"
+        );
+        assert!(
+            auth.authenticate(now).is_err(),
+            "blocked headers cannot authenticate"
+        );
+        auth.mark_confirmation_headers_sent()
+            .expect("one atomic response header section accepted");
+        assert!(!auth
+            .record_confirmation_write(73, AUTH_V3_SERVER_CONFIRMATION_LEN)
+            .expect("record exact first suffix"));
+        assert_eq!(auth.confirmation_offset, 73);
+        assert_eq!(auth.state, ServerAuthState::SendingConfirmation);
+        assert!(
+            auth.authenticate(now).is_err(),
+            "partial body cannot authenticate"
+        );
+        assert!(auth
+            .record_confirmation_write(247, 247)
+            .expect("record exact remaining suffix with final FIN"));
+        assert_eq!(auth.confirmation_offset, AUTH_V3_SERVER_CONFIRMATION_LEN);
+        auth.wall_deadline = Some(now);
+        assert_eq!(
+            auth.authenticate(now),
+            Err(RuntimeError::AuthenticationExpired),
+            "activation must recheck trusted monotonic time after the final write"
+        );
+        auth.wall_deadline = Some(now + AUTH_WALL_TIMEOUT);
+        auth.authenticate(now + Duration::from_secs(1))
+            .expect("only complete final suffix permits capability");
+        assert_eq!(auth.state, ServerAuthState::Authenticated);
+    }
+
+    #[test]
+    fn t027b2b2_2_live_blocked_and_partial_confirmation_remain_pending() {
+        let mut blocked = TestPair::with_response_window(0).expect("construct blocked pair");
+        blocked.drive_until_h3().expect("reach auth gate");
+        let control = blocked.live_client_control().expect("encode valid control");
+        blocked
+            .send_auth_control(&control, true)
+            .expect("queue valid control");
+        blocked
+            .client_to_server()
+            .expect("blocked response remains retryable");
+        assert_eq!(
+            blocked.server.auth.state,
+            ServerAuthState::SendingConfirmation
+        );
+        assert!(!blocked.server.auth.confirmation_headers_sent);
+        assert_eq!(blocked.server.auth.confirmation_offset, 0);
+        assert!(!blocked.server.is_authenticated());
+
+        let mut partial = TestPair::with_response_window(256).expect("construct partial pair");
+        partial.drive_until_h3().expect("reach auth gate");
+        let control = partial.live_client_control().expect("encode valid control");
+        partial
+            .send_auth_control(&control, true)
+            .expect("queue valid control");
+        partial
+            .client_to_server()
+            .expect("partial response remains retryable");
+        assert_eq!(
+            partial.server.auth.state,
+            ServerAuthState::SendingConfirmation
+        );
+        assert!(partial.server.auth.confirmation_headers_sent);
+        assert!(partial.server.auth.confirmation_offset < AUTH_V3_SERVER_CONFIRMATION_LEN);
+        assert!(!partial.server.is_authenticated());
+    }
+
+    #[test]
+    fn t027b2b2_2_live_partial_confirmation_retries_exact_suffix_to_fin() {
+        let mut pair = TestPair::with_response_window(256).expect("construct partial pair");
+        pair.drive_until_h3().expect("reach auth gate");
+        let control = pair.live_client_control().expect("encode valid control");
+        let stream_id = pair
+            .send_auth_control(&control, true)
+            .expect("queue valid control");
+        pair.client_to_server()
+            .expect("accept only the first bounded confirmation prefix");
+        let accepted_prefix = pair.server.auth.confirmation_offset;
+        let expected = pair.server.auth.confirmation;
+        assert!(accepted_prefix > 0 && accepted_prefix < expected.len());
+
+        let mut progress = ConfirmationProgress::empty();
+        pair.server_to_client()
+            .expect("deliver the accepted prefix to free peer flow control");
+        pair.poll_confirmation(stream_id, &mut progress)
+            .expect("consume the exact first prefix");
+        assert_eq!(progress.offset, accepted_prefix);
+        assert_eq!(
+            progress.body[..accepted_prefix],
+            expected[..accepted_prefix]
+        );
+        assert!(!progress.finished);
+
+        for _ in 0..MAX_SHUTTLE_STEPS {
+            pair.client_to_server()
+                .expect("deliver flow-control credit and retry only the suffix");
+            pair.server_to_client()
+                .expect("deliver one bounded retry round");
+            pair.poll_confirmation(stream_id, &mut progress)
+                .expect("consume the retried suffix without duplication");
+            if progress.finished {
+                break;
+            }
+        }
+        assert!(progress.finished);
+        assert_eq!(progress.offset, AUTH_V3_SERVER_CONFIRMATION_LEN);
+        assert_eq!(progress.body, expected);
+        assert!(pair.server.is_authenticated());
+    }
+
+    #[test]
+    fn t027b2b2_2_pending_and_wall_expiry_win_live_unblock_races() {
+        for deadline_kind in 0..3 {
+            let mut pair = TestPair::with_response_window(256).expect("construct partial pair");
+            pair.drive_until_h3().expect("reach auth gate");
+            let control = pair.live_client_control().expect("encode valid control");
+            let stream_id = pair
+                .send_auth_control(&control, true)
+                .expect("queue valid control");
+            pair.client_to_server()
+                .expect("leave one confirmation suffix flow-control blocked");
+            let accepted_prefix = pair.server.auth.confirmation_offset;
+            assert!(accepted_prefix > 0 && accepted_prefix < AUTH_V3_SERVER_CONFIRMATION_LEN);
+
+            let mut progress = ConfirmationProgress::empty();
+            pair.server_to_client()
+                .expect("deliver and consume the accepted prefix");
+            pair.poll_confirmation(stream_id, &mut progress)
+                .expect("consuming the prefix queues fresh peer credit");
+            assert_eq!(progress.offset, accepted_prefix);
+
+            let expires = Instant::now() + Duration::from_millis(3);
+            match deadline_kind {
+                0 => pair.server.auth.wall_deadline = Some(expires),
+                1 => {
+                    pair.server
+                        .auth
+                        .pending
+                        .as_mut()
+                        .expect("confirmation owns one pending capability")
+                        .admission_deadline = expires;
+                }
+                2 => {
+                    pair.server
+                        .auth
+                        .pending
+                        .as_mut()
+                        .expect("confirmation owns one pending capability")
+                        .hard_deadline = expires;
+                }
+                _ => unreachable!(),
+            }
+            assert!(pair
+                .server
+                .next_timeout()
+                .is_some_and(|timeout| !timeout.is_zero()));
+            std::thread::sleep(Duration::from_millis(6));
+            assert!(pair
+                .server
+                .next_timeout()
+                .is_some_and(|timeout| timeout.is_zero()));
+
+            assert_eq!(
+                pair.client_to_server()
+                    .expect_err("expired deadline must beat the live unblock retry"),
+                RuntimeError::AuthenticationExpired
+            );
+            assert_eq!(pair.server.auth.state, ServerAuthState::Failed);
+            assert!(!pair.server.is_authenticated());
+            assert!(pair.server.auth.pending.is_none());
+            assert!(pair.server.auth.capability.is_none());
+            assert!(pair.server.auth.control.iter().all(|byte| *byte == 0));
+            assert!(pair.server.auth.exporter.iter().all(|byte| *byte == 0));
+            assert!(pair.server.auth.confirmation.iter().all(|byte| *byte == 0));
+            pair.deliver_close_to_client();
+            assert_eq!(progress.offset, accepted_prefix);
+            assert!(!progress.finished);
+        }
+    }
+
+    #[test]
+    fn t027b2b2_2_expiry_selection_is_frozen_bounded_and_fail_closed() {
+        assert_eq!(selected_expiries(1_000, 90_000), Ok((2_800, 87_400)));
+        assert_eq!(selected_expiries(1_000, 2_000), Ok((1_999, 2_000)));
+        assert_eq!(
+            selected_expiries(1_000, 1_001),
+            Err(RuntimeError::AuthenticationRejected)
+        );
+        assert_eq!(
+            selected_expiries(1_000, 1_000),
+            Err(RuntimeError::AuthenticationRejected)
+        );
+        for error in [
+            RuntimeError::H3EventBudgetExhausted,
+            RuntimeError::PreAuthApplicationActivity,
+            RuntimeError::AuthenticationRejected,
+            RuntimeError::AuthenticationUnavailable,
+            RuntimeError::AuthenticationExpired,
+        ] {
+            assert!(error.to_string().len() <= 64);
+            assert_eq!(format!("{error:?}"), "private server connection error");
+        }
+    }
+
+    #[test]
+    fn t027b2b2_2_headers_are_exact_ordered_and_bounded() {
+        let exact = test_auth_request_headers();
+        assert!(exact_auth_request_headers(
+            &exact,
+            b"localhost",
+            b"/direct-v3"
+        ));
+        for mutation in [
+            (0, b"GET".as_slice()),
+            (1, b"http".as_slice()),
+            (2, b"other.invalid".as_slice()),
+            (3, b"/wrong".as_slice()),
+            (4, b"application/octet-stream".as_slice()),
+            (5, b"255".as_slice()),
+        ] {
+            let mut headers = exact.clone();
+            headers[mutation.0] = quiche::h3::Header::new(headers[mutation.0].name(), mutation.1);
+            assert!(!exact_auth_request_headers(
+                &headers,
+                b"localhost",
+                b"/direct-v3"
+            ));
+        }
+        assert!(!exact_auth_request_headers(
+            &exact[..5],
+            b"localhost",
+            b"/direct-v3"
+        ));
+        assert_eq!(MAX_H3_EVENTS_PER_DRIVE, 8);
+        let production = include_str!("quiche_runtime.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source prefix exists");
+        for forbidden in ["connect_target", "resolve_dns", "open_relay"] {
+            assert!(!production.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn t027b2b2_2_live_control_rejects_wrong_wire_commitments_and_bounds() {
+        for offset in [0_usize, 12, 32, 40, 48, 80, 112, 176, 192, 224] {
+            let mut pair = TestPair::new().expect("construct bounded in-memory pair");
+            pair.drive_until_h3()
+                .expect("reach the live authentication gate");
+            let mut control = pair.live_client_control().expect("encode valid control");
+            control[offset] ^= 0x80;
+            pair.send_auth_control(&control, true)
+                .expect("queue bounded invalid control");
+            let error = pair
+                .client_to_server()
+                .expect_err("wrong auth-v3 field must fail closed");
+            assert_eq!(error, RuntimeError::AuthenticationRejected);
+            assert_eq!(pair.server.auth.state, ServerAuthState::Failed);
+            assert!(!pair.server.is_authenticated());
+            pair.deliver_close_to_client();
+        }
+
+        for length in [
+            AUTH_V3_CLIENT_CONTROL_LEN - 1,
+            AUTH_V3_CLIENT_CONTROL_LEN + 1,
+        ] {
+            let mut pair = TestPair::new().expect("construct bounded in-memory pair");
+            pair.drive_until_h3().expect("reach auth gate");
+            let control = pair.live_client_control().expect("encode valid control");
+            let mut body = [0_u8; AUTH_V3_CLIENT_CONTROL_LEN + 1];
+            body[..AUTH_V3_CLIENT_CONTROL_LEN].copy_from_slice(&control);
+            pair.send_auth_control(&body[..length], true)
+                .expect("queue bounded wrong-length body");
+            let error = pair
+                .client_to_server()
+                .expect_err("short or long body must fail closed");
+            assert_eq!(error, RuntimeError::AuthenticationRejected);
+            pair.deliver_close_to_client();
+        }
+    }
+
+    #[test]
+    fn t027b2b2_2_wrong_live_exporter_or_preselected_profile_fails_closed() {
+        let mut wrong_exporter = TestPair::new().expect("construct exporter pair");
+        wrong_exporter.drive_until_h3().expect("reach auth gate");
+        let control = wrong_exporter
+            .client_control_with_exporter(&[0x5a; AUTH_V3_EXPORTER_LEN])
+            .expect("encode against a different exporter");
+        wrong_exporter
+            .send_auth_control(&control, true)
+            .expect("queue wrong-exporter control");
+        assert_eq!(
+            wrong_exporter
+                .client_to_server()
+                .expect_err("live exporter mismatch must reject"),
+            RuntimeError::AuthenticationRejected
+        );
+        wrong_exporter.deliver_close_to_client();
+
+        let mut wrong_profile = TestPair::new().expect("construct profile pair");
+        wrong_profile.drive_until_h3().expect("reach auth gate");
+        let control = wrong_profile
+            .live_client_control()
+            .expect("encode against original preselected profile");
+        let original = wrong_profile.server.role.direct_v3();
+        let alternate = test_server_role(
+            original.cert_path(),
+            original.key_path(),
+            "localhost",
+            "h3",
+            7,
+            "mv1_AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        )
+        .expect("parse alternate local profile");
+        wrong_profile.server.role =
+            FrozenDirectV3ServerRole::new(alternate).expect("preselect one alternate profile");
+        wrong_profile
+            .send_auth_control(&control, true)
+            .expect("queue original-profile control");
+        assert_eq!(
+            wrong_profile
+                .client_to_server()
+                .expect_err("preselected profile mismatch must reject"),
+            RuntimeError::AuthenticationRejected
+        );
+        wrong_profile.deliver_close_to_client();
+    }
+
+    #[test]
+    fn t027b2b2_2_fragmented_control_is_one_stream_and_one_generation() {
+        let mut pair = TestPair::new().expect("construct bounded in-memory pair");
+        pair.drive_until_h3().expect("reach auth gate");
+        let generation = pair.server.generation;
+        let control = pair.live_client_control().expect("encode valid control");
+        let stream = pair
+            .send_auth_fragments(
+                &[
+                    &control[..1],
+                    &control[1..127],
+                    &control[127..255],
+                    &control[255..],
+                ],
+                true,
+            )
+            .expect("queue four bounded fragments");
+        pair.client_to_server()
+            .expect("deliver fragments on one physical generation");
+        assert!(pair.server.is_authenticated());
+        assert_eq!(pair.server.auth.bound_stream(), Ok(stream));
+        assert_eq!(
+            pair.server
+                .auth
+                .capability
+                .as_ref()
+                .expect("capability exists")
+                .generation
+                .as_bytes(),
+            generation.as_bytes()
+        );
+    }
+
+    #[test]
+    fn t027b2b2_2_duplicate_stream_and_reset_fail_closed() {
+        let mut duplicate = TestPair::new().expect("construct duplicate pair");
+        duplicate.drive_until_h3().expect("reach auth gate");
+        duplicate
+            .send_auth_headers_only()
+            .expect("queue first auth headers");
+        duplicate
+            .send_auth_headers_only()
+            .expect("queue second auth headers");
+        let error = duplicate
+            .client_to_server()
+            .expect_err("second stream must fail the generation");
+        assert_eq!(error, RuntimeError::AuthenticationRejected);
+        duplicate.deliver_close_to_client();
+
+        let mut reset = TestPair::new().expect("construct reset pair");
+        reset.drive_until_h3().expect("reach auth gate");
+        let stream = reset
+            .send_auth_headers_only()
+            .expect("queue first auth headers");
+        reset
+            .client
+            .stream_shutdown(stream, quiche::Shutdown::Write, 0x44)
+            .expect("reset the request stream");
+        let error = reset
+            .client_to_server()
+            .expect_err("request reset must fail closed");
+        assert!(matches!(
+            error,
+            RuntimeError::PreAuthApplicationActivity | RuntimeError::H3Unavailable
+        ));
+        assert!(!reset.server.is_authenticated());
+
+        let mut stopped = TestPair::new().expect("construct stop pair");
+        stopped.drive_until_h3().expect("reach auth gate");
+        let control = stopped.live_client_control().expect("encode valid control");
+        let stream = stopped
+            .send_auth_control(&control, true)
+            .expect("queue valid request");
+        stopped
+            .client
+            .stream_shutdown(stream, quiche::Shutdown::Read, 0x45)
+            .expect("stop the response direction");
+        let error = stopped
+            .client_to_server()
+            .expect_err("STOP_SENDING must fail the generation");
+        assert_eq!(error, RuntimeError::AuthenticationRejected);
+        assert!(!stopped.server.is_authenticated());
+        stopped.deliver_close_to_client();
+    }
+
+    #[test]
+    fn t027b2b2_2_goaway_and_priority_update_fail_closed_independently() {
+        let mut goaway = TestPair::new().expect("construct GOAWAY pair");
+        goaway.drive_until_h3().expect("reach auth gate");
+        goaway
+            .client_h3
+            .as_mut()
+            .expect("client H3 exists")
+            .send_goaway(&mut goaway.client, 0)
+            .expect("queue client GOAWAY");
+        assert_eq!(
+            goaway
+                .client_to_server()
+                .expect_err("pre-auth GOAWAY must close"),
+            RuntimeError::PreAuthApplicationActivity
+        );
+        goaway.deliver_close_to_client();
+
+        let mut priority = TestPair::new().expect("construct priority pair");
+        priority.drive_until_h3().expect("reach auth gate");
+        priority
+            .client_h3
+            .as_mut()
+            .expect("client H3 exists")
+            .send_priority_update_for_request(
+                &mut priority.client,
+                0,
+                &quiche::h3::Priority::default(),
+            )
+            .expect("queue client priority update");
+        assert_eq!(
+            priority
+                .client_to_server()
+                .expect_err("pre-auth priority update must close"),
+            RuntimeError::PreAuthApplicationActivity
+        );
+        priority.deliver_close_to_client();
+    }
+
+    #[test]
+    fn t027b2b2_2_eighth_h3_application_event_exhausts_production_budget() {
+        let mut pair = TestPair::new().expect("construct bounded event-budget pair");
+        pair.drive_until_h3().expect("reach auth gate");
+        let mut events = 0;
+        for expected in 1..MAX_H3_EVENTS_PER_DRIVE {
+            observe_h3_application_event(&mut events)
+                .expect("the first seven bounded application events fit");
+            assert_eq!(events, expected);
+        }
+        assert_eq!(
+            observe_h3_application_event(&mut events)
+                .expect_err("the eighth application event must exhaust production budget"),
+            RuntimeError::H3EventBudgetExhausted
+        );
+        assert_eq!(
+            pair.server
+                .reject_with::<()>(RuntimeError::H3EventBudgetExhausted)
+                .expect_err("production budget failure closes the live generation"),
+            RuntimeError::H3EventBudgetExhausted
+        );
+        pair.deliver_close_to_client();
+    }
+
+    #[test]
+    fn t027b2b2_2_peer_close_immediately_clears_authenticated_generation() {
+        let mut pair = TestPair::new().expect("construct peer-close pair");
+        pair.drive_until_h3().expect("reach auth gate");
+        let control = pair.live_client_control().expect("encode valid control");
+        pair.send_auth_control(&control, true)
+            .expect("queue valid control");
+        pair.client_to_server().expect("authenticate generation");
+        assert!(pair.server.is_authenticated());
+
+        pair.client
+            .close(true, 0x44, b"")
+            .expect("peer initiates a real QUIC application close");
+        pair.client_to_server()
+            .expect("deliver peer close on the authenticated generation");
+        assert_ne!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+        assert!(!pair.server.is_authenticated());
+        assert_eq!(pair.server.auth.state, ServerAuthState::Failed);
+        assert!(pair.server.auth.pending.is_none());
+        assert!(pair.server.auth.capability.is_none());
+        assert!(pair.server.auth.control.iter().all(|byte| *byte == 0));
+        assert!(pair.server.auth.exporter.iter().all(|byte| *byte == 0));
+        assert!(pair.server.auth.confirmation.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn t027b2b2_2_idle_timeout_immediately_clears_authenticated_generation() {
+        let mut pair = TestPair::with_idle_timeout(25).expect("construct short-idle pair");
+        pair.drive_until_h3().expect("reach auth gate");
+        let control = pair.live_client_control().expect("encode valid control");
+        let stream_id = pair
+            .send_auth_control(&control, true)
+            .expect("queue valid control");
+        pair.client_to_server().expect("authenticate generation");
+        pair.collect_confirmation(stream_id)
+            .expect("finish the real authenticated exchange");
+        assert!(pair.server.is_authenticated());
+
+        let idle = pair
+            .server
+            .next_timeout()
+            .expect("real QUIC idle timer exists");
+        std::thread::sleep(idle + Duration::from_millis(10));
+        pair.server
+            .on_timeout()
+            .expect("apply the real QUIC idle timeout");
+        assert_ne!(pair.server.lifecycle(), ConnectionLifecycle::Active);
+        assert!(!pair.server.is_authenticated());
+        assert_eq!(pair.server.auth.state, ServerAuthState::Failed);
+        assert!(pair.server.auth.pending.is_none());
+        assert!(pair.server.auth.capability.is_none());
+        assert!(pair.server.auth.control.iter().all(|byte| *byte == 0));
+        assert!(pair.server.auth.exporter.iter().all(|byte| *byte == 0));
+        assert!(pair.server.auth.confirmation.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn t027b2b2_2_absolute_wall_and_hard_expiry_cannot_be_renewed() {
+        let now = Instant::now();
+        let mut auth = ServerAuthMachine::fresh();
+        auth.enter_gate(now).expect("enter gate once");
+        let fixed = auth.wall_deadline.expect("wall deadline installed");
+        auth.enter_gate(now + Duration::from_secs(9))
+            .expect("activity does not fail before deadline");
+        assert_eq!(auth.wall_deadline, Some(fixed));
+        assert_eq!(fixed, now + AUTH_WALL_TIMEOUT);
+
+        let mut wall = TestPair::new().expect("construct wall deadline pair");
+        wall.drive_until_h3().expect("reach auth gate");
+        wall.server.auth.wall_deadline = Some(Instant::now());
+        let mut packet = [0_u8; MAX_PACKET_BYTES];
+        assert!(matches!(
+            wall.server.next_packet(&mut packet),
+            Err(RuntimeError::AuthenticationExpired)
+        ));
+        wall.deliver_close_to_client();
+
+        let mut hard = TestPair::new().expect("construct hard expiry pair");
+        hard.drive_until_h3().expect("reach auth gate");
+        let control = hard.live_client_control().expect("encode valid control");
+        hard.send_auth_control(&control, true)
+            .expect("queue valid auth control");
+        hard.client_to_server().expect("authenticate generation");
+        let capability = hard
+            .server
+            .auth
+            .capability
+            .as_mut()
+            .expect("capability exists");
+        capability.hard_deadline = Instant::now();
+        assert!(Instant::now() >= capability.hard_deadline);
+        assert!(matches!(
+            hard.server.next_packet(&mut packet),
+            Err(RuntimeError::AuthenticationExpired)
+        ));
+        assert!(!hard.server.is_authenticated());
+        hard.deliver_close_to_client();
+    }
+
+    #[test]
+    fn t027b2b2_2_revocation_wins_before_any_future_admission() {
+        let mut pair = TestPair::new().expect("construct bounded pair");
+        pair.drive_until_h3().expect("reach auth gate");
+        let control = pair.live_client_control().expect("encode valid control");
+        pair.send_auth_control(&control, true)
+            .expect("queue valid auth control");
+        pair.client_to_server().expect("authenticate generation");
+        let capability = pair
+            .server
+            .auth
+            .capability
+            .as_mut()
+            .expect("capability exists");
+        capability.revoke();
+        assert!(!capability.is_active_at(Instant::now()));
+        assert!(!pair.server.is_authenticated());
+        let mut packet = [0_u8; MAX_PACKET_BYTES];
+        assert!(matches!(
+            pair.server.next_packet(&mut packet),
+            Err(RuntimeError::AuthenticationExpired)
+        ));
+        pair.deliver_close_to_client();
     }
 }

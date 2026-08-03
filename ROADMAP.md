@@ -17,60 +17,65 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2d0 — queue the Classic CONNECT success response after target handoff
+### T027b-2d1 — bounded target-to-client DATA and target-EOF response FIN
 
-- **User result:** Only after a real target `TcpStream` has returned to its
-  originating fixed Classic CONNECT slot, queue exactly one response header,
-  `:status = 200`, with `fin=false` on that request stream. Acceptance by the
-  server's local quiche send queue does not prove that the client received the
-  response. A client observing it in a loopback test is local test evidence
-  only.
-- **Scope:** Split the existing slot state minimally between target-owned
-  response-pending and response-accepted. Immediately before each
-  `h3.send_response` attempt, recheck the same generation and request stream,
-  active non-revoked capability, hard deadline, maximum frame size, consumed
-  target metadata, unique slot ownership of the still-live target socket, and
-  absence of request reset or stop. `StreamBlocked` makes zero progress and
-  preserves the same pending slot and socket for retry through the existing
-  actor drive and flush path. Local queue acceptance advances only that slot to
-  response-accepted. Any other response error fails the generation closed with
-  the existing fixed privacy-safe close behavior.
-- **Acceptance:** Prove a real loopback target handoff precedes one exact
-  `Headers(:status=200)` client observation with more frames still possible;
-  pre-handoff drives emit no response; handoff produces response-pending; local
-  queue acceptance produces response-accepted without claiming client receipt;
-  a real flow-control `StreamBlocked` writes no partial HEADERS, retains the
-  original socket and pending state, then safely retries the same response once
-  after unblocking. Recheck revocation, hard expiry, generation, stream, frame,
-  reset, and stop failures before sending and release the socket on generation
-  close. Admission expiry and the already-consumed target-open attempt deadline
-  are not response deadlines. A peer request write-half FIN still permits the
-  response. Target connect, egress, timeout, and Domain failures emit no 200;
-  repeated drives emit no second response; post-200 DATA remains rejected.
-  Preserve the fixed eight slots, four ready completions per round, T027b-2c4
-  and T027b-2c5 quota, fairness, EOF, join, teardown, opener, direct-v3 auth,
-  Domain parsing and admission, legacy, privacy, and source-shape gates.
-- **Out of scope:** No CONNECT DATA read or write, relay, half-close forwarding,
-  slot removal, reuse or recovery, fallback or error response, second response,
-  product-server startup caller, registry or metrics change, new task, future,
-  channel, collection, socket owner, timer, scheduler, public API, config,
-  schema, wire or version change, dependency, manifest, lockfile, vendor, core,
-  client, SDK, CLI, `STATUS.md`, CI, remote, deployment, release, real-network,
-  credential, infrastructure, or system-network work. Production Domain target
-  opening remains temporarily fail-closed; a truly cancellable resolver is a
-  separate later decision.
+- **User result:** After the original slot's exact `:status = 200` response has
+  been accepted by the server's local quiche queue, bytes read from that slot's
+  one target `TcpStream` can be queued as raw DATA on the same response stream.
+  Target EOF queues FIN only after all earlier target bytes. Local queue
+  acceptance still does not prove client receipt; loopback receipt remains
+  local test evidence only.
+- **Scope:** Keep the fixed eight Classic CONNECT slots. Each slot may own one
+  fixed 16 KiB payload buffer. An accepted response with an empty buffer borrows
+  only its original target socket's readable wake; one cancel-safe `try_read`
+  either preserves zero progress, prepares at most 16 KiB, or records target
+  EOF. Before the biased actor wait, that same synchronous round uses an exact
+  readable slot when present or probes at most one cursor-selected accepted
+  response; `WouldBlock` returns to the normal wait without looping.
+  `h3.send_body` retries only the exact unsent suffix, treats partial success
+  precisely, and treats `Done` or `StreamBlocked` as zero progress. Empty-body
+  `fin=true` advances only on `Ok(0)`. One actor round performs at most four
+  target read or body-send operations and advances through a rotating slot
+  cursor, for at most 64 KiB of payload progress. The original slot remains
+  occupied and retains its socket after FIN acceptance.
+- **Acceptance:** Prove bytes written before and after response observation
+  arrive only after the exact 200 on the same stream; initial `WouldBlock`
+  preserves the socket and later readiness wakes without a polling sleep; a
+  payload larger than 16 KiB arrives byte-for-byte in multiple reads; a real
+  small QUIC window preserves and retries the exact suffix without another
+  target read; target EOF follows all bytes, while zero-byte EOF still produces
+  FIN; eight simultaneously readable slots rotate to progress without any
+  round exceeding four operations; and a real continuously ready actor inbox
+  permits one inbound turn before the synchronous target probe, while target
+  readiness cannot bypass cancel or timer priority. RESET, STOP_SENDING, target
+  failure, hard expiry, revocation, and cancellation fail the generation
+  closed, clear the fixed buffer, and release the socket. Authenticated client
+  DATA remains rejected without `recv_body`, and its marker never reaches the
+  target.
+  Preserve all T027b-2d0 response, T027b-2c4/2c5 ownership and fairness,
+  direct-v3 auth, EOF, flush, join, teardown, opener, privacy, and source-shape
+  gates.
+- **Out of scope:** No client-to-target DATA, target write, target write-half
+  shutdown, bidirectional relay, client half-close forwarding, trailer, new
+  stream, slot removal, reclaim or reuse, fallback or error response,
+  product-server startup caller, registry or metrics change, new task, saved
+  future, channel, collection, second socket owner, timer, scheduler, public
+  API, config, schema, wire or version change, dependency, manifest, lockfile,
+  vendor, core, client, SDK, CLI, `STATUS.md`, CI, remote, deployment, release,
+  real-network, credential, infrastructure, or system-network work. Production
+  Domain target opening remains temporarily fail-closed.
 - **Stop conditions:** Stop before any file outside `ROADMAP.md`,
   `crates/maverick-server/src/quiche_runtime.rs`, and
-  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if the exact
-  response cannot be queued through the existing slot owner and actor drive,
-  if real blocked-to-unblocked behavior cannot be tested, or if any DATA plane,
-  new owner, queue, timer, task, dependency, public surface, forbidden file, or
-  `STATUS.md` change becomes necessary.
+  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if the slot's
+  socket must be moved, split, shared, or duplicated; if readiness needs a saved
+  future, task, channel, collection, second owner, polling sleep, unsafe code,
+  or new scheduler; if real partial/blocked behavior cannot be tested; or if a
+  dependency, public surface, forbidden file, or `STATUS.md` change is needed.
 
 This remains repository-local, private, feature-gated, and temporarily limited
-to IP-literal production target opening. It queues one response header but does
-not implement a tunnel or DATA plane, create a product runtime path, establish
-readiness, authorize a release, or produce a product result.
+to IP-literal production target opening. It is one bounded target-to-client
+foundation slice, not a complete tunnel, client-to-target path, product runtime,
+readiness result, release authorization, or product result.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

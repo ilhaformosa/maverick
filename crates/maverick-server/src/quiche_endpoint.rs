@@ -4,11 +4,11 @@
 //! Each actor receives one `ServerConnection` by value and never shares it.
 //! Production dispatch may open one policy-approved IP-literal target before
 //! the token's whole-attempt deadline. Domain targets remain representable but
-//! fail closed before system resolution. The endpoint performs no response,
-//! DATA, or relay work. One actor future temporarily owns the attempt and any
-//! connected target socket until synchronous handoff into the originating
-//! `ServerConnection` slot. This module exposes no public API or non-loopback
-//! binding seam.
+//! fail closed before system resolution. After synchronous handoff into the
+//! originating `ServerConnection` slot, the actor can borrow that slot's target
+//! read readiness while the connection queues bounded response DATA. The actor
+//! creates no second socket owner, relay task, channel, or target collection.
+//! This module exposes no public API or non-loopback binding seam.
 
 #![forbid(unsafe_code)]
 
@@ -397,6 +397,7 @@ async fn run_connection_actor(
     let mut terminal_error = None;
     let mut termination_deadline = None;
     let mut target_futures = TargetDispatchFutures::new(target_open_sinks);
+    let mut target_readable_slot = None;
     let result = async {
         loop {
             verify_stable_source_id(&connection, &expected_server_source_id)?;
@@ -541,6 +542,25 @@ async fn run_connection_actor(
                 if test_gate.take_parent_stall_request() {
                     test_gate.observe_parent_stall_started();
                     std::future::pending::<()>().await;
+                }
+            }
+            if termination_deadline.is_none() && connection.is_authenticated() {
+                let readable_slot = target_readable_slot.take();
+                let target_data_round = connection.drive_target_to_client_round(readable_slot);
+                #[cfg(test)]
+                if let (Ok(operations), Some(test_gate)) =
+                    (&target_data_round, test_gate.as_deref())
+                {
+                    test_gate.observe_target_data_round(*operations);
+                }
+                if target_data_round.is_err() {
+                    begin_actor_termination(
+                        &mut connection,
+                        &mut terminal_error,
+                        &mut termination_deadline,
+                        Some(ActorError::TargetDataUnavailable),
+                    );
+                    target_futures.clear();
                 }
             }
             let lifecycle_before_flush = connection.lifecycle();
@@ -804,6 +824,22 @@ async fn run_connection_actor(
                         target_futures.clear();
                     }
                 }
+                readable = connection.wait_target_readable(),
+                    if termination_deadline.is_none()
+                        && connection.has_target_read_waiter() => {
+                    match readable {
+                        Ok(slot_index) => target_readable_slot = Some(slot_index),
+                        Err(_) => {
+                            begin_actor_termination(
+                                &mut connection,
+                                &mut terminal_error,
+                                &mut termination_deadline,
+                                Some(ActorError::TargetDataUnavailable),
+                            );
+                            target_futures.clear();
+                        }
+                    }
+                }
             }
         }
     }
@@ -1008,7 +1044,10 @@ fn begin_actor_termination(
     error: Option<ActorError>,
 ) {
     let handshake_timed_out = error == Some(ActorError::HandshakeTimeout);
-    let generation_failed = error == Some(ActorError::TargetDispatchUnavailable);
+    let generation_failed = matches!(
+        error,
+        Some(ActorError::TargetDispatchUnavailable | ActorError::TargetDataUnavailable)
+    );
     if let Some(error) = error {
         terminal_error.get_or_insert(error);
     }
@@ -1163,6 +1202,7 @@ struct FlushTestPackets {
 #[derive(Default)]
 struct ActorTestGate {
     send_armed: AtomicBool,
+    send_after_target_completion: AtomicBool,
     send_started: Notify,
     release_send: Notify,
     pending_close_wait: Notify,
@@ -1191,6 +1231,8 @@ struct ActorTestGate {
     completion_round_peak: AtomicUsize,
     completion_queue_drained: AtomicBool,
     completion_accepted_notify: Notify,
+    target_data_progress_operations: AtomicUsize,
+    target_data_progress_inbound: AtomicUsize,
     fail_first_dispatch: Notify,
     revoke_requested: AtomicBool,
     hard_expiry_requested: AtomicBool,
@@ -1228,8 +1270,21 @@ impl ActorTestGate {
         assert!(!self.send_armed.swap(true, Ordering::SeqCst));
     }
 
+    fn arm_send_after_target_completion(&self) {
+        self.send_after_target_completion
+            .store(true, Ordering::SeqCst);
+        self.arm_send();
+    }
+
     async fn pause_once_if_armed(&self) {
+        if self.send_after_target_completion.load(Ordering::SeqCst)
+            && self.completion_accepted.load(Ordering::Acquire) == 0
+        {
+            return;
+        }
         if self.send_armed.swap(false, Ordering::SeqCst) {
+            self.send_after_target_completion
+                .store(false, Ordering::SeqCst);
             self.send_started.notify_one();
             self.release_send.notified().await;
         }
@@ -1410,6 +1465,35 @@ impl ActorTestGate {
 
     fn target_future_queue_drained(&self) -> bool {
         self.completion_queue_drained.load(Ordering::Acquire)
+    }
+
+    fn observe_target_data_round(&self, operations: usize) {
+        // In the single-slot flood fixture, one operation can be only a
+        // WouldBlock probe. Two prove the read changed state and the same
+        // round continued into a Body or FIN attempt.
+        if operations < 2 {
+            return;
+        }
+        if self
+            .target_data_progress_operations
+            .compare_exchange(0, operations, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.target_data_progress_inbound.store(
+                self.inbound_observed.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+        }
+    }
+
+    fn target_data_progress_snapshot(&self) -> Option<(usize, usize)> {
+        let operations = self.target_data_progress_operations.load(Ordering::Acquire);
+        (operations != 0).then(|| {
+            (
+                operations,
+                self.target_data_progress_inbound.load(Ordering::Acquire),
+            )
+        })
     }
 
     fn request_parent_stall(&self) {
@@ -1651,6 +1735,7 @@ enum ActorError {
     ConnectionUnavailable,
     SocketSendUnavailable,
     TargetDispatchUnavailable,
+    TargetDataUnavailable,
 }
 
 impl fmt::Display for ActorError {
@@ -1663,6 +1748,7 @@ impl fmt::Display for ActorError {
             Self::ConnectionUnavailable => "server actor connection unavailable",
             Self::SocketSendUnavailable => "server actor send unavailable",
             Self::TargetDispatchUnavailable => "server actor target dispatch unavailable",
+            Self::TargetDataUnavailable => "server actor target data unavailable",
         };
         formatter.write_str(message)
     }
@@ -1705,7 +1791,7 @@ mod tests {
         MAX_PACKET_BYTES,
     };
 
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::task::AbortHandle;
     use tokio::time::timeout;
 
@@ -2397,6 +2483,342 @@ fallback:
         assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 0);
         assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
         assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn t027b2d1_real_actor_delivers_target_bytes_written_before_and_after_response() {
+        const BEFORE_RESPONSE: &[u8] = b"target-before-response";
+        const AFTER_RESPONSE: &[u8] = b"-target-after-response";
+
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role_with_loopback_target(1_000);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind target-data endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind target-data loopback target");
+        let authority = listener
+            .local_addr()
+            .expect("read target-data target address")
+            .to_string();
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd1).await;
+        let client_gate = Arc::clone(&gate);
+        let client_cancel = cancel.clone();
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            let stream_id = client
+                .send_classic_connect_to(&authority)
+                .expect("queue target-data CONNECT");
+            client.send_pending().await;
+            let (mut target_peer, _) = timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .expect("target-data opener reaches loopback target")
+                .expect("accept target-data target connection");
+            target_peer
+                .write_all(BEFORE_RESPONSE)
+                .await
+                .expect("write target bytes before response");
+            timeout(
+                Duration::from_secs(1),
+                client_gate.wait_for_target_completions(1),
+            )
+            .await
+            .expect("target-data socket returns to original slot");
+
+            client.receive_available().await;
+            let h3 = client.h3.as_mut().expect("target-data H3 client exists");
+            match h3.poll(&mut client.connection) {
+                Ok((response_stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
+                    assert_eq!(response_stream_id, stream_id);
+                    assert_eq!(list.len(), 1);
+                    assert_eq!(list[0].name(), b":status");
+                    assert_eq!(list[0].value(), b"200");
+                    assert!(more_frames);
+                }
+                other => panic!("target DATA must follow the exact response: {other:?}"),
+            }
+            target_peer
+                .write_all(AFTER_RESPONSE)
+                .await
+                .expect("write target bytes after response");
+
+            let mut received = [0_u8; BEFORE_RESPONSE.len() + AFTER_RESPONSE.len()];
+            let mut received_len = 0_usize;
+            timeout(Duration::from_secs(1), async {
+                loop {
+                    client.receive_available().await;
+                    let h3 = client.h3.as_mut().expect("target-data H3 client exists");
+                    loop {
+                        match h3.poll(&mut client.connection) {
+                            Ok((data_stream_id, quiche::h3::Event::Data)) => {
+                                assert_eq!(data_stream_id, stream_id);
+                                loop {
+                                    match h3.recv_body(
+                                        &mut client.connection,
+                                        stream_id,
+                                        &mut received[received_len..],
+                                    ) {
+                                        Ok(length) => received_len += length,
+                                        Err(quiche::h3::Error::Done) => break,
+                                        Err(_) => panic!("target DATA unavailable"),
+                                    }
+                                }
+                            }
+                            Err(quiche::h3::Error::Done) => break,
+                            other => panic!("unexpected target-data event: {other:?}"),
+                        }
+                    }
+                    if received_len == received.len() {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("receive target bytes written around response");
+            assert_eq!(&received[..BEFORE_RESPONSE.len()], BEFORE_RESPONSE);
+            assert_eq!(&received[BEFORE_RESPONSE.len()..], AFTER_RESPONSE);
+
+            client_cancel
+                .send(true)
+                .expect("cancel endpoint after target DATA");
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("target-data endpoint joins its actor");
+    }
+
+    #[tokio::test]
+    async fn t027b2d1_real_actor_inbound_flood_cannot_starve_target_data_or_cancel() {
+        const TARGET_PAYLOAD: &[u8] = b"bounded-actor-fairness";
+
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role_with_loopback_target(1_000);
+        let metrics_owner = test_metrics_owner();
+        let server_socket = Arc::new(
+            UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .await
+                .expect("bind fairness server socket"),
+        );
+        let server_address = server_socket
+            .local_addr()
+            .expect("read fairness server address");
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xd2).await;
+        let mut initial_bytes = [0_u8; MAX_PACKET_BYTES];
+        let (initial_length, initial_info) = client
+            .connection
+            .send(&mut initial_bytes)
+            .expect("create fairness Initial");
+        let frozen_role =
+            FrozenDirectV3ServerRole::new(Arc::clone(&owner)).expect("freeze fairness server role");
+        let mut registry =
+            ConnectionRegistry::new(frozen_role).expect("construct fairness registry");
+        let (_pending, connection, expected) = actor_admission(
+            &mut registry,
+            TestPacket {
+                bytes: initial_bytes,
+                length: initial_length,
+                meta: PacketMeta {
+                    from: initial_info.from,
+                    to: initial_info.to,
+                },
+            },
+        )
+        .into_parts();
+        let (sender, receiver) = mpsc::channel(ACTOR_INBOX_CAPACITY);
+        let router_sender = sender.clone();
+        let router_socket = Arc::clone(&server_socket);
+        let router = tokio::spawn(async move {
+            let mut packet = [0_u8; SOCKET_RECV_BYTES];
+            loop {
+                let Ok((length, source)) = router_socket.recv_from(&mut packet).await else {
+                    return;
+                };
+                let Some(bytes) = bounded_received_datagram(&packet, length) else {
+                    continue;
+                };
+                if router_sender
+                    .send(ActorPacket {
+                        bytes,
+                        length,
+                        meta: PacketMeta {
+                            from: source,
+                            to: server_address,
+                        },
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let gate = Arc::new(ActorTestGate::default());
+        let actor = tokio::spawn(run_connection_actor(
+            connection,
+            expected,
+            receiver,
+            Arc::clone(&server_socket),
+            cancel_rx,
+            metrics_owner.target_open_sinks(),
+            Some(Arc::clone(&gate)),
+        ));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind fairness target listener");
+        let authority = listener
+            .local_addr()
+            .expect("read fairness target address")
+            .to_string();
+
+        drive_client_to_h3(&mut client).await;
+        client.authenticate_direct_v3(&owner).await;
+        gate.arm_send_after_target_completion();
+        let stream_id = client
+            .send_classic_connect_to(&authority)
+            .expect("queue fairness CONNECT");
+        client.send_pending().await;
+        let (mut target_peer, _) = timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .expect("fairness opener reaches target")
+            .expect("accept fairness target connection");
+        target_peer
+            .write_all(TARGET_PAYLOAD)
+            .await
+            .expect("write fairness target payload");
+        timeout(Duration::from_secs(1), gate.send_started.notified())
+            .await
+            .expect("pause actor response flush before fairness flood");
+
+        let inbound_before_flood = gate.inbound_observed.load(Ordering::Acquire);
+        timeout(Duration::from_secs(1), async {
+            while sender.capacity() != 0 {
+                client
+                    .connection
+                    .send_ack_eliciting()
+                    .expect("queue fairness inbound PING");
+                client.send_pending().await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fill actor inbox with real QUIC inbound");
+        assert_eq!(sender.capacity(), 0);
+        assert_eq!(
+            gate.inbound_observed.load(Ordering::Acquire),
+            inbound_before_flood,
+            "paused actor has not consumed the queued inbound flood"
+        );
+        gate.release();
+
+        let mut headers_seen = false;
+        let mut received = Vec::new();
+        timeout(Duration::from_secs(1), async {
+            loop {
+                client.receive_available().await;
+                let h3 = client.h3.as_mut().expect("fairness H3 client exists");
+                loop {
+                    match h3.poll(&mut client.connection) {
+                        Ok((response_stream, quiche::h3::Event::Headers { list, more_frames })) => {
+                            assert_eq!(response_stream, stream_id);
+                            assert!(!headers_seen);
+                            assert!(more_frames);
+                            assert_eq!(list.len(), 1);
+                            assert_eq!(list[0].name(), b":status");
+                            assert_eq!(list[0].value(), b"200");
+                            headers_seen = true;
+                        }
+                        Ok((data_stream, quiche::h3::Event::Data)) => {
+                            assert_eq!(data_stream, stream_id);
+                            assert!(headers_seen);
+                            let mut body = [0_u8; 64];
+                            loop {
+                                match h3.recv_body(&mut client.connection, stream_id, &mut body) {
+                                    Ok(length) => received.extend_from_slice(&body[..length]),
+                                    Err(quiche::h3::Error::Done) => break,
+                                    Err(_) => panic!("fairness target DATA unavailable"),
+                                }
+                            }
+                        }
+                        Err(quiche::h3::Error::Done) => break,
+                        other => panic!("unexpected fairness response event: {other:?}"),
+                    }
+                }
+                if received == TARGET_PAYLOAD {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("target DATA advances before the real inbound flood drains");
+        let (operations, inbound_at_target_progress) = gate
+            .target_data_progress_snapshot()
+            .expect("actor records one bounded target-data round");
+        assert!((2..=4).contains(&operations));
+        assert_eq!(
+            inbound_at_target_progress,
+            inbound_before_flood + 1,
+            "one inbound turn must be followed by the bounded target probe"
+        );
+
+        gate.arm_send();
+        target_peer
+            .shutdown()
+            .await
+            .expect("close fairness target write half");
+        client
+            .connection
+            .send_ack_eliciting()
+            .expect("queue cancel-priority PING");
+        client.send_pending().await;
+        timeout(Duration::from_secs(1), gate.send_started.notified())
+            .await
+            .expect("pause actor flush before cancel-priority check");
+        timeout(Duration::from_secs(1), async {
+            while sender.capacity() != 0 {
+                client
+                    .connection
+                    .send_ack_eliciting()
+                    .expect("queue cancel-priority inbound PING");
+                client.send_pending().await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("refill actor inbox before cancellation");
+        cancel_tx
+            .send(true)
+            .expect("cancel actor while inbound remains ready");
+        gate.release();
+        router.abort();
+        assert!(router
+            .await
+            .expect_err("fairness router is intentionally stopped")
+            .is_cancelled());
+        drop(sender);
+        let actor_result = timeout(Duration::from_secs(3), actor)
+            .await
+            .expect("cancelled fairness actor terminates")
+            .expect("join cancelled fairness actor");
+        assert_eq!(actor_result, Err(ActorError::Cancelled));
+        assert_eq!(
+            timeout(Duration::from_secs(1), target_peer.read_u8())
+                .await
+                .expect("cancel closes fairness target")
+                .expect_err("cancelled target peer reports EOF")
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[tokio::test]
@@ -4752,6 +5174,7 @@ fallback:
             ActorError::ConnectionUnavailable,
             ActorError::SocketSendUnavailable,
             ActorError::TargetDispatchUnavailable,
+            ActorError::TargetDataUnavailable,
         ];
         for error in actor_errors {
             assert_eq!(format!("{error:?}"), "private server actor error");
@@ -4806,6 +5229,8 @@ fallback:
         assert!(production_endpoint.contains("JoinSet<Result<(), ActorError>>"));
         assert_eq!(production_endpoint.matches("JoinSet<").count(), 1);
         assert!(production_endpoint.contains("FuturesUnordered<TargetDispatchFuture>"));
+        assert!(production_endpoint.contains("connection.wait_target_readable()"));
+        assert!(production_endpoint.contains("target_readable_slot = Some(slot_index)"));
         assert!(production_endpoint.contains("struct TargetDispatchCompletion"));
         assert!(production_endpoint.contains("opened_target: TcpStream"));
         assert!(production_endpoint.contains("private target dispatch completion"));
@@ -4849,6 +5274,8 @@ fallback:
             ["recv_", "body"].concat(),
             ["relay_", "tcp"].concat(),
             ["target_", "listener"].concat(),
+            "into_split".to_string(),
+            "try_write".to_string(),
         ] {
             assert!(!production_endpoint.contains(&forbidden));
         }

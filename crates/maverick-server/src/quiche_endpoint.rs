@@ -1695,6 +1695,7 @@ mod tests {
         encode_auth_v3_client_control, AuthV3Carrier, AuthV3ClientControlInput, AuthV3TlsVersion,
         AUTH_V3_CLIENT_CONTROL_LEN, AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN,
     };
+    use quiche::h3::NameValue;
 
     use crate::quiche_registry::{
         ActorAdmission, ActorInboundDisposition, ConnectionRegistry, RegistryError,
@@ -2236,6 +2237,15 @@ fallback:
                 .expect("synthetic H3 client exists")
                 .send_request(&mut self.connection, &headers, false)
         }
+
+        fn assert_no_classic_connect_response(&mut self) {
+            let h3 = self.h3.as_mut().expect("synthetic H3 client exists");
+            match h3.poll(&mut self.connection) {
+                Err(quiche::h3::Error::Done) => {}
+                Err(_) if self.connection.peer_error().is_some() => {}
+                other => panic!("failed target open must not emit an H3 response: {other:?}"),
+            }
+        }
     }
 
     async fn drive_two_clients_to_h3(first: &mut UdpQuicheClient, second: &mut UdpQuicheClient) {
@@ -2303,7 +2313,7 @@ fallback:
     }
 
     #[tokio::test]
-    async fn t027b2c5_production_opener_hands_real_loopback_socket_to_originating_slot() {
+    async fn t027b2d0_production_opener_queues_exact_success_response_after_slot_handoff() {
         let credentials = TestCredentials::new();
         let owner = credentials.server_role_with_loopback_target(1_000);
         let metrics_owner = test_metrics_owner();
@@ -2328,7 +2338,7 @@ fallback:
         let client_work = async move {
             drive_client_to_h3(&mut client).await;
             client.authenticate_direct_v3(&owner).await;
-            client
+            let stream_id = client
                 .send_classic_connect_to(&authority)
                 .expect("queue production-opener CONNECT");
             client.send_pending().await;
@@ -2344,12 +2354,22 @@ fallback:
             .expect("production opener returns socket to original slot");
             assert_eq!(client_gate.completion_snapshot(), (1, 1, true, 1));
             client.receive_available().await;
+            let h3 = client
+                .h3
+                .as_mut()
+                .expect("production-opener H3 client exists");
+            match h3.poll(&mut client.connection) {
+                Ok((response_stream_id, quiche::h3::Event::Headers { list, more_frames })) => {
+                    assert_eq!(response_stream_id, stream_id);
+                    assert_eq!(list.len(), 1);
+                    assert_eq!(list[0].name(), b":status");
+                    assert_eq!(list[0].value(), b"200");
+                    assert!(more_frames);
+                }
+                other => panic!("expected exact Classic CONNECT success response, got {other:?}"),
+            }
             assert!(matches!(
-                client
-                    .h3
-                    .as_mut()
-                    .expect("production-opener H3 client exists")
-                    .poll(&mut client.connection),
+                h3.poll(&mut client.connection),
                 Err(quiche::h3::Error::Done)
             ));
             assert!(timeout(Duration::from_millis(25), target_peer.read_u8())
@@ -2414,6 +2434,7 @@ fallback:
             timeout(Duration::from_secs(1), async {
                 loop {
                     client.receive_available().await;
+                    client.assert_no_classic_connect_response();
                     if client.connection.peer_error().is_some() {
                         return;
                     }
@@ -2438,6 +2459,65 @@ fallback:
         endpoint_result.expect("production-egress endpoint joins its actor");
         assert_eq!(gate.completion_snapshot(), (0, 0, false, 1));
         assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    #[tokio::test]
+    async fn t027b2d0_real_target_connect_failure_never_queues_success_response() {
+        let credentials = TestCredentials::new();
+        let owner = credentials.server_role_with_loopback_target(1_000);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) =
+            Endpoint::bind_test(Arc::clone(&owner), Arc::clone(&metrics_owner))
+                .await
+                .expect("bind connect-failure endpoint");
+        let gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&gate));
+        let refusing_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind target address before refusing connections");
+        let authority = refusing_listener
+            .local_addr()
+            .expect("read refusing target address")
+            .to_string();
+        drop(refusing_listener);
+        let server_address = endpoint.local_address;
+        let mut client = UdpQuicheClient::new(Ipv4Addr::LOCALHOST, server_address, 0xc9).await;
+        let client_cancel = cancel.clone();
+
+        let client_work = async move {
+            drive_client_to_h3(&mut client).await;
+            client.authenticate_direct_v3(&owner).await;
+            client
+                .send_classic_connect_to(&authority)
+                .expect("queue connect-failure CONNECT");
+            client.send_pending().await;
+            timeout(Duration::from_secs(2), async {
+                loop {
+                    client.receive_available().await;
+                    client.assert_no_classic_connect_response();
+                    if client.connection.peer_error().is_some() {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("target connect failure closes the generation");
+            client_cancel
+                .send(true)
+                .expect("stop endpoint after target connect failure");
+        };
+
+        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        endpoint_result.expect("connect-failure endpoint joins its actor");
+        assert_eq!(gate.completion_snapshot(), (0, 0, false, 1));
+        let sinks = metrics_owner.target_open_sinks();
+        assert_eq!(sinks.resolution_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 1);
+        assert_eq!(sinks.resolution_latency.snapshot().count, 1);
+        assert_eq!(sinks.connect_latency.snapshot().count, 0);
     }
 
     #[tokio::test]
@@ -2478,6 +2558,7 @@ fallback:
             timeout(Duration::from_secs(1), async {
                 loop {
                     client.receive_available().await;
+                    client.assert_no_classic_connect_response();
                     if client.connection.peer_error().is_some() {
                         return;
                     }
@@ -2542,6 +2623,7 @@ fallback:
             timeout(Duration::from_secs(1), async {
                 loop {
                     client.receive_available().await;
+                    client.assert_no_classic_connect_response();
                     if client.connection.peer_error().is_some() {
                         return;
                     }
@@ -4005,7 +4087,7 @@ fallback:
             assert!(client_gate.target_future_queue_drained());
             assert!(
                 client.send_classic_connect().is_err(),
-                "eight WaitingNextStage owners retain the original fixed quota"
+                "eight response-stage owners retain the original fixed quota"
             );
             assert_target_peers_stay_open(&mut target_peers).await;
 
@@ -4808,7 +4890,8 @@ fallback:
             "Headers",
             "DATA",
             "relay_target_and_tunnel",
-            "WaitingNextStage",
+            "ResponsePending",
+            "ResponseAccepted",
         ] {
             assert!(!production_dispatch.contains(forbidden));
         }

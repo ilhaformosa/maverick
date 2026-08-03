@@ -17,56 +17,60 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2c5 — wire production whole-attempt target opener into the fixed slot
+### T027b-2d0 — queue the Classic CONNECT success response after target handoff
 
-- **User result:** The private feature-gated endpoint can make its first
-  controlled real IP-literal target TCP connection and preserve that socket in
-  the same originating fixed request slot. This still produces no H3 success
-  response and proxies no application data.
-- **Scope:** Have the actor-owned production `TargetDispatchFuture` pass the
-  existing token's frozen target, port, absolute attempt deadline, and egress
-  policy directly to the existing whole-attempt opener with the same
-  `TargetOpenMetricSinks`. The direct-v3 production opener synchronously forms
-  one `SocketAddr` for an IPv4 or IPv6 literal. Earlier parsing and admission
-  still represent Domain targets, but this dispatch slice rejects them with a
-  fixed resolution failure before `lookup_host` or any system resolver work.
-  On IP-literal success, move the returned `TcpStream` only through the existing
-  completion into the T027b-2c4 fixed slot. Retain the controlled synthetic
-  dispatch seam only for tests of timeout, failure, panic, and teardown.
-- **Acceptance:** The production future directly awaits the opener without a
-  second deadline, timer, metric recorder, socket owner, task, or channel; all
-  opener errors become one fixed source-free unavailable result. Keep at most
-  eight actor-owned futures, eight runtime slots, and four ready completions per
-  round. Prove loopback success and original-slot ownership, exact resolution
-  and connect latency observations, egress rejection without a connection or
-  false failure metric, Domain rejection before system resolution or socket
-  handoff, whole-attempt deadline priority, prompt drop of injected pending
-  generic-helper resolver or connect futures, privacy-safe errors, and all
-  retained T027b-2c4 quota, fairness, teardown, EOF, join-before-reclaim, and
-  source-shape properties. The injected resolver test is not evidence that
-  blocking system DNS is cancellable.
-- **Out of scope:** No 2xx or other H3 success response, Headers or DATA read or
-  write, relay, half-close forwarding, slot reuse, fallback, product-server
-  startup caller, registry or runtime-metrics ownership change, public API,
-  config, schema, wire or version change, dependency, manifest, lockfile,
-  vendor, core, client, SDK, CLI, `STATUS.md`, CI, remote, deployment, release,
-  real-network, credential, infrastructure, or system-network work. A truly
-  cancellable production Domain resolver remains a separate later decision;
-  this interim restriction does not remove Domain parsing or admission.
+- **User result:** Only after a real target `TcpStream` has returned to its
+  originating fixed Classic CONNECT slot, queue exactly one response header,
+  `:status = 200`, with `fin=false` on that request stream. Acceptance by the
+  server's local quiche send queue does not prove that the client received the
+  response. A client observing it in a loopback test is local test evidence
+  only.
+- **Scope:** Split the existing slot state minimally between target-owned
+  response-pending and response-accepted. Immediately before each
+  `h3.send_response` attempt, recheck the same generation and request stream,
+  active non-revoked capability, hard deadline, maximum frame size, consumed
+  target metadata, unique slot ownership of the still-live target socket, and
+  absence of request reset or stop. `StreamBlocked` makes zero progress and
+  preserves the same pending slot and socket for retry through the existing
+  actor drive and flush path. Local queue acceptance advances only that slot to
+  response-accepted. Any other response error fails the generation closed with
+  the existing fixed privacy-safe close behavior.
+- **Acceptance:** Prove a real loopback target handoff precedes one exact
+  `Headers(:status=200)` client observation with more frames still possible;
+  pre-handoff drives emit no response; handoff produces response-pending; local
+  queue acceptance produces response-accepted without claiming client receipt;
+  a real flow-control `StreamBlocked` writes no partial HEADERS, retains the
+  original socket and pending state, then safely retries the same response once
+  after unblocking. Recheck revocation, hard expiry, generation, stream, frame,
+  reset, and stop failures before sending and release the socket on generation
+  close. Admission expiry and the already-consumed target-open attempt deadline
+  are not response deadlines. A peer request write-half FIN still permits the
+  response. Target connect, egress, timeout, and Domain failures emit no 200;
+  repeated drives emit no second response; post-200 DATA remains rejected.
+  Preserve the fixed eight slots, four ready completions per round, T027b-2c4
+  and T027b-2c5 quota, fairness, EOF, join, teardown, opener, direct-v3 auth,
+  Domain parsing and admission, legacy, privacy, and source-shape gates.
+- **Out of scope:** No CONNECT DATA read or write, relay, half-close forwarding,
+  slot removal, reuse or recovery, fallback or error response, second response,
+  product-server startup caller, registry or metrics change, new task, future,
+  channel, collection, socket owner, timer, scheduler, public API, config,
+  schema, wire or version change, dependency, manifest, lockfile, vendor, core,
+  client, SDK, CLI, `STATUS.md`, CI, remote, deployment, release, real-network,
+  credential, infrastructure, or system-network work. Production Domain target
+  opening remains temporarily fail-closed; a truly cancellable resolver is a
+  separate later decision.
 - **Stop conditions:** Stop before any file outside `ROADMAP.md`,
-  `crates/maverick-server/src/quiche_endpoint.rs`, and
-  `crates/maverick-server/src/relay.rs` changes. Any need for another timer,
-  metric owner, socket collection, background task, response or data plane,
-  ninth slot, registry or runtime change, public API, dependency, or
-  `STATUS.md` change requires re-adjudication.
+  `crates/maverick-server/src/quiche_runtime.rs`, and
+  `crates/maverick-server/src/quiche_endpoint.rs` changes. Stop if the exact
+  response cannot be queued through the existing slot owner and actor drive,
+  if real blocked-to-unblocked behavior cannot be tested, or if any DATA plane,
+  new owner, queue, timer, task, dependency, public surface, forbidden file, or
+  `STATUS.md` change becomes necessary.
 
 This remains repository-local, private, feature-gated, and temporarily limited
-to IP-literal production dispatch. Domain admission still exists but fails
-closed here until a separately reviewed truly cancellable resolver is chosen.
-This slice first stores one controlled real target socket in the already
-verified ownership channel, but it does not make H3 successful, carry DATA, run
-a relay, create a product-server startup path, establish runtime readiness,
-authorize a release, or produce a product result.
+to IP-literal production target opening. It queues one response header but does
+not implement a tunnel or DATA plane, create a product runtime path, establish
+readiness, authorize a release, or produce a product result.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

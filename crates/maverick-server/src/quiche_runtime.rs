@@ -174,6 +174,13 @@ impl AuthenticatedGenerationCapability {
             && self.generation.as_bytes() == generation.as_bytes()
             && now < self.hard_deadline
     }
+
+    fn permits_response_at(&self, generation: &ServerSourceConnectionId, now: Instant) -> bool {
+        self.active
+            && !self.revoked
+            && self.generation.as_bytes() == generation.as_bytes()
+            && now < self.hard_deadline
+    }
 }
 
 impl fmt::Debug for AuthenticatedGenerationCapability {
@@ -203,7 +210,8 @@ impl fmt::Debug for PendingClassicConnect {
 enum TargetDispatchState {
     Admitted,
     InFlight,
-    WaitingNextStage,
+    ResponsePending,
+    ResponseAccepted,
 }
 
 pub(super) struct TargetOpenDispatchToken {
@@ -955,6 +963,7 @@ impl ServerConnection {
                 Err(quiche::h3::Error::Done) => {
                     self.refresh_peer_settings(h3)?;
                     self.drive_confirmation(h3)?;
+                    self.drive_classic_connect_responses(h3)?;
                     return Ok(());
                 }
                 Err(_) => {
@@ -1228,7 +1237,67 @@ impl ServerConnection {
             return Err(RuntimeError::TargetOpenDispatchRejected);
         }
         pending.opened_target = Some(opened_target);
-        pending.dispatch_state = TargetDispatchState::WaitingNextStage;
+        pending.dispatch_state = TargetDispatchState::ResponsePending;
+        Ok(())
+    }
+
+    fn drive_classic_connect_responses(
+        &mut self,
+        h3: &mut quiche::h3::Connection,
+    ) -> Result<(), RuntimeError> {
+        for slot_index in 0..MAX_PENDING_CLASSIC_CONNECTS {
+            let Some(pending) = self.pending_connects.slots[slot_index].as_ref() else {
+                continue;
+            };
+            if pending.dispatch_state != TargetDispatchState::ResponsePending {
+                continue;
+            }
+
+            let now = Instant::now();
+            let capability = self
+                .auth
+                .capability
+                .as_ref()
+                .filter(|capability| capability.permits_response_at(&self.generation, now))
+                .ok_or(RuntimeError::ClassicConnectResponseRejected)?;
+            let stream_id = pending.stream_id;
+            if pending.generation.as_bytes() != self.generation.as_bytes()
+                || pending.max_frame_size != capability.max_frame_size
+                || pending.target.is_some()
+                || pending.opened_target.is_none()
+                || self
+                    .pending_connects
+                    .slots
+                    .iter()
+                    .flatten()
+                    .filter(|candidate| candidate.stream_id == stream_id)
+                    .count()
+                    != 1
+                || self.transport.stream_capacity(stream_id).is_err()
+            {
+                return self.reject_with(RuntimeError::ClassicConnectResponseRejected);
+            }
+
+            let headers = [quiche::h3::Header::new(b":status", b"200")];
+            match h3.send_response(&mut self.transport, stream_id, &headers, false) {
+                Ok(()) => {
+                    let pending = self.pending_connects.slots[slot_index]
+                        .as_mut()
+                        .ok_or(RuntimeError::ClassicConnectResponseRejected)?;
+                    if pending.dispatch_state != TargetDispatchState::ResponsePending
+                        || pending.generation.as_bytes() != self.generation.as_bytes()
+                        || pending.stream_id != stream_id
+                        || pending.target.is_some()
+                        || pending.opened_target.is_none()
+                    {
+                        return self.reject_with(RuntimeError::ClassicConnectResponseRejected);
+                    }
+                    pending.dispatch_state = TargetDispatchState::ResponseAccepted;
+                }
+                Err(quiche::h3::Error::StreamBlocked) => continue,
+                Err(_) => return self.reject_with(RuntimeError::ClassicConnectResponseRejected),
+            }
+        }
         Ok(())
     }
 
@@ -1238,7 +1307,12 @@ impl ServerConnection {
             .slots
             .iter()
             .flatten()
-            .filter(|pending| pending.dispatch_state == TargetDispatchState::WaitingNextStage)
+            .filter(|pending| {
+                matches!(
+                    pending.dispatch_state,
+                    TargetDispatchState::ResponsePending | TargetDispatchState::ResponseAccepted
+                )
+            })
             .count()
     }
 
@@ -1249,10 +1323,32 @@ impl ServerConnection {
             .iter()
             .flatten()
             .filter(|pending| {
-                pending.dispatch_state == TargetDispatchState::WaitingNextStage
-                    && pending.target.is_none()
+                matches!(
+                    pending.dispatch_state,
+                    TargetDispatchState::ResponsePending | TargetDispatchState::ResponseAccepted
+                ) && pending.target.is_none()
                     && pending.opened_target.is_some()
             })
+            .count()
+    }
+
+    #[cfg(test)]
+    fn response_pending_count_for_test(&self) -> usize {
+        self.pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .filter(|pending| pending.dispatch_state == TargetDispatchState::ResponsePending)
+            .count()
+    }
+
+    #[cfg(test)]
+    fn response_accepted_count_for_test(&self) -> usize {
+        self.pending_connects
+            .slots
+            .iter()
+            .flatten()
+            .filter(|pending| pending.dispatch_state == TargetDispatchState::ResponseAccepted)
             .count()
     }
 
@@ -1498,6 +1594,7 @@ pub(super) enum RuntimeError {
     AuthenticationUnavailable,
     AuthenticationExpired,
     ClassicConnectAdmissionRejected,
+    ClassicConnectResponseRejected,
     TargetOpenDispatchRejected,
     CloseUnavailable,
 }
@@ -1523,6 +1620,7 @@ impl fmt::Display for RuntimeError {
             Self::AuthenticationUnavailable => "server authentication unavailable",
             Self::AuthenticationExpired => "server authentication expired",
             Self::ClassicConnectAdmissionRejected => "Classic CONNECT admission rejected",
+            Self::ClassicConnectResponseRejected => "Classic CONNECT response rejected",
             Self::TargetOpenDispatchRejected => "target-open dispatch rejected",
             Self::CloseUnavailable => "server connection close unavailable",
         };
@@ -1804,6 +1902,28 @@ mod tests {
         );
     }
 
+    async fn response_pending_pair(authority: &[u8]) -> (TestPair, u64, TcpStream) {
+        let mut pair = TestPair::new().expect("construct response-pending pair");
+        pair.authenticate_generation()
+            .expect("authenticate response-pending pair");
+        let headers = test_classic_connect_headers(authority, false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue response-pending CONNECT");
+        pair.client_to_server()
+            .expect("admit response-pending CONNECT");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take response-pending dispatch")
+            .expect("response-pending dispatch exists");
+        let (opened_target, peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(token, opened_target, Instant::now())
+            .expect("handoff target into response-pending slot");
+        (pair, stream_id, peer)
+    }
+
     struct ConfirmationProgress {
         body: [u8; AUTH_V3_SERVER_CONFIRMATION_LEN],
         offset: usize,
@@ -1848,6 +1968,7 @@ mod tests {
                 offered_server_name,
                 fault,
                 INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                INITIAL_CONNECTION_WINDOW_BYTES,
                 quiche::h3::APPLICATION_PROTOCOL,
                 MAX_IDLE_TIMEOUT_MILLIS,
             )
@@ -1859,6 +1980,19 @@ mod tests {
                 Some("localhost"),
                 PeerSettingsFault::None,
                 response_window,
+                INITIAL_CONNECTION_WINDOW_BYTES,
+                quiche::h3::APPLICATION_PROTOCOL,
+                MAX_IDLE_TIMEOUT_MILLIS,
+            )
+        }
+
+        fn with_connection_window(connection_window: u64) -> Result<Self, RuntimeError> {
+            Self::with_options(
+                "localhost",
+                Some("localhost"),
+                PeerSettingsFault::None,
+                INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                connection_window,
                 quiche::h3::APPLICATION_PROTOCOL,
                 MAX_IDLE_TIMEOUT_MILLIS,
             )
@@ -1870,6 +2004,7 @@ mod tests {
                 Some("localhost"),
                 PeerSettingsFault::None,
                 INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                INITIAL_CONNECTION_WINDOW_BYTES,
                 alpn,
                 MAX_IDLE_TIMEOUT_MILLIS,
             )
@@ -1881,6 +2016,7 @@ mod tests {
                 Some("localhost"),
                 PeerSettingsFault::None,
                 INITIAL_BIDI_STREAM_WINDOW_BYTES,
+                INITIAL_CONNECTION_WINDOW_BYTES,
                 quiche::h3::APPLICATION_PROTOCOL,
                 idle_timeout_millis,
             )
@@ -1891,6 +2027,7 @@ mod tests {
             offered_server_name: Option<&str>,
             fault: PeerSettingsFault,
             response_window: u64,
+            connection_window: u64,
             alpn: &[&[u8]],
             idle_timeout_millis: u64,
         ) -> Result<Self, RuntimeError> {
@@ -1925,6 +2062,8 @@ mod tests {
             let mut client_config = bounded_transport_config()?;
             client_config.verify_peer(false);
             client_config.set_max_idle_timeout(idle_timeout_millis);
+            client_config.set_initial_max_data(connection_window);
+            client_config.set_max_connection_window(connection_window);
             client_config.set_initial_max_stream_data_bidi_local(response_window);
             client_config
                 .set_application_protos(alpn)
@@ -2220,6 +2359,33 @@ mod tests {
                 .ok_or(RuntimeError::H3Unavailable)?
                 .send_request(&mut self.client, headers, fin)
                 .map_err(|_| RuntimeError::ClassicConnectAdmissionRejected)
+        }
+
+        fn poll_exact_classic_connect_success(
+            &mut self,
+            expected_stream: u64,
+        ) -> Result<bool, RuntimeError> {
+            let h3 = self.client_h3.as_mut().ok_or(RuntimeError::H3Unavailable)?;
+            let mut seen = false;
+            loop {
+                match h3.poll(&mut self.client) {
+                    Ok((stream_id, quiche::h3::Event::Headers { list, more_frames }))
+                        if stream_id == expected_stream
+                            && !seen
+                            && more_frames
+                            && list.len() == 1
+                            && list[0].name() == b":status"
+                            && list[0].value() == b"200" =>
+                    {
+                        seen = true;
+                    }
+                    Ok(_) | Err(quiche::h3::Error::StreamBlocked) => {
+                        return Err(RuntimeError::ClassicConnectResponseRejected);
+                    }
+                    Err(quiche::h3::Error::Done) => return Ok(seen),
+                    Err(_) => return Err(RuntimeError::ClassicConnectResponseRejected),
+                }
+            }
         }
 
         fn collect_confirmation(
@@ -4483,7 +4649,7 @@ auth:
                 .as_ref()
                 .expect("waiting slot remains occupied")
                 .dispatch_state,
-            TargetDispatchState::WaitingNextStage
+            TargetDispatchState::ResponsePending
         ));
     }
 
@@ -4515,7 +4681,7 @@ auth:
         assert!(pending.peer_write_half_closed);
         assert!(matches!(
             pending.dispatch_state,
-            TargetDispatchState::WaitingNextStage
+            TargetDispatchState::ResponsePending
         ));
     }
 
@@ -4575,7 +4741,7 @@ auth:
         assert!(pending.opened_target.is_some());
         assert!(matches!(
             pending.dispatch_state,
-            TargetDispatchState::WaitingNextStage
+            TargetDispatchState::ResponsePending
         ));
         assert!(timeout(Duration::from_millis(25), peer.read_u8())
             .await
@@ -4590,6 +4756,320 @@ auth:
                 .kind(),
             std::io::ErrorKind::UnexpectedEof
         );
+    }
+
+    #[tokio::test]
+    async fn t027b2d0_handoff_is_the_only_transition_to_pending_and_local_queue_acceptance() {
+        let mut pair = TestPair::new().expect("construct response-state pair");
+        pair.authenticate_generation()
+            .expect("authenticate response-state pair");
+        let headers = test_classic_connect_headers(b"response-state.invalid:443", false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue response-state CONNECT");
+        pair.client_to_server()
+            .expect("admit response-state CONNECT");
+        assert_eq!(pair.server.response_pending_count_for_test(), 0);
+        assert_eq!(pair.server.response_accepted_count_for_test(), 0);
+        pair.server
+            .drive_h3()
+            .expect("drive before target dispatch");
+        assert!(!pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("poll before target dispatch"));
+
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take response-state dispatch")
+            .expect("response-state dispatch exists");
+        pair.server.drive_h3().expect("drive before target handoff");
+        assert_eq!(pair.server.response_pending_count_for_test(), 0);
+        assert_eq!(pair.server.response_accepted_count_for_test(), 0);
+        assert!(!pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("poll before target handoff"));
+
+        let (opened_target, peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(token, opened_target, Instant::now())
+            .expect("handoff target to original response slot");
+        assert_eq!(pair.server.response_pending_count_for_test(), 1);
+        assert_eq!(pair.server.response_accepted_count_for_test(), 0);
+        pair.server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active response capability")
+            .admission_deadline = Instant::now();
+        pair.server
+            .drive_h3()
+            .expect("queue response after handoff and admission expiry");
+        assert_eq!(pair.server.response_pending_count_for_test(), 0);
+        assert_eq!(pair.server.response_accepted_count_for_test(), 1);
+        assert!(!pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("local queue acceptance is not client receipt"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), peer.readable())
+                .await
+                .is_err()
+        );
+
+        pair.server_to_client()
+            .expect("deliver locally queued success response");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("poll exact success response"));
+        pair.server.drive_h3().expect("repeat response drive");
+        pair.server_to_client().expect("repeat response flush");
+        assert!(!pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("accepted response is never sent twice"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), peer.readable())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn t027b2d0_real_stream_blocked_is_atomic_and_retries_same_response_once() {
+        let mut pair =
+            TestPair::with_connection_window(512).expect("construct connection-flow-blocked pair");
+        pair.authenticate_generation()
+            .expect("authenticate connection-flow-blocked pair");
+        let headers = test_classic_connect_headers(b"blocked-response.invalid:443", false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue blocked-response CONNECT");
+        pair.client_to_server()
+            .expect("admit blocked-response CONNECT");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take blocked-response dispatch")
+            .expect("blocked-response dispatch exists");
+
+        assert_eq!(pair.server.transport.stream_send(1, b"", false), Ok(0));
+        let filler_capacity = pair
+            .server
+            .transport
+            .stream_capacity(1)
+            .expect("read real server send capacity");
+        assert!(filler_capacity > 0 && filler_capacity <= 512);
+        let filler = vec![0x5a; filler_capacity];
+        assert_eq!(
+            pair.server.transport.stream_send(1, &filler, false),
+            Ok(filler_capacity)
+        );
+
+        let (opened_target, peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(token, opened_target, Instant::now())
+            .expect("handoff target before real StreamBlocked");
+        pair.server
+            .drive_h3()
+            .expect("real StreamBlocked keeps generation active");
+        assert_eq!(pair.server.response_pending_count_for_test(), 1);
+        assert_eq!(pair.server.response_accepted_count_for_test(), 0);
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("blocked response retains original slot");
+        assert_eq!(pending.stream_id, stream_id);
+        assert!(pending.target.is_none());
+        assert!(pending.opened_target.is_some());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), peer.readable())
+                .await
+                .is_err()
+        );
+
+        pair.server_to_client()
+            .expect("deliver only the connection-window filler");
+        let mut response_probe = [0_u8; 32];
+        assert_eq!(
+            pair.client.stream_recv(stream_id, &mut response_probe),
+            Err(quiche::Error::Done),
+            "blocked atomic HEADERS must contribute zero response-stream bytes"
+        );
+        let mut received = 0_usize;
+        let mut filler_probe = [0_u8; 512];
+        loop {
+            match pair.client.stream_recv(1, &mut filler_probe) {
+                Ok((length, false)) => received += length,
+                Ok((_, true)) => panic!("test filler stream unexpectedly finished"),
+                Err(quiche::Error::Done) => break,
+                Err(_) => panic!("read real flow-control filler"),
+            }
+        }
+        assert_eq!(received, filler_capacity);
+
+        for _ in 0..MAX_SHUTTLE_STEPS {
+            pair.client_to_server()
+                .expect("deliver real peer flow-control credit");
+            if pair.server.response_accepted_count_for_test() == 1 {
+                break;
+            }
+            pair.server.drive_h3().expect("retry blocked response");
+        }
+        assert_eq!(pair.server.response_pending_count_for_test(), 0);
+        assert_eq!(pair.server.response_accepted_count_for_test(), 1);
+        pair.server_to_client()
+            .expect("deliver safely retried success response");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("poll one safely retried success response"));
+        pair.server
+            .drive_h3()
+            .expect("repeat accepted response drive");
+        pair.server_to_client()
+            .expect("repeat accepted response flush");
+        assert!(!pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("retry produces no duplicate response"));
+    }
+
+    #[tokio::test]
+    async fn t027b2d0_peer_request_fin_still_allows_exact_success_without_data_plane() {
+        let mut pair = TestPair::new().expect("construct peer-FIN response pair");
+        pair.authenticate_generation()
+            .expect("authenticate peer-FIN response pair");
+        let headers = test_classic_connect_headers(b"peer-fin.invalid:443", false);
+        let stream_id = pair
+            .send_classic_connect(&headers, false)
+            .expect("queue peer-FIN CONNECT");
+        pair.client_to_server().expect("admit peer-FIN CONNECT");
+        let token = pair
+            .server
+            .take_target_open_dispatch(Instant::now())
+            .expect("take peer-FIN dispatch")
+            .expect("peer-FIN dispatch exists");
+        assert_eq!(pair.client.stream_send(stream_id, b"", true), Ok(0));
+        pair.client_to_server()
+            .expect("record peer request write-half FIN");
+        let (opened_target, peer) = connected_target_pair().await;
+        pair.server
+            .complete_target_open_dispatch(token, opened_target, Instant::now())
+            .expect("handoff target after peer request FIN");
+        pair.server
+            .drive_h3()
+            .expect("queue response after peer FIN");
+        pair.server_to_client()
+            .expect("deliver response after peer FIN");
+        assert!(pair
+            .poll_exact_classic_connect_success(stream_id)
+            .expect("poll exact response after peer FIN"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), peer.readable())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn t027b2d0_response_prechecks_fail_closed_and_release_slot_socket() {
+        let (mut revoked, _, revoked_peer) =
+            response_pending_pair(b"response-revoked.invalid:443").await;
+        revoked
+            .server
+            .revoke_authenticated_generation()
+            .expect("revoke response-pending generation");
+        assert_eq!(revoked.server.pending_connects.len(), 0);
+        assert_target_peer_eof(revoked_peer).await;
+
+        let (mut expired, _, expired_peer) =
+            response_pending_pair(b"response-expired.invalid:443").await;
+        expired
+            .server
+            .auth
+            .capability
+            .as_mut()
+            .expect("active response-expiry capability")
+            .hard_deadline = Instant::now();
+        assert_eq!(
+            expired.server.drive_h3(),
+            Err(RuntimeError::AuthenticationExpired)
+        );
+        assert_eq!(expired.server.pending_connects.len(), 0);
+        assert_target_peer_eof(expired_peer).await;
+
+        let (mut generation, _, generation_peer) =
+            response_pending_pair(b"response-generation.invalid:443").await;
+        generation.server.pending_connects.slots[0]
+            .as_mut()
+            .expect("generation-mismatch response slot")
+            .generation = ServerSourceConnectionId::new([0x77; quiche::MAX_CONN_ID_LEN]);
+        assert_eq!(
+            generation.server.drive_h3(),
+            Err(RuntimeError::ClassicConnectResponseRejected)
+        );
+        assert_eq!(generation.server.pending_connects.len(), 0);
+        assert_target_peer_eof(generation_peer).await;
+
+        let (mut stream, _, stream_peer) =
+            response_pending_pair(b"response-stream.invalid:443").await;
+        stream.server.pending_connects.slots[0]
+            .as_mut()
+            .expect("stream-mismatch response slot")
+            .stream_id = u64::MAX;
+        assert!(stream.server.drive_h3().is_err());
+        assert_eq!(stream.server.pending_connects.len(), 0);
+        assert_target_peer_eof(stream_peer).await;
+
+        let (mut frame, _, frame_peer) = response_pending_pair(b"response-frame.invalid:443").await;
+        frame.server.pending_connects.slots[0]
+            .as_mut()
+            .expect("frame-mismatch response slot")
+            .max_frame_size += 1;
+        assert_eq!(
+            frame.server.drive_h3(),
+            Err(RuntimeError::ClassicConnectResponseRejected)
+        );
+        assert_eq!(frame.server.pending_connects.len(), 0);
+        assert_target_peer_eof(frame_peer).await;
+    }
+
+    #[tokio::test]
+    async fn t027b2d0_reset_stop_and_post_200_data_fail_closed_without_relay() {
+        let (mut reset, reset_stream, reset_peer) =
+            response_pending_pair(b"response-reset.invalid:443").await;
+        reset
+            .client
+            .stream_shutdown(reset_stream, quiche::Shutdown::Write, 0x41)
+            .expect("reset response-pending request stream");
+        assert!(reset.client_to_server().is_err());
+        assert_eq!(reset.server.pending_connects.len(), 0);
+        assert_target_peer_eof(reset_peer).await;
+
+        let (mut stopped, stopped_stream, stopped_peer) =
+            response_pending_pair(b"response-stop.invalid:443").await;
+        stopped
+            .client
+            .stream_shutdown(stopped_stream, quiche::Shutdown::Read, 0x42)
+            .expect("stop response-pending response stream");
+        assert!(stopped.client_to_server().is_err());
+        assert_eq!(stopped.server.pending_connects.len(), 0);
+        assert_target_peer_eof(stopped_peer).await;
+
+        let (mut data, data_stream, data_peer) =
+            response_pending_pair(b"response-data.invalid:443").await;
+        data.server.drive_h3().expect("queue response before DATA");
+        data.server_to_client()
+            .expect("deliver response before DATA");
+        assert!(data
+            .poll_exact_classic_connect_success(data_stream)
+            .expect("poll response before unsupported DATA"));
+        assert_eq!(
+            data.client_h3
+                .as_mut()
+                .expect("client H3 exists for unsupported DATA")
+                .send_body(&mut data.client, data_stream, b"not-a-tunnel", false),
+            Ok(12)
+        );
+        assert!(data.client_to_server().is_err());
+        assert_eq!(data.server.pending_connects.len(), 0);
+        assert_target_peer_eof(data_peer).await;
     }
 
     #[tokio::test]

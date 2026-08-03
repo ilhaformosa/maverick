@@ -1451,6 +1451,7 @@ version = "1.2.0-beta.4"
 dependencies = [
  "anyhow",
  "base64",
+ "boring",
  "bytes",
  "futures",
  "h2",
@@ -1462,6 +1463,7 @@ dependencies = [
  "hyper-util",
  "maverick-client",
  "maverick-core",
+ "quiche",
  "quinn",
  "rand",
  "rcgen",

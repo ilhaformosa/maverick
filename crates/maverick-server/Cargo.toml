@@ -9,9 +9,11 @@ repository.workspace = true
 default = []
 ech = ["maverick-core/ech"]
 h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn"]
+quiche-foundation = ["dep:boring", "dep:quiche"]
 
 [dependencies]
 anyhow.workspace = true
+boring = { workspace = true, optional = true }
 bytes.workspace = true
 futures.workspace = true
 h2.workspace = true
@@ -23,6 +25,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 maverick-core = { path = "../maverick-core" }
 quinn = { workspace = true, optional = true }
+quiche = { workspace = true, optional = true }
 rand.workspace = true
 rustls.workspace = true
 time.workspace = true

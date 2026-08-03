@@ -17,45 +17,39 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2a — strict Classic CONNECT request/authority parser
+### T027b-2b0 — server-owned native-quiche connection state
 
-- **User result:** A future authenticated standard HTTP/3 TCP Classic CONNECT
-  path can pass its borrowed raw initial request fields through one strict,
-  privacy-safe pure parser and receive the existing typed `(TargetAddr, u16)`.
-  This slice has no product caller and performs no DNS lookup, egress decision,
-  target connection, socket operation, or traffic relay.
-- **Scope:** Change only this queue, `crates/maverick-server/src/lib.rs`, and one
-  new private `crates/maverick-server/src/h3_connect.rs`. Accept exactly one
-  byte-exact `:method = CONNECT` and one strict `:authority`, in either relative
-  order, and no other field. Parse only canonical `domain:port`, `IPv4:port`, or
-  `[IPv6]:port`; return the existing target type, lowercase ASCII domains, and
-  discard all raw input and lower-level parse errors. Add no quiche dependency.
-- **Acceptance:** Retain a real focused red test before implementation, then
-  cover the complete positive and strict-rejection matrices for fields,
-  authority, canonical ports, IPv4, bracketed IPv6, and ASCII domains. Errors
-  are fixed, bounded, source-free, and value-free under both Display and Debug.
-  The parser remains a synchronous private function with no caller or side
-  effect. Existing T027b-1 resolver, egress, and structured-connect tests plus
-  the server, core, client, workspace lint, and local product gates stay green.
-  Any future runtime must enforce this order as a hard gate: authenticated
-  generation, then policy/lease/admission/permit, then parse, then egress and
-  DNS/connect work.
-- **Out of scope:** No runtime or quiche caller, trailer input, response parser,
-  DNS, egress, opener invocation, socket, target, real traffic, Extended
-  CONNECT, `:protocol`, URI Template, CONNECT-UDP, IDNA, URL or HTTP/1 parser,
-  public API, dependency or manifest, core/client/SDK/CLI change, config,
-  protocol, authentication, frame, wire, stored schema, version, `STATUS.md`,
-  CI, push, PR, merge, tag, release, remote, deployment, real network, or system
-  network change.
-- **Stop conditions:** Stop on a fourth changed file; a need for any dependency
-  or manifest, public/runtime API, quiche integration, DNS/socket/opener/target,
-  Extended CONNECT or UDP/IDNA work, logging of raw or lower-level errors, an
-  unclear raw-header contract, a real-network or unstable-sleep test, any
-  T023b-1/T027a-1/T027b-1 safety regression, or any focused or full local gate
-  failure.
+- **User result:** `maverick-server` can privately own and synchronously advance
+  one real native-quiche server connection and its H3 state without depending
+  on `maverick-client`. This is only an ownership seam; it is not a product H3
+  path or user-visible transport result.
+- **Scope:** Add one private, non-default `quiche-foundation` server feature that
+  reuses the workspace-pinned quiche and Boring dependencies. Add one private
+  connection-local engine with fixed packet and resource limits, TLS 1.3 and
+  H3 ALPN checks, disabled 0-RTT, synchronous packet/timer driving, fixed safe
+  errors, pre-authentication application-activity rejection, and local-only
+  in-memory tests.
+- **Acceptance:** Retain focused red-to-green evidence. Prove a synthetic
+  client and the server-owned engine reach an established H3 connection, reject
+  application activity before authentication, close explicitly, and release
+  the owned connection state. Default, legacy H3, client quiche-foundation,
+  strict-push, T023b/T026/T027, lint, dependency-tree, and local product gates
+  remain green. The dependency graph remains acyclic with one version each of
+  quiche, boring, and boring-sys.
+- **Out of scope:** No UDP listener, registry, CID demultiplexer, async task,
+  authentication runtime or policy, parser caller, target address, egress,
+  DNS, connect, opener, TCP stream, relay, metrics, data plane, public API,
+  config, protocol, frame, wire, schema, version, `STATUS.md`, CI, remote,
+  deployment, release, or system-network change. The existing Quinn H3 runtime
+  is unchanged.
+- **Stop conditions:** Stop on a sixth changed file, a root-manifest or
+  server-to-client product dependency, any public third-party type, a need for
+  listener/demux/auth/parser/target/relay work, an unbounded queue or task, an
+  async or unbounded connection engine, a default or legacy-H3 behavior change,
+  a second quiche/Boring version, or any required regression failure.
 
-This pure parser is a future typed boundary, not a product H3 data plane,
-authenticated runtime, target-opening result, or publication authorization.
+This ownership seam is not a listener, authenticated runtime, parser caller,
+target connection, data plane, product H3 result, or publication authorization.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

@@ -9,6 +9,9 @@ pub mod fallback;
 pub mod h2_acceptor;
 #[allow(dead_code)]
 mod h3_connect;
+#[cfg(feature = "quiche-foundation")]
+#[allow(dead_code)]
+mod quiche_runtime;
 pub mod relay;
 pub mod server;
 pub mod users;

@@ -792,6 +792,27 @@ impl VerifiedAuthV3ClientControl {
     pub const fn client_time_unix(&self) -> u64 {
         self.parsed.client_time_unix
     }
+
+    /// Return the credential-expiry ceiling retained by core authentication
+    /// verification.
+    ///
+    /// This is absolute Unix not-after metadata for the credential accepted by
+    /// [`verify_auth_v3_client_control`]. It is not the current time or a
+    /// connection deadline, and it does not prove that runtime authentication
+    /// completed or that any generation, capability, or connection is usable.
+    ///
+    /// ```compile_fail
+    /// use maverick_core::auth_v3::{
+    ///     parse_auth_v3_client_control, AUTH_V3_CLIENT_CONTROL_LEN,
+    /// };
+    /// let parsed = parse_auth_v3_client_control(
+    ///     &[0; AUTH_V3_CLIENT_CONTROL_LEN],
+    /// ).unwrap();
+    /// let _ = parsed.credential_not_after_unix();
+    /// ```
+    pub const fn credential_not_after_unix(&self) -> u64 {
+        self.credential_not_after_unix
+    }
 }
 
 impl fmt::Debug for VerifiedAuthV3ClientControl {

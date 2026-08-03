@@ -17,45 +17,33 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2b1c — bounded native-QUIC termination draining
+### T027b-2b2-0 — verified credential-expiry core prerequisite
 
-- **User result:** The private local-only native-quiche server foundation keeps
-  a closing connection owned until quiche reports it closed, so a locally
-  requested close gets a bounded send opportunity and peer draining can finish
-  its protocol timer. This is repository-local lifecycle correctness, not an
-  authenticated runtime, data plane, or user-visible product result.
-- **Scope:** Separate active, close-pending-send, draining, and closed transport
-  states directly from live quiche facts. Keep synchronous registry aliases,
-  source accounting, and capacity until `is_closed()`. Make connection actors
-  capture their terminal reason, flush a pending close before processing an
-  already-due transport timer, continue bounded receive and timer work while
-  draining, and use a 1.5-second actor termination deadline inside the existing
-  two-second endpoint join budget. The endpoint still aborts overdue actors and
-  unconditionally drains its `JoinSet` before reclaiming joined routes.
-- **Acceptance:** Retain focused red-to-green evidence. Feed server close
-  datagrams into a real quiche peer and verify the exact peer error; prove local
-  close and peer draining retain both CID aliases, source/global capacity, and
-  actor ownership until the transport closes and the actor joins; prove
-  established cancellation sends a real close while pre-key cancellation and
-  handshake failure remain hard-bounded; preserve stable server-SCID checks
-  around every receive, send, and timer operation; and keep all previous
-  endpoint, registry, default, legacy-H3, client, strict-push, lint, and local
+- **User result:** Later server auth-v3 foundation work can read the exact
+  credential expiry ceiling already retained by successful core verification.
+  This is read-only core metadata, not runnable authentication, a connection or
+  capability, a data plane, or a user-visible product result.
+- **Scope:** Add one privacy-safe accessor to the already-public verified
+  `ClientControl` type. Cover the real core verifier with two distinct legal
+  expiry values, read the metadata before confirmation encoding consumes the
+  verified value, and preserve identical confirmation bytes and canonical
+  vectors when every wire input is unchanged.
+- **Acceptance:** Retain focused compile-failure-to-pass evidence for the
+  missing accessor; return each exact trusted not-after value without a default,
+  truncation, or cross-binding; keep parsed/unverified values outside the
+  verified API boundary; preserve malformed, expired, PSK, encoder, verifier,
+  and canonical-vector behavior; and pass the core, lint, rustdoc, and local
   product gates.
-- **Out of scope:** No Retry or address validation, Version Negotiation,
-  Stateless Reset, CID rotation or retirement, NAT rebinding, migration,
-  multipath, auth-v3, ClientControl, ServerConfirmation, policy, parser caller,
-  target, egress, DNS, opener, TCP stream, relay, metrics, public API, config,
-  protocol, frame, wire, schema, version, `STATUS.md`, CI, remote, deployment,
-  release, real network, or system-network change. Capacity caps still do not
-  prove peer-address ownership or spoofing-DoS resistance.
-- **Stop conditions:** Stop on a fifth changed file, any manifest, lockfile, or
-  dependency change, a server-to-client production dependency, any public
-  third-party type, a need for auth/parser/target/relay work, an unbounded
-  collection, queue, wait, flush, or shutdown, shared-lock connection state, a
-  default or legacy-H3 behavior change, or any required regression failure.
+- **Out of scope:** No shared generation policy, server authentication runtime,
+  SETTINGS or transport integration, flow or data plane, config, stored schema,
+  protocol, frame, wire, version, `STATUS.md`, CI, remote, deployment, release,
+  real network, or system-network change.
+- **Stop conditions:** Stop on a fourth changed file, any manifest, lockfile,
+  dependency, public type, field, trait, or schema expansion, runtime wiring,
+  generation/deadline state, capability framework, wire change, or required
+  regression failure.
 
-This endpoint remains local foundation only. T027b-2b2 is deferred and is not
-started by this slice.
+This accessor remains a repository-local foundation prerequisite only.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

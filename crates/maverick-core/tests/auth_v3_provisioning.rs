@@ -287,6 +287,63 @@ fn valid_singleton_preselection_drives_production_encode_and_verify() {
 }
 
 #[test]
+fn verified_client_control_exposes_exact_credential_expiry_before_confirmation() {
+    let expiries = [NOW + 100_000, NOW + 200_000];
+    let expiry_markers = expiries.map(|expiry| expiry.to_string());
+    let mut confirmations = [None, None];
+
+    for (index, credential_not_after_unix) in expiries.into_iter().enumerate() {
+        let profile = owned_profile(
+            PRINCIPAL_A,
+            DEPLOYMENT_A,
+            NAMESPACE_A,
+            SERVER_A,
+            true,
+            CONTROL_PATH_A,
+            7,
+            credential_not_after_unix,
+            SecretString::new(SECRET_A).unwrap(),
+        )
+        .unwrap();
+        let binding = binding(0x74 + index as u8, profile);
+        let preselected = binding.preselected_profile();
+        let connection = connection(&DEPLOYMENT_A, &SERVER_A, CONTROL_PATH_A);
+        let input = AuthV3ClientControlInput::new(AuthV3Carrier::H2, NOW, [0x46; 32]);
+        let profile = preselected.trusted_profile();
+        let control = encode_auth_v3_client_control(&profile, &connection, &input).unwrap();
+        let verified = verify_auth_v3_client_control(&control, &profile, &connection, NOW).unwrap();
+
+        assert_eq!(
+            verified.credential_not_after_unix(),
+            credential_not_after_unix
+        );
+        let verified_debug = format!("{verified:?}");
+        assert_eq!(verified_debug, "verified auth-v3 client control metadata");
+        assert!(expiry_markers
+            .iter()
+            .all(|marker| !verified_debug.contains(marker)));
+        confirmations[index] = Some(
+            encode_auth_v3_server_confirmation(
+                verified,
+                &connection,
+                &AuthV3ServerConfirmationInput::new(
+                    NOW,
+                    NOW + 1_800,
+                    NOW + 86_400,
+                    [0x47; 32],
+                    [0x48; 16],
+                    65_536,
+                    128,
+                ),
+            )
+            .unwrap(),
+        );
+    }
+
+    assert_eq!(confirmations[0], confirmations[1]);
+}
+
+#[test]
 fn preselected_a_rejects_b_and_changed_wire_claims_without_switching() {
     let binding_a = binding(0x72, valid_profile_a());
     let selected_a = binding_a.preselected_profile();

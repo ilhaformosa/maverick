@@ -11,6 +11,9 @@ pub mod h2_acceptor;
 mod h3_connect;
 #[cfg(feature = "quiche-foundation")]
 #[allow(dead_code)]
+mod quiche_registry;
+#[cfg(feature = "quiche-foundation")]
+#[allow(dead_code)]
 mod quiche_runtime;
 pub mod relay;
 pub mod server;

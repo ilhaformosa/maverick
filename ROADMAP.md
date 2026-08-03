@@ -17,39 +17,47 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027b-2b0 — server-owned native-quiche connection state
+### T027b-2b1a — bounded server CID registry and synchronous packet router
 
-- **User result:** `maverick-server` can privately own and synchronously advance
-  one real native-quiche server connection and its H3 state without depending
-  on `maverick-client`. This is only an ownership seam; it is not a product H3
-  path or user-visible transport result.
-- **Scope:** Add one private, non-default `quiche-foundation` server feature that
-  reuses the workspace-pinned quiche and Boring dependencies. Add one private
-  connection-local engine with fixed packet and resource limits, TLS 1.3 and
-  H3 ALPN checks, disabled 0-RTT, synchronous packet/timer driving, fixed safe
-  errors, pre-authentication application-activity rejection, and local-only
-  in-memory tests.
-- **Acceptance:** Retain focused red-to-green evidence. Prove a synthetic
-  client and the server-owned engine reach an established H3 connection, reject
-  application activity before authentication, close explicitly, and release
-  the owned connection state. Default, legacy H3, client quiche-foundation,
-  strict-push, T023b/T026/T027, lint, dependency-tree, and local product gates
-  remain green. The dependency graph remains acyclic with one version each of
-  quiche, boring, and boring-sys.
-- **Out of scope:** No UDP listener, registry, CID demultiplexer, async task,
-  authentication runtime or policy, parser caller, target address, egress,
-  DNS, connect, opener, TCP stream, relay, metrics, data plane, public API,
-  config, protocol, frame, wire, schema, version, `STATUS.md`, CI, remote,
-  deployment, release, or system-network change. The existing Quinn H3 runtime
-  is unchanged.
-- **Stop conditions:** Stop on a sixth changed file, a root-manifest or
-  server-to-client product dependency, any public third-party type, a need for
-  listener/demux/auth/parser/target/relay work, an unbounded queue or task, an
-  async or unbounded connection engine, a default or legacy-H3 behavior change,
-  a second quiche/Boring version, or any required regression failure.
+- **User result:** `maverick-server` can privately route one bounded packet at a
+  time among at most eight server-owned native-quiche connections. This is only
+  a local foundation parking-and-routing table; it is not a listener, server
+  endpoint, authenticated runtime, data plane, or user-visible product result.
+- **Scope:** Add one private synchronous CID registry around the existing
+  single-connection engine. Keep packets fixed at 1,350 bytes, active
+  connections at eight, connections per source IP at two, aliases per
+  connection at two, total route keys at sixteen, server-SCID collision attempts
+  at four, and timeout sweep work at eight. Generate one stable server-owned
+  SCID with `OsRng`, register it together with the client Initial DCID alias,
+  route exact `SocketAddr` matches, and remove both aliases and source capacity
+  atomically when a connection is reclaimed. Reuse no second source-count table.
+- **Acceptance:** Retain the focused red-to-green result. Prove two synthetic
+  clients receive distinct live server SCIDs and reach H3 without cross-routing;
+  Initial retransmission reuses one connection; later server-SCID packets route;
+  supported tokenless Initial envelope rules are exact; unknown, malformed,
+  unsupported, token-bearing, and wrong-address packets do not grow state;
+  global and per-source-IP caps apply before connection creation; RNG failure
+  and four collisions leave no partial entry; cleanup restores capacity; live
+  `source_ids()` remains exactly one and matches the registered server SCID; and
+  fixed private errors, synchronous APIs, default, legacy H3, client foundation,
+  strict-push, lint, dependency, and local product gates remain green.
+- **Out of scope:** No UDP socket or listener, task, channel, Retry or address
+  validation, Version Negotiation, Stateless Reset, CID rotation or retirement,
+  NAT rebinding, migration, multipath, auth-v3, ClientControl,
+  ServerConfirmation, policy, lease, quota, parser caller, target, egress, DNS,
+  opener, TCP stream, relay, metrics, public API, config, protocol, frame, wire,
+  schema, version, `STATUS.md`, CI, remote, deployment, release, or
+  system-network change. The capacity caps bound damage only; without Retry they
+  do not prove address ownership or spoofing-DoS resistance.
+- **Stop conditions:** Stop on a fifth changed file, any manifest, lockfile, or
+  dependency change, a server-to-client production dependency, any public
+  third-party type, a need for a socket/listener/task/channel/auth/parser/target/
+  relay seam, more than one server SCID per connection, an unbounded collection
+  or loop, an async router, a default or legacy-H3 behavior change, or any
+  required regression failure.
 
-This ownership seam is not a listener, authenticated runtime, parser caller,
-target connection, data plane, product H3 result, or publication authorization.
+This registry remains local foundation only. T027b-2b1b, including any real UDP
+listener or driver, is deferred and not started by this slice.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

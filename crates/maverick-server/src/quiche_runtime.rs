@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use boring::ssl::{SslRef, SslVersion};
 
-const MAX_PACKET_BYTES: usize = 1_350;
+pub(super) const MAX_PACKET_BYTES: usize = 1_350;
 const INITIAL_CONNECTION_WINDOW_BYTES: u64 = 1_048_576;
 const INITIAL_BIDI_STREAM_WINDOW_BYTES: u64 = 65_536;
 const INITIAL_UNI_STREAM_WINDOW_BYTES: u64 = 16_384;
@@ -28,25 +28,26 @@ const MAX_IDLE_TIMEOUT_MILLIS: u64 = 5_000;
 const PRE_AUTH_CLOSE_CODE: u64 = 0x105;
 
 #[derive(Clone, Copy)]
-struct PacketMeta {
-    from: SocketAddr,
-    to: SocketAddr,
+pub(super) struct PacketMeta {
+    pub(super) from: SocketAddr,
+    pub(super) to: SocketAddr,
 }
 
 #[derive(Clone, Copy)]
-struct ServerCredentials<'a> {
-    certificate_chain: &'a Path,
-    private_key: &'a Path,
+pub(super) struct ServerCredentials<'a> {
+    pub(super) certificate_chain: &'a Path,
+    pub(super) private_key: &'a Path,
 }
 
-struct ServerSourceConnectionId([u8; quiche::MAX_CONN_ID_LEN]);
+#[derive(Clone, Copy)]
+pub(super) struct ServerSourceConnectionId([u8; quiche::MAX_CONN_ID_LEN]);
 
 impl ServerSourceConnectionId {
-    fn new(bytes: [u8; quiche::MAX_CONN_ID_LEN]) -> Self {
+    pub(super) fn new(bytes: [u8; quiche::MAX_CONN_ID_LEN]) -> Self {
         Self(bytes)
     }
 
-    fn as_bytes(&self) -> &[u8] {
+    pub(super) fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
@@ -55,12 +56,12 @@ impl ServerSourceConnectionId {
     }
 }
 
-struct ServerConnectionConfig {
+pub(super) struct ServerConnectionConfig {
     transport: quiche::Config,
 }
 
 impl ServerConnectionConfig {
-    fn new(credentials: ServerCredentials<'_>) -> Result<Self, RuntimeError> {
+    pub(super) fn new(credentials: ServerCredentials<'_>) -> Result<Self, RuntimeError> {
         let mut transport = bounded_transport_config()?;
         transport
             .load_cert_chain_from_pem_file(private_path(credentials.certificate_chain)?)
@@ -72,7 +73,7 @@ impl ServerConnectionConfig {
     }
 }
 
-struct ServerConnection {
+pub(super) struct ServerConnection {
     transport: quiche::Connection,
     h3_config: Option<quiche::h3::Config>,
     h3: Option<quiche::h3::Connection>,
@@ -82,7 +83,7 @@ struct ServerConnection {
 }
 
 impl ServerConnection {
-    fn accept_initial(
+    pub(super) fn accept_initial(
         config: &mut ServerConnectionConfig,
         source_connection_id: ServerSourceConnectionId,
         packet: &mut [u8; MAX_PACKET_BYTES],
@@ -99,9 +100,9 @@ impl ServerConnection {
             return Err(RuntimeError::InitialPacketRejected);
         }
 
-        let source_connection_id = source_connection_id.as_quiche();
+        let quiche_source_connection_id = source_connection_id.as_quiche();
         let mut transport = quiche::accept(
-            &source_connection_id,
+            &quiche_source_connection_id,
             None,
             meta.to,
             meta.from,
@@ -126,11 +127,15 @@ impl ServerConnection {
             peer_address: meta.from,
             close_requested: false,
         };
+        if !connection.has_stable_source_connection_id(&source_connection_id) {
+            connection.fail_closed(PRE_AUTH_CLOSE_CODE);
+            return Err(RuntimeError::ConnectionUnavailable);
+        }
         connection.drive_h3()?;
         Ok(connection)
     }
 
-    fn receive_packet(
+    pub(super) fn receive_packet(
         &mut self,
         packet: &mut [u8; MAX_PACKET_BYTES],
         length: usize,
@@ -139,19 +144,20 @@ impl ServerConnection {
         if meta.from != self.peer_address || meta.to != self.local_address {
             return Err(RuntimeError::PacketRejected);
         }
-        self.transport
-            .recv(
-                bounded_packet(packet, length)?,
-                quiche::RecvInfo {
-                    from: meta.from,
-                    to: meta.to,
-                },
-            )
-            .map_err(|_| RuntimeError::PacketRejected)?;
+        match self.transport.recv(
+            bounded_packet(packet, length)?,
+            quiche::RecvInfo {
+                from: meta.from,
+                to: meta.to,
+            },
+        ) {
+            Ok(_) | Err(quiche::Error::Done) => {}
+            Err(_) => return Err(RuntimeError::PacketRejected),
+        }
         self.drive_h3()
     }
 
-    fn next_packet(
+    pub(super) fn next_packet(
         &mut self,
         packet: &mut [u8; MAX_PACKET_BYTES],
     ) -> Result<Option<(usize, PacketMeta)>, RuntimeError> {
@@ -176,28 +182,28 @@ impl ServerConnection {
         }
     }
 
-    fn next_timeout(&self) -> Option<Duration> {
+    pub(super) fn next_timeout(&self) -> Option<Duration> {
         self.transport.timeout()
     }
 
-    fn on_timeout(&mut self) -> Result<(), RuntimeError> {
+    pub(super) fn on_timeout(&mut self) -> Result<(), RuntimeError> {
         self.transport.on_timeout();
         self.drive_h3()
     }
 
-    fn is_established(&self) -> bool {
+    pub(super) fn is_established(&self) -> bool {
         self.transport.is_established()
     }
 
-    fn h3_is_ready(&self) -> bool {
+    pub(super) fn h3_is_ready(&self) -> bool {
         self.h3.is_some()
     }
 
-    fn is_terminating(&self) -> bool {
+    pub(super) fn is_terminating(&self) -> bool {
         self.close_requested || self.transport.is_draining() || self.transport.is_closed()
     }
 
-    fn close(&mut self) -> Result<(), RuntimeError> {
+    pub(super) fn close(&mut self) -> Result<(), RuntimeError> {
         self.transport
             .close(true, 0, b"")
             .map_err(|_| RuntimeError::CloseUnavailable)?;
@@ -248,10 +254,21 @@ impl ServerConnection {
         self.close_requested = true;
         let _ = self.transport.close(true, code, b"");
     }
+
+    pub(super) fn has_stable_source_connection_id(
+        &self,
+        expected: &ServerSourceConnectionId,
+    ) -> bool {
+        let mut source_ids = self.transport.source_ids();
+        matches!(
+            (source_ids.next(), source_ids.next()),
+            (Some(source_id), None) if source_id.as_ref() == expected.as_bytes()
+        )
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum RuntimeError {
+pub(super) enum RuntimeError {
     ConfigurationUnavailable,
     InitialPacketRejected,
     ConnectionUnavailable,
@@ -306,7 +323,7 @@ fn bounded_packet(
     Ok(&mut packet[..length])
 }
 
-fn bounded_transport_config() -> Result<quiche::Config, RuntimeError> {
+pub(super) fn bounded_transport_config() -> Result<quiche::Config, RuntimeError> {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)
         .map_err(|_| RuntimeError::ConfigurationUnavailable)?;
     config
@@ -335,7 +352,7 @@ fn bounded_transport_config() -> Result<quiche::Config, RuntimeError> {
     Ok(config)
 }
 
-fn bounded_h3_config() -> Result<quiche::h3::Config, RuntimeError> {
+pub(super) fn bounded_h3_config() -> Result<quiche::h3::Config, RuntimeError> {
     let mut config =
         quiche::h3::Config::new().map_err(|_| RuntimeError::ConfigurationUnavailable)?;
     config.set_reject_peer_push_activity(true);

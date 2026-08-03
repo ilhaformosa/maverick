@@ -6,9 +6,10 @@
 //! leaves this private module.
 
 use std::fmt;
+#[cfg(test)]
 use std::marker::PhantomData;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -44,8 +45,10 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECTION_RUN_TIMEOUT: Duration = Duration::from_secs(10);
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const AUTHENTICATED_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 const DRIVER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(2);
+const AUTH_FAILURE_CLOSE_CODE: u64 = 0x100;
 
 const SETTINGS_QPACK_MAX_TABLE_CAPACITY: u64 = 0x1;
 const SETTINGS_MAX_FIELD_SECTION_SIZE: u64 = 0x6;
@@ -61,9 +64,6 @@ const T026C_NOW: u64 = 1_800_000_000;
 const T026C_REQUEST_SPLIT: usize = 113;
 #[cfg(test)]
 const T026C_RESPONSE_SPLIT: usize = 127;
-#[cfg(test)]
-const T026C_APPLICATION_CLOSE_CODE: u64 = 0x100;
-
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy)]
@@ -195,6 +195,7 @@ struct FoundationObservation {
 }
 
 impl FoundationObservation {
+    #[cfg(test)]
     fn auth_v3_exporter_for<'observation, 'manager>(
         &'observation self,
         lease: &'observation ConnectionLease<'manager>,
@@ -206,8 +207,7 @@ impl FoundationObservation {
     }
 }
 
-#[cfg(test)]
-mod auth_runtime_reference {
+mod generation_auth {
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, encode_auth_v3_server_confirmation,
         verify_auth_v3_client_control, verify_auth_v3_server_confirmation, AuthV3Carrier,
@@ -221,20 +221,28 @@ mod auth_runtime_reference {
 
     use super::*;
 
+    #[cfg(test)]
     const TEST_SECRET: &str = "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    #[cfg(test)]
     const TEST_NOT_AFTER: u64 = T026C_NOW + 172_800;
+    #[cfg(test)]
     const TEST_HANDLE: &str = "VVVVVVVVVVVVVVVVVVVVVQ";
+    #[cfg(test)]
     const TEST_PRINCIPAL: &str = "EREREREREREREREREREREQ";
+    #[cfg(test)]
     const TEST_DEPLOYMENT: &str = "IiIiIiIiIiIiIiIiIiIiIg";
+    #[cfg(test)]
     const TEST_NAMESPACE: &str = "MzMzMzMzMzMzMzMzMzMzMw";
+    #[cfg(test)]
     const TEST_SERVER_ID: &str = "RERERERERERERERERERERA";
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    pub(super) enum TestAuthRole {
+    pub(super) enum AuthRole {
         Client,
         Server,
     }
 
+    #[cfg(test)]
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(super) enum ReferenceFault {
         None,
@@ -243,14 +251,16 @@ mod auth_runtime_reference {
         WrongClientExporter,
         WrongClientProfile,
         WrongClientPolicy,
+        WrongClientReceipt,
         WrongServerConfirmation,
         DuplicateControl,
         PreAuthDatagram,
     }
 
+    #[cfg(test)]
     #[derive(Clone, Copy, Eq, PartialEq)]
     pub(super) struct ReferenceOutcome {
-        pub(super) role: TestAuthRole,
+        pub(super) role: AuthRole,
         pub(super) slot_claims: u8,
         pub(super) sent_body_chunks: u8,
         pub(super) received_data_events: u8,
@@ -259,6 +269,7 @@ mod auth_runtime_reference {
         pub(super) datagram_checks: u16,
     }
 
+    #[cfg(test)]
     impl fmt::Debug for ReferenceOutcome {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter.write_str("test-private auth-v3 reference outcome")
@@ -284,7 +295,6 @@ mod auth_runtime_reference {
         ServerSendingHeaders,
         ServerSendingBody,
         Authenticated,
-        Consumed,
         Failed,
     }
 
@@ -294,6 +304,7 @@ mod auth_runtime_reference {
         offset: usize,
         chunk_end: usize,
         split_at: usize,
+        #[cfg(test)]
         completed_chunks: u8,
     }
 
@@ -305,6 +316,7 @@ mod auth_runtime_reference {
                 offset: 0,
                 chunk_end: split_at,
                 split_at,
+                #[cfg(test)]
                 completed_chunks: 0,
             }
         }
@@ -325,10 +337,13 @@ mod auth_runtime_reference {
             if self.offset != self.chunk_end {
                 return Ok(false);
             }
-            self.completed_chunks = self
-                .completed_chunks
-                .checked_add(1)
-                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            #[cfg(test)]
+            {
+                self.completed_chunks = self
+                    .completed_chunks
+                    .checked_add(1)
+                    .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            }
             if self.offset == LENGTH {
                 return Ok(true);
             }
@@ -344,34 +359,56 @@ mod auth_runtime_reference {
             self.stream_id = 0;
             self.offset = 0;
             self.chunk_end = 0;
-            self.completed_chunks = 0;
+            #[cfg(test)]
+            {
+                self.completed_chunks = 0;
+            }
         }
     }
 
-    enum TestRoleConfig {
+    fn record_body_send_result<const LENGTH: usize>(
+        state: &mut BodySendState<LENGTH>,
+        pending_len: usize,
+        result: Result<usize, quiche::h3::Error>,
+    ) -> Result<bool, FoundationError> {
+        match result {
+            Ok(written) if written <= pending_len => state.record_progress(written),
+            Ok(_) => Err(FoundationError::PreAuthApplicationActivity),
+            Err(quiche::h3::Error::Done) => Ok(false),
+            Err(_) => Err(FoundationError::PreAuthApplicationActivity),
+        }
+    }
+
+    enum FrozenDirectV3Role {
         Client(ClientRoleConfig),
         Server(ServerRoleConfig),
     }
 
-    impl TestRoleConfig {
-        fn parse(role: TestAuthRole) -> Result<Self, FoundationError> {
-            let parsed = match role {
-                TestAuthRole::Client => Self::Client(
-                    ClientRoleConfig::from_yaml_str(&test_client_role_yaml())
-                        .map_err(|_| FoundationError::PreAuthApplicationActivity)?,
-                ),
-                TestAuthRole::Server => Self::Server(
-                    ServerRoleConfig::from_yaml_str(&test_server_role_yaml())
-                        .map_err(|_| FoundationError::PreAuthApplicationActivity)?,
-                ),
-            };
-            if parsed.transport_strategy()? != DirectV3TransportStrategy::H3
-                || parsed.tunnel_path()? != T026C_CONTROL_PATH
+    impl FrozenDirectV3Role {
+        fn client(config: ClientRoleConfig) -> Result<Self, FoundationError> {
+            let frozen = Self::Client(config);
+            frozen.validate_before_io()?;
+            Ok(frozen)
+        }
+
+        fn server(config: ServerRoleConfig) -> Result<Self, FoundationError> {
+            let frozen = Self::Server(config);
+            frozen.validate_before_io()?;
+            Ok(frozen)
+        }
+
+        fn validate_before_io(&self) -> Result<(), FoundationError> {
+            if self.transport_strategy()? != DirectV3TransportStrategy::H3
+                || !valid_control_path(self.tunnel_path()?.as_bytes())
             {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
-            let _preselected_before_io = parsed.preselected_profile()?;
-            Ok(parsed)
+            let authority = self.expected_authority()?.as_bytes();
+            if authority.is_empty() || !authority.is_ascii() {
+                return Err(FoundationError::PreAuthApplicationActivity);
+            }
+            let _preselected_before_io = self.preselected_profile()?;
+            Ok(())
         }
 
         fn transport_strategy(&self) -> Result<DirectV3TransportStrategy, FoundationError> {
@@ -413,22 +450,123 @@ mod auth_runtime_reference {
             }
         }
 
-        fn client_server_name(&self) -> Option<&str> {
+        fn role(&self) -> AuthRole {
             match self {
-                Self::Client(config) => config.direct_v3().map(|config| config.server_name()),
-                Self::Server(_) => None,
+                Self::Client(_) => AuthRole::Client,
+                Self::Server(_) => AuthRole::Server,
+            }
+        }
+
+        fn expected_authority(&self) -> Result<&str, FoundationError> {
+            match self {
+                Self::Client(config) => config
+                    .direct_v3()
+                    .map(|config| config.server_name())
+                    .ok_or(FoundationError::PreAuthApplicationActivity),
+                Self::Server(config) => config
+                    .direct_v3()
+                    .map(|config| config.expected_authority())
+                    .ok_or(FoundationError::PreAuthApplicationActivity),
+            }
+        }
+
+        fn client_server_name(&self) -> Result<&str, FoundationError> {
+            match self {
+                Self::Client(config) => config
+                    .direct_v3()
+                    .map(|config| config.server_name())
+                    .ok_or(FoundationError::PreAuthApplicationActivity),
+                Self::Server(_) => Err(FoundationError::PreAuthApplicationActivity),
             }
         }
     }
 
-    pub(super) struct TestAuthRuntime {
-        role: TestAuthRole,
+    #[derive(Clone, Copy)]
+    pub(super) struct TrustedGenerationAuthInputs {
+        now: u64,
+        admission_expiry: u64,
+        hard_expiry: u64,
+        max_frame_size: u32,
+        max_concurrent_flows: u32,
+        client_max_frame_size: u32,
+        client_max_concurrent_flows: u32,
+    }
+
+    impl TrustedGenerationAuthInputs {
+        pub(super) fn new(
+            now: u64,
+            admission_expiry: u64,
+            hard_expiry: u64,
+            max_frame_size: u32,
+            max_concurrent_flows: u32,
+            client_max_frame_size: u32,
+            client_max_concurrent_flows: u32,
+        ) -> Result<Self, FoundationError> {
+            if now == 0
+                || admission_expiry <= now
+                || hard_expiry <= admission_expiry
+                || max_frame_size == 0
+                || max_concurrent_flows == 0
+                || client_max_frame_size == 0
+                || client_max_concurrent_flows == 0
+            {
+                return Err(FoundationError::PreAuthApplicationActivity);
+            }
+            Ok(Self {
+                now,
+                admission_expiry,
+                hard_expiry,
+                max_frame_size,
+                max_concurrent_flows,
+                client_max_frame_size,
+                client_max_concurrent_flows,
+            })
+        }
+    }
+
+    pub(super) struct AuthenticatedGeneration {
+        generation: ConnectionGeneration,
+        active: Arc<AtomicBool>,
+    }
+
+    pub(super) struct AuthenticatedConnectionLease {
+        authenticated: AuthenticatedGeneration,
+        _permit: OwnedSemaphorePermit,
+    }
+
+    impl AuthenticatedConnectionLease {
+        pub(super) fn generation(&self) -> ConnectionGeneration {
+            self.authenticated.generation
+        }
+
+        pub(super) fn is_active(&self) -> bool {
+            self.authenticated.active.load(Ordering::Acquire)
+        }
+
+        pub(super) fn release(self) {}
+    }
+
+    pub(super) fn bind_authenticated_lease(
+        authenticated: AuthenticatedGeneration,
+        permit: OwnedSemaphorePermit,
+    ) -> AuthenticatedConnectionLease {
+        AuthenticatedConnectionLease {
+            authenticated,
+            _permit: permit,
+        }
+    }
+
+    pub(super) struct GenerationAuth {
+        role: AuthRole,
+        parameters: TrustedGenerationAuthInputs,
+        active: Arc<AtomicBool>,
+        #[cfg(test)]
         fault: ReferenceFault,
-        role_config: TestRoleConfig,
-        expected_authority: &'static [u8],
+        role_config: FrozenDirectV3Role,
         slot: AuthSlot,
         phase: AuthPhase,
         facts: Option<FoundationObservation>,
+        authenticated_generation: Option<ConnectionGeneration>,
         deadline: Option<Instant>,
         request_send: Option<BodySendState<AUTH_V3_CLIENT_CONTROL_LEN>>,
         response_send: Option<BodySendState<AUTH_V3_SERVER_CONFIRMATION_LEN>>,
@@ -436,39 +574,48 @@ mod auth_runtime_reference {
         request_recv_len: usize,
         response_recv: [u8; AUTH_V3_SERVER_CONFIRMATION_LEN],
         response_recv_len: usize,
+        #[cfg(test)]
         slot_claims: u8,
+        #[cfg(test)]
         received_data_events: u8,
+        #[cfg(test)]
         datagram_checks: u16,
+        #[cfg(test)]
+        reference_outcome: Option<ReferenceOutcome>,
     }
 
-    impl TestAuthRuntime {
-        pub(super) fn new(role: TestAuthRole) -> Result<Self, FoundationError> {
-            Self::with_fault(role, ReferenceFault::None)
+    impl GenerationAuth {
+        pub(super) fn client(
+            config: ClientRoleConfig,
+            inputs: TrustedGenerationAuthInputs,
+        ) -> Result<Self, FoundationError> {
+            Self::new(FrozenDirectV3Role::client(config)?, inputs)
         }
 
-        pub(super) fn with_fault(
-            role: TestAuthRole,
-            fault: ReferenceFault,
+        pub(super) fn server(
+            config: ServerRoleConfig,
+            inputs: TrustedGenerationAuthInputs,
         ) -> Result<Self, FoundationError> {
-            if !valid_test_authority(T026C_AUTHORITY.as_bytes())
-                || !valid_test_control_path(T026C_CONTROL_PATH.as_bytes())
-            {
-                return Err(FoundationError::PreAuthApplicationActivity);
-            }
-            let role_config = TestRoleConfig::parse(role)?;
-            if role == TestAuthRole::Client
-                && role_config.client_server_name() != Some(T026C_AUTHORITY)
-            {
-                return Err(FoundationError::PreAuthApplicationActivity);
-            }
+            Self::new(FrozenDirectV3Role::server(config)?, inputs)
+        }
+
+        fn new(
+            role_config: FrozenDirectV3Role,
+            parameters: TrustedGenerationAuthInputs,
+        ) -> Result<Self, FoundationError> {
+            role_config.validate_before_io()?;
+            let role = role_config.role();
             Ok(Self {
                 role,
-                fault,
+                parameters,
+                active: Arc::new(AtomicBool::new(true)),
+                #[cfg(test)]
+                fault: ReferenceFault::None,
                 role_config,
-                expected_authority: T026C_AUTHORITY.as_bytes(),
                 slot: AuthSlot::Fresh,
                 phase: AuthPhase::Fresh,
                 facts: None,
+                authenticated_generation: None,
                 deadline: None,
                 request_send: None,
                 response_send: None,
@@ -476,10 +623,41 @@ mod auth_runtime_reference {
                 request_recv_len: 0,
                 response_recv: [0; AUTH_V3_SERVER_CONFIRMATION_LEN],
                 response_recv_len: 0,
+                #[cfg(test)]
                 slot_claims: 0,
+                #[cfg(test)]
                 received_data_events: 0,
+                #[cfg(test)]
                 datagram_checks: 0,
+                #[cfg(test)]
+                reference_outcome: None,
             })
+        }
+
+        #[cfg(test)]
+        pub(super) fn new_test(role: AuthRole) -> Result<Self, FoundationError> {
+            Self::with_fault(role, ReferenceFault::None)
+        }
+
+        #[cfg(test)]
+        pub(super) fn with_fault(
+            role: AuthRole,
+            fault: ReferenceFault,
+        ) -> Result<Self, FoundationError> {
+            let role_config = match role {
+                AuthRole::Client => FrozenDirectV3Role::client(
+                    ClientRoleConfig::from_yaml_str(&test_client_role_yaml())
+                        .map_err(|_| FoundationError::PreAuthApplicationActivity)?,
+                )?,
+                AuthRole::Server => FrozenDirectV3Role::server(
+                    ServerRoleConfig::from_yaml_str(&test_server_role_yaml())
+                        .map_err(|_| FoundationError::PreAuthApplicationActivity)?,
+                )?,
+            };
+            let parameters = test_trusted_inputs()?;
+            let mut runtime = Self::new(role_config, parameters)?;
+            runtime.fault = fault;
+            Ok(runtime)
         }
 
         pub(super) fn install_live_facts(
@@ -499,8 +677,9 @@ mod auth_runtime_reference {
             {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
-            if self.role == TestAuthRole::Server
-                && raw_sni.map(str::as_bytes) != Some(self.expected_authority)
+            if self.role == AuthRole::Server
+                && raw_sni.map(str::as_bytes)
+                    != Some(self.role_config.expected_authority()?.as_bytes())
             {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
@@ -512,10 +691,13 @@ mod auth_runtime_reference {
             &mut self,
             connection: &quiche::Connection,
         ) -> Result<(), FoundationError> {
-            self.datagram_checks = self
-                .datagram_checks
-                .checked_add(1)
-                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            #[cfg(test)]
+            {
+                self.datagram_checks = self
+                    .datagram_checks
+                    .checked_add(1)
+                    .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            }
             if connection.dgram_recv_front_len().is_some() {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
@@ -528,16 +710,10 @@ mod auth_runtime_reference {
             h3_connection: &mut quiche::h3::Connection,
             foundation_ready: bool,
         ) -> Result<(), FoundationError> {
-            if let Some(deadline) = self.deadline {
-                if Instant::now() >= deadline {
-                    return Err(FoundationError::DriverTimeout);
-                }
-            }
+            self.check_deadline()?;
 
-            if self.role == TestAuthRole::Client
-                && self.phase == AuthPhase::Fresh
-                && foundation_ready
-            {
+            if self.role == AuthRole::Client && self.phase == AuthPhase::Fresh && foundation_ready {
+                #[cfg(test)]
                 if self.fault == ReferenceFault::PreAuthDatagram {
                     connection
                         .dgram_send(b"test-private-datagram")
@@ -552,29 +728,31 @@ mod auth_runtime_reference {
             match self.phase {
                 AuthPhase::ClientSendingHeaders => {
                     let headers = request_headers(
-                        self.expected_authority,
+                        self.role_config.expected_authority()?.as_bytes(),
                         self.role_config.tunnel_path()?.as_bytes(),
                     );
-                    match h3_connection.send_request(connection, &headers, false) {
-                        Ok(stream_id) => {
-                            if self.fault == ReferenceFault::DuplicateControl {
-                                h3_connection
-                                    .send_request(connection, &headers, false)
-                                    .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
-                            }
-                            self.bind_client_stream(stream_id)?;
-                            let body = self
-                                .request_send
-                                .take()
-                                .ok_or(FoundationError::PreAuthApplicationActivity)?
-                                .bytes;
-                            self.request_send =
-                                Some(BodySendState::new(body, stream_id, T026C_REQUEST_SPLIT));
-                            self.phase = AuthPhase::ClientSendingBody;
-                        }
-                        Err(quiche::h3::Error::StreamBlocked) => {}
-                        Err(_) => return Err(FoundationError::PreAuthApplicationActivity),
+                    let request_result = h3_connection.send_request(connection, &headers, false);
+                    let Some(stream_id) = self.admit_request_send_result(request_result)? else {
+                        return Ok(());
+                    };
+                    #[cfg(test)]
+                    if self.fault == ReferenceFault::DuplicateControl {
+                        h3_connection
+                            .send_request(connection, &headers, false)
+                            .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
                     }
+                    self.bind_client_stream(stream_id)?;
+                    let body = self
+                        .request_send
+                        .take()
+                        .ok_or(FoundationError::PreAuthApplicationActivity)?
+                        .bytes;
+                    self.request_send = Some(BodySendState::new(
+                        body,
+                        stream_id,
+                        self.request_chunk_end(),
+                    ));
+                    self.phase = AuthPhase::ClientSendingBody;
                 }
                 AuthPhase::ClientSendingBody => {
                     let (stream_id, pending_len, fin) = {
@@ -593,31 +771,24 @@ mod auth_runtime_reference {
                         let (pending, _) = send.pending();
                         h3_connection.send_body(connection, stream_id, pending, fin)
                     };
-                    match result {
-                        Ok(written) => {
-                            if written > pending_len {
-                                return Err(FoundationError::PreAuthApplicationActivity);
-                            }
-                            let complete = self
-                                .request_send
-                                .as_mut()
-                                .ok_or(FoundationError::PreAuthApplicationActivity)?
-                                .record_progress(written)?;
-                            if complete {
-                                self.phase = AuthPhase::ClientWaitingResponse;
-                            }
-                        }
-                        Err(quiche::h3::Error::Done) => {}
-                        Err(_) => return Err(FoundationError::PreAuthApplicationActivity),
+                    let complete = record_body_send_result(
+                        self.request_send
+                            .as_mut()
+                            .ok_or(FoundationError::PreAuthApplicationActivity)?,
+                        pending_len,
+                        result,
+                    )?;
+                    if complete {
+                        self.phase = AuthPhase::ClientWaitingResponse;
                     }
                 }
                 AuthPhase::ServerSendingHeaders => {
                     let stream_id = self.bound_stream()?;
                     let headers = response_headers();
-                    match h3_connection.send_response(connection, stream_id, &headers, false) {
-                        Ok(()) => self.phase = AuthPhase::ServerSendingBody,
-                        Err(quiche::h3::Error::StreamBlocked) => {}
-                        Err(_) => return Err(FoundationError::PreAuthApplicationActivity),
+                    if self.admit_response_send_result(
+                        h3_connection.send_response(connection, stream_id, &headers, false),
+                    )? {
+                        self.phase = AuthPhase::ServerSendingBody;
                     }
                 }
                 AuthPhase::ServerSendingBody => {
@@ -637,23 +808,16 @@ mod auth_runtime_reference {
                         let (pending, _) = send.pending();
                         h3_connection.send_body(connection, stream_id, pending, fin)
                     };
-                    match result {
-                        Ok(written) => {
-                            if written > pending_len {
-                                return Err(FoundationError::PreAuthApplicationActivity);
-                            }
-                            let complete = self
-                                .response_send
-                                .as_mut()
-                                .ok_or(FoundationError::PreAuthApplicationActivity)?
-                                .record_progress(written)?;
-                            if complete {
-                                self.check_datagram_queue(connection)?;
-                                self.authenticate()?;
-                            }
-                        }
-                        Err(quiche::h3::Error::Done) => {}
-                        Err(_) => return Err(FoundationError::PreAuthApplicationActivity),
+                    let complete = record_body_send_result(
+                        self.response_send
+                            .as_mut()
+                            .ok_or(FoundationError::PreAuthApplicationActivity)?,
+                        pending_len,
+                        result,
+                    )?;
+                    if complete {
+                        self.check_datagram_queue(connection)?;
+                        self.authenticate()?;
                     }
                 }
                 AuthPhase::Fresh
@@ -661,9 +825,6 @@ mod auth_runtime_reference {
                 | AuthPhase::ClientReceivingResponse
                 | AuthPhase::ServerReceivingRequest
                 | AuthPhase::Authenticated => {}
-                AuthPhase::Consumed => {
-                    return Err(FoundationError::PreAuthApplicationActivity);
-                }
                 AuthPhase::Failed => {
                     return Err(FoundationError::PreAuthApplicationActivity);
                 }
@@ -678,13 +839,14 @@ mod auth_runtime_reference {
             stream_id: u64,
             event: quiche::h3::Event,
         ) -> Result<(), FoundationError> {
+            self.check_deadline()?;
             match (self.role, event) {
-                (TestAuthRole::Server, quiche::h3::Event::Headers { list, more_frames }) => {
+                (AuthRole::Server, quiche::h3::Event::Headers { list, more_frames }) => {
                     self.claim_server_slot(stream_id)?;
                     if !more_frames
                         || !valid_request_headers_for(
                             &list,
-                            self.expected_authority,
+                            self.role_config.expected_authority()?.as_bytes(),
                             self.role_config.tunnel_path()?.as_bytes(),
                         )
                     {
@@ -693,7 +855,7 @@ mod auth_runtime_reference {
                     self.phase = AuthPhase::ServerReceivingRequest;
                     Ok(())
                 }
-                (TestAuthRole::Server, quiche::h3::Event::Data) => {
+                (AuthRole::Server, quiche::h3::Event::Data) => {
                     self.admit_data_event(AuthPhase::ServerReceivingRequest, stream_id)?;
                     drain_body(
                         h3_connection,
@@ -703,7 +865,7 @@ mod auth_runtime_reference {
                         &mut self.request_recv_len,
                     )
                 }
-                (TestAuthRole::Server, quiche::h3::Event::Finished) => {
+                (AuthRole::Server, quiche::h3::Event::Finished) => {
                     if self.phase != AuthPhase::ServerReceivingRequest
                         || self.bound_stream()? != stream_id
                     {
@@ -714,7 +876,7 @@ mod auth_runtime_reference {
                     self.phase = AuthPhase::ServerSendingHeaders;
                     Ok(())
                 }
-                (TestAuthRole::Client, quiche::h3::Event::Headers { list, more_frames }) => {
+                (AuthRole::Client, quiche::h3::Event::Headers { list, more_frames }) => {
                     if self.phase != AuthPhase::ClientWaitingResponse
                         || self.bound_stream()? != stream_id
                         || !more_frames
@@ -725,7 +887,7 @@ mod auth_runtime_reference {
                     self.phase = AuthPhase::ClientReceivingResponse;
                     Ok(())
                 }
-                (TestAuthRole::Client, quiche::h3::Event::Data) => {
+                (AuthRole::Client, quiche::h3::Event::Data) => {
                     self.admit_data_event(AuthPhase::ClientReceivingResponse, stream_id)?;
                     drain_body(
                         h3_connection,
@@ -735,7 +897,7 @@ mod auth_runtime_reference {
                         &mut self.response_recv_len,
                     )
                 }
-                (TestAuthRole::Client, quiche::h3::Event::Finished) => {
+                (AuthRole::Client, quiche::h3::Event::Finished) => {
                     if self.phase != AuthPhase::ClientReceivingResponse
                         || self.bound_stream()? != stream_id
                     {
@@ -754,22 +916,30 @@ mod auth_runtime_reference {
             }
         }
 
+        #[cfg(test)]
         pub(super) fn take_success_outcome(&mut self) -> Option<ReferenceOutcome> {
-            if self.phase != AuthPhase::Authenticated || self.slot != AuthSlot::Authenticated {
-                return None;
-            }
-            self.facts.as_ref()?;
+            self.reference_outcome.take()
+        }
+
+        #[cfg(test)]
+        fn record_reference_outcome(&mut self) -> Result<(), FoundationError> {
             let (sent_body_chunks, request_bytes, response_bytes) = match self.role {
-                TestAuthRole::Client => {
-                    let send = self.request_send.as_ref()?;
+                AuthRole::Client => {
+                    let send = self
+                        .request_send
+                        .as_ref()
+                        .ok_or(FoundationError::PreAuthApplicationActivity)?;
                     (send.completed_chunks, send.offset, self.response_recv_len)
                 }
-                TestAuthRole::Server => {
-                    let send = self.response_send.as_ref()?;
+                AuthRole::Server => {
+                    let send = self
+                        .response_send
+                        .as_ref()
+                        .ok_or(FoundationError::PreAuthApplicationActivity)?;
                     (send.completed_chunks, self.request_recv_len, send.offset)
                 }
             };
-            let outcome = ReferenceOutcome {
+            self.reference_outcome = Some(ReferenceOutcome {
                 role: self.role,
                 slot_claims: self.slot_claims,
                 sent_body_chunks,
@@ -777,19 +947,17 @@ mod auth_runtime_reference {
                 request_bytes,
                 response_bytes,
                 datagram_checks: self.datagram_checks,
-            };
-            self.facts.take()?;
-            self.slot = AuthSlot::Consumed;
-            self.phase = AuthPhase::Consumed;
-            self.clear_auth_buffers();
-            Some(outcome)
+            });
+            Ok(())
         }
 
         pub(super) fn fail_closed(&mut self) {
             self.slot = AuthSlot::Consumed;
             self.phase = AuthPhase::Failed;
+            self.active.store(false, Ordering::Release);
             self.clear_auth_buffers();
             self.facts = None;
+            self.authenticated_generation = None;
         }
 
         fn prepare_client_control(&mut self) -> Result<(), FoundationError> {
@@ -797,21 +965,17 @@ mod auth_runtime_reference {
                 .facts
                 .ok_or(FoundationError::PreAuthApplicationActivity)?;
             let preselected = self.role_config.preselected_profile()?;
-            let mut alternate_exporter = *facts.auth_v3_exporter.as_bytes();
+            let mut exporter = *facts.auth_v3_exporter.as_bytes();
+            #[cfg(test)]
             if self.fault == ReferenceFault::WrongClientExporter {
-                alternate_exporter[0] ^= 0x80;
+                exporter[0] ^= 0x80;
             }
-            let exporter = if self.fault == ReferenceFault::WrongClientExporter {
-                &alternate_exporter
-            } else {
-                facts.auth_v3_exporter.as_bytes()
-            };
             let context = preselected.trusted_connection_context(
                 AuthV3Carrier::H3,
                 AuthV3TlsVersion::Tls13,
                 true,
                 facts.early_data,
-                exporter,
+                &exporter,
                 true,
                 Some(&[]),
                 self.role_config.tunnel_path()?,
@@ -820,12 +984,22 @@ mod auth_runtime_reference {
             OsRng
                 .try_fill_bytes(&mut client_nonce)
                 .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
-            let mut control = encode_auth_v3_client_control(
+            let control_result = encode_auth_v3_client_control(
                 &preselected.trusted_profile(),
                 &context,
-                &AuthV3ClientControlInput::new(AuthV3Carrier::H3, T026C_NOW, client_nonce),
-            )
-            .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+                &AuthV3ClientControlInput::new(
+                    AuthV3Carrier::H3,
+                    self.parameters.now,
+                    client_nonce,
+                ),
+            );
+            client_nonce.fill(0);
+            exporter.fill(0);
+            let control =
+                control_result.map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+            #[cfg(test)]
+            let mut control = control;
+            #[cfg(test)]
             match self.fault {
                 ReferenceFault::MalformedClientControl => control[0] ^= 0x80,
                 ReferenceFault::WrongClientMac => control[255] ^= 0x80,
@@ -833,11 +1007,12 @@ mod auth_runtime_reference {
                 ReferenceFault::WrongClientPolicy => control[12] ^= 0x80,
                 ReferenceFault::None
                 | ReferenceFault::WrongClientExporter
+                | ReferenceFault::WrongClientReceipt
                 | ReferenceFault::WrongServerConfirmation
                 | ReferenceFault::DuplicateControl
                 | ReferenceFault::PreAuthDatagram => {}
             }
-            self.request_send = Some(BodySendState::new(control, 0, T026C_REQUEST_SPLIT));
+            self.request_send = Some(BodySendState::new(control, 0, self.request_chunk_end()));
             Ok(())
         }
 
@@ -860,7 +1035,7 @@ mod auth_runtime_reference {
                 &self.request_recv,
                 &preselected.trusted_profile(),
                 &context,
-                T026C_NOW,
+                self.parameters.now,
             )
             .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
             let mut server_nonce = [0_u8; 32];
@@ -869,20 +1044,26 @@ mod auth_runtime_reference {
                 .try_fill_bytes(&mut server_nonce)
                 .and_then(|()| OsRng.try_fill_bytes(&mut session_id))
                 .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
-            let mut confirmation = encode_auth_v3_server_confirmation(
+            let confirmation_result = encode_auth_v3_server_confirmation(
                 verified,
                 &context,
                 &AuthV3ServerConfirmationInput::new(
-                    T026C_NOW,
-                    T026C_NOW + 1_800,
-                    T026C_NOW + 86_400,
+                    self.parameters.now,
+                    self.parameters.admission_expiry,
+                    self.parameters.hard_expiry,
                     server_nonce,
                     session_id,
-                    65_536,
-                    128,
+                    self.parameters.max_frame_size,
+                    self.parameters.max_concurrent_flows,
                 ),
-            )
-            .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+            );
+            server_nonce.fill(0);
+            session_id.fill(0);
+            let confirmation =
+                confirmation_result.map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+            #[cfg(test)]
+            let mut confirmation = confirmation;
+            #[cfg(test)]
             if self.fault == ReferenceFault::WrongServerConfirmation {
                 confirmation[319] ^= 0x80;
             }
@@ -890,7 +1071,7 @@ mod auth_runtime_reference {
             self.response_send = Some(BodySendState::new(
                 confirmation,
                 stream_id,
-                T026C_RESPONSE_SPLIT,
+                self.response_chunk_end(),
             ));
             Ok(())
         }
@@ -915,12 +1096,23 @@ mod auth_runtime_reference {
                 Some(&[]),
                 self.role_config.tunnel_path()?,
             );
+            let client_max_frame_size = self.parameters.client_max_frame_size;
+            #[cfg(test)]
+            let client_max_frame_size = if self.fault == ReferenceFault::WrongClientReceipt {
+                1
+            } else {
+                client_max_frame_size
+            };
             verify_auth_v3_server_confirmation(
                 &self.response_recv,
                 request,
                 &preselected.trusted_profile(),
                 &context,
-                &AuthV3ClientReceipt::new(T026C_NOW, 131_072, 256),
+                &AuthV3ClientReceipt::new(
+                    self.parameters.now,
+                    client_max_frame_size,
+                    self.parameters.client_max_concurrent_flows,
+                ),
             )
             .map(|_| ())
             .map_err(|_| FoundationError::PreAuthApplicationActivity)
@@ -931,10 +1123,13 @@ mod auth_runtime_reference {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
             self.slot = AuthSlot::Authenticating(None);
-            self.slot_claims = self
-                .slot_claims
-                .checked_add(1)
-                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            #[cfg(test)]
+            {
+                self.slot_claims = self
+                    .slot_claims
+                    .checked_add(1)
+                    .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            }
             self.deadline = Some(
                 Instant::now()
                     .checked_add(CONNECTION_RUN_TIMEOUT)
@@ -948,10 +1143,13 @@ mod auth_runtime_reference {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
             self.slot = AuthSlot::Authenticating(Some(stream_id));
-            self.slot_claims = self
-                .slot_claims
-                .checked_add(1)
-                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            #[cfg(test)]
+            {
+                self.slot_claims = self
+                    .slot_claims
+                    .checked_add(1)
+                    .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            }
             self.deadline = Some(
                 Instant::now()
                     .checked_add(CONNECTION_RUN_TIMEOUT)
@@ -971,6 +1169,28 @@ mod auth_runtime_reference {
             Ok(())
         }
 
+        fn admit_request_send_result(
+            &self,
+            result: Result<u64, quiche::h3::Error>,
+        ) -> Result<Option<u64>, FoundationError> {
+            match result {
+                Ok(stream_id) => Ok(Some(stream_id)),
+                Err(quiche::h3::Error::StreamBlocked) => Ok(None),
+                Err(_) => Err(FoundationError::PreAuthApplicationActivity),
+            }
+        }
+
+        fn admit_response_send_result(
+            &self,
+            result: Result<(), quiche::h3::Error>,
+        ) -> Result<bool, FoundationError> {
+            match result {
+                Ok(()) => Ok(true),
+                Err(quiche::h3::Error::StreamBlocked) => Ok(false),
+                Err(_) => Err(FoundationError::PreAuthApplicationActivity),
+            }
+        }
+
         fn admit_data_event(
             &mut self,
             expected_phase: AuthPhase,
@@ -979,10 +1199,13 @@ mod auth_runtime_reference {
             if self.phase != expected_phase || self.bound_stream()? != stream_id {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
-            self.received_data_events = self
-                .received_data_events
-                .checked_add(1)
-                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            #[cfg(test)]
+            {
+                self.received_data_events = self
+                    .received_data_events
+                    .checked_add(1)
+                    .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            }
             Ok(())
         }
 
@@ -993,13 +1216,72 @@ mod auth_runtime_reference {
             }
         }
 
+        fn check_deadline(&self) -> Result<(), FoundationError> {
+            if self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                return Err(FoundationError::DriverTimeout);
+            }
+            Ok(())
+        }
+
         fn authenticate(&mut self) -> Result<(), FoundationError> {
             if !matches!(self.slot, AuthSlot::Authenticating(Some(_))) {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
+            let generation = self
+                .facts
+                .as_ref()
+                .map(|facts| facts.generation)
+                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            #[cfg(test)]
+            self.record_reference_outcome()?;
             self.slot = AuthSlot::Authenticated;
             self.phase = AuthPhase::Authenticated;
+            self.authenticated_generation = Some(generation);
+            self.facts = None;
+            self.clear_auth_buffers();
             Ok(())
+        }
+
+        pub(super) fn authenticated_generation(&self) -> Option<AuthenticatedGeneration> {
+            if self.slot != AuthSlot::Authenticated
+                || self.phase != AuthPhase::Authenticated
+                || !self.active.load(Ordering::Acquire)
+            {
+                return None;
+            }
+            Some(AuthenticatedGeneration {
+                generation: self.authenticated_generation?,
+                active: Arc::clone(&self.active),
+            })
+        }
+
+        pub(super) fn client_server_name(&self) -> Result<&str, FoundationError> {
+            self.role_config.client_server_name()
+        }
+
+        fn request_chunk_end(&self) -> usize {
+            #[cfg(test)]
+            {
+                T026C_REQUEST_SPLIT
+            }
+            #[cfg(not(test))]
+            {
+                AUTH_V3_CLIENT_CONTROL_LEN
+            }
+        }
+
+        fn response_chunk_end(&self) -> usize {
+            #[cfg(test)]
+            {
+                T026C_RESPONSE_SPLIT
+            }
+            #[cfg(not(test))]
+            {
+                AUTH_V3_SERVER_CONFIRMATION_LEN
+            }
         }
 
         fn clear_auth_buffers(&mut self) {
@@ -1019,8 +1301,22 @@ mod auth_runtime_reference {
         }
     }
 
-    impl Drop for TestAuthRuntime {
+    #[cfg(test)]
+    fn test_trusted_inputs() -> Result<TrustedGenerationAuthInputs, FoundationError> {
+        TrustedGenerationAuthInputs::new(
+            T026C_NOW,
+            T026C_NOW + 1_800,
+            T026C_NOW + 86_400,
+            65_536,
+            128,
+            131_072,
+            256,
+        )
+    }
+
+    impl Drop for GenerationAuth {
         fn drop(&mut self) {
+            self.active.store(false, Ordering::Release);
             self.clear_auth_buffers();
         }
     }
@@ -1076,6 +1372,7 @@ mod auth_runtime_reference {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn valid_request_headers<T: NameValue>(headers: &[T]) -> bool {
         valid_request_headers_for(
             headers,
@@ -1134,6 +1431,7 @@ mod auth_runtime_reference {
         ]
     }
 
+    #[cfg(test)]
     pub(super) fn request_header_pairs() -> [(&'static [u8], &'static [u8]); 6] {
         [
             (b":method", b"POST"),
@@ -1153,20 +1451,11 @@ mod auth_runtime_reference {
         ]
     }
 
-    fn valid_test_authority(authority: &[u8]) -> bool {
-        !authority.is_empty()
-            && authority.is_ascii()
-            && !authority.starts_with(b".")
-            && !authority.ends_with(b".")
-            && authority
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'-'))
+    fn valid_control_path(path: &[u8]) -> bool {
+        path.starts_with(b"/") && path.is_ascii() && !path.contains(&b'?') && !path.contains(&b'#')
     }
 
-    fn valid_test_control_path(path: &[u8]) -> bool {
-        path.starts_with(b"/") && path.is_ascii() && !path.contains(&b'?')
-    }
-
+    #[cfg(test)]
     fn test_binding_yaml() -> String {
         format!(
             r#"      provisioning_handle: "{TEST_HANDLE}"
@@ -1181,6 +1470,7 @@ mod auth_runtime_reference {
         )
     }
 
+    #[cfg(test)]
     fn test_client_role_yaml() -> String {
         format!(
             r#"version: 3
@@ -1213,6 +1503,7 @@ auth:
         )
     }
 
+    #[cfg(test)]
     fn test_server_role_yaml() -> String {
         format!(
             r#"version: 3
@@ -1280,9 +1571,38 @@ auth:
             }
         }
 
+        #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+        fn flow_control_session(
+            mut transport: quiche::Config,
+            h3: &quiche::h3::Config,
+        ) -> (tempfile::TempDir, quiche::h3::testing::Session) {
+            let temp = tempfile::TempDir::new().expect("create flow-control certificate directory");
+            let cert_path = temp.path().join("cert.pem");
+            let key_path = temp.path().join("key.pem");
+            let certified = rcgen::generate_simple_self_signed(vec![T026C_AUTHORITY.into()])
+                .expect("generate flow-control certificate");
+            std::fs::write(&cert_path, certified.cert.pem())
+                .expect("write flow-control certificate");
+            std::fs::write(&key_path, certified.key_pair.serialize_pem())
+                .expect("write flow-control key");
+            transport
+                .load_cert_chain_from_pem_file(
+                    cert_path
+                        .to_str()
+                        .expect("read flow-control certificate path"),
+                )
+                .expect("load flow-control certificate");
+            transport
+                .load_priv_key_from_pem_file(key_path.to_str().expect("read flow-control key path"))
+                .expect("load flow-control key");
+            let session = quiche::h3::testing::Session::with_configs(&mut transport, h3)
+                .expect("construct flow-control session");
+            (temp, session)
+        }
+
         #[test]
         fn server_claims_once_before_requiring_facts_and_rejects_early_or_trailing_events() {
-            let mut before_facts = TestAuthRuntime::new(TestAuthRole::Server)
+            let mut before_facts = GenerationAuth::new_test(AuthRole::Server)
                 .expect("construct facts-order reference runtime");
             assert_eq!(
                 before_facts.claim_server_slot(0),
@@ -1292,7 +1612,7 @@ auth:
             assert_eq!(before_facts.slot_claims, 1);
             assert!(before_facts.facts.is_none());
 
-            let mut sequencing = TestAuthRuntime::new(TestAuthRole::Server)
+            let mut sequencing = GenerationAuth::new_test(AuthRole::Server)
                 .expect("construct event-order reference runtime");
             sequencing
                 .install_live_facts(synthetic_live_facts(), Some(T026C_AUTHORITY))
@@ -1316,24 +1636,329 @@ auth:
             assert_eq!(sequencing.slot_claims, 1);
         }
 
+        #[test]
+        fn frozen_roles_and_trusted_inputs_fail_before_any_network_seam() {
+            let bad_authority = test_client_role_yaml().replace(
+                &format!("server_name: \"{T026C_AUTHORITY}\""),
+                "server_name: \"invalid:443\"",
+            );
+            assert!(ClientRoleConfig::from_yaml_str(&bad_authority).is_err());
+
+            let bad_path = test_client_role_yaml().replace(
+                &format!("tunnel_path: \"{T026C_CONTROL_PATH}\""),
+                "tunnel_path: \"/synthetic-h3-auth-v3?query\"",
+            );
+            let parsed_bad_path = ClientRoleConfig::from_yaml_str(&bad_path)
+                .expect("parse path for private pre-I/O gate");
+            assert_eq!(
+                GenerationAuth::client(
+                    parsed_bad_path,
+                    test_trusted_inputs().expect("construct trusted test inputs"),
+                )
+                .err(),
+                Some(FoundationError::PreAuthApplicationActivity)
+            );
+
+            assert_eq!(
+                TrustedGenerationAuthInputs::new(0, 1, 2, 1, 1, 1, 1).err(),
+                Some(FoundationError::PreAuthApplicationActivity)
+            );
+
+            let server_config = ServerRoleConfig::from_yaml_str(&test_server_role_yaml())
+                .expect("parse frozen server role");
+            let mut server = GenerationAuth::server(
+                server_config,
+                test_trusted_inputs().expect("construct trusted server inputs"),
+            )
+            .expect("freeze server role before I/O");
+            assert_eq!(
+                server.install_live_facts(synthetic_live_facts(), Some("other.invalid")),
+                Err(FoundationError::PreAuthApplicationActivity)
+            );
+            assert!(server.facts.is_none());
+            assert_eq!(server.slot, AuthSlot::Fresh);
+
+            let missing_sni_config = ServerRoleConfig::from_yaml_str(&test_server_role_yaml())
+                .expect("parse missing-SNI server role");
+            let mut missing_sni = GenerationAuth::server(
+                missing_sni_config,
+                test_trusted_inputs().expect("construct missing-SNI inputs"),
+            )
+            .expect("freeze missing-SNI server role before I/O");
+            assert_eq!(
+                missing_sni.install_live_facts(synthetic_live_facts(), None),
+                Err(FoundationError::PreAuthApplicationActivity)
+            );
+            assert!(missing_sni.facts.is_none());
+        }
+
+        #[test]
+        fn occupied_auth_deadline_fails_without_reopening_the_generation_slot() {
+            let mut runtime = GenerationAuth::new_test(AuthRole::Client)
+                .expect("construct deadline reference runtime");
+            runtime
+                .install_live_facts(synthetic_live_facts(), None)
+                .expect("install deadline live facts");
+            runtime
+                .claim_client_slot()
+                .expect("occupy deadline auth slot");
+            runtime.deadline = Some(Instant::now());
+            assert_eq!(
+                runtime.check_deadline(),
+                Err(FoundationError::DriverTimeout)
+            );
+            assert_eq!(
+                runtime.claim_client_slot(),
+                Err(FoundationError::PreAuthApplicationActivity)
+            );
+            assert_eq!(runtime.slot_claims, 1);
+            runtime.fail_closed();
+            assert!(!runtime.active.load(Ordering::Acquire));
+        }
+
+        #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+        #[test]
+        fn real_quiche_blocked_partial_and_done_retries_preserve_the_same_attempt_suffix() {
+            let mut blocked_transport = bounded_self_signed_loopback_quic_config()
+                .expect("construct blocked-request transport");
+            blocked_transport.set_initial_max_data(150);
+            blocked_transport.set_initial_max_stream_data_bidi_local(150);
+            blocked_transport.set_initial_max_stream_data_bidi_remote(150);
+            blocked_transport.set_initial_max_streams_bidi(100);
+            let blocked_h3 = bounded_h3_config().expect("construct blocked-request H3 config");
+            let (_blocked_temp, mut blocked) = flow_control_session(blocked_transport, &blocked_h3);
+            blocked
+                .handshake()
+                .expect("handshake blocked-request session");
+
+            let mut client = GenerationAuth::new_test(AuthRole::Client)
+                .expect("construct blocked-request auth runtime");
+            client
+                .install_live_facts(synthetic_live_facts(), None)
+                .expect("install blocked-request facts");
+            client
+                .prepare_client_control()
+                .expect("prepare blocked-request control");
+            client
+                .claim_client_slot()
+                .expect("claim blocked-request slot");
+            client.phase = AuthPhase::ClientSendingHeaders;
+            let headers = request_headers(
+                client
+                    .role_config
+                    .expected_authority()
+                    .expect("read blocked-request authority")
+                    .as_bytes(),
+                client
+                    .role_config
+                    .tunnel_path()
+                    .expect("read blocked-request path")
+                    .as_bytes(),
+            );
+            let fill_headers = [
+                quiche::h3::Header::new(b":method", b"GET"),
+                quiche::h3::Header::new(b":scheme", b"https"),
+                quiche::h3::Header::new(b":authority", b"flow.invalid"),
+                quiche::h3::Header::new(b":path", b"/fill"),
+            ];
+            assert_eq!(
+                blocked
+                    .client
+                    .send_request(&mut blocked.pipe.client, &fill_headers, true),
+                Ok(0)
+            );
+            let blocked_result =
+                blocked
+                    .client
+                    .send_request(&mut blocked.pipe.client, &headers, false);
+            assert_eq!(blocked_result, Err(quiche::h3::Error::StreamBlocked));
+            assert_eq!(
+                client
+                    .admit_request_send_result(blocked_result)
+                    .expect("admit real blocked request result"),
+                None
+            );
+            assert_eq!(client.slot, AuthSlot::Authenticating(None));
+            assert_eq!(client.phase, AuthPhase::ClientSendingHeaders);
+            assert_eq!(client.slot_claims, 1);
+
+            let mut response_blocked_transport = bounded_self_signed_loopback_quic_config()
+                .expect("construct blocked-response transport");
+            response_blocked_transport.set_initial_max_data(10_000);
+            response_blocked_transport.set_initial_max_stream_data_bidi_local(1);
+            response_blocked_transport.set_initial_max_stream_data_bidi_remote(1_024);
+            let response_blocked_h3 =
+                bounded_h3_config().expect("construct blocked-response H3 config");
+            let (_response_blocked_temp, mut response_blocked) =
+                flow_control_session(response_blocked_transport, &response_blocked_h3);
+            response_blocked
+                .handshake()
+                .expect("handshake blocked-response session");
+            let response_stream = response_blocked
+                .client
+                .send_request(&mut response_blocked.pipe.client, &headers, true)
+                .expect("send blocked-response request");
+            response_blocked
+                .advance()
+                .expect("advance blocked-response request");
+            assert!(matches!(
+                response_blocked.poll_server(),
+                Ok((id, quiche::h3::Event::Headers { .. })) if id == response_stream
+            ));
+            assert_eq!(
+                response_blocked.poll_server(),
+                Ok((response_stream, quiche::h3::Event::Finished))
+            );
+            let response_result = response_blocked.server.send_response(
+                &mut response_blocked.pipe.server,
+                response_stream,
+                &response_headers(),
+                false,
+            );
+            assert_eq!(response_result, Err(quiche::h3::Error::StreamBlocked));
+            let mut server = GenerationAuth::new_test(AuthRole::Server)
+                .expect("construct blocked-response auth runtime");
+            server
+                .install_live_facts(synthetic_live_facts(), Some(T026C_AUTHORITY))
+                .expect("install blocked-response facts");
+            server
+                .claim_server_slot(response_stream)
+                .expect("claim blocked-response slot");
+            server.phase = AuthPhase::ServerSendingHeaders;
+            assert!(!server
+                .admit_response_send_result(response_result)
+                .expect("admit real blocked response result"));
+            assert_eq!(server.slot, AuthSlot::Authenticating(Some(response_stream)));
+            assert_eq!(server.phase, AuthPhase::ServerSendingHeaders);
+            assert_eq!(server.slot_claims, 1);
+
+            let mut body_transport = bounded_self_signed_loopback_quic_config()
+                .expect("construct body-flow-control transport");
+            body_transport.set_initial_max_data(10_000);
+            body_transport.set_initial_max_stream_data_bidi_local(100);
+            body_transport.set_initial_max_stream_data_bidi_remote(1_024);
+            let body_h3 = bounded_h3_config().expect("construct body-flow-control H3 config");
+            let (_body_temp, mut body) = flow_control_session(body_transport, &body_h3);
+            body.handshake()
+                .expect("handshake body-flow-control session");
+            let stream_id = body
+                .client
+                .send_request(&mut body.pipe.client, &headers, true)
+                .expect("send body-flow-control request");
+            body.advance().expect("advance body-flow-control request");
+            assert!(matches!(
+                body.poll_server(),
+                Ok((id, quiche::h3::Event::Headers { .. })) if id == stream_id
+            ));
+            assert_eq!(
+                body.poll_server(),
+                Ok((stream_id, quiche::h3::Event::Finished))
+            );
+            body.server
+                .send_response(&mut body.pipe.server, stream_id, &response_headers(), false)
+                .expect("send body-flow-control response headers");
+
+            let original: [u8; AUTH_V3_SERVER_CONFIRMATION_LEN] =
+                std::array::from_fn(|index| ((index * 31 + 7) % 251) as u8);
+            let mut send = BodySendState::new(original, stream_id, AUTH_V3_SERVER_CONFIRMATION_LEN);
+            assert_eq!(send.stream_id, stream_id);
+            let (first_pending, first_fin) = send.pending();
+            let first_pending_len = first_pending.len();
+            let first_result =
+                body.server
+                    .send_body(&mut body.pipe.server, stream_id, first_pending, first_fin);
+            let first_written = first_result.expect("observe real partial body write");
+            assert!(first_written > 0 && first_written < first_pending_len);
+            assert!(
+                !record_body_send_result(&mut send, first_pending_len, Ok(first_written),)
+                    .expect("record real partial body write")
+            );
+            let (same_suffix, same_fin) = send.pending();
+            assert_eq!(same_suffix, &original[first_written..]);
+            assert!(same_fin);
+            assert_eq!(send.stream_id, stream_id);
+            let done_result =
+                body.server
+                    .send_body(&mut body.pipe.server, stream_id, same_suffix, same_fin);
+            assert_eq!(done_result, Err(quiche::h3::Error::Done));
+            let same_suffix_len = same_suffix.len();
+            assert!(
+                !record_body_send_result(&mut send, same_suffix_len, done_result,)
+                    .expect("record real Done without progress")
+            );
+            let (retry_suffix, retry_fin) = send.pending();
+            assert_eq!(retry_suffix, &original[first_written..]);
+            assert!(retry_fin);
+            assert_eq!(send.stream_id, stream_id);
+        }
+
+        #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+        #[test]
+        fn expired_generation_rejects_an_admissible_event_before_any_state_or_byte_change() {
+            let mut transport = bounded_self_signed_loopback_quic_config()
+                .expect("construct expired-event QUIC config");
+            let h3_config = bounded_h3_config().expect("construct expired-event H3 config");
+            let mut session =
+                quiche::h3::testing::Session::with_configs(&mut transport, &h3_config)
+                    .expect("construct expired-event H3 session");
+            let mut runtime = GenerationAuth::new_test(AuthRole::Client)
+                .expect("construct expired-event auth runtime");
+            runtime
+                .install_live_facts(synthetic_live_facts(), None)
+                .expect("install expired-event facts");
+            runtime
+                .claim_client_slot()
+                .expect("claim expired-event client slot");
+            runtime
+                .bind_client_stream(0)
+                .expect("bind expired-event client stream");
+            runtime.phase = AuthPhase::ClientWaitingResponse;
+            runtime.deadline = Some(Instant::now());
+
+            let slot_before = runtime.slot;
+            let phase_before = runtime.phase;
+            let request_before = runtime.request_recv;
+            let response_before = runtime.response_recv;
+            let request_len_before = runtime.request_recv_len;
+            let response_len_before = runtime.response_recv_len;
+            let result = runtime.handle_event(
+                &mut session.pipe.client,
+                &mut session.client,
+                0,
+                quiche::h3::Event::Headers {
+                    list: response_headers().to_vec(),
+                    more_frames: true,
+                },
+            );
+
+            assert_eq!(result, Err(FoundationError::DriverTimeout));
+            assert_eq!(runtime.slot, slot_before);
+            assert_eq!(runtime.phase, phase_before);
+            assert_eq!(runtime.request_recv, request_before);
+            assert_eq!(runtime.response_recv, response_before);
+            assert_eq!(runtime.request_recv_len, request_len_before);
+            assert_eq!(runtime.response_recv_len, response_len_before);
+            assert!(runtime.authenticated_generation().is_none());
+        }
+
         #[cfg(feature = "unstable-quiche-strict-push-test-support")]
         #[test]
         fn handle_event_rejects_trailers_control_events_and_wrong_stream_without_reopening_slot() {
             fn assert_rejected_without_reopening(
                 session: &mut quiche::h3::testing::Session,
-                role: TestAuthRole,
+                role: AuthRole,
                 phase: AuthPhase,
                 stream_id: u64,
                 event: quiche::h3::Event,
             ) {
-                let mut runtime = TestAuthRuntime::new(role)
+                let mut runtime = GenerationAuth::new_test(role)
                     .expect("construct direct event rejection reference runtime");
-                let raw_sni = (role == TestAuthRole::Server).then_some(T026C_AUTHORITY);
+                let raw_sni = (role == AuthRole::Server).then_some(T026C_AUTHORITY);
                 runtime
                     .install_live_facts(synthetic_live_facts(), raw_sni)
                     .expect("install direct event rejection facts");
                 match role {
-                    TestAuthRole::Client => {
+                    AuthRole::Client => {
                         runtime
                             .claim_client_slot()
                             .expect("claim direct event client slot");
@@ -1341,7 +1966,7 @@ auth:
                             .bind_client_stream(0)
                             .expect("bind direct event client stream");
                     }
-                    TestAuthRole::Server => runtime
+                    AuthRole::Server => runtime
                         .claim_server_slot(0)
                         .expect("claim direct event server slot"),
                 }
@@ -1349,13 +1974,13 @@ auth:
                 let claimed_slot = runtime.slot;
 
                 let result = match role {
-                    TestAuthRole::Client => runtime.handle_event(
+                    AuthRole::Client => runtime.handle_event(
                         &mut session.pipe.client,
                         &mut session.client,
                         stream_id,
                         event,
                     ),
-                    TestAuthRole::Server => runtime.handle_event(
+                    AuthRole::Server => runtime.handle_event(
                         &mut session.pipe.server,
                         &mut session.server,
                         stream_id,
@@ -1368,8 +1993,8 @@ auth:
                 assert_eq!(runtime.phase, phase);
                 assert!(runtime.facts.is_some());
                 let second_claim = match role {
-                    TestAuthRole::Client => runtime.claim_client_slot(),
-                    TestAuthRole::Server => runtime.claim_server_slot(4),
+                    AuthRole::Client => runtime.claim_client_slot(),
+                    AuthRole::Server => runtime.claim_server_slot(4),
                 };
                 assert_eq!(
                     second_claim,
@@ -1387,8 +2012,8 @@ auth:
                 quiche::h3::testing::Session::with_configs(&mut transport, &h3_config)
                     .expect("construct direct event rejection H3 session");
             for (role, phase) in [
-                (TestAuthRole::Client, AuthPhase::ClientReceivingResponse),
-                (TestAuthRole::Server, AuthPhase::ServerReceivingRequest),
+                (AuthRole::Client, AuthPhase::ClientReceivingResponse),
+                (AuthRole::Server, AuthPhase::ServerReceivingRequest),
             ] {
                 for event in [
                     quiche::h3::Event::Headers {
@@ -1420,21 +2045,20 @@ auth:
 
         #[test]
         fn success_outcome_take_is_transactional_and_one_shot() {
-            let mut runtime = TestAuthRuntime::new(TestAuthRole::Client)
+            let mut runtime = GenerationAuth::new_test(AuthRole::Client)
                 .expect("construct transactional outcome reference runtime");
             runtime
                 .install_live_facts(synthetic_live_facts(), None)
                 .expect("install transactional outcome facts");
-            runtime.slot = AuthSlot::Authenticated;
-            runtime.phase = AuthPhase::Authenticated;
+            runtime.slot = AuthSlot::Authenticating(Some(0));
+            runtime.phase = AuthPhase::ClientReceivingResponse;
             runtime.slot_claims = 1;
             runtime.received_data_events = 2;
             runtime.datagram_checks = 2;
 
             assert!(runtime.take_success_outcome().is_none());
             assert!(runtime.facts.is_some());
-            assert_eq!(runtime.slot, AuthSlot::Authenticated);
-            assert_eq!(runtime.phase, AuthPhase::Authenticated);
+            assert_eq!(runtime.slot, AuthSlot::Authenticating(Some(0)));
 
             let mut request =
                 BodySendState::new([0_u8; AUTH_V3_CLIENT_CONTROL_LEN], 0, T026C_REQUEST_SPLIT);
@@ -1443,6 +2067,9 @@ auth:
             request.completed_chunks = 2;
             runtime.request_send = Some(request);
             runtime.response_recv_len = AUTH_V3_SERVER_CONFIRMATION_LEN;
+            runtime
+                .authenticate()
+                .expect("authenticate complete transactional runtime");
 
             let outcome = runtime
                 .take_success_outcome()
@@ -1454,18 +2081,22 @@ auth:
             assert_eq!(outcome.response_bytes, AUTH_V3_SERVER_CONFIRMATION_LEN);
             assert_eq!(outcome.datagram_checks, 2);
             assert!(runtime.facts.is_none());
-            assert_eq!(runtime.slot, AuthSlot::Consumed);
-            assert_eq!(runtime.phase, AuthPhase::Consumed);
+            assert_eq!(runtime.slot, AuthSlot::Authenticated);
+            assert_eq!(runtime.phase, AuthPhase::Authenticated);
+            assert!(runtime.authenticated_generation().is_some());
             assert!(runtime.take_success_outcome().is_none());
         }
     }
 }
 
+use generation_auth::{
+    bind_authenticated_lease, AuthenticatedConnectionLease, AuthenticatedGeneration, GenerationAuth,
+};
+
 #[cfg(test)]
-use auth_runtime_reference::{
+use generation_auth::{
     bounded_body_progress, exact_body_finished, request_header_pairs, response_header_pairs,
-    valid_request_headers, valid_response_headers, ReferenceFault, ReferenceOutcome, TestAuthRole,
-    TestAuthRuntime,
+    valid_request_headers, valid_response_headers, AuthRole, ReferenceFault, ReferenceOutcome,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1519,6 +2150,10 @@ impl std::error::Error for FoundationError {}
 struct ConnectionGeneration(u64);
 
 enum DriverCommand {
+    AcquireAuthenticated {
+        response: oneshot::Sender<AuthenticatedGeneration>,
+    },
+    #[cfg(test)]
     Acquire {
         response: oneshot::Sender<ConnectionGeneration>,
     },
@@ -1531,12 +2166,14 @@ struct DriverExit {
     reference_outcome: Option<ReferenceOutcome>,
 }
 
+#[cfg(test)]
 struct ConnectionLease<'manager> {
     generation: ConnectionGeneration,
     _permit: OwnedSemaphorePermit,
     _manager: PhantomData<&'manager SingleIdentityQuicManager>,
 }
 
+#[cfg(test)]
 impl ConnectionLease<'_> {
     fn generation(&self) -> ConnectionGeneration {
         self.generation
@@ -1569,6 +2206,31 @@ impl SingleIdentityQuicManager {
         })
     }
 
+    async fn acquire_authenticated(&self) -> Result<AuthenticatedConnectionLease, FoundationError> {
+        let command_tx = self
+            .command_tx
+            .as_ref()
+            .ok_or(FoundationError::ManagerClosed)?;
+        let permit = self
+            .lease_permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| FoundationError::LeaseUnavailable)?;
+        let (response_tx, response_rx) = oneshot::channel();
+        try_send_driver_command(
+            command_tx,
+            DriverCommand::AcquireAuthenticated {
+                response: response_tx,
+            },
+        )?;
+        let authenticated = timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, response_rx)
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::DriverStopped)?;
+        Ok(bind_authenticated_lease(authenticated, permit))
+    }
+
+    #[cfg(test)]
     async fn acquire(&self) -> Result<ConnectionLease<'_>, FoundationError> {
         let command_tx = self
             .command_tx
@@ -1598,9 +2260,6 @@ impl SingleIdentityQuicManager {
     }
 
     async fn close(&mut self) -> Result<(), FoundationError> {
-        if self.lease_permits.available_permits() != CONNECTION_LEASE_LIMIT {
-            return Err(FoundationError::LeaseUnavailable);
-        }
         let Some(command_tx) = self.command_tx.take() else {
             return Ok(());
         };
@@ -1630,6 +2289,23 @@ impl SingleIdentityQuicManager {
         let result = self.join_driver().await;
         self.command_tx.take();
         result
+    }
+
+    #[cfg(test)]
+    async fn close_and_take_driver_exit(&mut self) -> Result<DriverExit, FoundationError> {
+        let Some(command_tx) = self.command_tx.take() else {
+            return self.join_driver().await;
+        };
+        try_send_driver_command(&command_tx, DriverCommand::Close)?;
+        drop(command_tx);
+        self.join_driver().await
+    }
+
+    #[cfg(test)]
+    fn driver_is_finished(&self) -> bool {
+        self.driver_task
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished)
     }
 }
 
@@ -1672,9 +2348,32 @@ struct FoundationDriver {
     observation_tx: mpsc::Sender<FoundationObservation>,
     ready_barrier: Arc<Barrier>,
     #[cfg(test)]
-    pre_auth_request_trigger: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pre_auth_request_trigger: Option<Arc<AtomicBool>>,
+    auth_runtime: DriverAuthRuntime,
+}
+
+enum DriverAuthRuntime {
+    Authenticated(Box<GenerationAuth>),
     #[cfg(test)]
-    auth_runtime: Option<TestAuthRuntime>,
+    FoundationOnly,
+}
+
+impl DriverAuthRuntime {
+    fn generation(&self) -> Option<&GenerationAuth> {
+        match self {
+            Self::Authenticated(runtime) => Some(runtime),
+            #[cfg(test)]
+            Self::FoundationOnly => None,
+        }
+    }
+
+    fn generation_mut(&mut self) -> Option<&mut GenerationAuth> {
+        match self {
+            Self::Authenticated(runtime) => Some(runtime),
+            #[cfg(test)]
+            Self::FoundationOnly => None,
+        }
+    }
 }
 
 impl FoundationDriver {
@@ -1684,6 +2383,43 @@ impl FoundationDriver {
         connection: quiche::Connection,
         observation_tx: mpsc::Sender<FoundationObservation>,
         ready_barrier: Arc<Barrier>,
+        auth_runtime: GenerationAuth,
+    ) -> Result<Self, FoundationError> {
+        Self::new_inner(
+            socket,
+            peer_address,
+            connection,
+            observation_tx,
+            ready_barrier,
+            DriverAuthRuntime::Authenticated(Box::new(auth_runtime)),
+        )
+    }
+
+    #[cfg(test)]
+    fn new_test_foundation(
+        socket: UdpSocket,
+        peer_address: SocketAddr,
+        connection: quiche::Connection,
+        observation_tx: mpsc::Sender<FoundationObservation>,
+        ready_barrier: Arc<Barrier>,
+    ) -> Result<Self, FoundationError> {
+        Self::new_inner(
+            socket,
+            peer_address,
+            connection,
+            observation_tx,
+            ready_barrier,
+            DriverAuthRuntime::FoundationOnly,
+        )
+    }
+
+    fn new_inner(
+        socket: UdpSocket,
+        peer_address: SocketAddr,
+        connection: quiche::Connection,
+        observation_tx: mpsc::Sender<FoundationObservation>,
+        ready_barrier: Arc<Barrier>,
+        auth_runtime: DriverAuthRuntime,
     ) -> Result<Self, FoundationError> {
         let local_address = socket
             .local_addr()
@@ -1704,8 +2440,7 @@ impl FoundationDriver {
             ready_barrier,
             #[cfg(test)]
             pre_auth_request_trigger: None,
-            #[cfg(test)]
-            auth_runtime: None,
+            auth_runtime,
         })
     }
 
@@ -1715,14 +2450,11 @@ impl FoundationDriver {
         generation: ConnectionGeneration,
     ) -> Result<DriverExit, FoundationError> {
         let result = self.run_inner(&mut command_rx, generation).await;
-        #[cfg(test)]
         if result.is_err() {
-            if let Some(runtime) = self.auth_runtime.as_mut() {
+            if let Some(runtime) = self.auth_runtime.generation_mut() {
                 runtime.fail_closed();
                 if !self.connection.is_closed() {
-                    let _ = self
-                        .connection
-                        .close(true, T026C_APPLICATION_CLOSE_CODE, b"");
+                    let _ = self.connection.close(true, AUTH_FAILURE_CLOSE_CODE, b"");
                     let mut send_buffer = [0_u8; MAX_UDP_PAYLOAD_BYTES];
                     let _ = self.flush_packets(&mut send_buffer).await;
                 }
@@ -1740,6 +2472,8 @@ impl FoundationDriver {
         let mut receive_buffer = [0_u8; MAX_UDP_PAYLOAD_BYTES];
         let mut send_buffer = [0_u8; MAX_UDP_PAYLOAD_BYTES];
         let mut foundation_ready = false;
+        let mut pending_authenticated_acquire: Option<oneshot::Sender<AuthenticatedGeneration>> =
+            None;
 
         loop {
             self.initialize_h3()?;
@@ -1753,25 +2487,15 @@ impl FoundationDriver {
                     .map_err(|_| FoundationError::DriverTimeout)?;
                 foundation_ready = true;
             }
-            #[cfg(test)]
-            self.drive_test_auth(foundation_ready)?;
+            self.drive_generation_auth(foundation_ready)?;
             self.flush_packets(&mut send_buffer).await?;
 
-            #[cfg(test)]
-            if let Some(outcome) = self.take_test_auth_success_outcome() {
-                if !self.connection.is_closed() {
-                    match self
-                        .connection
-                        .close(true, T026C_APPLICATION_CLOSE_CODE, b"")
-                    {
-                        Ok(()) | Err(quiche::Error::Done) => {}
-                        Err(_) => return Err(FoundationError::ConnectionUnavailable),
-                    }
+            if let Some(response) = pending_authenticated_acquire.take() {
+                if let Some(authenticated) = self.authenticated_generation() {
+                    let _ = response.send(authenticated);
+                } else {
+                    pending_authenticated_acquire = Some(response);
                 }
-                self.flush_packets(&mut send_buffer).await?;
-                return Ok(DriverExit {
-                    reference_outcome: Some(outcome),
-                });
             }
 
             if self.connection.is_closed() {
@@ -1797,6 +2521,16 @@ impl FoundationDriver {
                 biased;
                 command = command_rx.recv() => {
                     match command {
+                        Some(DriverCommand::AcquireAuthenticated { response }) => {
+                            if let Some(authenticated) = self.authenticated_generation() {
+                                let _ = response.send(authenticated);
+                            } else if pending_authenticated_acquire.is_none() {
+                                pending_authenticated_acquire = Some(response);
+                            } else {
+                                return Err(FoundationError::CommandQueueUnavailable);
+                            }
+                        }
+                        #[cfg(test)]
                         Some(DriverCommand::Acquire { response }) => {
                             let _ = response.send(generation);
                         }
@@ -1807,7 +2541,7 @@ impl FoundationDriver {
                                 .close(true, 0, b"")
                                 .map_err(|_| FoundationError::ConnectionUnavailable)?;
                             self.flush_packets(&mut send_buffer).await?;
-                            return Ok(DriverExit::default());
+                            return Ok(self.driver_exit());
                         }
                     }
                 }
@@ -1913,31 +2647,27 @@ impl FoundationDriver {
             return Ok(false);
         };
 
-        #[cfg(test)]
-        if let Some(runtime) = self.auth_runtime.as_mut() {
-            runtime.check_datagram_queue(&self.connection)?;
-        }
-        let event = h3_connection.poll(&mut self.connection);
-        #[cfg(test)]
-        if let Some(runtime) = self.auth_runtime.as_mut() {
-            runtime.check_datagram_queue(&self.connection)?;
-        }
+        loop {
+            if let Some(runtime) = self.auth_runtime.generation_mut() {
+                runtime.check_datagram_queue(&self.connection)?;
+            }
+            let event = h3_connection.poll(&mut self.connection);
+            if let Some(runtime) = self.auth_runtime.generation_mut() {
+                runtime.check_datagram_queue(&self.connection)?;
+            }
 
-        match event {
-            Ok(received_event) => {
-                #[cfg(test)]
-                if let Some(runtime) = self.auth_runtime.as_mut() {
-                    let (stream_id, event) = received_event;
+            match event {
+                Ok((stream_id, event)) => {
+                    let Some(runtime) = self.auth_runtime.generation_mut() else {
+                        return Err(FoundationError::PreAuthApplicationActivity);
+                    };
                     runtime.check_datagram_queue(&self.connection)?;
                     runtime.handle_event(&mut self.connection, h3_connection, stream_id, event)?;
-                    return Ok(false);
+                    continue;
                 }
-                #[cfg(not(test))]
-                let _ = received_event;
-                return Err(FoundationError::PreAuthApplicationActivity);
+                Err(quiche::h3::Error::Done) => break,
+                Err(_) => return Err(FoundationError::H3Unavailable),
             }
-            Err(quiche::h3::Error::Done) => {}
-            Err(_) => return Err(FoundationError::H3Unavailable),
         }
 
         if self.tls_observation.is_none() {
@@ -1975,8 +2705,7 @@ impl FoundationDriver {
             peer_quic: tls_observation.peer_quic,
             peer_h3,
         };
-        #[cfg(test)]
-        if let Some(runtime) = self.auth_runtime.as_mut() {
+        if let Some(runtime) = self.auth_runtime.generation_mut() {
             runtime.install_live_facts(observation, self.connection.server_name())?;
         }
         self.observation_tx
@@ -1985,9 +2714,8 @@ impl FoundationDriver {
         Ok(true)
     }
 
-    #[cfg(test)]
-    fn drive_test_auth(&mut self, foundation_ready: bool) -> Result<(), FoundationError> {
-        let Some(runtime) = self.auth_runtime.as_mut() else {
+    fn drive_generation_auth(&mut self, foundation_ready: bool) -> Result<(), FoundationError> {
+        let Some(runtime) = self.auth_runtime.generation_mut() else {
             return Ok(());
         };
         let Some(h3_connection) = self.h3_connection.as_mut() else {
@@ -1996,11 +2724,20 @@ impl FoundationDriver {
         runtime.drive_outbound(&mut self.connection, h3_connection, foundation_ready)
     }
 
-    #[cfg(test)]
-    fn take_test_auth_success_outcome(&mut self) -> Option<ReferenceOutcome> {
+    fn authenticated_generation(&self) -> Option<AuthenticatedGeneration> {
         self.auth_runtime
-            .as_mut()
-            .and_then(TestAuthRuntime::take_success_outcome)
+            .generation()
+            .and_then(GenerationAuth::authenticated_generation)
+    }
+
+    fn driver_exit(&mut self) -> DriverExit {
+        DriverExit {
+            #[cfg(test)]
+            reference_outcome: self
+                .auth_runtime
+                .generation_mut()
+                .and_then(GenerationAuth::take_success_outcome),
+        }
     }
 
     #[cfg(test)]
@@ -2317,7 +3054,7 @@ mod tests {
     struct ClientStartFixture<'fixture> {
         connections_created: &'fixture AtomicUsize,
         pre_auth_request_trigger: Option<Arc<AtomicBool>>,
-        auth_runtime: Option<TestAuthRuntime>,
+        auth_runtime: Option<GenerationAuth>,
     }
 
     fn fixed_ok<T, E>(result: Result<T, E>, message: &'static str) -> T {
@@ -2620,7 +3357,7 @@ mod tests {
         ready_barrier: Arc<Barrier>,
         task_permit: OwnedSemaphorePermit,
         connections_created: &AtomicUsize,
-        auth_runtime: Option<TestAuthRuntime>,
+        auth_runtime: Option<GenerationAuth>,
     ) -> Result<SingleIdentityQuicManager, FoundationError> {
         let local_address = socket
             .local_addr()
@@ -2655,14 +3392,23 @@ mod tests {
             )
             .map_err(|_| FoundationError::PacketUnavailable)?;
 
-        let mut driver = FoundationDriver::new(
-            socket,
-            peer_address,
-            connection,
-            observation_tx,
-            ready_barrier,
-        )?;
-        driver.auth_runtime = auth_runtime;
+        let driver = match auth_runtime {
+            Some(auth_runtime) => FoundationDriver::new(
+                socket,
+                peer_address,
+                connection,
+                observation_tx,
+                ready_barrier,
+                auth_runtime,
+            )?,
+            None => FoundationDriver::new_test_foundation(
+                socket,
+                peer_address,
+                connection,
+                observation_tx,
+                ready_barrier,
+            )?,
+        };
         SingleIdentityQuicManager::start(driver, task_permit)
     }
 
@@ -2675,30 +3421,48 @@ mod tests {
         task_permit: OwnedSemaphorePermit,
         fixture: ClientStartFixture<'_>,
     ) -> Result<SingleIdentityQuicManager, FoundationError> {
+        let ClientStartFixture {
+            connections_created,
+            pre_auth_request_trigger,
+            auth_runtime,
+        } = fixture;
         let local_address = socket
             .local_addr()
             .map_err(|_| FoundationError::SocketUnavailable)?;
         let source_connection_id = [0x51_u8; quiche::MAX_CONN_ID_LEN];
         let source_connection_id = quiche::ConnectionId::from_ref(&source_connection_id);
+        let server_name = match auth_runtime.as_ref() {
+            Some(runtime) => runtime.client_server_name()?,
+            None => T026C_AUTHORITY,
+        };
         let connection = quiche::connect(
-            Some(T026C_AUTHORITY),
+            Some(server_name),
             &source_connection_id,
             local_address,
             peer_address,
             &mut config,
         )
         .map_err(|_| FoundationError::ConnectionUnavailable)?;
-        fixture.connections_created.fetch_add(1, Ordering::Relaxed);
+        connections_created.fetch_add(1, Ordering::Relaxed);
 
-        let mut driver = FoundationDriver::new(
-            socket,
-            peer_address,
-            connection,
-            observation_tx,
-            ready_barrier,
-        )?;
-        driver.pre_auth_request_trigger = fixture.pre_auth_request_trigger;
-        driver.auth_runtime = fixture.auth_runtime;
+        let mut driver = match auth_runtime {
+            Some(auth_runtime) => FoundationDriver::new(
+                socket,
+                peer_address,
+                connection,
+                observation_tx,
+                ready_barrier,
+                auth_runtime,
+            )?,
+            None => FoundationDriver::new_test_foundation(
+                socket,
+                peer_address,
+                connection,
+                observation_tx,
+                ready_barrier,
+            )?,
+        };
+        driver.pre_auth_request_trigger = pre_auth_request_trigger;
         SingleIdentityQuicManager::start(driver, task_permit)
     }
 
@@ -2753,11 +3517,11 @@ mod tests {
             server_task_budget,
             None,
             Some(fixed_ok(
-                TestAuthRuntime::with_fault(TestAuthRole::Client, client_fault),
+                GenerationAuth::with_fault(AuthRole::Client, client_fault),
                 "construct test-private H3 client auth runtime",
             )),
             Some(fixed_ok(
-                TestAuthRuntime::with_fault(TestAuthRole::Server, server_fault),
+                GenerationAuth::with_fault(AuthRole::Server, server_fault),
                 "construct test-private H3 server auth runtime",
             )),
         )
@@ -2768,8 +3532,8 @@ mod tests {
         client_task_budget: &ConnectionTaskBudget,
         server_task_budget: &ConnectionTaskBudget,
         pre_auth_request_trigger: Option<Arc<AtomicBool>>,
-        client_auth_runtime: Option<TestAuthRuntime>,
-        server_auth_runtime: Option<TestAuthRuntime>,
+        client_auth_runtime: Option<GenerationAuth>,
+        server_auth_runtime: Option<GenerationAuth>,
     ) -> LoopbackPair {
         let temp = fixed_ok(TempDir::new(), "create temporary certificate directory");
         let cert_path = temp.path().join("cert.pem");
@@ -2986,7 +3750,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn t026c_exact_split_control_round_trip_verifies_and_closes_both_roles() {
+    async fn t026d_authenticated_generation_handoff_stays_open_until_explicit_close() {
         let _test_guard = fixed_ok(
             bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
             "acquire bounded loopback test lock",
@@ -3003,22 +3767,39 @@ mod tests {
             server_observation.auth_v3_exporter
         );
 
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "acquire authenticated H3 client generation");
+        let server_lease = fixed_ok(server_lease, "acquire authenticated H3 server generation");
+        assert!(
+            !pair.client.driver_is_finished(),
+            "client driver stopped after handoff"
+        );
+        assert!(
+            !pair.server.driver_is_finished(),
+            "server driver stopped after handoff"
+        );
+        assert_eq!(client_lease.generation(), client_observation.generation);
+        assert_eq!(server_lease.generation(), server_observation.generation);
+        assert!(client_lease.is_active());
+        assert!(server_lease.is_active());
+        assert!(!pair.client.driver_is_finished());
+        assert!(!pair.server.driver_is_finished());
+        assert_eq!(
+            pair.client.acquire_authenticated().await.err(),
+            Some(FoundationError::LeaseUnavailable)
+        );
+
         let (client_exit, server_exit) = tokio::join!(
-            timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()),
-            timeout(CONNECTION_RUN_TIMEOUT, pair.server.take_driver_exit()),
+            pair.client.close_and_take_driver_exit(),
+            pair.server.close_and_take_driver_exit(),
         );
-        let client_exit = fixed_ok(client_exit, "wait for test-private H3 client auth closure");
-        let server_exit = fixed_ok(server_exit, "wait for test-private H3 server auth closure");
-        assert!(
-            client_exit.is_ok(),
-            "client reference outcome was not successful: {client_exit:?}"
-        );
-        assert!(
-            server_exit.is_ok(),
-            "server reference outcome was not successful: {server_exit:?}"
-        );
-        let client_exit = fixed_ok(client_exit, "complete test-private H3 client auth closure");
-        let server_exit = fixed_ok(server_exit, "complete test-private H3 server auth closure");
+        let client_exit = fixed_ok(client_exit, "explicitly close authenticated H3 client");
+        let server_exit = fixed_ok(server_exit, "explicitly close authenticated H3 server");
+        assert!(!client_lease.is_active());
+        assert!(!server_lease.is_active());
         let client_outcome = fixed_some(
             client_exit.reference_outcome,
             "read test-private H3 client reference outcome",
@@ -3028,8 +3809,8 @@ mod tests {
             "read test-private H3 server reference outcome",
         );
         for (outcome, role) in [
-            (client_outcome, TestAuthRole::Client),
-            (server_outcome, TestAuthRole::Server),
+            (client_outcome, AuthRole::Client),
+            (server_outcome, AuthRole::Server),
         ] {
             assert_eq!(outcome.role, role);
             assert_eq!(outcome.slot_claims, 1);
@@ -3043,6 +3824,8 @@ mod tests {
                 "test-private auth-v3 reference outcome"
             );
         }
+        client_lease.release();
+        server_lease.release();
         drop(trace_capture);
         assert_eq!(H3_TRACE_RECORDS.load(Ordering::Relaxed), 0);
         assert_eq!(QPACK_TRACE_RECORDS.load(Ordering::Relaxed), 0);
@@ -3064,6 +3847,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t026d_replacement_generation_reauthenticates_without_inheriting_capability() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded loopback test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+
+        let mut first = start_t026c_loopback_pair(&task_budget, &task_budget).await;
+        let _ = receive_loopback_observations(&mut first).await;
+        let (first_client, first_server) = tokio::join!(
+            first.client.acquire_authenticated(),
+            first.server.acquire_authenticated(),
+        );
+        let first_client = fixed_ok(first_client, "authenticate first client generation");
+        let first_server = fixed_ok(first_server, "authenticate first server generation");
+        let first_client_generation = first_client.generation();
+        let first_server_generation = first_server.generation();
+        let (first_client_exit, first_server_exit) = tokio::join!(
+            first.client.close_and_take_driver_exit(),
+            first.server.close_and_take_driver_exit(),
+        );
+        assert!(fixed_ok(first_client_exit, "close first client generation")
+            .reference_outcome
+            .is_some());
+        assert!(fixed_ok(first_server_exit, "close first server generation")
+            .reference_outcome
+            .is_some());
+        assert!(!first_client.is_active());
+        assert!(!first_server.is_active());
+
+        let mut second = start_t026c_loopback_pair(&task_budget, &task_budget).await;
+        let _ = receive_loopback_observations(&mut second).await;
+        let (second_client, second_server) = tokio::join!(
+            second.client.acquire_authenticated(),
+            second.server.acquire_authenticated(),
+        );
+        let second_client = fixed_ok(second_client, "authenticate replacement client generation");
+        let second_server = fixed_ok(second_server, "authenticate replacement server generation");
+        assert_ne!(second_client.generation(), first_client_generation);
+        assert_ne!(second_server.generation(), first_server_generation);
+        assert!(second_client.is_active());
+        assert!(second_server.is_active());
+        assert_eq!(first.client_connections_created.load(Ordering::Relaxed), 1);
+        assert_eq!(first.server_connections_created.load(Ordering::Relaxed), 1);
+        assert_eq!(second.client_connections_created.load(Ordering::Relaxed), 1);
+        assert_eq!(second.server_connections_created.load(Ordering::Relaxed), 1);
+
+        let (second_client_exit, second_server_exit) = tokio::join!(
+            second.client.close_and_take_driver_exit(),
+            second.server.close_and_take_driver_exit(),
+        );
+        assert!(
+            fixed_ok(second_client_exit, "close replacement client generation")
+                .reference_outcome
+                .is_some()
+        );
+        assert!(
+            fixed_ok(second_server_exit, "close replacement server generation")
+                .reference_outcome
+                .is_some()
+        );
+        assert!(!second_client.is_active());
+        assert!(!second_server.is_active());
+        first_client.release();
+        first_server.release();
+        second_client.release();
+        second_server.release();
+        drop(first);
+        drop(second);
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn t026c_real_fail_closed_matrix_has_zero_h3_or_qpack_trace() {
         let _test_guard = fixed_ok(
             bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
@@ -3076,6 +3932,7 @@ mod tests {
             (ReferenceFault::WrongClientExporter, ReferenceFault::None),
             (ReferenceFault::WrongClientProfile, ReferenceFault::None),
             (ReferenceFault::WrongClientPolicy, ReferenceFault::None),
+            (ReferenceFault::WrongClientReceipt, ReferenceFault::None),
             (ReferenceFault::DuplicateControl, ReferenceFault::None),
             (ReferenceFault::PreAuthDatagram, ReferenceFault::None),
             (
@@ -3098,31 +3955,31 @@ mod tests {
             assert_t022a_live_facts(&client_observation);
             assert_t022a_live_facts(&server_observation);
 
+            let (client_result, server_result) = tokio::join!(
+                pair.client.acquire_authenticated(),
+                pair.server.acquire_authenticated(),
+            );
+            if client_fault == ReferenceFault::WrongClientReceipt
+                || server_fault == ReferenceFault::WrongServerConfirmation
+            {
+                let server_lease = fixed_ok(
+                    server_result,
+                    "server reaches local confirmation queue boundary",
+                );
+                assert!(server_lease.is_active() || pair.server.driver_is_finished());
+                assert!(client_result.is_err());
+                server_lease.release();
+            } else {
+                assert!(server_result.is_err());
+                assert!(client_result.is_err());
+            }
+
             let (client_exit, server_exit) = tokio::join!(
                 timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()),
                 timeout(CONNECTION_RUN_TIMEOUT, pair.server.take_driver_exit()),
             );
-            let client_exit = fixed_ok(client_exit, "wait for rejected H3 client generation");
-            let server_exit = fixed_ok(server_exit, "wait for rejected H3 server generation");
-            if server_fault == ReferenceFault::WrongServerConfirmation {
-                let server_outcome = fixed_some(
-                    fixed_ok(server_exit, "complete server confirmation send boundary")
-                        .reference_outcome,
-                    "read server confirmation send outcome",
-                );
-                assert_eq!(server_outcome.role, TestAuthRole::Server);
-                assert_eq!(
-                    server_outcome.response_bytes,
-                    AUTH_V3_SERVER_CONFIRMATION_LEN
-                );
-                assert!(client_exit.is_err());
-            } else {
-                assert_eq!(
-                    server_exit.err(),
-                    Some(FoundationError::PreAuthApplicationActivity)
-                );
-                assert!(client_exit.is_err());
-            }
+            assert!(fixed_ok(client_exit, "reclaim rejected H3 client").is_err());
+            assert!(fixed_ok(server_exit, "reclaim rejected H3 server").is_err());
 
             assert_eq!(pair.client_connections_created.load(Ordering::Relaxed), 1);
             assert_eq!(pair.server_connections_created.load(Ordering::Relaxed), 1);

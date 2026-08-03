@@ -17,47 +17,51 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T012c-1 — trusted direct-v3 expected authority input
+### T026d-1 — product-private authenticated-generation handoff
 
-- **User result:** Before any future direct-v3 I/O, the validated client and
-  server role configs each own one byte-exact trusted expected authority. A
-  missing or malformed value fails closed instead of being guessed from a
-  request, SNI, listener, certificate, DNS result, or dial endpoint.
-- **Scope:** Change only this queue, `CONFIG.md`, the frozen direct-auth-v3 spec,
-  the existing core schema-3 role parser, its role-config tests, and three
-  `#[cfg(test)]` fixture sites. In
-  `crates/maverick-client/src/direct_v3_h2.rs`, only delete the obsolete
-  bad-name runtime-gate row. In
-  `crates/maverick-server/src/direct_v3_h2.rs`, only add neutral `localhost` as
-  the server fixture's expected authority. In
-  `crates/maverick-client/src/quiche_foundation.rs`, only add the existing
-  `T026C_AUTHORITY` to the H3 server fixture. Make
-  `maverick.expected_authority` required for schema-3 servers, preserve the
-  validated text through one read-only accessor, and apply one private strict
-  DNS/SNI-hostname validator to both roles without normalization.
-- **Acceptance:** Preserve real canonical-parser red evidence for the former
-  missing-server-field and loose-client-name behavior, then prove legal
-  lowercase, uppercase, internal-hyphen, and ASCII-punycode values round-trip
-  byte for byte. Prove both roles reject non-host authority forms, IP literals,
-  invalid DNS labels, non-ASCII, whitespace/control input, and overlong labels
-  or names. Prove server missing/null/unknown/misplaced fields fail closed,
-  errors and Debug remain fixed and value-free, and config-v1, policy-only v2,
-  stored-profile, old-reader, wire, runtime, and version boundaries do not move.
-- **Out of scope:** H2/H3 runtime wiring, live request or SNI comparison,
-  authentication, Developer Mode, target/DNS/egress work, config/auth/frame/
-  protocol/stored-schema version changes, dependencies, SDK/CLI/client/server
-  runtime changes, CI, push, PR, tag, release, remote, deployment, real-network,
-  and system-network work remain deferred. `STATUS.md` is unchanged.
-- **Stop conditions:** Stop on any ninth file, any non-test or production-runtime
-  change in the three fixture files above, or any further scope expansion. Also
-  stop for Cargo/dependency or URL/IDNA work, a version or wire change,
-  authority inference from runtime input, separate client/server validators,
-  input-bearing errors, runtime I/O, product H3, target work, or a focused/full
-  local gate regression.
+- **User result:** Inside the private feature-gated direct-quiche foundation,
+  one physical H3 generation authenticates exactly once before its manager can
+  hand out a module-private, unforgeable generation-bound authenticated
+  capability. Client success means
+  the complete 320-byte confirmation passed local receipt verification; server
+  success means only that the complete confirmation with FIN was accepted by
+  its local quiche send queue, not that the client received or acknowledged it.
+  Auth success itself does not close the connection; it remains managed until
+  explicit close or fail-closed transport termination.
+- **Scope:** Change only this queue and
+  `crates/maverick-client/src/quiche_foundation.rs`. Move the reusable T026c
+  auth slot, strict H3 event state machine, bounded body handling, and direct-v3
+  verification into one non-test private module. Consume one by-value validated
+  client or server role config before I/O, use its same singleton profile,
+  exact authority, and exact path, bind all facts to the manager generation,
+  and keep fixtures, fault injection, and outcome spies test-only.
+- **Acceptance:** Preserve the accurate pre-change reds that ordinary acquire
+  was foundation-ready before auth and the non-test H3 path rejected the exact
+  POST. Prove both roles authenticate once, manager handoff cannot precede auth,
+  request authority and same-generation raw SNI compare independently, split
+  DATA is exact, duplicate/trailer/wrong-stream/reset/GOAWAY/priority/Datagram/
+  push/deadline and auth/context/receipt failures close without retry, real
+  `StreamBlocked`, partial, and `Done` branches retain one stream and the exact
+  unwritten suffix, server-local queue success can precede client receipt
+  failure, close invalidates leases, and a replacement starts Fresh and
+  reauthenticates. Keep one physical connection, no fallback, fixed resources,
+  privacy-safe diagnostics, cleared auth buffers, and complete reclamation.
+- **Out of scope:** No product entry, Developer Mode, CONNECT or Extended
+  CONNECT, target, DNS, egress, user DATA, UDP relay, CLI, SDK, server product
+  runtime, public API, dependency, Cargo/lock/vendor/core change, wire or
+  version change, CI, push, PR, tag, release, remote, deployment, real network,
+  or system-network work. `STATUS.md` remains unchanged, and this task defines
+  no release scope.
+- **Stop conditions:** Stop on a third changed file, unavailable same-generation
+  raw SNI or ordered headers, a need for another queue, manager, registry,
+  timeout framework, dependency/vendor/core/public API/wire/version change,
+  sensitive production diagnostic, fallback or data-plane work, or any focused
+  or full local gate regression. If a retry branch cannot be forced through the
+  real quiche API without such expansion, record it as deferred instead of
+  manufacturing evidence.
 
-This pre-runtime prerequisite is not tied to a release version, does not define
-v1.3 release scope, and does not authorize CI, publication, push, deployment,
-or real-network work.
+This private handoff is not tied to a release version and does not authorize
+publication, push, deployment, or real-network work.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

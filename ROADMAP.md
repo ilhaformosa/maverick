@@ -17,30 +17,15 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-0c — make the local dependency inventory honest and usable offline
+No repository-local product slice is currently queued. Local security review,
+dependency checks, and safe rejection do not change the product truth in
+`STATUS.md`.
 
-- **User result:** The cumulative H3 foundation check can run from local caches
-  without attempting network access, pretending cached package status is
-  current, or mistaking a test's forbidden-source needle for real unsafe Rust.
-- **Scope:** Add one explicit offline mode to
-  `scripts/security-dependency-inventory.sh`, make dependency-policy warnings
-  and scanner-tool errors fail closed, add one focused shell regression, and
-  split one test-only source needle without weakening the first-party unsafe
-  scanner. Limit product-file scope to the existing `quiche_runtime.rs` test
-  module.
-- **Acceptance:** Offline mode scans the cached RustSec database, uses locked
-  offline dependency metadata, checks cached advisory/yanked/policy data with
-  warnings denied, and states that online freshness remains unproved. The
-  existing online mode remains the release-facing path. Real unsafe constructs
-  still match the unchanged scanner, while the test-only literal no longer
-  creates a false positive.
-- **Out of scope:** No `STATUS.md`, product runtime, protocol, wire version,
-  public API, config schema, dependency, deployment, remote, CI, or release
-  change. This slice does not close T027c-0 or authorize T027c-1 by itself.
-- **Stop conditions:** Stop before changing any additional product file,
-  weakening or excluding scanner coverage, adding a dependency or coordination
-  framework, using the network, or presenting cached checks as current online
-  or release evidence.
+The next step is a standalone, read-only T027c-1 runtime-seam audit. It may
+inspect the client transport manager, server startup, config-v3, and CLI wiring
+only to identify one smallest implementation slice. It does not authorize
+product changes, and any recommendation must return here as a separately
+bounded queue item before implementation.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

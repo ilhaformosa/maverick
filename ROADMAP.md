@@ -17,53 +17,49 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-1c — Private config-v3 client trust adapter
+### T027c-1d — Private client runtime-policy owner
 
-**User result.** The private direct-H3 client foundation can consume one owned
-config-v3 H3 client role and explicit trusted authentication inputs, then apply
-its literal loopback address, server name, CA policy, and optional leaf
-certificate pin before authentication. This is still a private,
-feature-gated, loopback-only foundation seam. It is not a CLI/SOCKS product
-path, real routing, product readiness, or a release result.
+**User result.** The private direct-H3 client foundation owns its runtime time
+snapshot, fixed receipt-acceptance caps, task budget, manager, and observation
+receiver. A production-facing private start path no longer asks its caller to
+supply or guess server expiry or maximum-flow policy. This remains a
+feature-gated, loopback-only foundation seam. It is not a CLI/SOCKS/data-plane
+path, product readiness, real routing, or a release result.
 
 **Scope.** Limit this slice to `ROADMAP.md` and the client's private quiche
-foundation. Add one private adapter that first transfers the complete client
-role into the existing generation-auth owner, accepts a task permit already
-reserved by its caller, rejects non-H3, DNS, non-loopback, and zero-port peers
-before CA or socket I/O, and performs a timeout-bounded matching-family
-loopback bind. When a custom CA is configured, build a fresh BoringSSL trust
-context containing only that CA; otherwise preserve quiche's platform-aware
-backend-default root handling. Keep server-name verification mandatory. Decode
-an optional SHA-256 leaf pin before I/O and compare it in constant time after
-verified TLS 1.3 and H3 ALPN, but before exporters, H3 construction,
-observation, or auth-v3.
+foundation. Split trusted generation-auth inputs by client and server role.
+Give the client only one trusted wall-clock/monotonic snapshot and fixed
+65,536-byte/128-flow receipt acceptance caps; the authenticated lease keeps
+the existing effective local limit of one. Add one private production client
+owner that reserves one permit from its existing per-owner task budget before
+startup and owns the resulting manager plus observation receiver. Provide
+private start, authenticated-acquire, and bounded asynchronous close paths.
+Keep config-v3 role validation before socket I/O and preserve CA, server-name,
+and optional pin verification order.
 
-**Acceptance.** A malformed pin is rejected by the canonical parser before the
-adapter or a task permit exists. Invalid v1, H2, DNS, non-loopback, zero-port,
-and missing-CA inputs reaching the adapter fail with fixed privacy-safe errors
-before the next forbidden I/O stage and return the caller's task permit. A
-custom synthetic CA and matching server name authenticate with no pin or a
-matching pin. A wrong custom CA, backend-default roots against that private CA,
-a wrong server name, or a wrong pin cannot produce a client observation or
-authenticated lease; a matching pin never overrides failed PKI or name
-verification. Wrong-pin
-rejection occurs before any exporter/H3/auth observation. Explicit close
-invalidates the successful lease and reclaims tasks. Existing independent
-readiness, cancellation, bounded queues, default behavior, and all protocol,
-config, auth, frame, wire, and stored-profile versions remain unchanged.
+**Acceptance.** The production time provider is sampled exactly once per owner
+start, and client trusted inputs contain no server admission expiry, hard
+expiry, maximum-frame, or maximum-flow policy. Invalid client inputs fail
+before socket I/O and return the reserved permit. Server confirmations at the
+65,536-byte/128-flow receipt caps authenticate; either value above its cap
+fails closed with a fixed privacy-safe error. Explicit owner close invalidates
+an issued lease and returns every task permit. Startup and authentication
+failure paths explicitly close any created manager and reclaim permits. The
+existing v1, H2, DNS, non-loopback, zero-port, and missing-custom-CA gates stay
+closed. Focused local feature tests cover these contracts without external
+network access.
 
-**Out of scope.** Do not add public APIs, CLI/SDK/SOCKS wiring, CONNECT
-streaming, DNS or non-loopback support, real-network I/O, reconnect policy,
-telemetry, a second manager/queue/task framework, dependency, feature, schema,
-or wire changes. Backend-default root sets may differ between H2 and H3; this
-slice preserves the policy boundary of exclusive custom CA versus backend
-defaults, not byte-identical root stores. The private adapter does not prove a
-product client runtime.
+**Out of scope.** Do not add a public API, public clock injection, CLI, SDK,
+SOCKS, CONNECT/data-plane or dynamic-target wiring, streaming, DNS or
+non-loopback support, real-network I/O, a second manager/task framework, or any
+manifest, feature, schema, protocol, authentication-wire, or stored-profile
+change. Fixed receipt values are acceptance ceilings, not a negotiated server
+policy and not an increase to the one-lease local runtime limit.
 
-**Stop conditions.** Stop and re-adjudicate before touching any additional
-file, changing a manifest or feature graph, exposing a public handle or quiche
-type, enabling DNS/non-loopback/real-network I/O, inventing trusted time or
-capability inputs, or requiring server, core, CLI, SDK, schema, or wire changes.
+**Stop conditions.** Stop and re-adjudicate before touching a third file,
+exposing a runtime owner, clock, or quiche type publicly, moving server policy
+into client inputs, enabling non-loopback I/O, changing wire/schema/version
+contracts, or requiring core, server, CLI, SDK, manifest, or feature changes.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

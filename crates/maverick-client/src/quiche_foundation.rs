@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -56,6 +56,8 @@ const AUTHENTICATED_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 const DRIVER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(2);
 const AUTH_FAILURE_CLOSE_CODE: u64 = 0x100;
+const CLIENT_RECEIPT_MAX_FRAME_SIZE: u32 = 65_536;
+const CLIENT_RECEIPT_MAX_CONCURRENT_FLOWS: u32 = 128;
 
 const SETTINGS_QPACK_MAX_TABLE_CAPACITY: u64 = 0x1;
 const SETTINGS_MAX_FIELD_SECTION_SIZE: u64 = 0x6;
@@ -571,53 +573,43 @@ mod generation_auth {
     }
 
     #[derive(Clone, Copy)]
-    pub(super) struct TrustedGenerationAuthInputs {
+    pub(super) struct TrustedTimeAnchor {
         trusted_unix_anchor: u64,
         monotonic_anchor: Instant,
-        admission_expiry: u64,
-        hard_expiry: u64,
-        max_frame_size: u32,
-        max_concurrent_flows: u32,
-        client_max_frame_size: u32,
-        client_max_concurrent_flows: u32,
     }
 
-    impl TrustedGenerationAuthInputs {
-        pub(super) fn new(
-            now: u64,
-            admission_expiry: u64,
-            hard_expiry: u64,
-            max_frame_size: u32,
-            max_concurrent_flows: u32,
-            client_max_frame_size: u32,
-            client_max_concurrent_flows: u32,
+    impl TrustedTimeAnchor {
+        pub(super) fn production_snapshot() -> Result<Self, FoundationError> {
+            let wall_clock = SystemTime::now();
+            let monotonic_anchor = Instant::now();
+            let trusted_unix_anchor = wall_clock
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| FoundationError::PreAuthApplicationActivity)?
+                .as_secs();
+            Self::new(trusted_unix_anchor, monotonic_anchor)
+        }
+
+        fn new(
+            trusted_unix_anchor: u64,
+            monotonic_anchor: Instant,
         ) -> Result<Self, FoundationError> {
-            if now == 0
-                || admission_expiry <= now
-                || hard_expiry <= admission_expiry
-                || max_frame_size == 0
-                || max_concurrent_flows == 0
-                || client_max_frame_size == 0
-                || client_max_concurrent_flows == 0
-            {
+            if trusted_unix_anchor == 0 {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
             Ok(Self {
-                trusted_unix_anchor: now,
-                monotonic_anchor: Instant::now(),
-                admission_expiry,
-                hard_expiry,
-                max_frame_size,
-                max_concurrent_flows,
-                client_max_frame_size,
-                client_max_concurrent_flows,
+                trusted_unix_anchor,
+                monotonic_anchor,
             })
         }
 
         #[cfg(test)]
-        fn with_test_anchor(mut self, monotonic_anchor: Instant) -> Self {
-            self.monotonic_anchor = monotonic_anchor;
-            self
+        pub(super) fn new_test(trusted_unix_anchor: u64, monotonic_anchor: Instant) -> Self {
+            Self::new(trusted_unix_anchor, monotonic_anchor)
+                .expect("construct test trusted time anchor")
+        }
+
+        pub(super) fn trusted_unix_anchor(&self) -> u64 {
+            self.trusted_unix_anchor
         }
 
         fn deadline_for(&self, expiry_unix: u64) -> Result<Instant, FoundationError> {
@@ -631,6 +623,114 @@ mod generation_auth {
         }
     }
 
+    #[derive(Clone, Copy)]
+    pub(super) struct TrustedClientGenerationAuthInputs {
+        time_anchor: TrustedTimeAnchor,
+        receipt_max_frame_size: u32,
+        receipt_max_concurrent_flows: u32,
+    }
+
+    impl TrustedClientGenerationAuthInputs {
+        pub(super) fn production(time_anchor: TrustedTimeAnchor) -> Self {
+            Self {
+                time_anchor,
+                receipt_max_frame_size: CLIENT_RECEIPT_MAX_FRAME_SIZE,
+                receipt_max_concurrent_flows: CLIENT_RECEIPT_MAX_CONCURRENT_FLOWS,
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn new_test(
+            time_anchor: TrustedTimeAnchor,
+            receipt_max_frame_size: u32,
+            receipt_max_concurrent_flows: u32,
+        ) -> Result<Self, FoundationError> {
+            if receipt_max_frame_size == 0 || receipt_max_concurrent_flows == 0 {
+                return Err(FoundationError::PreAuthApplicationActivity);
+            }
+            Ok(Self {
+                time_anchor,
+                receipt_max_frame_size,
+                receipt_max_concurrent_flows,
+            })
+        }
+
+        pub(super) fn trusted_unix_anchor(&self) -> u64 {
+            self.time_anchor.trusted_unix_anchor()
+        }
+
+        pub(super) fn receipt_max_frame_size(&self) -> u32 {
+            self.receipt_max_frame_size
+        }
+
+        pub(super) fn receipt_max_concurrent_flows(&self) -> u32 {
+            self.receipt_max_concurrent_flows
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub(super) struct TrustedServerGenerationAuthInputs {
+        time_anchor: TrustedTimeAnchor,
+        admission_expiry: u64,
+        hard_expiry: u64,
+        max_frame_size: u32,
+        max_concurrent_flows: u32,
+    }
+
+    impl TrustedServerGenerationAuthInputs {
+        pub(super) fn new(
+            time_anchor: TrustedTimeAnchor,
+            admission_expiry: u64,
+            hard_expiry: u64,
+            max_frame_size: u32,
+            max_concurrent_flows: u32,
+        ) -> Result<Self, FoundationError> {
+            if admission_expiry <= time_anchor.trusted_unix_anchor()
+                || hard_expiry <= admission_expiry
+                || max_frame_size == 0
+                || max_concurrent_flows == 0
+            {
+                return Err(FoundationError::PreAuthApplicationActivity);
+            }
+            Ok(Self {
+                time_anchor,
+                admission_expiry,
+                hard_expiry,
+                max_frame_size,
+                max_concurrent_flows,
+            })
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum TrustedGenerationAuthInputs {
+        Client(TrustedClientGenerationAuthInputs),
+        Server(TrustedServerGenerationAuthInputs),
+    }
+
+    impl TrustedGenerationAuthInputs {
+        fn time_anchor(&self) -> &TrustedTimeAnchor {
+            match self {
+                Self::Client(inputs) => &inputs.time_anchor,
+                Self::Server(inputs) => &inputs.time_anchor,
+            }
+        }
+
+        fn client(&self) -> Result<&TrustedClientGenerationAuthInputs, FoundationError> {
+            match self {
+                Self::Client(inputs) => Ok(inputs),
+                Self::Server(_) => Err(FoundationError::PreAuthApplicationActivity),
+            }
+        }
+
+        fn server(&self) -> Result<&TrustedServerGenerationAuthInputs, FoundationError> {
+            match self {
+                Self::Server(inputs) => Ok(inputs),
+                Self::Client(_) => Err(FoundationError::PreAuthApplicationActivity),
+            }
+        }
+    }
+
     struct AuthenticatedGenerationPolicy {
         verified: VerifiedAuthV3ServerConfirmation,
         admission_deadline: Instant,
@@ -641,10 +741,10 @@ mod generation_auth {
     impl AuthenticatedGenerationPolicy {
         fn new(
             verified: VerifiedAuthV3ServerConfirmation,
-            inputs: &TrustedGenerationAuthInputs,
+            time_anchor: &TrustedTimeAnchor,
         ) -> Result<Self, FoundationError> {
-            let admission_deadline = inputs.deadline_for(verified.admission_expiry_unix())?;
-            let hard_deadline = inputs.deadline_for(verified.hard_expiry_unix())?;
+            let admission_deadline = time_anchor.deadline_for(verified.admission_expiry_unix())?;
+            let hard_deadline = time_anchor.deadline_for(verified.hard_expiry_unix())?;
             if admission_deadline >= hard_deadline {
                 return Err(FoundationError::PreAuthApplicationActivity);
             }
@@ -868,7 +968,7 @@ mod generation_auth {
             active: Arc::new(AtomicBool::new(true)),
             policy: Arc::new(AuthenticatedGenerationPolicy::new(
                 test_verified_confirmation(),
-                &inputs,
+                &inputs.time_anchor,
             )?),
         };
         let permit = Arc::new(Semaphore::new(1))
@@ -910,16 +1010,22 @@ mod generation_auth {
     impl GenerationAuth {
         pub(super) fn client(
             config: ClientRoleConfig,
-            inputs: TrustedGenerationAuthInputs,
+            inputs: TrustedClientGenerationAuthInputs,
         ) -> Result<Self, FoundationError> {
-            Self::new(FrozenDirectV3Role::client(config)?, inputs)
+            Self::new(
+                FrozenDirectV3Role::client(config)?,
+                TrustedGenerationAuthInputs::Client(inputs),
+            )
         }
 
         pub(super) fn server(
             config: ServerRoleConfig,
-            inputs: TrustedGenerationAuthInputs,
+            inputs: TrustedServerGenerationAuthInputs,
         ) -> Result<Self, FoundationError> {
-            Self::new(FrozenDirectV3Role::server(config)?, inputs)
+            Self::new(
+                FrozenDirectV3Role::server(config)?,
+                TrustedGenerationAuthInputs::Server(inputs),
+            )
         }
 
         fn new(
@@ -978,7 +1084,12 @@ mod generation_auth {
                         .map_err(|_| FoundationError::PreAuthApplicationActivity)?,
                 )?,
             };
-            let parameters = test_trusted_inputs()?;
+            let parameters = match role {
+                AuthRole::Client => TrustedGenerationAuthInputs::Client(test_trusted_inputs()?),
+                AuthRole::Server => {
+                    TrustedGenerationAuthInputs::Server(test_trusted_server_inputs()?)
+                }
+            };
             let mut runtime = Self::new(role_config, parameters)?;
             runtime.fault = fault;
             Ok(runtime)
@@ -1285,6 +1396,7 @@ mod generation_auth {
         }
 
         fn prepare_client_control(&mut self) -> Result<(), FoundationError> {
+            let inputs = self.parameters.client()?;
             let facts = self
                 .facts
                 .ok_or(FoundationError::PreAuthApplicationActivity)?;
@@ -1313,7 +1425,7 @@ mod generation_auth {
                 &context,
                 &AuthV3ClientControlInput::new(
                     AuthV3Carrier::H3,
-                    self.parameters.trusted_unix_anchor,
+                    inputs.trusted_unix_anchor(),
                     client_nonce,
                 ),
             );
@@ -1341,6 +1453,7 @@ mod generation_auth {
         }
 
         fn prepare_server_confirmation(&mut self) -> Result<(), FoundationError> {
+            let inputs = self.parameters.server()?;
             let facts = self
                 .facts
                 .ok_or(FoundationError::PreAuthApplicationActivity)?;
@@ -1359,7 +1472,7 @@ mod generation_auth {
                 &self.request_recv,
                 &preselected.trusted_profile(),
                 &context,
-                self.parameters.trusted_unix_anchor,
+                inputs.time_anchor.trusted_unix_anchor(),
             )
             .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
             let mut server_nonce = [0_u8; 32];
@@ -1372,13 +1485,13 @@ mod generation_auth {
                 verified,
                 &context,
                 &AuthV3ServerConfirmationInput::new(
-                    self.parameters.trusted_unix_anchor,
-                    self.parameters.admission_expiry,
-                    self.parameters.hard_expiry,
+                    inputs.time_anchor.trusted_unix_anchor(),
+                    inputs.admission_expiry,
+                    inputs.hard_expiry,
                     server_nonce,
                     session_id,
-                    self.parameters.max_frame_size,
-                    self.parameters.max_concurrent_flows,
+                    inputs.max_frame_size,
+                    inputs.max_concurrent_flows,
                 ),
             );
             server_nonce.fill(0);
@@ -1391,15 +1504,15 @@ mod generation_auth {
                 &preselected.trusted_profile(),
                 &context,
                 &AuthV3ClientReceipt::new(
-                    self.parameters.trusted_unix_anchor,
-                    self.parameters.client_max_frame_size,
-                    self.parameters.client_max_concurrent_flows,
+                    inputs.time_anchor.trusted_unix_anchor(),
+                    inputs.max_frame_size,
+                    inputs.max_concurrent_flows,
                 ),
             )
             .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
             self.authenticated_policy = Some(Arc::new(AuthenticatedGenerationPolicy::new(
                 verified_confirmation,
-                &self.parameters,
+                &inputs.time_anchor,
             )?));
             #[cfg(test)]
             let mut confirmation = confirmation;
@@ -1419,6 +1532,7 @@ mod generation_auth {
         fn verify_server_confirmation(
             &self,
         ) -> Result<Arc<AuthenticatedGenerationPolicy>, FoundationError> {
+            let inputs = self.parameters.client()?;
             let facts = self
                 .facts
                 .ok_or(FoundationError::PreAuthApplicationActivity)?;
@@ -1438,7 +1552,7 @@ mod generation_auth {
                 Some(&[]),
                 self.role_config.tunnel_path()?,
             );
-            let client_max_frame_size = self.parameters.client_max_frame_size;
+            let client_max_frame_size = inputs.receipt_max_frame_size();
             #[cfg(test)]
             let client_max_frame_size = if self.fault == ReferenceFault::WrongClientReceipt {
                 1
@@ -1451,15 +1565,15 @@ mod generation_auth {
                 &preselected.trusted_profile(),
                 &context,
                 &AuthV3ClientReceipt::new(
-                    self.parameters.trusted_unix_anchor,
+                    inputs.trusted_unix_anchor(),
                     client_max_frame_size,
-                    self.parameters.client_max_concurrent_flows,
+                    inputs.receipt_max_concurrent_flows(),
                 ),
             )
             .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
             Ok(Arc::new(AuthenticatedGenerationPolicy::new(
                 verified,
-                &self.parameters,
+                &inputs.time_anchor,
             )?))
         }
 
@@ -1684,32 +1798,36 @@ mod generation_auth {
     }
 
     #[cfg(test)]
-    pub(super) fn test_trusted_inputs() -> Result<TrustedGenerationAuthInputs, FoundationError> {
-        TrustedGenerationAuthInputs::new(
-            T026C_NOW,
-            T026C_NOW + 1_800,
-            T026C_NOW + 86_400,
-            65_536,
-            128,
+    pub(super) fn test_trusted_inputs() -> Result<TrustedClientGenerationAuthInputs, FoundationError>
+    {
+        TrustedClientGenerationAuthInputs::new_test(
+            TrustedTimeAnchor::new(T026C_NOW, Instant::now())?,
             131_072,
             256,
         )
     }
 
     #[cfg(test)]
-    fn test_trusted_inputs_at(
-        anchor: Instant,
-    ) -> Result<TrustedGenerationAuthInputs, FoundationError> {
-        TrustedGenerationAuthInputs::new(
-            T026C_NOW,
+    pub(super) fn test_trusted_server_inputs(
+    ) -> Result<TrustedServerGenerationAuthInputs, FoundationError> {
+        TrustedServerGenerationAuthInputs::new(
+            TrustedTimeAnchor::new(T026C_NOW, Instant::now())?,
             T026C_NOW + 1_800,
             T026C_NOW + 86_400,
             65_536,
             128,
+        )
+    }
+
+    #[cfg(test)]
+    fn test_trusted_inputs_at(
+        anchor: Instant,
+    ) -> Result<TrustedClientGenerationAuthInputs, FoundationError> {
+        TrustedClientGenerationAuthInputs::new_test(
+            TrustedTimeAnchor::new(T026C_NOW, anchor)?,
             131_072,
             256,
         )
-        .map(|inputs| inputs.with_test_anchor(anchor))
     }
 
     #[cfg(test)]
@@ -1958,7 +2076,7 @@ auth:
     }
 
     #[cfg(test)]
-    fn test_server_role_yaml() -> String {
+    pub(super) fn test_server_role_yaml() -> String {
         format!(
             r#"version: 3
 role: server
@@ -2010,12 +2128,16 @@ auth:
                 .expect("construct anchored client policy inputs");
             let server_inputs = test_trusted_inputs_at(server_anchor)
                 .expect("construct anchored server policy inputs");
-            let client_policy =
-                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &client_inputs)
-                    .expect("construct verified client policy");
-            let server_policy =
-                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &server_inputs)
-                    .expect("construct verified server policy");
+            let client_policy = AuthenticatedGenerationPolicy::new(
+                test_verified_confirmation(),
+                &client_inputs.time_anchor,
+            )
+            .expect("construct verified client policy");
+            let server_policy = AuthenticatedGenerationPolicy::new(
+                test_verified_confirmation(),
+                &server_inputs.time_anchor,
+            )
+            .expect("construct verified server policy");
 
             assert_eq!(
                 client_policy.admission_expiry_unix(),
@@ -2051,8 +2173,11 @@ auth:
             let anchor = Instant::now();
             let inputs = test_trusted_inputs_at(anchor).expect("construct strict policy inputs");
             let simulated_auth_completion = anchor + Duration::from_secs(900);
-            let policy = AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &inputs)
-                .expect("construct strict verified policy");
+            let policy = AuthenticatedGenerationPolicy::new(
+                test_verified_confirmation(),
+                &inputs.time_anchor,
+            )
+            .expect("construct strict verified policy");
 
             assert_eq!(
                 policy.admission_deadline(),
@@ -2076,12 +2201,18 @@ auth:
             let anchor = Instant::now();
             let inputs = test_trusted_inputs_at(anchor).expect("construct identity inputs");
             let first_policy = Arc::new(
-                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &inputs)
-                    .expect("construct first identity policy"),
+                AuthenticatedGenerationPolicy::new(
+                    test_verified_confirmation(),
+                    &inputs.time_anchor,
+                )
+                .expect("construct first identity policy"),
             );
             let second_policy = Arc::new(
-                AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &inputs)
-                    .expect("construct second identity policy"),
+                AuthenticatedGenerationPolicy::new(
+                    test_verified_confirmation(),
+                    &inputs.time_anchor,
+                )
+                .expect("construct second identity policy"),
             );
             let active = Arc::new(AtomicBool::new(true));
             let current = AuthenticatedGeneration {
@@ -2105,17 +2236,8 @@ auth:
         #[test]
         fn t023b1_deadline_derivation_fails_closed_on_an_invalid_anchor_relation() {
             let trusted_unix_anchor = T026C_NOW + 90_000;
-            let inputs = TrustedGenerationAuthInputs::new(
-                trusted_unix_anchor,
-                trusted_unix_anchor + 1,
-                trusted_unix_anchor + 2,
-                65_536,
-                128,
-                131_072,
-                256,
-            )
-            .map(|inputs| inputs.with_test_anchor(Instant::now()))
-            .expect("construct mismatched deadline inputs");
+            let inputs = TrustedTimeAnchor::new(trusted_unix_anchor, Instant::now())
+                .expect("construct mismatched deadline inputs");
             assert!(matches!(
                 AuthenticatedGenerationPolicy::new(test_verified_confirmation(), &inputs),
                 Err(FoundationError::PreAuthApplicationActivity)
@@ -2290,7 +2412,7 @@ advanced:
             );
 
             assert_eq!(
-                TrustedGenerationAuthInputs::new(0, 1, 2, 1, 1, 1, 1).err(),
+                TrustedTimeAnchor::new(0, Instant::now()).err(),
                 Some(FoundationError::PreAuthApplicationActivity)
             );
 
@@ -2298,7 +2420,7 @@ advanced:
                 .expect("parse frozen server role");
             let mut server = GenerationAuth::server(
                 server_config,
-                test_trusted_inputs().expect("construct trusted server inputs"),
+                test_trusted_server_inputs().expect("construct trusted server inputs"),
             )
             .expect("freeze server role before I/O");
             assert_eq!(
@@ -2312,7 +2434,7 @@ advanced:
                 .expect("parse missing-SNI server role");
             let mut missing_sni = GenerationAuth::server(
                 missing_sni_config,
-                test_trusted_inputs().expect("construct missing-SNI inputs"),
+                test_trusted_server_inputs().expect("construct missing-SNI inputs"),
             )
             .expect("freeze missing-SNI server role before I/O");
             assert_eq!(
@@ -2700,7 +2822,7 @@ advanced:
             runtime.authenticated_policy = Some(Arc::new(
                 AuthenticatedGenerationPolicy::new(
                     test_verified_confirmation(),
-                    &runtime.parameters,
+                    runtime.parameters.time_anchor(),
                 )
                 .expect("construct transactional authenticated policy"),
             ));
@@ -3493,7 +3615,8 @@ mod classic_connect {
 
 use generation_auth::{
     bind_authenticated_lease, lease_command_proof, AuthenticatedConnectionLease,
-    AuthenticatedGeneration, AuthenticatedLeaseProof, GenerationAuth, TrustedGenerationAuthInputs,
+    AuthenticatedGeneration, AuthenticatedLeaseProof, GenerationAuth,
+    TrustedClientGenerationAuthInputs, TrustedTimeAnchor,
 };
 
 use classic_connect::{ClassicConnectOutcome, ClassicConnectReference, FlowBuffer};
@@ -3504,8 +3627,9 @@ use classic_connect::{ReferenceFault as ClassicConnectFault, ReferenceSpy as Cla
 #[cfg(test)]
 use generation_auth::{
     bounded_body_progress, exact_body_finished, request_header_pairs, response_header_pairs,
-    test_client_role_yaml, test_trusted_inputs, valid_request_headers, valid_response_headers,
-    AuthRole, ReferenceFault, ReferenceOutcome,
+    test_client_role_yaml, test_server_role_yaml, test_trusted_inputs, valid_request_headers,
+    valid_response_headers, AuthRole, ReferenceFault, ReferenceOutcome,
+    TrustedServerGenerationAuthInputs,
 };
 
 #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
@@ -3918,6 +4042,117 @@ struct ClientDriverBootstrap {
     observation_rx: mpsc::Receiver<FoundationObservation>,
 }
 
+trait TrustedTimeProvider {
+    fn snapshot(&self) -> Result<TrustedTimeAnchor, FoundationError>;
+}
+
+struct SystemTrustedTimeProvider;
+
+impl TrustedTimeProvider for SystemTrustedTimeProvider {
+    fn snapshot(&self) -> Result<TrustedTimeAnchor, FoundationError> {
+        TrustedTimeAnchor::production_snapshot()
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+struct ClientRuntimePolicyOwner {
+    task_budget: ConnectionTaskBudget,
+    manager: Option<SingleIdentityQuicManager>,
+    observation_rx: mpsc::Receiver<FoundationObservation>,
+}
+
+impl ClientRuntimePolicyOwner {
+    async fn start(role: ClientRoleConfig) -> Result<Self, FoundationError> {
+        Self::start_with_provider(role, &SystemTrustedTimeProvider).await
+    }
+
+    async fn start_with_provider(
+        role: ClientRoleConfig,
+        time_provider: &impl TrustedTimeProvider,
+    ) -> Result<Self, FoundationError> {
+        let task_budget = ConnectionTaskBudget::new();
+        Self::start_with_provider_and_budget(role, time_provider, task_budget).await
+    }
+
+    async fn start_with_provider_and_budget(
+        role: ClientRoleConfig,
+        time_provider: &impl TrustedTimeProvider,
+        task_budget: ConnectionTaskBudget,
+    ) -> Result<Self, FoundationError> {
+        let task_permit = task_budget.try_acquire()?;
+        let bootstrap =
+            bootstrap_client_role_with_provider(role, task_permit, time_provider).await?;
+        Ok(Self::from_bootstrap(task_budget, bootstrap))
+    }
+
+    fn from_bootstrap(task_budget: ConnectionTaskBudget, bootstrap: ClientDriverBootstrap) -> Self {
+        let ClientDriverBootstrap {
+            manager,
+            observation_rx,
+        } = bootstrap;
+        Self {
+            task_budget,
+            manager: Some(manager),
+            observation_rx,
+        }
+    }
+
+    async fn acquire_authenticated(
+        &mut self,
+    ) -> Result<AuthenticatedConnectionLease, FoundationError> {
+        let result = match self.manager.as_ref() {
+            Some(manager) => manager.acquire_authenticated().await,
+            None => Err(FoundationError::ManagerClosed),
+        };
+        if result.is_err() {
+            self.close_manager_after_failure().await;
+        }
+        result
+    }
+
+    async fn receive_observation(&mut self) -> Option<FoundationObservation> {
+        self.observation_rx.recv().await
+    }
+
+    async fn close(&mut self) -> Result<(), FoundationError> {
+        self.observation_rx.close();
+        let Some(mut manager) = self.manager.take() else {
+            return Ok(());
+        };
+        manager.close().await
+    }
+
+    async fn close_manager_after_failure(&mut self) {
+        if let Some(mut manager) = self.manager.take() {
+            let _ = manager.close().await;
+        }
+        self.observation_rx.close();
+    }
+
+    #[cfg(test)]
+    fn available_task_permits(&self) -> usize {
+        self.task_budget.available_permits()
+    }
+
+    #[cfg(test)]
+    async fn take_driver_exit(&mut self) -> Result<DriverExit, FoundationError> {
+        match self.manager.as_mut() {
+            Some(manager) => manager.take_driver_exit().await,
+            None => Err(FoundationError::ManagerClosed),
+        }
+    }
+}
+
+impl Drop for ClientRuntimePolicyOwner {
+    fn drop(&mut self) {
+        // Explicit close is the bounded cleanup path. Dropping the manager is
+        // only the existing abort fallback and does not claim graceful close.
+        if let Some(manager) = self.manager.take() {
+            drop(manager);
+        }
+    }
+}
+
 struct PreparedClientTrust {
     config: quiche::Config,
     expected_leaf_sha256: Option<[u8; 32]>,
@@ -3926,7 +4161,24 @@ struct PreparedClientTrust {
 #[cfg_attr(not(test), allow(dead_code))]
 async fn bootstrap_client_role(
     role: ClientRoleConfig,
-    trusted_inputs: TrustedGenerationAuthInputs,
+    task_permit: OwnedSemaphorePermit,
+) -> Result<ClientDriverBootstrap, FoundationError> {
+    bootstrap_client_role_with_provider(role, task_permit, &SystemTrustedTimeProvider).await
+}
+
+async fn bootstrap_client_role_with_provider(
+    role: ClientRoleConfig,
+    task_permit: OwnedSemaphorePermit,
+    time_provider: &impl TrustedTimeProvider,
+) -> Result<ClientDriverBootstrap, FoundationError> {
+    let trusted_inputs = TrustedClientGenerationAuthInputs::production(time_provider.snapshot()?);
+    bootstrap_client_role_with_inputs(role, trusted_inputs, task_permit).await
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+async fn bootstrap_client_role_with_inputs(
+    role: ClientRoleConfig,
+    trusted_inputs: TrustedClientGenerationAuthInputs,
     task_permit: OwnedSemaphorePermit,
 ) -> Result<ClientDriverBootstrap, FoundationError> {
     let auth_runtime = GenerationAuth::client(role, trusted_inputs)?;
@@ -5086,10 +5338,26 @@ mod tests {
 
     struct ClientRoleAdapterPair {
         _temp: TempDir,
-        client: SingleIdentityQuicManager,
+        client: ClientRuntimePolicyOwner,
         server: SingleIdentityQuicManager,
-        client_observation_rx: mpsc::Receiver<FoundationObservation>,
         server_observation_rx: mpsc::Receiver<FoundationObservation>,
+        time_snapshots: Arc<AtomicUsize>,
+    }
+
+    struct TestTrustedTimeProvider {
+        time_snapshots: Arc<AtomicUsize>,
+        anchor: TrustedTimeAnchor,
+        error: Option<FoundationError>,
+    }
+
+    impl TrustedTimeProvider for TestTrustedTimeProvider {
+        fn snapshot(&self) -> Result<TrustedTimeAnchor, FoundationError> {
+            self.time_snapshots.fetch_add(1, Ordering::AcqRel);
+            if let Some(error) = self.error {
+                return Err(error);
+            }
+            Ok(self.anchor)
+        }
     }
 
     struct ClientStartFixture<'fixture> {
@@ -5740,7 +6008,6 @@ mod tests {
     }
 
     async fn start_client_role_adapter_pair(
-        client_task_budget: &ConnectionTaskBudget,
         server_task_budget: &ConnectionTaskBudget,
         ca: ClientRoleAdapterCa,
         pin: ClientRoleAdapterPin,
@@ -5842,22 +6109,14 @@ mod tests {
                 "construct client role adapter server auth",
             )),
         );
-        let ClientDriverBootstrap {
-            manager: client,
-            observation_rx: client_observation_rx,
-        } = fixed_ok(
-            bootstrap_client_role(
-                role,
-                fixed_ok(
-                    test_trusted_inputs(),
-                    "construct client role adapter trusted inputs",
-                ),
-                fixed_ok(
-                    client_task_budget.try_acquire(),
-                    "reserve client role adapter client task",
-                ),
-            )
-            .await,
+        let time_snapshots = Arc::new(AtomicUsize::new(0));
+        let time_provider = TestTrustedTimeProvider {
+            time_snapshots: Arc::clone(&time_snapshots),
+            anchor: TrustedTimeAnchor::new_test(T026C_NOW, Instant::now()),
+            error: None,
+        };
+        let client = fixed_ok(
+            ClientRuntimePolicyOwner::start_with_provider(role, &time_provider).await,
             "start client role adapter",
         );
         let server = fixed_ok(
@@ -5873,8 +6132,8 @@ mod tests {
             _temp: temp,
             client,
             server,
-            client_observation_rx,
             server_observation_rx,
+            time_snapshots,
         }
     }
 
@@ -8175,8 +8434,182 @@ mod tests {
         assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
     }
 
+    #[test]
+    fn t027c1d_client_inputs_are_role_specific_and_fix_only_receipt_caps() {
+        let anchor = TrustedTimeAnchor::new_test(T026C_NOW, Instant::now());
+        let inputs = TrustedClientGenerationAuthInputs::production(anchor);
+
+        assert_eq!(inputs.trusted_unix_anchor(), T026C_NOW);
+        assert_eq!(inputs.receipt_max_frame_size(), 65_536);
+        assert_eq!(inputs.receipt_max_concurrent_flows(), 128);
+
+        let test_override = fixed_ok(
+            TrustedClientGenerationAuthInputs::new_test(anchor, 1, 2),
+            "construct test-only client receipt override",
+        );
+        assert_eq!(test_override.receipt_max_frame_size(), 1);
+        assert_eq!(test_override.receipt_max_concurrent_flows(), 2);
+    }
+
     #[tokio::test]
-    async fn client_role_adapter_rejects_invalid_roles_before_socket_io() {
+    async fn t027c1d_provider_failure_is_pre_bind_fixed_and_returns_start_permit() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire provider failure test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let time_snapshots = Arc::new(AtomicUsize::new(0));
+        let time_provider = TestTrustedTimeProvider {
+            time_snapshots: Arc::clone(&time_snapshots),
+            anchor: TrustedTimeAnchor::new_test(T026C_NOW, Instant::now()),
+            error: Some(FoundationError::PreAuthApplicationActivity),
+        };
+        let binds_before = CLIENT_ROLE_SOCKET_BINDS.load(Ordering::Acquire);
+        let generation_before = NEXT_CONNECTION_GENERATION.load(Ordering::Acquire);
+        let role = fixed_ok(
+            ClientRoleConfig::from_yaml_str(&test_client_role_yaml()),
+            "parse provider failure client role",
+        );
+
+        let error = fixed_some(
+            ClientRuntimePolicyOwner::start_with_provider_and_budget(
+                role,
+                &time_provider,
+                task_budget.clone(),
+            )
+            .await
+            .err(),
+            "reject provider failure before client start",
+        );
+
+        assert_eq!(error, FoundationError::PreAuthApplicationActivity);
+        assert_eq!(error.to_string(), "native H3 pre-auth activity rejected");
+        assert!(std::error::Error::source(&error).is_none());
+        assert_eq!(time_snapshots.load(Ordering::Acquire), 1);
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+        assert_eq!(
+            CLIENT_ROLE_SOCKET_BINDS.load(Ordering::Acquire),
+            binds_before
+        );
+        assert_eq!(
+            NEXT_CONNECTION_GENERATION.load(Ordering::Acquire),
+            generation_before
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c1d_receipt_caps_accept_exact_policy_and_reject_each_excess() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire client receipt-cap test lock",
+        );
+        for (max_frame_size, max_concurrent_flows, expected_success) in [
+            (65_536, 128, true),
+            (65_537, 128, false),
+            (65_536, 129, false),
+        ] {
+            let client_task_budget = ConnectionTaskBudget::new();
+            let server_task_budget = ConnectionTaskBudget::new();
+            let client_config = fixed_ok(
+                ClientRoleConfig::from_yaml_str(&test_client_role_yaml()),
+                "parse receipt-cap client role",
+            );
+            let server_config = fixed_ok(
+                maverick_core::config::ServerRoleConfig::from_yaml_str(&test_server_role_yaml()),
+                "parse receipt-cap server role",
+            );
+            let client_auth = fixed_ok(
+                GenerationAuth::client(
+                    client_config,
+                    TrustedClientGenerationAuthInputs::production(TrustedTimeAnchor::new_test(
+                        T026C_NOW,
+                        Instant::now(),
+                    )),
+                ),
+                "construct fixed-cap client auth runtime",
+            );
+            let server_auth = fixed_ok(
+                GenerationAuth::server(
+                    server_config,
+                    fixed_ok(
+                        TrustedServerGenerationAuthInputs::new(
+                            TrustedTimeAnchor::new_test(T026C_NOW, Instant::now()),
+                            T026C_NOW + 1_800,
+                            T026C_NOW + 86_400,
+                            max_frame_size,
+                            max_concurrent_flows,
+                        ),
+                        "construct receipt-cap server inputs",
+                    ),
+                ),
+                "construct receipt-cap server auth runtime",
+            );
+            let mut pair = start_loopback_pair_with_options(
+                &client_task_budget,
+                &server_task_budget,
+                None,
+                None,
+                Some(client_auth),
+                Some(server_auth),
+            )
+            .await;
+
+            if expected_success {
+                let _ = receive_loopback_observations(&mut pair).await;
+                let (client_lease, server_lease) = tokio::join!(
+                    pair.client.acquire_authenticated(),
+                    pair.server.acquire_authenticated(),
+                );
+                let client_lease = fixed_ok(client_lease, "accept exact client receipt caps");
+                let server_lease = fixed_ok(server_lease, "accept exact server policy");
+                assert_eq!(client_lease.max_frame_size(), 65_536);
+                assert_eq!(client_lease.max_concurrent_flows(), 128);
+                assert_eq!(client_lease.effective_local_flow_limit(), 1);
+                close_loopback_pair(&mut pair).await;
+                assert!(!client_lease.is_active());
+                client_lease.release();
+                server_lease.release();
+            } else {
+                let client_exit = fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()).await,
+                    "bound excess receipt-cap client exit",
+                );
+                assert_eq!(
+                    client_exit.err(),
+                    Some(FoundationError::PreAuthApplicationActivity)
+                );
+                assert!(pair.client_observation_rx.recv().await.is_some());
+                assert_eq!(pair.client_observation_rx.recv().await, None);
+                assert_eq!(
+                    pair.client.acquire_authenticated().await.err(),
+                    Some(FoundationError::ManagerClosed)
+                );
+                drop(pair);
+                let client_permits = fixed_ok(
+                    timeout(
+                        DRIVER_JOIN_TIMEOUT,
+                        client_task_budget
+                            .permits
+                            .clone()
+                            .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
+                    )
+                    .await,
+                    "reclaim excess receipt-cap client permits",
+                );
+                drop(fixed_ok(
+                    client_permits,
+                    "hold excess receipt-cap client permits",
+                ));
+            }
+            assert_eq!(
+                client_task_budget.available_permits(),
+                CONNECTION_TASK_LIMIT
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn t027c1d_invalid_client_inputs_are_pre_io_private_and_return_permit() {
         let _test_guard = fixed_ok(
             bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
             "acquire client role adapter pre-I/O test lock",
@@ -8255,7 +8688,7 @@ advanced:
                 ClientRoleConfig::from_yaml_str(&role_yaml),
                 "parse pre-I/O client role adapter fixture",
             );
-            let result = bootstrap_client_role(
+            let result = bootstrap_client_role_with_inputs(
                 role,
                 fixed_ok(
                     test_trusted_inputs(),
@@ -8281,16 +8714,14 @@ advanced:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn client_role_adapter_custom_ca_and_optional_pin_authenticate() {
+    async fn t027c1d_owner_samples_once_authenticates_and_explicit_close_reclaims() {
         let _test_guard = fixed_ok(
             bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
             "acquire client role adapter positive test lock",
         );
         for pin in [ClientRoleAdapterPin::None, ClientRoleAdapterPin::Matching] {
-            let client_task_budget = ConnectionTaskBudget::new();
             let server_task_budget = ConnectionTaskBudget::new();
             let mut pair = start_client_role_adapter_pair(
-                &client_task_budget,
                 &server_task_budget,
                 ClientRoleAdapterCa::Custom,
                 pin,
@@ -8299,7 +8730,7 @@ advanced:
             .await;
             let client_observation = fixed_some(
                 fixed_ok(
-                    timeout(CONNECTION_RUN_TIMEOUT, pair.client_observation_rx.recv()).await,
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.client.receive_observation()).await,
                     "bound client role adapter client observation",
                 ),
                 "receive client role adapter client observation",
@@ -8315,6 +8746,7 @@ advanced:
                 client_observation.auth_v3_exporter,
                 server_observation.auth_v3_exporter
             );
+            assert_eq!(pair.time_snapshots.load(Ordering::Acquire), 1);
             let (client_lease, server_lease) = tokio::join!(
                 pair.client.acquire_authenticated(),
                 pair.server.acquire_authenticated(),
@@ -8329,10 +8761,7 @@ advanced:
             assert!(!server_lease.is_active());
             drop(client_lease);
             drop(server_lease);
-            assert_eq!(
-                client_task_budget.available_permits(),
-                CONNECTION_TASK_LIMIT
-            );
+            assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
             assert_eq!(
                 server_task_budget.available_permits(),
                 CONNECTION_TASK_LIMIT
@@ -8341,15 +8770,13 @@ advanced:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn client_role_adapter_wrong_pin_fails_before_observation_or_auth() {
+    async fn t027c1d_auth_failure_explicitly_cleans_up_owner() {
         let _test_guard = fixed_ok(
             bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
             "acquire client role adapter wrong pin test lock",
         );
-        let client_task_budget = ConnectionTaskBudget::new();
         let server_task_budget = ConnectionTaskBudget::new();
         let mut pair = start_client_role_adapter_pair(
-            &client_task_budget,
             &server_task_budget,
             ClientRoleAdapterCa::Custom,
             ClientRoleAdapterPin::Wrong,
@@ -8357,35 +8784,26 @@ advanced:
         )
         .await;
 
-        let driver_exit = fixed_ok(
-            timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()).await,
-            "bound wrong pin client driver exit",
+        let error = fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.client.acquire_authenticated()).await,
+                "bound wrong pin owner authentication",
+            )
+            .err(),
+            "reject wrong pin owner authentication",
         );
-        assert_eq!(
-            driver_exit.err(),
-            Some(FoundationError::PeerIdentityUnavailable)
-        );
-        assert_eq!(pair.client_observation_rx.recv().await, None);
+        assert!(matches!(
+            error,
+            FoundationError::DriverStopped | FoundationError::PeerIdentityUnavailable
+        ));
+        assert!(std::error::Error::source(&error).is_none());
+        assert_eq!(pair.client.receive_observation().await, None);
         assert_eq!(
             pair.client.acquire_authenticated().await.err(),
             Some(FoundationError::ManagerClosed)
         );
+        assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
         drop(pair);
-        let client_permits = fixed_ok(
-            timeout(
-                DRIVER_JOIN_TIMEOUT,
-                client_task_budget
-                    .permits
-                    .clone()
-                    .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
-            )
-            .await,
-            "reclaim wrong pin client task permits",
-        );
-        drop(fixed_ok(
-            client_permits,
-            "hold wrong pin client task permits",
-        ));
         let server_permits = fixed_ok(
             timeout(
                 DRIVER_JOIN_TIMEOUT,
@@ -8404,7 +8822,7 @@ advanced:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn client_role_adapter_ca_and_sni_fail_closed_before_auth() {
+    async fn t027c1d_existing_ca_sni_and_pin_gates_stay_closed() {
         let _test_guard = fixed_ok(
             bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
             "acquire client role adapter trust rejection test lock",
@@ -8431,16 +8849,9 @@ advanced:
                 T026C_AUTHORITY,
             ),
         ] {
-            let client_task_budget = ConnectionTaskBudget::new();
             let server_task_budget = ConnectionTaskBudget::new();
-            let mut pair = start_client_role_adapter_pair(
-                &client_task_budget,
-                &server_task_budget,
-                ca,
-                pin,
-                server_name,
-            )
-            .await;
+            let mut pair =
+                start_client_role_adapter_pair(&server_task_budget, ca, pin, server_name).await;
             let driver_exit = fixed_ok(
                 timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()).await,
                 "bound client role adapter trust rejection",
@@ -8450,27 +8861,13 @@ advanced:
                 "reject untrusted client role adapter peer",
             );
             assert!(std::error::Error::source(&error).is_none());
-            assert_eq!(pair.client_observation_rx.recv().await, None);
+            assert_eq!(pair.client.receive_observation().await, None);
             assert_eq!(
                 pair.client.acquire_authenticated().await.err(),
                 Some(FoundationError::ManagerClosed)
             );
+            assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
             drop(pair);
-            let client_permits = fixed_ok(
-                timeout(
-                    DRIVER_JOIN_TIMEOUT,
-                    client_task_budget
-                        .permits
-                        .clone()
-                        .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
-                )
-                .await,
-                "reclaim trust rejection client permits",
-            );
-            drop(fixed_ok(
-                client_permits,
-                "hold trust rejection client permits",
-            ));
             let server_permits = fixed_ok(
                 timeout(
                     DRIVER_JOIN_TIMEOUT,

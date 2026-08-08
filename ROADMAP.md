@@ -17,42 +17,48 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-1a — Version-first server-role runtime entry
+### T027c-1b — Independent client-foundation readiness and cancellation
 
-**User result.** The server library can accept one validated, version-first
-server role and select either the unchanged config-v1 runtime or the existing
-bounded config-v3 H3 foundation. The new config-v3 H3 branch remains a
-loopback-only library seam; this is not CLI wiring, real routing, product
-readiness, or a release result.
+**User result.** The private direct-H3 client foundation can advance from its
+own verified loopback connection facts instead of waiting for a second
+same-process test participant. An early close is serviced cooperatively, and a
+canceled pre-authentication wait no longer poisons the next authentication
+attempt. This is still a private loopback foundation seam, not config trust
+wiring, a SOCKS/CONNECT product path, real routing, product readiness, or a
+release result.
 
-**Scope.** Limit this slice to `ROADMAP.md`, the server crate's public re-export
-and runtime entry, and the private quiche endpoint wrapper. Config v1 may make
-one `ServerConfig` clone, must immediately drop the secret-bearing
-`ServerRoleConfig` before awaiting, and must call the existing `run_server`
-unchanged. Config v3 H3 may run only when `quiche-foundation` is compiled and
-must pass one
-`Arc<ServerRoleConfig>` into the existing loopback-only endpoint with a
-runtime-entry-owned metrics owner.
+**Scope.** Limit this slice to `ROADMAP.md` and the client's private quiche
+foundation. Promote the existing low-level client construction into one
+production-compiled private bootstrap that accepts an already prepared QUIC
+trust configuration, an already-bound loopback socket, one owned auth runtime,
+and the existing task permit. Remove the production dependency on the
+test-pair readiness barrier, service close and authenticated-acquire commands
+before foundation readiness, and discard canceled pending acquire responders.
+Keep the existing manager, one-slot command queue, bounded join, generation
+owner, and authentication state machine.
 
-**Acceptance.** Version and transport selection occurs before certificate
-reads or socket binds. Config-v3 H2, unavailable features, and inconsistent or
-unsupported role combinations fail with one fixed privacy-safe error. Config
-v1 behavior, endpoint bounds, authentication-before-CONNECT, target-open
-deadline and egress ownership, clean endpoint shutdown, and all protocol,
-config, auth, frame, wire, and stored-profile versions remain unchanged.
-Focused tests cover selection, pre-I/O rejection, real loopback endpoint
-lifecycle, cleanup, and both default and `quiche-foundation` builds.
+**Acceptance.** A client and server started independently without a shared
+barrier complete the same-generation auth-v3 exchange using peer verification
+and a synthetic loopback CA. Closing before handshake readiness completes
+inside the existing join bound and returns the task permit. Canceling one
+pre-authenticated acquire permits a later acquire to succeed without stopping
+the driver. Explicit async close remains the primary bounded reclamation path;
+Drop remains an abort-only fallback. Existing loopback limits, pre-auth
+application rejection, authenticated lease invalidation, default behavior,
+and all protocol, config, auth, frame, wire, and stored-profile versions remain
+unchanged.
 
-**Out of scope.** Do not change manifests, default features, core config, CLI,
-SDK, client routing, public lifecycle handles or metrics APIs, public quiche
-types, non-loopback binding, domain resolution, target relay ownership,
-schemas, wire formats, dependencies, system network settings, or real
-infrastructure.
+**Out of scope.** Do not add the `ClientRoleConfig` trust adapter, custom-CA
+policy, certificate-pin enforcement, DNS, non-loopback I/O, public runtime or
+lifecycle APIs, CLI/SDK wiring, SOCKS/CONNECT streaming, a second manager,
+queue, task framework, dependency, feature, schema, or wire change. The
+prepared QUIC configuration is a private lower-layer input and does not prove
+that product trust configuration is wired.
 
 **Stop conditions.** Stop and re-adjudicate before touching any additional
-file, changing the feature graph, exposing quiche or a new lifecycle handle,
-adding a second listener/resolver/opener/task framework/queue, enabling
-non-loopback I/O, or requiring any schema, wire, CLI, client, or core change.
+file, changing a manifest or feature graph, exposing quiche or a public handle,
+consuming the full client role, enabling DNS/non-loopback/real-network I/O, or
+requiring server, core, CLI, SDK, schema, or wire changes.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

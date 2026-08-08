@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 use boring::ssl::{SslRef, SslVersion};
 use maverick_core::auth::{TlsChannelBinding, TLS_CHANNEL_BINDING_EXPORTER_LABEL};
 use maverick_core::auth_v3::{AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN};
+use rand::{rngs::OsRng, TryRngCore};
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, oneshot, Barrier, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -2192,6 +2193,52 @@ auth:
                 Some(FoundationError::PreAuthApplicationActivity)
             );
 
+            let h2_role = test_client_role_yaml().replace("strategy: h3", "strategy: h2");
+            let parsed_h2_role = ClientRoleConfig::from_yaml_str(&h2_role)
+                .expect("parse v3 H2 role for private H3 pre-I/O gate");
+            assert_eq!(
+                GenerationAuth::client(
+                    parsed_h2_role,
+                    test_trusted_inputs().expect("construct v3 H2 trusted test inputs"),
+                )
+                .err(),
+                Some(FoundationError::PreAuthApplicationActivity)
+            );
+
+            let v1_role = format!(
+                r#"version: 1
+mode: auto
+local:
+  socks5:
+    listen: "127.0.0.1:0"
+server:
+  address: "example.invalid:443"
+  server_name: "example.invalid"
+  tunnel_path: "/assets/upload"
+  credential_id: "u_example"
+  secret: "{TEST_SECRET}"
+auth:
+  channel_binding:
+    enabled: true
+    require: false
+advanced:
+  crypto:
+    offered_suites:
+      - "tls13"
+    allow_experimental: false
+"#
+            );
+            let parsed_v1_role = ClientRoleConfig::from_yaml_str(&v1_role)
+                .expect("parse v1 role for private H3 pre-I/O gate");
+            assert_eq!(
+                GenerationAuth::client(
+                    parsed_v1_role,
+                    test_trusted_inputs().expect("construct v1 trusted test inputs"),
+                )
+                .err(),
+                Some(FoundationError::PreAuthApplicationActivity)
+            );
+
             assert_eq!(
                 TrustedGenerationAuthInputs::new(0, 1, 2, 1, 1, 1, 1).err(),
                 Some(FoundationError::PreAuthApplicationActivity)
@@ -3731,7 +3778,12 @@ impl SingleIdentityQuicManager {
         let Some(command_tx) = self.command_tx.take() else {
             return Ok(());
         };
-        let send_result = try_send_driver_command(&command_tx, DriverCommand::Close);
+        let send_result =
+            match timeout(DRIVER_JOIN_TIMEOUT, command_tx.send(DriverCommand::Close)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err(FoundationError::DriverStopped),
+                Err(_) => Err(FoundationError::DriverTimeout),
+            };
         drop(command_tx);
         let join_result = self.join_driver().await.map(|_| ());
         send_result.and(join_result)
@@ -3805,6 +3857,66 @@ fn try_send_driver_command(
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+struct ClientDriverBootstrap {
+    manager: SingleIdentityQuicManager,
+    observation_rx: mpsc::Receiver<FoundationObservation>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn bootstrap_client_driver(
+    socket: UdpSocket,
+    peer_address: SocketAddr,
+    config: quiche::Config,
+    auth_runtime: GenerationAuth,
+    task_permit: OwnedSemaphorePermit,
+) -> Result<ClientDriverBootstrap, FoundationError> {
+    let (observation_tx, observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+    let driver =
+        authenticated_client_driver(socket, peer_address, config, observation_tx, auth_runtime)?;
+    let manager = SingleIdentityQuicManager::start(driver, task_permit)?;
+    Ok(ClientDriverBootstrap {
+        manager,
+        observation_rx,
+    })
+}
+
+fn authenticated_client_driver(
+    socket: UdpSocket,
+    peer_address: SocketAddr,
+    mut config: quiche::Config,
+    observation_tx: mpsc::Sender<FoundationObservation>,
+    auth_runtime: GenerationAuth,
+) -> Result<FoundationDriver, FoundationError> {
+    let local_address = socket
+        .local_addr()
+        .map_err(|_| FoundationError::SocketUnavailable)?;
+    if !local_address.ip().is_loopback() || !peer_address.ip().is_loopback() {
+        return Err(FoundationError::SocketUnavailable);
+    }
+    let mut source_connection_id = [0_u8; quiche::MAX_CONN_ID_LEN];
+    OsRng
+        .try_fill_bytes(&mut source_connection_id)
+        .map_err(|_| FoundationError::ConnectionUnavailable)?;
+    let source_connection_id = quiche::ConnectionId::from_ref(&source_connection_id);
+    let server_name = auth_runtime.client_server_name()?;
+    let connection = quiche::connect(
+        Some(server_name),
+        &source_connection_id,
+        local_address,
+        peer_address,
+        &mut config,
+    )
+    .map_err(|_| FoundationError::ConnectionUnavailable)?;
+    FoundationDriver::new(
+        socket,
+        peer_address,
+        connection,
+        observation_tx,
+        auth_runtime,
+    )
+}
+
 struct FoundationDriver {
     socket: UdpSocket,
     local_address: SocketAddr,
@@ -3814,9 +3926,10 @@ struct FoundationDriver {
     h3_connection: Option<quiche::h3::Connection>,
     tls_observation: Option<TlsObservation>,
     observation_tx: mpsc::Sender<FoundationObservation>,
-    ready_barrier: Arc<Barrier>,
     #[cfg(test)]
     pre_auth_request_trigger: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    authentication_hold: Option<Arc<AtomicBool>>,
     auth_runtime: DriverAuthRuntime,
     classic_connect: ClassicConnectReference,
 }
@@ -3851,7 +3964,6 @@ impl FoundationDriver {
         peer_address: SocketAddr,
         connection: quiche::Connection,
         observation_tx: mpsc::Sender<FoundationObservation>,
-        ready_barrier: Arc<Barrier>,
         auth_runtime: GenerationAuth,
     ) -> Result<Self, FoundationError> {
         Self::new_inner(
@@ -3859,7 +3971,6 @@ impl FoundationDriver {
             peer_address,
             connection,
             observation_tx,
-            ready_barrier,
             DriverAuthRuntime::Authenticated(Box::new(auth_runtime)),
         )
     }
@@ -3870,14 +3981,12 @@ impl FoundationDriver {
         peer_address: SocketAddr,
         connection: quiche::Connection,
         observation_tx: mpsc::Sender<FoundationObservation>,
-        ready_barrier: Arc<Barrier>,
     ) -> Result<Self, FoundationError> {
         Self::new_inner(
             socket,
             peer_address,
             connection,
             observation_tx,
-            ready_barrier,
             DriverAuthRuntime::FoundationOnly,
         )
     }
@@ -3887,7 +3996,6 @@ impl FoundationDriver {
         peer_address: SocketAddr,
         connection: quiche::Connection,
         observation_tx: mpsc::Sender<FoundationObservation>,
-        ready_barrier: Arc<Barrier>,
         auth_runtime: DriverAuthRuntime,
     ) -> Result<Self, FoundationError> {
         let local_address = socket
@@ -3908,9 +4016,10 @@ impl FoundationDriver {
             h3_connection: None,
             tls_observation: None,
             observation_tx,
-            ready_barrier,
             #[cfg(test)]
             pre_auth_request_trigger: None,
+            #[cfg(test)]
+            authentication_hold: None,
             auth_runtime,
             classic_connect,
         })
@@ -3982,6 +4091,12 @@ impl FoundationDriver {
             None;
 
         loop {
+            if pending_authenticated_acquire
+                .as_ref()
+                .is_some_and(oneshot::Sender::is_closed)
+            {
+                pending_authenticated_acquire.take();
+            }
             self.enforce_authenticated_hard_deadline()?;
             self.enforce_active_flow_lease()?;
             self.initialize_h3()?;
@@ -3992,9 +4107,6 @@ impl FoundationDriver {
             self.enforce_active_flow_lease()?;
             if !foundation_ready && observation_ready {
                 self.flush_packets(&mut send_buffer).await?;
-                timeout(HANDSHAKE_TIMEOUT, self.ready_barrier.wait())
-                    .await
-                    .map_err(|_| FoundationError::DriverTimeout)?;
                 foundation_ready = true;
             }
             self.drive_generation_auth(foundation_ready)?;
@@ -4026,7 +4138,44 @@ impl FoundationDriver {
                 .min(MAX_IDLE_TIMEOUT);
 
             if !foundation_ready {
-                self.receive_packet(wait, &mut receive_buffer).await?;
+                tokio::select! {
+                    biased;
+                    command = command_rx.recv() => {
+                        match command {
+                            Some(DriverCommand::AcquireAuthenticated { response }) => {
+                                Self::queue_authenticated_acquire(
+                                    &mut pending_authenticated_acquire,
+                                    response,
+                                )?;
+                            }
+                            Some(DriverCommand::OpenClassicConnect { response, .. }) => {
+                                let _ = response.send(Err(
+                                    FoundationError::PreAuthApplicationActivity,
+                                ));
+                                return Err(FoundationError::PreAuthApplicationActivity);
+                            }
+                            #[cfg(test)]
+                            Some(DriverCommand::Acquire { response }) => {
+                                let _ = response.send(generation);
+                            }
+                            #[cfg(test)]
+                            Some(DriverCommand::ObserveDriverTick { response }) => {
+                                let _ = response.send(());
+                            }
+                            #[cfg(test)]
+                            Some(DriverCommand::ExpireAuthenticatedAt { response, .. }) => {
+                                let _ = response.send(());
+                                return Err(FoundationError::PostAuthFlowRejected);
+                            }
+                            Some(DriverCommand::Close) | None => {
+                                return self.close_connection(&mut send_buffer).await;
+                            }
+                        }
+                    }
+                    packet = timeout(wait, self.socket.recv_from(&mut receive_buffer)) => {
+                        self.process_received_packet(packet, &mut receive_buffer)?;
+                    }
+                }
                 continue;
             }
 
@@ -4072,10 +4221,11 @@ impl FoundationDriver {
                         Some(DriverCommand::AcquireAuthenticated { response }) => {
                             if let Some(authenticated) = self.authenticated_generation() {
                                 let _ = response.send(authenticated);
-                            } else if pending_authenticated_acquire.is_none() {
-                                pending_authenticated_acquire = Some(response);
                             } else {
-                                return Err(FoundationError::CommandQueueUnavailable);
+                                Self::queue_authenticated_acquire(
+                                    &mut pending_authenticated_acquire,
+                                    response,
+                                )?;
                             }
                         }
                         Some(DriverCommand::OpenClassicConnect {
@@ -4125,13 +4275,7 @@ impl FoundationDriver {
                             }
                         }
                         Some(DriverCommand::Close) | None => {
-                            // T021b promises bounded reclamation, not a
-                            // graceful QUIC drain.
-                            self.connection
-                                .close(true, 0, b"")
-                                .map_err(|_| FoundationError::ConnectionUnavailable)?;
-                            self.flush_packets(&mut send_buffer).await?;
-                            return Ok(self.driver_exit());
+                            return self.close_connection(&mut send_buffer).await;
                         }
                     }
                 }
@@ -4140,6 +4284,32 @@ impl FoundationDriver {
                 }
             }
         }
+    }
+
+    fn queue_authenticated_acquire(
+        pending: &mut Option<oneshot::Sender<AuthenticatedGeneration>>,
+        response: oneshot::Sender<AuthenticatedGeneration>,
+    ) -> Result<(), FoundationError> {
+        if pending.as_ref().is_some_and(oneshot::Sender::is_closed) {
+            pending.take();
+        }
+        if pending.is_some() {
+            return Err(FoundationError::CommandQueueUnavailable);
+        }
+        *pending = Some(response);
+        Ok(())
+    }
+
+    async fn close_connection(
+        &mut self,
+        send_buffer: &mut [u8; MAX_UDP_PAYLOAD_BYTES],
+    ) -> Result<DriverExit, FoundationError> {
+        // This promises bounded reclamation, not a graceful QUIC drain.
+        self.connection
+            .close(true, 0, b"")
+            .map_err(|_| FoundationError::ConnectionUnavailable)?;
+        self.flush_packets(send_buffer).await?;
+        Ok(self.driver_exit())
     }
 
     async fn receive_packet(
@@ -4327,6 +4497,14 @@ impl FoundationDriver {
     }
 
     fn drive_generation_auth(&mut self, foundation_ready: bool) -> Result<(), FoundationError> {
+        #[cfg(test)]
+        if self
+            .authentication_hold
+            .as_ref()
+            .is_some_and(|hold| hold.load(Ordering::Acquire))
+        {
+            return Ok(());
+        }
         let Some(runtime) = self.auth_runtime.generation_mut() else {
             return Ok(());
         };
@@ -4432,8 +4610,14 @@ impl FoundationDriver {
 }
 
 fn bounded_quic_config() -> Result<quiche::Config, FoundationError> {
-    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)
+    let config = quiche::Config::new(quiche::PROTOCOL_VERSION)
         .map_err(|_| FoundationError::ConnectionUnavailable)?;
+    apply_bounded_quic_config(config)
+}
+
+fn apply_bounded_quic_config(
+    mut config: quiche::Config,
+) -> Result<quiche::Config, FoundationError> {
     config.verify_peer(true);
     config
         .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
@@ -4546,6 +4730,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::{Mutex, MutexGuard, Once};
 
+    use boring::ssl::{SslContextBuilder, SslMethod, SslVerifyMode};
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, encode_auth_v3_server_confirmation,
         verify_auth_v3_client_control, verify_auth_v3_server_confirmation, AuthV3Carrier,
@@ -4678,6 +4863,7 @@ mod tests {
     struct ClientStartFixture<'fixture> {
         connections_created: &'fixture AtomicUsize,
         pre_auth_request_trigger: Option<Arc<AtomicBool>>,
+        authentication_hold: Option<Arc<AtomicBool>>,
         auth_runtime: Option<GenerationAuth>,
     }
 
@@ -4693,6 +4879,20 @@ mod tests {
             Some(value) => value,
             None => panic!("{message}"),
         }
+    }
+
+    fn bounded_quic_config_with_exclusive_ca(
+        ca_path: &std::path::Path,
+    ) -> Result<quiche::Config, FoundationError> {
+        let mut builder = SslContextBuilder::new(SslMethod::tls())
+            .map_err(|_| FoundationError::ConnectionUnavailable)?;
+        builder.set_verify(SslVerifyMode::PEER);
+        builder
+            .set_ca_file(ca_path)
+            .map_err(|_| FoundationError::ConnectionUnavailable)?;
+        let config = quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, builder)
+            .map_err(|_| FoundationError::ConnectionUnavailable)?;
+        apply_bounded_quic_config(config)
     }
 
     #[cfg(feature = "unstable-quiche-strict-push-test-support")]
@@ -4986,7 +5186,6 @@ mod tests {
         socket: UdpSocket,
         mut config: quiche::Config,
         observation_tx: mpsc::Sender<FoundationObservation>,
-        ready_barrier: Arc<Barrier>,
         task_permit: OwnedSemaphorePermit,
         connections_created: &AtomicUsize,
         auth_runtime: Option<GenerationAuth>,
@@ -5030,7 +5229,6 @@ mod tests {
                 peer_address,
                 connection,
                 observation_tx,
-                ready_barrier,
                 auth_runtime,
             )?,
             None => FoundationDriver::new_test_foundation(
@@ -5038,7 +5236,6 @@ mod tests {
                 peer_address,
                 connection,
                 observation_tx,
-                ready_barrier,
             )?,
         };
         SingleIdentityQuicManager::start(driver, task_permit)
@@ -5049,13 +5246,13 @@ mod tests {
         peer_address: SocketAddr,
         mut config: quiche::Config,
         observation_tx: mpsc::Sender<FoundationObservation>,
-        ready_barrier: Arc<Barrier>,
         task_permit: OwnedSemaphorePermit,
         fixture: ClientStartFixture<'_>,
     ) -> Result<SingleIdentityQuicManager, FoundationError> {
         let ClientStartFixture {
             connections_created,
             pre_auth_request_trigger,
+            authentication_hold,
             auth_runtime,
         } = fixture;
         let local_address = socket
@@ -5067,34 +5264,34 @@ mod tests {
             Some(runtime) => runtime.client_server_name()?,
             None => T026C_AUTHORITY,
         };
-        let connection = quiche::connect(
-            Some(server_name),
-            &source_connection_id,
-            local_address,
-            peer_address,
-            &mut config,
-        )
-        .map_err(|_| FoundationError::ConnectionUnavailable)?;
-        connections_created.fetch_add(1, Ordering::Relaxed);
-
         let mut driver = match auth_runtime {
-            Some(auth_runtime) => FoundationDriver::new(
+            Some(auth_runtime) => authenticated_client_driver(
                 socket,
                 peer_address,
-                connection,
+                config,
                 observation_tx,
-                ready_barrier,
                 auth_runtime,
             )?,
-            None => FoundationDriver::new_test_foundation(
-                socket,
-                peer_address,
-                connection,
-                observation_tx,
-                ready_barrier,
-            )?,
+            None => {
+                let connection = quiche::connect(
+                    Some(server_name),
+                    &source_connection_id,
+                    local_address,
+                    peer_address,
+                    &mut config,
+                )
+                .map_err(|_| FoundationError::ConnectionUnavailable)?;
+                FoundationDriver::new_test_foundation(
+                    socket,
+                    peer_address,
+                    connection,
+                    observation_tx,
+                )?
+            }
         };
+        connections_created.fetch_add(1, Ordering::Relaxed);
         driver.pre_auth_request_trigger = pre_auth_request_trigger;
+        driver.authentication_hold = authentication_hold;
         SingleIdentityQuicManager::start(driver, task_permit)
     }
 
@@ -5119,6 +5316,7 @@ mod tests {
             client_task_budget,
             server_task_budget,
             pre_auth_request_trigger,
+            None,
             None,
             None,
         )
@@ -5148,6 +5346,7 @@ mod tests {
             client_task_budget,
             server_task_budget,
             None,
+            None,
             Some(fixed_ok(
                 GenerationAuth::with_fault(AuthRole::Client, client_fault),
                 "construct test-private H3 client auth runtime",
@@ -5164,6 +5363,7 @@ mod tests {
         client_task_budget: &ConnectionTaskBudget,
         server_task_budget: &ConnectionTaskBudget,
         pre_auth_request_trigger: Option<Arc<AtomicBool>>,
+        client_authentication_hold: Option<Arc<AtomicBool>>,
         client_auth_runtime: Option<GenerationAuth>,
         server_auth_runtime: Option<GenerationAuth>,
     ) -> LoopbackPair {
@@ -5198,8 +5398,8 @@ mod tests {
             "load temporary loopback key",
         );
         let client_config = fixed_ok(
-            bounded_self_signed_loopback_quic_config(),
-            "build bounded loopback H3 client configuration",
+            bounded_quic_config_with_exclusive_ca(&cert_path),
+            "build verified loopback H3 client configuration",
         );
 
         let server_socket = fixed_ok(
@@ -5221,9 +5421,7 @@ mod tests {
             client_task_budget.try_acquire(),
             "reserve loopback H3 client task",
         );
-        let ready_barrier = Arc::new(Barrier::new(2));
         let (server_tx, server_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
-        let (client_tx, client_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
         let client_connections_created = Arc::new(AtomicUsize::new(0));
         let server_connections_created = Arc::new(AtomicUsize::new(0));
 
@@ -5231,27 +5429,46 @@ mod tests {
             server_socket,
             server_config,
             server_tx,
-            Arc::clone(&ready_barrier),
             server_permit,
             &server_connections_created,
             server_auth_runtime,
         );
-        let client = fixed_ok(
-            start_client(
-                client_socket,
-                server_address,
-                client_config,
-                client_tx,
-                ready_barrier,
-                client_permit,
-                ClientStartFixture {
-                    connections_created: &client_connections_created,
-                    pre_auth_request_trigger,
-                    auth_runtime: client_auth_runtime,
-                },
-            ),
-            "start managed loopback H3 client",
-        );
+        let (client, client_observation_rx) = if pre_auth_request_trigger.is_none()
+            && client_authentication_hold.is_none()
+            && client_auth_runtime.is_some()
+        {
+            let bootstrap = fixed_ok(
+                bootstrap_client_driver(
+                    client_socket,
+                    server_address,
+                    client_config,
+                    fixed_some(client_auth_runtime, "take client auth runtime"),
+                    client_permit,
+                ),
+                "bootstrap independent loopback H3 client",
+            );
+            client_connections_created.fetch_add(1, Ordering::Relaxed);
+            (bootstrap.manager, bootstrap.observation_rx)
+        } else {
+            let (client_tx, client_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+            let client = fixed_ok(
+                start_client(
+                    client_socket,
+                    server_address,
+                    client_config,
+                    client_tx,
+                    client_permit,
+                    ClientStartFixture {
+                        connections_created: &client_connections_created,
+                        pre_auth_request_trigger,
+                        authentication_hold: client_authentication_hold,
+                        auth_runtime: client_auth_runtime,
+                    },
+                ),
+                "start managed loopback H3 client",
+            );
+            (client, client_observation_rx)
+        };
         let server = fixed_ok(
             fixed_ok(
                 timeout(CONNECTION_RUN_TIMEOUT, server_setup).await,
@@ -5267,6 +5484,138 @@ mod tests {
             client_observation_rx,
             server_observation_rx,
             client_connections_created,
+            server_connections_created,
+            client_address,
+            server_address,
+        }
+    }
+
+    async fn start_verified_bootstrap_pair(
+        client_task_budget: &ConnectionTaskBudget,
+        server_task_budget: &ConnectionTaskBudget,
+        trust_server_certificate: bool,
+    ) -> LoopbackPair {
+        let temp = fixed_ok(
+            TempDir::new(),
+            "create verified bootstrap certificate directory",
+        );
+        let cert_path = temp.path().join("cert.pem");
+        let key_path = temp.path().join("key.pem");
+        let wrong_ca_path = temp.path().join("wrong-ca.pem");
+        let certified = fixed_ok(
+            rcgen::generate_simple_self_signed(vec![T026C_AUTHORITY.into()]),
+            "generate verified bootstrap certificate",
+        );
+        let wrong_ca = fixed_ok(
+            rcgen::generate_simple_self_signed(vec!["wrong.invalid".into()]),
+            "generate wrong bootstrap CA",
+        );
+        fixed_ok(
+            std::fs::write(&cert_path, certified.cert.pem()),
+            "write verified bootstrap certificate",
+        );
+        fixed_ok(
+            std::fs::write(&key_path, certified.key_pair.serialize_pem()),
+            "write verified bootstrap key",
+        );
+        fixed_ok(
+            std::fs::write(&wrong_ca_path, wrong_ca.cert.pem()),
+            "write wrong bootstrap CA",
+        );
+        let cert = fixed_some(
+            cert_path.to_str(),
+            "read verified bootstrap certificate path",
+        );
+        let key = fixed_some(key_path.to_str(), "read verified bootstrap key path");
+
+        let mut server_config = fixed_ok(
+            bounded_self_signed_loopback_quic_config(),
+            "build verified bootstrap server config",
+        );
+        fixed_ok(
+            server_config.load_cert_chain_from_pem_file(cert),
+            "load verified bootstrap certificate",
+        );
+        fixed_ok(
+            server_config.load_priv_key_from_pem_file(key),
+            "load verified bootstrap key",
+        );
+        let trusted_path = if trust_server_certificate {
+            &cert_path
+        } else {
+            &wrong_ca_path
+        };
+        let client_config = fixed_ok(
+            bounded_quic_config_with_exclusive_ca(trusted_path),
+            "build verified bootstrap client config",
+        );
+
+        let server_socket = fixed_ok(
+            bind_bounded_loopback_socket(SocketAddr::from(([127, 0, 0, 1], 0))).await,
+            "bind verified bootstrap server",
+        );
+        let server_address = fixed_ok(
+            server_socket.local_addr(),
+            "read verified bootstrap server address",
+        );
+        let client_socket = fixed_ok(
+            bind_bounded_loopback_socket(SocketAddr::from(([127, 0, 0, 1], 0))).await,
+            "bind verified bootstrap client",
+        );
+        let client_address = fixed_ok(
+            client_socket.local_addr(),
+            "read verified bootstrap client address",
+        );
+        let (server_tx, server_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+        let server_connections_created = Arc::new(AtomicUsize::new(0));
+        let server_setup = start_server(
+            server_socket,
+            server_config,
+            server_tx,
+            fixed_ok(
+                server_task_budget.try_acquire(),
+                "reserve verified bootstrap server task",
+            ),
+            &server_connections_created,
+            Some(fixed_ok(
+                GenerationAuth::new_test(AuthRole::Server),
+                "construct verified bootstrap server auth",
+            )),
+        );
+        let ClientDriverBootstrap {
+            manager: client,
+            observation_rx: client_observation_rx,
+        } = fixed_ok(
+            bootstrap_client_driver(
+                client_socket,
+                server_address,
+                client_config,
+                fixed_ok(
+                    GenerationAuth::new_test(AuthRole::Client),
+                    "construct verified bootstrap client auth",
+                ),
+                fixed_ok(
+                    client_task_budget.try_acquire(),
+                    "reserve verified bootstrap client task",
+                ),
+            ),
+            "start verified client bootstrap",
+        );
+        let server = fixed_ok(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, server_setup).await,
+                "bound verified bootstrap server setup",
+            ),
+            "start verified bootstrap server",
+        );
+
+        LoopbackPair {
+            _temp: temp,
+            client,
+            server,
+            client_observation_rx,
+            server_observation_rx,
+            client_connections_created: Arc::new(AtomicUsize::new(1)),
             server_connections_created,
             client_address,
             server_address,
@@ -7370,6 +7719,236 @@ mod tests {
         assert_eq!(PATH_CHALLENGE_QUEUE_LIMIT, 3);
     }
 
+    #[tokio::test]
+    async fn canceled_queued_acquire_does_not_block_pre_foundation_close() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire bounded pre-foundation close test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let client_socket = fixed_ok(
+            bind_bounded_loopback_socket(SocketAddr::from(([127, 0, 0, 1], 0))).await,
+            "bind pre-foundation close client socket",
+        );
+        let silent_peer = fixed_ok(
+            bind_bounded_loopback_socket(SocketAddr::from(([127, 0, 0, 1], 0))).await,
+            "bind pre-foundation close silent peer",
+        );
+        let peer_address = fixed_ok(silent_peer.local_addr(), "read silent peer address");
+        let bootstrap = fixed_ok(
+            bootstrap_client_driver(
+                client_socket,
+                peer_address,
+                fixed_ok(
+                    bounded_self_signed_loopback_quic_config(),
+                    "build pre-foundation close client config",
+                ),
+                fixed_ok(
+                    GenerationAuth::new_test(AuthRole::Client),
+                    "construct pre-foundation close auth runtime",
+                ),
+                fixed_ok(
+                    task_budget.try_acquire(),
+                    "reserve pre-foundation close task",
+                ),
+            ),
+            "bootstrap pre-foundation close manager",
+        );
+        let mut manager = bootstrap.manager;
+        let _observation_rx = bootstrap.observation_rx;
+        let (canceled_response, canceled_receiver) = oneshot::channel();
+        drop(canceled_receiver);
+        fixed_ok(
+            try_send_driver_command(
+                fixed_some(
+                    manager.command_tx.as_ref(),
+                    "read pre-foundation close command sender",
+                ),
+                DriverCommand::AcquireAuthenticated {
+                    response: canceled_response,
+                },
+            ),
+            "queue canceled pre-foundation acquire",
+        );
+
+        fixed_ok(
+            fixed_ok(
+                timeout(DRIVER_JOIN_TIMEOUT, manager.close()).await,
+                "bound pre-foundation close",
+            ),
+            "close before foundation readiness",
+        );
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn private_client_bootstrap_uses_verified_sni_and_caller_ca() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire verified client bootstrap test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_verified_bootstrap_pair(&task_budget, &task_budget, true).await;
+        let (client_observation, server_observation) =
+            receive_loopback_observations(&mut pair).await;
+        assert_eq!(
+            client_observation.auth_v3_exporter,
+            server_observation.auth_v3_exporter
+        );
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "authenticate verified bootstrap client");
+        let server_lease = fixed_ok(server_lease, "authenticate verified bootstrap server");
+        assert!(client_lease.is_active());
+        assert!(server_lease.is_active());
+
+        close_loopback_pair(&mut pair).await;
+        assert!(!client_lease.is_active());
+        assert!(!server_lease.is_active());
+        drop(client_lease);
+        drop(server_lease);
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn private_client_bootstrap_wrong_ca_cannot_authenticate() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire wrong CA bootstrap test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let pair = start_verified_bootstrap_pair(&task_budget, &task_budget, false).await;
+        let authentication =
+            timeout(CONNECTION_RUN_TIMEOUT, pair.client.acquire_authenticated()).await;
+        assert!(
+            !matches!(authentication, Ok(Ok(_))),
+            "wrong CA authenticated the private client bootstrap"
+        );
+        drop(pair);
+        let permits = fixed_ok(
+            timeout(
+                DRIVER_JOIN_TIMEOUT,
+                task_budget
+                    .permits
+                    .clone()
+                    .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
+            )
+            .await,
+            "reclaim wrong CA bootstrap task permits",
+        );
+        drop(fixed_ok(permits, "hold wrong CA bootstrap task permits"));
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_pending_authenticated_acquire_is_removed_before_retry() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire canceled pending readiness test lock",
+        );
+        let task_budget = ConnectionTaskBudget::new();
+        let authentication_hold = Arc::new(AtomicBool::new(true));
+        let mut pair = start_loopback_pair_with_options(
+            &task_budget,
+            &task_budget,
+            None,
+            Some(Arc::clone(&authentication_hold)),
+            Some(fixed_ok(
+                GenerationAuth::new_test(AuthRole::Client),
+                "construct held client auth runtime",
+            )),
+            Some(fixed_ok(
+                GenerationAuth::new_test(AuthRole::Server),
+                "construct held server auth runtime",
+            )),
+        )
+        .await;
+
+        {
+            let pending_acquire = pair.client.acquire_authenticated();
+            tokio::pin!(pending_acquire);
+            tokio::select! {
+                biased;
+                result = &mut pending_acquire => {
+                    let _ = result;
+                    panic!("held authenticated acquire completed while priming");
+                }
+                _ = tokio::task::yield_now() => {}
+            }
+            let driver_consumed_command = async {
+                loop {
+                    match pair.client.observe_driver_tick().await {
+                        Ok(()) => break,
+                        Err(FoundationError::CommandQueueUnavailable) => {
+                            tokio::task::yield_now().await;
+                        }
+                        Err(_) => panic!("observe held client driver"),
+                    }
+                }
+            };
+            tokio::select! {
+                result = &mut pending_acquire => {
+                    let _ = result;
+                    panic!("held authenticated acquire completed unexpectedly");
+                }
+                _ = driver_consumed_command => {}
+                _ = tokio::time::sleep(DRIVER_JOIN_TIMEOUT) => {
+                    panic!("held authenticated acquire was not consumed");
+                }
+            }
+        }
+
+        authentication_hold.store(false, Ordering::Release);
+        fixed_ok(
+            pair.client.observe_driver_tick().await,
+            "wake client after releasing authentication hold",
+        );
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "retry canceled client acquire");
+        let server_lease = fixed_ok(server_lease, "complete retry server acquire");
+        assert!(client_lease.is_active());
+        assert!(!pair.client.driver_is_finished());
+
+        close_loopback_pair(&mut pair).await;
+        assert!(!client_lease.is_active());
+        assert!(!server_lease.is_active());
+        drop(client_lease);
+        drop(server_lease);
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn client_bootstrap_preserves_loopback_only_boundary() {
+        let task_budget = ConnectionTaskBudget::new();
+        let socket = fixed_ok(
+            bind_bounded_loopback_socket(SocketAddr::from(([127, 0, 0, 1], 0))).await,
+            "bind loopback-only bootstrap socket",
+        );
+        let result = bootstrap_client_driver(
+            socket,
+            SocketAddr::from(([192, 0, 2, 1], 443)),
+            fixed_ok(
+                bounded_quic_config(),
+                "build loopback-only bootstrap config",
+            ),
+            fixed_ok(
+                GenerationAuth::new_test(AuthRole::Client),
+                "construct loopback-only auth runtime",
+            ),
+            fixed_ok(
+                task_budget.try_acquire(),
+                "reserve loopback-only bootstrap task",
+            ),
+        );
+        assert_eq!(result.err(), Some(FoundationError::SocketUnavailable));
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn manager_drop_cancels_driver_and_reclaims_owned_resources() {
         let _test_guard = fixed_ok(
@@ -7424,7 +8003,12 @@ mod tests {
             "reclaim dropped manager socket",
         ));
 
-        fixed_ok(pair.server.close().await, "close drop-test H3 server");
+        assert!(matches!(
+            pair.server.close().await,
+            Ok(())
+                | Err(FoundationError::DriverStopped)
+                | Err(FoundationError::ConnectionUnavailable)
+        ));
         drop(reclaimed_permit);
         drop(remaining_permits);
         assert_eq!(

@@ -2894,7 +2894,7 @@ mod classic_connect {
 
     #[cfg(test)]
     impl ReferenceSpy {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 header_send_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 body_send_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -3052,6 +3052,21 @@ mod classic_connect {
 
     impl ClassicConnectReference {
         pub(super) fn new(role: Option<AuthRole>) -> Self {
+            #[cfg(test)]
+            let spy = ReferenceSpy::new();
+            Self::new_inner(
+                role,
+                #[cfg(test)]
+                spy,
+            )
+        }
+
+        #[cfg(test)]
+        pub(super) fn new_with_spy(role: Option<AuthRole>, spy: ReferenceSpy) -> Self {
+            Self::new_inner(role, spy)
+        }
+
+        fn new_inner(role: Option<AuthRole>, #[cfg(test)] spy: ReferenceSpy) -> Self {
             Self {
                 role,
                 phase: FlowPhase::Dormant,
@@ -3063,7 +3078,7 @@ mod classic_connect {
                 #[cfg(test)]
                 fault: ReferenceFault::None,
                 #[cfg(test)]
-                spy: ReferenceSpy::new(),
+                spy,
             }
         }
 
@@ -3613,27 +3628,1710 @@ mod classic_connect {
     }
 }
 
+mod private_classic_connect {
+    use std::fmt::Write as _;
+    use std::sync::{Mutex, MutexGuard, Weak};
+
+    use quiche::h3::NameValue;
+
+    use super::generation_auth::{
+        AuthRole, AuthenticatedConnectionLease, AuthenticatedGeneration, AuthenticatedLeaseProof,
+    };
+    use super::*;
+
+    pub(super) const FLOW_CHUNK_LIMIT: usize = 16_384;
+    const LOOPBACK_AUTHORITY_LIMIT: usize = 64;
+    #[cfg(test)]
+    const TEST_FLOW_ABORT_CODE: u64 = 0x103;
+
+    #[derive(Clone, Eq, PartialEq)]
+    pub(super) struct CanonicalLoopbackAuthority {
+        bytes: [u8; LOOPBACK_AUTHORITY_LIMIT],
+        length: usize,
+    }
+
+    impl CanonicalLoopbackAuthority {
+        pub(super) fn from_socket_addr(target: SocketAddr) -> Result<Self, FoundationError> {
+            let mut authority = Self {
+                bytes: [0; LOOPBACK_AUTHORITY_LIMIT],
+                length: 0,
+            };
+            let port = target.port();
+            if port == 0 {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            match target {
+                SocketAddr::V4(address) if address.ip().is_loopback() => {
+                    write!(&mut authority, "{}:{port}", address.ip())
+                        .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+                }
+                SocketAddr::V6(address)
+                    if address.ip().is_loopback()
+                        && address.flowinfo() == 0
+                        && address.scope_id() == 0 =>
+                {
+                    write!(&mut authority, "[{}]:{port}", address.ip())
+                        .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+                }
+                SocketAddr::V4(_) | SocketAddr::V6(_) => {
+                    return Err(FoundationError::PostAuthFlowRejected);
+                }
+            }
+            if authority.length == 0 {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            Ok(authority)
+        }
+
+        pub(super) fn as_bytes(&self) -> &[u8] {
+            &self.bytes[..self.length]
+        }
+
+        fn clear(&mut self) {
+            self.bytes.fill(0);
+            self.length = 0;
+        }
+    }
+
+    impl fmt::Write for CanonicalLoopbackAuthority {
+        fn write_str(&mut self, value: &str) -> fmt::Result {
+            let end = self.length.checked_add(value.len()).ok_or(fmt::Error)?;
+            if end > self.bytes.len() || !value.is_ascii() {
+                return Err(fmt::Error);
+            }
+            self.bytes[self.length..end].copy_from_slice(value.as_bytes());
+            self.length = end;
+            Ok(())
+        }
+    }
+
+    impl fmt::Debug for CanonicalLoopbackAuthority {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("redacted loopback CONNECT authority")
+        }
+    }
+
+    impl Drop for CanonicalLoopbackAuthority {
+        fn drop(&mut self) {
+            self.clear();
+        }
+    }
+
+    pub(super) struct PrivateFlowChunk {
+        bytes: [u8; FLOW_CHUNK_LIMIT],
+        length: usize,
+    }
+
+    impl PrivateFlowChunk {
+        pub(super) fn from_slice(bytes: &[u8]) -> Result<Box<Self>, FoundationError> {
+            if bytes.is_empty() || bytes.len() > FLOW_CHUNK_LIMIT {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            let mut chunk = Box::new(Self::empty());
+            chunk.bytes[..bytes.len()].copy_from_slice(bytes);
+            chunk.length = bytes.len();
+            Ok(chunk)
+        }
+
+        pub(super) fn empty_boxed() -> Box<Self> {
+            Box::new(Self::empty())
+        }
+
+        fn empty() -> Self {
+            Self {
+                bytes: [0; FLOW_CHUNK_LIMIT],
+                length: 0,
+            }
+        }
+
+        pub(super) fn as_slice(&self) -> &[u8] {
+            &self.bytes[..self.length]
+        }
+
+        pub(super) fn len(&self) -> usize {
+            self.length
+        }
+
+        pub(super) fn is_empty(&self) -> bool {
+            self.length == 0
+        }
+
+        pub(super) fn spare_capacity_mut(&mut self) -> &mut [u8] {
+            &mut self.bytes[self.length..]
+        }
+
+        pub(super) fn record_received(&mut self, length: usize) -> Result<(), FoundationError> {
+            if length == 0 || length > self.bytes.len().saturating_sub(self.length) {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            self.length += length;
+            Ok(())
+        }
+
+        fn clear(&mut self) {
+            self.bytes.fill(0);
+            self.length = 0;
+        }
+    }
+
+    impl fmt::Debug for PrivateFlowChunk {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("redacted private classic CONNECT chunk")
+        }
+    }
+
+    impl Drop for PrivateFlowChunk {
+        fn drop(&mut self) {
+            self.clear();
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum MailboxTerminal {
+        Eof,
+        Error(FoundationError),
+    }
+
+    struct MailboxState {
+        slot: Option<Box<PrivateFlowChunk>>,
+        terminal: Option<MailboxTerminal>,
+    }
+
+    pub(super) struct InboundMailbox {
+        state: Mutex<MailboxState>,
+        ready: Notify,
+        drained: Arc<Notify>,
+    }
+
+    impl InboundMailbox {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new(MailboxState {
+                    slot: None,
+                    terminal: None,
+                }),
+                ready: Notify::new(),
+                drained: Arc::new(Notify::new()),
+            }
+        }
+
+        fn lock(&self) -> MutexGuard<'_, MailboxState> {
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        pub(super) fn try_offer(
+            &self,
+            chunk: Box<PrivateFlowChunk>,
+        ) -> Result<(), Box<PrivateFlowChunk>> {
+            let mut state = self.lock();
+            if state.terminal.is_some() || state.slot.is_some() {
+                return Err(chunk);
+            }
+            state.slot = Some(chunk);
+            drop(state);
+            self.ready.notify_one();
+            Ok(())
+        }
+
+        pub(super) fn slot_is_empty(&self) -> bool {
+            self.lock().slot.is_none()
+        }
+
+        pub(super) fn mark_eof(&self) {
+            let mut state = self.lock();
+            if state.terminal.is_none() {
+                state.terminal = Some(MailboxTerminal::Eof);
+            }
+            drop(state);
+            self.ready.notify_waiters();
+        }
+
+        pub(super) fn fail_closed(&self, error: FoundationError) {
+            let mut state = self.lock();
+            state.slot.take();
+            state.terminal = Some(MailboxTerminal::Error(error));
+            drop(state);
+            self.ready.notify_waiters();
+            self.drained.notify_waiters();
+        }
+
+        pub(super) fn drained_notification(&self) -> Arc<Notify> {
+            Arc::clone(&self.drained)
+        }
+
+        fn try_receive(&self) -> MailboxReceive {
+            let mut state = self.lock();
+            if let Some(chunk) = state.slot.take() {
+                drop(state);
+                self.drained.notify_one();
+                return MailboxReceive::Chunk(chunk);
+            }
+            match state.terminal {
+                Some(MailboxTerminal::Eof) => MailboxReceive::Eof,
+                Some(MailboxTerminal::Error(error)) => MailboxReceive::Error(error),
+                None => MailboxReceive::Pending,
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn buffered_bytes(&self) -> usize {
+            self.lock().slot.as_ref().map_or(0, |chunk| chunk.len())
+        }
+    }
+
+    enum MailboxReceive {
+        Chunk(Box<PrivateFlowChunk>),
+        Eof,
+        Error(FoundationError),
+        Pending,
+    }
+
+    pub(super) struct FlowLeaseGuard {
+        lease: Mutex<Option<AuthenticatedConnectionLease>>,
+        aborted: AtomicBool,
+        terminal: AtomicBool,
+        abort_notify: Arc<Notify>,
+    }
+
+    impl FlowLeaseGuard {
+        fn new(lease: AuthenticatedConnectionLease) -> Self {
+            Self {
+                lease: Mutex::new(Some(lease)),
+                aborted: AtomicBool::new(false),
+                terminal: AtomicBool::new(false),
+                abort_notify: Arc::new(Notify::new()),
+            }
+        }
+
+        fn lock_lease(&self) -> MutexGuard<'_, Option<AuthenticatedConnectionLease>> {
+            self.lease
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        fn is_active(&self) -> bool {
+            !self.aborted.load(Ordering::Acquire)
+                && !self.terminal.load(Ordering::Acquire)
+                && self
+                    .lock_lease()
+                    .as_ref()
+                    .is_some_and(AuthenticatedConnectionLease::is_active)
+        }
+
+        fn abort(&self) {
+            if !self.terminal.load(Ordering::Acquire) {
+                self.aborted.store(true, Ordering::Release);
+                self.abort_notify.notify_one();
+            }
+        }
+
+        pub(super) fn is_aborted(&self) -> bool {
+            self.aborted.load(Ordering::Acquire)
+        }
+
+        pub(super) fn mark_terminal(&self) {
+            self.terminal.store(true, Ordering::Release);
+            self.lock_lease().take();
+            self.abort_notify.notify_one();
+        }
+
+        pub(super) fn abort_notification(&self) -> Arc<Notify> {
+            Arc::clone(&self.abort_notify)
+        }
+    }
+
+    impl fmt::Debug for FlowLeaseGuard {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("redacted private classic CONNECT lease guard")
+        }
+    }
+
+    pub(super) struct PrivateClassicConnectReadHalf {
+        mailbox: Arc<InboundMailbox>,
+        control: Arc<FlowLeaseGuard>,
+        eof_delivered: bool,
+    }
+
+    impl PrivateClassicConnectReadHalf {
+        pub(super) async fn receive_chunk(
+            &mut self,
+        ) -> Result<Option<Box<PrivateFlowChunk>>, FoundationError> {
+            if self.eof_delivered {
+                return Ok(None);
+            }
+            loop {
+                match self.mailbox.try_receive() {
+                    MailboxReceive::Chunk(chunk) => return Ok(Some(chunk)),
+                    MailboxReceive::Eof => {
+                        self.eof_delivered = true;
+                        return Ok(None);
+                    }
+                    MailboxReceive::Error(error) => return Err(error),
+                    MailboxReceive::Pending => {}
+                }
+
+                let notified = self.mailbox.ready.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                match self.mailbox.try_receive() {
+                    MailboxReceive::Chunk(chunk) => return Ok(Some(chunk)),
+                    MailboxReceive::Eof => {
+                        self.eof_delivered = true;
+                        return Ok(None);
+                    }
+                    MailboxReceive::Error(error) => return Err(error),
+                    MailboxReceive::Pending => notified.await,
+                }
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn buffered_bytes(&self) -> usize {
+            self.mailbox.buffered_bytes()
+        }
+    }
+
+    impl fmt::Debug for PrivateClassicConnectReadHalf {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("private classic CONNECT read half")
+        }
+    }
+
+    impl Drop for PrivateClassicConnectReadHalf {
+        fn drop(&mut self) {
+            if !self.eof_delivered {
+                self.control.abort();
+            }
+        }
+    }
+
+    pub(super) struct PrivateClassicConnectWriteHalf {
+        command_tx: mpsc::Sender<DriverCommand>,
+        control: Arc<FlowLeaseGuard>,
+        fin_accepted: bool,
+        canceled: bool,
+    }
+
+    impl PrivateClassicConnectWriteHalf {
+        pub(super) async fn send_chunk(&mut self, bytes: &[u8]) -> Result<(), FoundationError> {
+            if self.fin_accepted {
+                self.control.abort();
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            if self.canceled || !self.control.is_active() {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            let chunk = PrivateFlowChunk::from_slice(bytes)?;
+            let (response_tx, response_rx) = oneshot::channel();
+            let command = DriverCommand::PrivateFlowWrite {
+                identity: Arc::clone(&self.control),
+                chunk,
+                response: response_tx,
+            };
+            let result = bounded_flow_command(&self.command_tx, command, response_rx).await;
+            if result.is_err() {
+                self.control.abort();
+            }
+            result
+        }
+
+        pub(super) async fn finish(&mut self) -> Result<(), FoundationError> {
+            if self.fin_accepted {
+                self.control.abort();
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            if self.canceled || !self.control.is_active() {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            let (response_tx, response_rx) = oneshot::channel();
+            let command = DriverCommand::PrivateFlowFinish {
+                identity: Arc::clone(&self.control),
+                response: response_tx,
+            };
+            if let Err(error) = bounded_flow_command(&self.command_tx, command, response_rx).await {
+                self.control.abort();
+                return Err(error);
+            }
+            self.fin_accepted = true;
+            Ok(())
+        }
+
+        pub(super) async fn cancel(&mut self) -> Result<(), FoundationError> {
+            if self.canceled {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            let (response_tx, response_rx) = oneshot::channel();
+            let command = DriverCommand::PrivateFlowCancel {
+                identity: Arc::clone(&self.control),
+                response: response_tx,
+            };
+            let result = bounded_flow_command(&self.command_tx, command, response_rx).await;
+            if result.is_ok() {
+                self.canceled = true;
+                self.control.mark_terminal();
+            } else {
+                self.control.abort();
+            }
+            result
+        }
+    }
+
+    impl fmt::Debug for PrivateClassicConnectWriteHalf {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("private classic CONNECT write half")
+        }
+    }
+
+    impl Drop for PrivateClassicConnectWriteHalf {
+        fn drop(&mut self) {
+            if !self.fin_accepted && !self.canceled {
+                self.control.abort();
+            }
+        }
+    }
+
+    async fn bounded_flow_command(
+        command_tx: &mpsc::Sender<DriverCommand>,
+        command: DriverCommand,
+        response_rx: oneshot::Receiver<Result<(), FoundationError>>,
+    ) -> Result<(), FoundationError> {
+        timeout(COMMAND_RESPONSE_TIMEOUT, async {
+            command_tx
+                .send(command)
+                .await
+                .map_err(|_| FoundationError::DriverStopped)?;
+            response_rx
+                .await
+                .map_err(|_| FoundationError::DriverStopped)?
+        })
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?
+    }
+
+    pub(super) struct PrivateClassicConnectFlow {
+        reader: PrivateClassicConnectReadHalf,
+        writer: PrivateClassicConnectWriteHalf,
+    }
+
+    impl PrivateClassicConnectFlow {
+        pub(super) fn into_halves(
+            self,
+        ) -> (
+            PrivateClassicConnectReadHalf,
+            PrivateClassicConnectWriteHalf,
+        ) {
+            (self.reader, self.writer)
+        }
+
+        pub(super) async fn close(mut self) -> Result<(), FoundationError> {
+            self.writer.cancel().await
+        }
+    }
+
+    impl fmt::Debug for PrivateClassicConnectFlow {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("private classic CONNECT flow handle")
+        }
+    }
+
+    pub(super) struct DriverFlowEndpoint {
+        identity: Weak<FlowLeaseGuard>,
+        mailbox: Arc<InboundMailbox>,
+    }
+
+    impl DriverFlowEndpoint {
+        pub(super) fn identity(&self) -> &Weak<FlowLeaseGuard> {
+            &self.identity
+        }
+    }
+
+    pub(super) fn new_flow_handle(
+        lease: AuthenticatedConnectionLease,
+        command_tx: mpsc::Sender<DriverCommand>,
+    ) -> (PrivateClassicConnectFlow, DriverFlowEndpoint) {
+        let control = Arc::new(FlowLeaseGuard::new(lease));
+        let mailbox = Arc::new(InboundMailbox::new());
+        let reader = PrivateClassicConnectReadHalf {
+            mailbox: Arc::clone(&mailbox),
+            control: Arc::clone(&control),
+            eof_delivered: false,
+        };
+        let writer = PrivateClassicConnectWriteHalf {
+            command_tx,
+            control: Arc::clone(&control),
+            fin_accepted: false,
+            canceled: false,
+        };
+        let endpoint = DriverFlowEndpoint {
+            identity: Arc::downgrade(&control),
+            mailbox,
+        };
+        (PrivateClassicConnectFlow { reader, writer }, endpoint)
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum DriverFlowPhase {
+        Dormant,
+        ClientSendingHeaders,
+        ClientWaitingResponse,
+        ServerWaitingRequest,
+        ServerSendingResponse,
+        Open,
+        Complete,
+        Failed,
+    }
+
+    #[cfg(test)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) enum PrivateFlowFault {
+        None,
+        Non200,
+        Trailer,
+        Reset,
+        StopSending,
+        GoAway,
+        SecondRequest,
+    }
+
+    enum PendingOutbound {
+        Write {
+            identity: Arc<FlowLeaseGuard>,
+            chunk: Box<PrivateFlowChunk>,
+            offset: usize,
+            response: oneshot::Sender<Result<(), FoundationError>>,
+        },
+        Finish {
+            identity: Arc<FlowLeaseGuard>,
+            response: oneshot::Sender<Result<(), FoundationError>>,
+        },
+    }
+
+    impl PendingOutbound {
+        fn response_is_closed(&self) -> bool {
+            match self {
+                Self::Write { response, .. } | Self::Finish { response, .. } => {
+                    response.is_closed()
+                }
+            }
+        }
+
+        fn fail(self, error: FoundationError) {
+            match self {
+                Self::Write { response, .. } | Self::Finish { response, .. } => {
+                    let _ = response.send(Err(error));
+                }
+            }
+        }
+
+        fn into_response(self) -> oneshot::Sender<Result<(), FoundationError>> {
+            match self {
+                Self::Write {
+                    chunk, response, ..
+                } => {
+                    drop(chunk);
+                    response
+                }
+                Self::Finish { response, .. } => response,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[derive(Clone)]
+    pub(super) struct PrivateFlowSpy {
+        arm_commands: Arc<std::sync::atomic::AtomicUsize>,
+        header_send_attempts: Arc<std::sync::atomic::AtomicUsize>,
+        header_stream_blocked_results: Arc<std::sync::atomic::AtomicUsize>,
+        request_streams_opened: Arc<std::sync::atomic::AtomicUsize>,
+        body_send_calls: Arc<std::sync::atomic::AtomicUsize>,
+        body_partial_writes: Arc<std::sync::atomic::AtomicUsize>,
+        body_done_results: Arc<std::sync::atomic::AtomicUsize>,
+        recv_body_calls: Arc<std::sync::atomic::AtomicUsize>,
+        observed_authority: Arc<Mutex<Option<CanonicalLoopbackAuthority>>>,
+        request_real_header_pressure: Arc<AtomicBool>,
+        requested_fault: Arc<Mutex<PrivateFlowFault>>,
+    }
+
+    #[cfg(test)]
+    impl PrivateFlowSpy {
+        pub(super) fn new() -> Self {
+            Self {
+                arm_commands: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                header_send_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                header_stream_blocked_results: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                request_streams_opened: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                body_send_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                body_partial_writes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                body_done_results: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                recv_body_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                observed_authority: Arc::new(Mutex::new(None)),
+                request_real_header_pressure: Arc::new(AtomicBool::new(false)),
+                requested_fault: Arc::new(Mutex::new(PrivateFlowFault::None)),
+            }
+        }
+
+        pub(super) fn arm_commands(&self) -> usize {
+            self.arm_commands.load(Ordering::Acquire)
+        }
+
+        pub(super) fn record_arm_command(&self) {
+            self.arm_commands.fetch_add(1, Ordering::AcqRel);
+        }
+
+        pub(super) fn header_send_attempts(&self) -> usize {
+            self.header_send_attempts.load(Ordering::Acquire)
+        }
+
+        pub(super) fn request_streams_opened(&self) -> usize {
+            self.request_streams_opened.load(Ordering::Acquire)
+        }
+
+        pub(super) fn header_stream_blocked_results(&self) -> usize {
+            self.header_stream_blocked_results.load(Ordering::Acquire)
+        }
+
+        pub(super) fn body_send_calls(&self) -> usize {
+            self.body_send_calls.load(Ordering::Acquire)
+        }
+
+        pub(super) fn body_partial_writes(&self) -> usize {
+            self.body_partial_writes.load(Ordering::Acquire)
+        }
+
+        pub(super) fn body_done_results(&self) -> usize {
+            self.body_done_results.load(Ordering::Acquire)
+        }
+
+        pub(super) fn recv_body_calls(&self) -> usize {
+            self.recv_body_calls.load(Ordering::Acquire)
+        }
+
+        pub(super) fn observed_authority(&self) -> Option<CanonicalLoopbackAuthority> {
+            self.observed_authority
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
+        pub(super) fn request_real_header_pressure(&self) {
+            self.request_real_header_pressure
+                .store(true, Ordering::Release);
+        }
+
+        pub(super) fn take_real_header_pressure_request(&self) -> bool {
+            self.request_real_header_pressure
+                .swap(false, Ordering::AcqRel)
+        }
+
+        pub(super) fn request_fault(&self, fault: PrivateFlowFault) {
+            *self
+                .requested_fault
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = fault;
+        }
+
+        pub(super) fn take_requested_fault(&self) -> PrivateFlowFault {
+            std::mem::replace(
+                &mut *self
+                    .requested_fault
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                PrivateFlowFault::None,
+            )
+        }
+    }
+
+    pub(super) struct PrivateClassicConnectDriver {
+        role: Option<AuthRole>,
+        phase: DriverFlowPhase,
+        proof: Option<AuthenticatedLeaseProof>,
+        identity: Option<Weak<FlowLeaseGuard>>,
+        authority: Option<CanonicalLoopbackAuthority>,
+        stream_id: Option<u64>,
+        open_response: Option<oneshot::Sender<Result<(), FoundationError>>>,
+        pending_outbound: Option<PendingOutbound>,
+        mailbox: Option<Arc<InboundMailbox>>,
+        pending_inbound: Option<Box<PrivateFlowChunk>>,
+        inbound_data_ready: bool,
+        local_fin_accepted: bool,
+        remote_eof_seen: bool,
+        #[cfg(test)]
+        fault: PrivateFlowFault,
+        #[cfg(test)]
+        spy: PrivateFlowSpy,
+    }
+
+    impl PrivateClassicConnectDriver {
+        pub(super) fn new(role: Option<AuthRole>) -> Self {
+            #[cfg(test)]
+            let spy = PrivateFlowSpy::new();
+            Self::new_inner(
+                role,
+                #[cfg(test)]
+                spy,
+            )
+        }
+
+        #[cfg(test)]
+        pub(super) fn new_with_spy(role: Option<AuthRole>, spy: PrivateFlowSpy) -> Self {
+            Self::new_inner(role, spy)
+        }
+
+        fn new_inner(role: Option<AuthRole>, #[cfg(test)] spy: PrivateFlowSpy) -> Self {
+            Self {
+                role,
+                phase: DriverFlowPhase::Dormant,
+                proof: None,
+                identity: None,
+                authority: None,
+                stream_id: None,
+                open_response: None,
+                pending_outbound: None,
+                mailbox: None,
+                pending_inbound: None,
+                inbound_data_ready: false,
+                local_fin_accepted: false,
+                remote_eof_seen: false,
+                #[cfg(test)]
+                fault: PrivateFlowFault::None,
+                #[cfg(test)]
+                spy,
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn test_spy(&self) -> PrivateFlowSpy {
+            self.spy.clone()
+        }
+
+        pub(super) fn arm(
+            &mut self,
+            current: &AuthenticatedGeneration,
+            proof: AuthenticatedLeaseProof,
+            endpoint: DriverFlowEndpoint,
+            authority: CanonicalLoopbackAuthority,
+            response: oneshot::Sender<Result<(), FoundationError>>,
+            #[cfg(test)] fault: PrivateFlowFault,
+        ) -> Result<(), FoundationError> {
+            let now = Instant::now();
+            let identity_is_live = endpoint
+                .identity()
+                .upgrade()
+                .is_some_and(|identity| identity.is_active());
+            if self.phase != DriverFlowPhase::Dormant
+                || self.role.is_none()
+                || !identity_is_live
+                || !proof.authorizes_at(current, now)
+                || !current.admits_new_flow_at(now)
+            {
+                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            let DriverFlowEndpoint { identity, mailbox } = endpoint;
+            self.proof = Some(proof);
+            self.identity = Some(identity);
+            self.mailbox = Some(mailbox);
+            self.authority = Some(authority);
+            self.open_response = Some(response);
+            #[cfg(test)]
+            {
+                self.fault = fault;
+            }
+            self.phase = match self.role {
+                Some(AuthRole::Client) => DriverFlowPhase::ClientSendingHeaders,
+                Some(AuthRole::Server) => DriverFlowPhase::ServerWaitingRequest,
+                None => return Err(FoundationError::PostAuthFlowRejected),
+            };
+            Ok(())
+        }
+
+        pub(super) fn has_attempt(&self) -> bool {
+            !matches!(
+                self.phase,
+                DriverFlowPhase::Dormant | DriverFlowPhase::Complete | DriverFlowPhase::Failed
+            )
+        }
+
+        pub(super) fn is_complete(&self) -> bool {
+            self.phase == DriverFlowPhase::Complete
+        }
+
+        pub(super) fn route_is_open_for(&self, current: &AuthenticatedGeneration) -> bool {
+            self.has_attempt()
+                && self
+                    .proof
+                    .as_ref()
+                    .is_some_and(|proof| proof.authorizes(current))
+                && self
+                    .identity
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|identity| identity.is_active())
+        }
+
+        pub(super) fn active_lease_notification(&self) -> Option<Arc<Notify>> {
+            self.has_attempt().then(|| {
+                self.proof
+                    .as_ref()
+                    .map(AuthenticatedLeaseProof::drop_notification)
+            })?
+        }
+
+        pub(super) fn active_abort_notification(&self) -> Option<Arc<Notify>> {
+            self.has_attempt()
+                .then(|| {
+                    self.identity
+                        .as_ref()
+                        .and_then(Weak::upgrade)
+                        .map(|identity| identity.abort_notification())
+                })
+                .flatten()
+        }
+
+        pub(super) fn inbound_drained_notification(&self) -> Option<Arc<Notify>> {
+            self.has_attempt()
+                .then(|| {
+                    self.mailbox
+                        .as_ref()
+                        .map(|mailbox| mailbox.drained_notification())
+                })
+                .flatten()
+        }
+
+        pub(super) fn identity_matches(&self, candidate: &Arc<FlowLeaseGuard>) -> bool {
+            self.identity
+                .as_ref()
+                .is_some_and(|identity| Weak::ptr_eq(identity, &Arc::downgrade(candidate)))
+                && candidate.is_active()
+        }
+
+        pub(super) fn queue_write(
+            &mut self,
+            identity: Arc<FlowLeaseGuard>,
+            chunk: Box<PrivateFlowChunk>,
+            response: oneshot::Sender<Result<(), FoundationError>>,
+        ) -> Result<(), FoundationError> {
+            if self.phase != DriverFlowPhase::Open
+                || self.local_fin_accepted
+                || self.pending_outbound.is_some()
+                || !self.identity_matches(&identity)
+            {
+                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            self.pending_outbound = Some(PendingOutbound::Write {
+                identity,
+                chunk,
+                offset: 0,
+                response,
+            });
+            Ok(())
+        }
+
+        pub(super) fn queue_finish(
+            &mut self,
+            identity: Arc<FlowLeaseGuard>,
+            response: oneshot::Sender<Result<(), FoundationError>>,
+        ) -> Result<(), FoundationError> {
+            if self.phase != DriverFlowPhase::Open
+                || self.local_fin_accepted
+                || self.pending_outbound.is_some()
+                || !self.identity_matches(&identity)
+            {
+                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            self.pending_outbound = Some(PendingOutbound::Finish { identity, response });
+            Ok(())
+        }
+
+        pub(super) fn validates_cancel(&self, identity: &Arc<FlowLeaseGuard>) -> bool {
+            self.identity_matches(identity)
+        }
+
+        pub(super) fn drive_io(
+            &mut self,
+            current: &AuthenticatedGeneration,
+            connection: &mut quiche::Connection,
+            h3_connection: &mut quiche::h3::Connection,
+        ) -> Result<(), FoundationError> {
+            if matches!(
+                self.phase,
+                DriverFlowPhase::Dormant | DriverFlowPhase::Complete
+            ) {
+                return Ok(());
+            }
+            if !self.route_is_open_for(current) {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            self.flush_pending_inbound()?;
+            match self.phase {
+                DriverFlowPhase::ClientSendingHeaders => {
+                    #[cfg(test)]
+                    self.spy.header_send_attempts.fetch_add(1, Ordering::AcqRel);
+                    let authority = self
+                        .authority
+                        .as_ref()
+                        .ok_or(FoundationError::PostAuthFlowRejected)?;
+                    let headers = [
+                        quiche::h3::Header::new(b":method", b"CONNECT"),
+                        quiche::h3::Header::new(b":authority", authority.as_bytes()),
+                    ];
+                    match h3_connection.send_request(connection, &headers, false) {
+                        Ok(stream_id) => {
+                            #[cfg(test)]
+                            self.spy
+                                .request_streams_opened
+                                .fetch_add(1, Ordering::AcqRel);
+                            self.stream_id = Some(stream_id);
+                            #[cfg(test)]
+                            if self.fault == PrivateFlowFault::SecondRequest {
+                                h3_connection
+                                    .send_request(connection, &headers, false)
+                                    .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+                                self.spy
+                                    .request_streams_opened
+                                    .fetch_add(1, Ordering::AcqRel);
+                            }
+                            self.phase = DriverFlowPhase::ClientWaitingResponse;
+                        }
+                        Err(quiche::h3::Error::StreamBlocked) => {
+                            #[cfg(test)]
+                            self.spy
+                                .header_stream_blocked_results
+                                .fetch_add(1, Ordering::AcqRel);
+                            return Ok(());
+                        }
+                        Err(_) => return Err(FoundationError::PostAuthFlowRejected),
+                    }
+                }
+                DriverFlowPhase::ServerSendingResponse => {
+                    #[cfg(test)]
+                    self.spy.header_send_attempts.fetch_add(1, Ordering::AcqRel);
+                    let stream_id = self.bound_stream()?;
+                    #[cfg(test)]
+                    let status = if self.fault == PrivateFlowFault::Non200 {
+                        b"403".as_slice()
+                    } else {
+                        b"200".as_slice()
+                    };
+                    #[cfg(not(test))]
+                    let status = b"200".as_slice();
+                    let headers = [quiche::h3::Header::new(b":status", status)];
+                    match h3_connection.send_response(connection, stream_id, &headers, false) {
+                        Ok(()) => {
+                            #[cfg(test)]
+                            match self.fault {
+                                PrivateFlowFault::Trailer => h3_connection
+                                    .send_additional_headers(
+                                        connection,
+                                        stream_id,
+                                        &[quiche::h3::Header::new(b"x-trailer", b"1")],
+                                        true,
+                                        true,
+                                    )
+                                    .map_err(|_| FoundationError::PostAuthFlowRejected)?,
+                                PrivateFlowFault::Reset => connection
+                                    .stream_shutdown(
+                                        stream_id,
+                                        quiche::Shutdown::Write,
+                                        TEST_FLOW_ABORT_CODE,
+                                    )
+                                    .map_err(|_| FoundationError::PostAuthFlowRejected)?,
+                                PrivateFlowFault::StopSending => connection
+                                    .stream_shutdown(
+                                        stream_id,
+                                        quiche::Shutdown::Read,
+                                        TEST_FLOW_ABORT_CODE,
+                                    )
+                                    .map_err(|_| FoundationError::PostAuthFlowRejected)?,
+                                PrivateFlowFault::GoAway => h3_connection
+                                    .send_goaway(connection, stream_id)
+                                    .map_err(|_| FoundationError::PostAuthFlowRejected)?,
+                                PrivateFlowFault::None
+                                | PrivateFlowFault::Non200
+                                | PrivateFlowFault::SecondRequest => {}
+                            }
+                            self.phase = DriverFlowPhase::Open;
+                            self.send_open_success()?;
+                        }
+                        Err(quiche::h3::Error::StreamBlocked) => {
+                            #[cfg(test)]
+                            self.spy
+                                .header_stream_blocked_results
+                                .fetch_add(1, Ordering::AcqRel);
+                            return Ok(());
+                        }
+                        Err(_) => return Err(FoundationError::PostAuthFlowRejected),
+                    }
+                }
+                DriverFlowPhase::Open => {
+                    self.check_peer_stop(connection)?;
+                    self.drive_pending_outbound(connection, h3_connection)?;
+                    self.pump_inbound(connection, h3_connection)?;
+                }
+                DriverFlowPhase::Dormant
+                | DriverFlowPhase::ClientWaitingResponse
+                | DriverFlowPhase::ServerWaitingRequest
+                | DriverFlowPhase::Complete => {}
+                DriverFlowPhase::Failed => {
+                    return Err(FoundationError::PostAuthFlowRejected);
+                }
+            }
+            self.flush_pending_inbound()?;
+            self.maybe_publish_eof_and_complete();
+            Ok(())
+        }
+
+        pub(super) fn handle_event(
+            &mut self,
+            current: &AuthenticatedGeneration,
+            connection: &mut quiche::Connection,
+            h3_connection: &mut quiche::h3::Connection,
+            stream_id: u64,
+            event: quiche::h3::Event,
+        ) -> Result<(), FoundationError> {
+            if !self.route_is_open_for(current) {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            match (self.role, event) {
+                (Some(AuthRole::Server), quiche::h3::Event::Headers { list, more_frames })
+                    if self.phase == DriverFlowPhase::ServerWaitingRequest =>
+                {
+                    if !more_frames || !self.valid_request_headers(&list) {
+                        return Err(FoundationError::PostAuthFlowRejected);
+                    }
+                    self.stream_id = Some(stream_id);
+                    #[cfg(test)]
+                    {
+                        self.spy
+                            .request_streams_opened
+                            .fetch_add(1, Ordering::AcqRel);
+                        *self
+                            .spy
+                            .observed_authority
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                            self.authority.clone();
+                    }
+                    self.phase = DriverFlowPhase::ServerSendingResponse;
+                    Ok(())
+                }
+                (Some(AuthRole::Client), quiche::h3::Event::Headers { list, more_frames })
+                    if self.phase == DriverFlowPhase::ClientWaitingResponse =>
+                {
+                    self.require_stream(stream_id)?;
+                    if !more_frames || !Self::valid_response_headers(&list) {
+                        return Err(FoundationError::PostAuthFlowRejected);
+                    }
+                    self.phase = DriverFlowPhase::Open;
+                    self.send_open_success()
+                }
+                (_, quiche::h3::Event::Data) if self.phase == DriverFlowPhase::Open => {
+                    self.require_stream(stream_id)?;
+                    self.inbound_data_ready = true;
+                    self.pump_inbound(connection, h3_connection)
+                }
+                (_, quiche::h3::Event::Finished) if self.phase == DriverFlowPhase::Open => {
+                    self.require_stream(stream_id)?;
+                    if self.remote_eof_seen {
+                        return Err(FoundationError::PostAuthFlowRejected);
+                    }
+                    self.remote_eof_seen = true;
+                    self.pump_inbound(connection, h3_connection)?;
+                    self.flush_pending_inbound()?;
+                    self.maybe_publish_eof_and_complete();
+                    Ok(())
+                }
+                (_, quiche::h3::Event::Reset(_))
+                | (_, quiche::h3::Event::GoAway)
+                | (_, quiche::h3::Event::PriorityUpdate)
+                | (_, quiche::h3::Event::Headers { .. })
+                | (_, quiche::h3::Event::Data)
+                | (_, quiche::h3::Event::Finished) => Err(FoundationError::PostAuthFlowRejected),
+            }
+        }
+
+        fn send_open_success(&mut self) -> Result<(), FoundationError> {
+            self.open_response
+                .take()
+                .ok_or(FoundationError::PostAuthFlowRejected)?
+                .send(Ok(()))
+                .map_err(|_| FoundationError::PostAuthFlowRejected)
+        }
+
+        fn drive_pending_outbound(
+            &mut self,
+            connection: &mut quiche::Connection,
+            h3_connection: &mut quiche::h3::Connection,
+        ) -> Result<(), FoundationError> {
+            let Some(pending) = self.pending_outbound.take() else {
+                return Ok(());
+            };
+            if pending.response_is_closed() {
+                pending.fail(FoundationError::PostAuthFlowRejected);
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            let stream_id = self.bound_stream()?;
+            match pending {
+                PendingOutbound::Write {
+                    identity,
+                    chunk,
+                    offset,
+                    response,
+                } => {
+                    if !self.identity_matches(&identity) {
+                        let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                        return Err(FoundationError::PostAuthFlowRejected);
+                    }
+                    let suffix = &chunk.as_slice()[offset..];
+                    let suffix_len = suffix.len();
+                    #[cfg(test)]
+                    self.spy.body_send_calls.fetch_add(1, Ordering::AcqRel);
+                    match h3_connection.send_body(connection, stream_id, suffix, false) {
+                        Ok(written) if written > 0 && written <= suffix_len => {
+                            let next = offset + written;
+                            if next == chunk.len() {
+                                response
+                                    .send(Ok(()))
+                                    .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+                            } else {
+                                #[cfg(test)]
+                                self.spy.body_partial_writes.fetch_add(1, Ordering::AcqRel);
+                                self.pending_outbound = Some(PendingOutbound::Write {
+                                    identity,
+                                    chunk,
+                                    offset: next,
+                                    response,
+                                });
+                            }
+                        }
+                        Err(quiche::h3::Error::Done) => {
+                            #[cfg(test)]
+                            self.spy.body_done_results.fetch_add(1, Ordering::AcqRel);
+                            self.pending_outbound = Some(PendingOutbound::Write {
+                                identity,
+                                chunk,
+                                offset,
+                                response,
+                            });
+                        }
+                        Err(quiche::h3::Error::StreamBlocked) => {
+                            self.pending_outbound = Some(PendingOutbound::Write {
+                                identity,
+                                chunk,
+                                offset,
+                                response,
+                            });
+                        }
+                        Ok(_) | Err(_) => {
+                            let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                            return Err(FoundationError::PostAuthFlowRejected);
+                        }
+                    }
+                }
+                PendingOutbound::Finish { identity, response } => {
+                    if !self.identity_matches(&identity) {
+                        let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                        return Err(FoundationError::PostAuthFlowRejected);
+                    }
+                    #[cfg(test)]
+                    self.spy.body_send_calls.fetch_add(1, Ordering::AcqRel);
+                    match h3_connection.send_body(connection, stream_id, &[], true) {
+                        Ok(0) => {
+                            self.local_fin_accepted = true;
+                            self.maybe_publish_eof_and_complete();
+                            response
+                                .send(Ok(()))
+                                .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+                        }
+                        Err(quiche::h3::Error::Done) => {
+                            #[cfg(test)]
+                            self.spy.body_done_results.fetch_add(1, Ordering::AcqRel);
+                            self.pending_outbound =
+                                Some(PendingOutbound::Finish { identity, response });
+                        }
+                        Err(quiche::h3::Error::StreamBlocked) => {
+                            self.pending_outbound =
+                                Some(PendingOutbound::Finish { identity, response });
+                        }
+                        Ok(_) | Err(_) => {
+                            let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                            return Err(FoundationError::PostAuthFlowRejected);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        fn pump_inbound(
+            &mut self,
+            connection: &mut quiche::Connection,
+            h3_connection: &mut quiche::h3::Connection,
+        ) -> Result<(), FoundationError> {
+            while self.inbound_data_ready && self.pending_inbound.is_none() {
+                let stream_id = self.bound_stream()?;
+                let mut chunk = PrivateFlowChunk::empty_boxed();
+                loop {
+                    #[cfg(test)]
+                    self.spy.recv_body_calls.fetch_add(1, Ordering::AcqRel);
+                    match h3_connection.recv_body(connection, stream_id, chunk.spare_capacity_mut())
+                    {
+                        Ok(length) => {
+                            chunk.record_received(length)?;
+                            if chunk.len() == FLOW_CHUNK_LIMIT {
+                                self.inbound_data_ready = true;
+                                break;
+                            }
+                        }
+                        Err(quiche::h3::Error::Done) => {
+                            self.inbound_data_ready = false;
+                            break;
+                        }
+                        Err(_) => return Err(FoundationError::PostAuthFlowRejected),
+                    }
+                }
+                if chunk.is_empty() {
+                    break;
+                }
+                let mailbox = self
+                    .mailbox
+                    .as_ref()
+                    .ok_or(FoundationError::PostAuthFlowRejected)?;
+                if let Err(chunk) = mailbox.try_offer(chunk) {
+                    self.pending_inbound = Some(chunk);
+                    break;
+                }
+            }
+            Ok(())
+        }
+
+        fn flush_pending_inbound(&mut self) -> Result<(), FoundationError> {
+            let Some(chunk) = self.pending_inbound.take() else {
+                return Ok(());
+            };
+            let mailbox = self
+                .mailbox
+                .as_ref()
+                .ok_or(FoundationError::PostAuthFlowRejected)?;
+            if let Err(chunk) = mailbox.try_offer(chunk) {
+                self.pending_inbound = Some(chunk);
+            }
+            Ok(())
+        }
+
+        fn maybe_publish_eof_and_complete(&mut self) {
+            if !self.remote_eof_seen || self.pending_inbound.is_some() {
+                return;
+            }
+            let Some(mailbox) = self.mailbox.as_ref() else {
+                return;
+            };
+            if !mailbox.slot_is_empty() {
+                return;
+            }
+            if self.local_fin_accepted && self.pending_outbound.is_none() {
+                let Some(mailbox) = self.mailbox.take() else {
+                    return;
+                };
+                let identity = self.identity.as_ref().and_then(Weak::upgrade);
+                self.phase = DriverFlowPhase::Complete;
+                if let Some(authority) = self.authority.as_mut() {
+                    authority.clear();
+                }
+                self.authority = None;
+                self.proof = None;
+                self.identity = None;
+                self.stream_id = None;
+                if let Some(identity) = identity {
+                    identity.mark_terminal();
+                }
+                mailbox.mark_eof();
+            } else if let Some(mailbox) = self.mailbox.as_ref() {
+                mailbox.mark_eof();
+            }
+        }
+
+        fn check_peer_stop(
+            &mut self,
+            connection: &mut quiche::Connection,
+        ) -> Result<(), FoundationError> {
+            match connection.stream_capacity(self.bound_stream()?) {
+                Ok(_) | Err(quiche::Error::Done) => Ok(()),
+                Err(quiche::Error::StreamStopped(_) | quiche::Error::StreamReset(_)) => {
+                    Err(FoundationError::PostAuthFlowRejected)
+                }
+                Err(quiche::Error::InvalidStreamState(_)) if self.local_fin_accepted => Ok(()),
+                Err(_) => Err(FoundationError::PostAuthFlowRejected),
+            }
+        }
+
+        fn bound_stream(&self) -> Result<u64, FoundationError> {
+            self.stream_id.ok_or(FoundationError::PostAuthFlowRejected)
+        }
+
+        fn require_stream(&self, stream_id: u64) -> Result<(), FoundationError> {
+            if self.bound_stream()? != stream_id {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            Ok(())
+        }
+
+        pub(super) fn pending_response_is_closed(&self) -> bool {
+            self.pending_outbound
+                .as_ref()
+                .is_some_and(PendingOutbound::response_is_closed)
+        }
+
+        pub(super) fn aborted(&self) -> bool {
+            self.identity
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .is_none_or(|identity| identity.is_aborted())
+        }
+
+        pub(super) fn fail_closed(&mut self, error: FoundationError) {
+            let identity = self.identity.as_ref().and_then(Weak::upgrade);
+            let open_response = self.open_response.take();
+            let pending_response = self
+                .pending_outbound
+                .take()
+                .map(PendingOutbound::into_response);
+            self.pending_inbound.take();
+            let mailbox = self.mailbox.take();
+            self.phase = DriverFlowPhase::Failed;
+            if let Some(mailbox) = mailbox.as_ref() {
+                mailbox.fail_closed(error);
+            }
+            if let Some(authority) = self.authority.as_mut() {
+                authority.clear();
+            }
+            self.authority = None;
+            self.stream_id = None;
+            self.inbound_data_ready = false;
+            self.local_fin_accepted = true;
+            self.remote_eof_seen = true;
+            self.proof = None;
+            self.identity = None;
+            if let Some(identity) = identity {
+                identity.mark_terminal();
+            }
+            if let Some(response) = open_response {
+                let _ = response.send(Err(error));
+            }
+            if let Some(response) = pending_response {
+                let _ = response.send(Err(error));
+            }
+        }
+
+        pub(super) fn valid_request_headers<T: NameValue>(&self, headers: &[T]) -> bool {
+            let Some(authority) = self.authority.as_ref() else {
+                return false;
+            };
+            headers.len() == 2
+                && headers[0].name() == b":method"
+                && headers[0].value() == b"CONNECT"
+                && headers[1].name() == b":authority"
+                && headers[1].value() == authority.as_bytes()
+        }
+
+        pub(super) fn valid_response_headers<T: NameValue>(headers: &[T]) -> bool {
+            headers.len() == 1 && headers[0].name() == b":status" && headers[0].value() == b"200"
+        }
+    }
+
+    impl Drop for PrivateClassicConnectDriver {
+        fn drop(&mut self) {
+            if self.phase != DriverFlowPhase::Complete {
+                self.fail_closed(FoundationError::PostAuthFlowRejected);
+            }
+        }
+    }
+}
+
 use generation_auth::{
-    bind_authenticated_lease, lease_command_proof, AuthenticatedConnectionLease,
+    bind_authenticated_lease, lease_command_proof, AuthRole, AuthenticatedConnectionLease,
     AuthenticatedGeneration, AuthenticatedLeaseProof, GenerationAuth,
     TrustedClientGenerationAuthInputs, TrustedTimeAnchor,
 };
 
 use classic_connect::{ClassicConnectOutcome, ClassicConnectReference, FlowBuffer};
 
+use private_classic_connect::{
+    CanonicalLoopbackAuthority, DriverFlowEndpoint, FlowLeaseGuard, PrivateClassicConnectDriver,
+    PrivateClassicConnectFlow, PrivateFlowChunk,
+};
+
 #[cfg(test)]
 use classic_connect::{ReferenceFault as ClassicConnectFault, ReferenceSpy as ClassicConnectSpy};
+
+#[cfg(test)]
+use private_classic_connect::{PrivateFlowFault, PrivateFlowSpy};
 
 #[cfg(test)]
 use generation_auth::{
     bounded_body_progress, exact_body_finished, request_header_pairs, response_header_pairs,
     test_client_role_yaml, test_server_role_yaml, test_trusted_inputs, valid_request_headers,
-    valid_response_headers, AuthRole, ReferenceFault, ReferenceOutcome,
-    TrustedServerGenerationAuthInputs,
+    valid_response_headers, ReferenceFault, ReferenceOutcome, TrustedServerGenerationAuthInputs,
 };
 
 #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
 use generation_auth::{record_bounded_send_result, test_authenticated_lease, BodySendState};
+
+enum ClassicConnectRouteState {
+    Dormant { role: Option<AuthRole> },
+    Reference(Box<ClassicConnectReference>),
+    Private(Box<PrivateClassicConnectDriver>),
+    Consumed,
+}
+
+struct ClassicConnectRoute {
+    state: ClassicConnectRouteState,
+    #[cfg(test)]
+    reference_spy: ClassicConnectSpy,
+    #[cfg(test)]
+    private_spy: PrivateFlowSpy,
+}
+
+impl ClassicConnectRoute {
+    fn new(role: Option<AuthRole>) -> Self {
+        Self {
+            state: ClassicConnectRouteState::Dormant { role },
+            #[cfg(test)]
+            reference_spy: ClassicConnectSpy::new(),
+            #[cfg(test)]
+            private_spy: PrivateFlowSpy::new(),
+        }
+    }
+
+    fn arm_reference(
+        &mut self,
+        current: &AuthenticatedGeneration,
+        proof: AuthenticatedLeaseProof,
+        outbound: FlowBuffer,
+        response: oneshot::Sender<Result<ClassicConnectOutcome, FoundationError>>,
+        #[cfg(test)] fault: ClassicConnectFault,
+    ) -> Result<(), FoundationError> {
+        let prior = std::mem::replace(&mut self.state, ClassicConnectRouteState::Consumed);
+        let ClassicConnectRouteState::Dormant { role } = prior else {
+            self.state = prior;
+            let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+            return Err(FoundationError::PostAuthFlowRejected);
+        };
+        #[cfg(test)]
+        let mut reference = ClassicConnectReference::new_with_spy(role, self.reference_spy.clone());
+        #[cfg(not(test))]
+        let mut reference = ClassicConnectReference::new(role);
+        let result = reference.arm(
+            current,
+            proof,
+            outbound,
+            response,
+            #[cfg(test)]
+            fault,
+        );
+        self.state = ClassicConnectRouteState::Reference(Box::new(reference));
+        result
+    }
+
+    fn arm_private(
+        &mut self,
+        current: &AuthenticatedGeneration,
+        proof: AuthenticatedLeaseProof,
+        endpoint: DriverFlowEndpoint,
+        authority: CanonicalLoopbackAuthority,
+        response: oneshot::Sender<Result<(), FoundationError>>,
+        #[cfg(test)] fault: PrivateFlowFault,
+    ) -> Result<(), FoundationError> {
+        let prior = std::mem::replace(&mut self.state, ClassicConnectRouteState::Consumed);
+        let ClassicConnectRouteState::Dormant { role } = prior else {
+            self.state = prior;
+            let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+            return Err(FoundationError::PostAuthFlowRejected);
+        };
+        #[cfg(test)]
+        let mut private = PrivateClassicConnectDriver::new_with_spy(role, self.private_spy.clone());
+        #[cfg(not(test))]
+        let mut private = PrivateClassicConnectDriver::new(role);
+        let result = private.arm(
+            current,
+            proof,
+            endpoint,
+            authority,
+            response,
+            #[cfg(test)]
+            fault,
+        );
+        self.state = ClassicConnectRouteState::Private(Box::new(private));
+        result
+    }
+
+    fn has_attempt(&self) -> bool {
+        match &self.state {
+            ClassicConnectRouteState::Reference(reference) => reference.has_attempt(),
+            ClassicConnectRouteState::Private(private) => private.has_attempt(),
+            ClassicConnectRouteState::Dormant { .. } | ClassicConnectRouteState::Consumed => false,
+        }
+    }
+
+    fn route_is_open_for(&self, current: &AuthenticatedGeneration) -> bool {
+        match &self.state {
+            ClassicConnectRouteState::Reference(reference) => reference.route_is_open_for(current),
+            ClassicConnectRouteState::Private(private) => private.route_is_open_for(current),
+            ClassicConnectRouteState::Dormant { .. } | ClassicConnectRouteState::Consumed => false,
+        }
+    }
+
+    fn active_lease_notification(&self) -> Option<Arc<Notify>> {
+        match &self.state {
+            ClassicConnectRouteState::Reference(reference) => reference.active_lease_notification(),
+            ClassicConnectRouteState::Private(private) => private.active_lease_notification(),
+            ClassicConnectRouteState::Dormant { .. } | ClassicConnectRouteState::Consumed => None,
+        }
+    }
+
+    fn active_abort_notification(&self) -> Option<Arc<Notify>> {
+        match &self.state {
+            ClassicConnectRouteState::Private(private) => private.active_abort_notification(),
+            ClassicConnectRouteState::Dormant { .. }
+            | ClassicConnectRouteState::Reference(_)
+            | ClassicConnectRouteState::Consumed => None,
+        }
+    }
+
+    fn inbound_drained_notification(&self) -> Option<Arc<Notify>> {
+        match &self.state {
+            ClassicConnectRouteState::Private(private) => private.inbound_drained_notification(),
+            ClassicConnectRouteState::Dormant { .. }
+            | ClassicConnectRouteState::Reference(_)
+            | ClassicConnectRouteState::Consumed => None,
+        }
+    }
+
+    fn drive_outbound(
+        &mut self,
+        current: &AuthenticatedGeneration,
+        connection: &mut quiche::Connection,
+        h3_connection: &mut quiche::h3::Connection,
+    ) -> Result<(), FoundationError> {
+        match &mut self.state {
+            ClassicConnectRouteState::Reference(reference) => {
+                reference.drive_outbound(current, connection, h3_connection)
+            }
+            ClassicConnectRouteState::Private(private) => {
+                private.drive_io(current, connection, h3_connection)
+            }
+            ClassicConnectRouteState::Dormant { .. } | ClassicConnectRouteState::Consumed => Ok(()),
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        current: &AuthenticatedGeneration,
+        connection: &mut quiche::Connection,
+        h3_connection: &mut quiche::h3::Connection,
+        stream_id: u64,
+        event: quiche::h3::Event,
+    ) -> Result<(), FoundationError> {
+        match &mut self.state {
+            ClassicConnectRouteState::Reference(reference) => {
+                reference.handle_event(current, connection, h3_connection, stream_id, event)
+            }
+            ClassicConnectRouteState::Private(private) => {
+                private.handle_event(current, connection, h3_connection, stream_id, event)
+            }
+            ClassicConnectRouteState::Dormant { .. } | ClassicConnectRouteState::Consumed => {
+                Err(FoundationError::PostAuthFlowRejected)
+            }
+        }
+    }
+
+    fn queue_private_write(
+        &mut self,
+        identity: Arc<FlowLeaseGuard>,
+        chunk: Box<PrivateFlowChunk>,
+        response: oneshot::Sender<Result<(), FoundationError>>,
+    ) -> Result<(), FoundationError> {
+        match &mut self.state {
+            ClassicConnectRouteState::Private(private) => {
+                private.queue_write(identity, chunk, response)
+            }
+            _ => {
+                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                Err(FoundationError::PostAuthFlowRejected)
+            }
+        }
+    }
+
+    fn queue_private_finish(
+        &mut self,
+        identity: Arc<FlowLeaseGuard>,
+        response: oneshot::Sender<Result<(), FoundationError>>,
+    ) -> Result<(), FoundationError> {
+        match &mut self.state {
+            ClassicConnectRouteState::Private(private) => private.queue_finish(identity, response),
+            _ => {
+                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                Err(FoundationError::PostAuthFlowRejected)
+            }
+        }
+    }
+
+    fn validates_private_cancel(&self, identity: &Arc<FlowLeaseGuard>) -> bool {
+        matches!(
+            &self.state,
+            ClassicConnectRouteState::Private(private) if private.validates_cancel(identity)
+        )
+    }
+
+    fn private_pending_response_is_closed(&self) -> bool {
+        matches!(
+            &self.state,
+            ClassicConnectRouteState::Private(private) if private.pending_response_is_closed()
+        )
+    }
+
+    fn private_aborted(&self) -> bool {
+        matches!(
+            &self.state,
+            ClassicConnectRouteState::Private(private) if private.aborted()
+        )
+    }
+
+    fn reap_completed_private_flow(&mut self) {
+        let completed = matches!(
+            &self.state,
+            ClassicConnectRouteState::Private(private) if private.is_complete()
+        );
+        if completed {
+            let completed = std::mem::replace(&mut self.state, ClassicConnectRouteState::Consumed);
+            drop(completed);
+        }
+    }
+
+    fn fail_closed(&mut self) {
+        match &mut self.state {
+            ClassicConnectRouteState::Reference(reference) => reference.fail_closed(),
+            ClassicConnectRouteState::Private(private) => {
+                private.fail_closed(FoundationError::PostAuthFlowRejected);
+            }
+            ClassicConnectRouteState::Dormant { .. } | ClassicConnectRouteState::Consumed => {}
+        }
+    }
+
+    #[cfg(test)]
+    fn test_spy(&self) -> ClassicConnectSpy {
+        self.reference_spy.clone()
+    }
+
+    #[cfg(test)]
+    fn test_private_spy(&self) -> PrivateFlowSpy {
+        self.private_spy.clone()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FoundationError {
@@ -3702,6 +5400,29 @@ enum DriverCommand {
         #[cfg(test)]
         fault: ClassicConnectFault,
     },
+    ArmPrivateClassicConnect {
+        proof: AuthenticatedLeaseProof,
+        endpoint: DriverFlowEndpoint,
+        authority: CanonicalLoopbackAuthority,
+        response: oneshot::Sender<Result<(), FoundationError>>,
+        #[cfg(test)]
+        real_header_pressure: bool,
+        #[cfg(test)]
+        fault: PrivateFlowFault,
+    },
+    PrivateFlowWrite {
+        identity: Arc<FlowLeaseGuard>,
+        chunk: Box<PrivateFlowChunk>,
+        response: oneshot::Sender<Result<(), FoundationError>>,
+    },
+    PrivateFlowFinish {
+        identity: Arc<FlowLeaseGuard>,
+        response: oneshot::Sender<Result<(), FoundationError>>,
+    },
+    PrivateFlowCancel {
+        identity: Arc<FlowLeaseGuard>,
+        response: oneshot::Sender<Result<(), FoundationError>>,
+    },
     #[cfg(test)]
     Acquire {
         response: oneshot::Sender<ConnectionGeneration>,
@@ -3746,6 +5467,8 @@ struct SingleIdentityQuicManager {
     driver_task: Option<JoinHandle<Result<DriverExit, FoundationError>>>,
     #[cfg(test)]
     classic_connect_spy: ClassicConnectSpy,
+    #[cfg(test)]
+    private_flow_spy: PrivateFlowSpy,
 }
 
 impl SingleIdentityQuicManager {
@@ -3757,6 +5480,8 @@ impl SingleIdentityQuicManager {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_LIMIT);
         #[cfg(test)]
         let classic_connect_spy = driver.classic_connect.test_spy();
+        #[cfg(test)]
+        let private_flow_spy = driver.classic_connect.test_private_spy();
         let driver_task = tokio::spawn(async move {
             let _task_permit = task_permit;
             driver.run(command_rx, generation).await
@@ -3767,7 +5492,59 @@ impl SingleIdentityQuicManager {
             driver_task: Some(driver_task),
             #[cfg(test)]
             classic_connect_spy,
+            #[cfg(test)]
+            private_flow_spy,
         })
+    }
+
+    fn enqueue_private_flow(
+        &self,
+        proof: AuthenticatedLeaseProof,
+        endpoint: DriverFlowEndpoint,
+        authority: CanonicalLoopbackAuthority,
+        response: oneshot::Sender<Result<(), FoundationError>>,
+    ) -> Result<(), FoundationError> {
+        #[cfg(test)]
+        self.private_flow_spy.record_arm_command();
+        let command_tx = self
+            .command_tx
+            .as_ref()
+            .ok_or(FoundationError::ManagerClosed)?;
+        try_send_driver_command(
+            command_tx,
+            DriverCommand::ArmPrivateClassicConnect {
+                proof,
+                endpoint,
+                authority,
+                response,
+                #[cfg(test)]
+                real_header_pressure: self.private_flow_spy.take_real_header_pressure_request(),
+                #[cfg(test)]
+                fault: self.private_flow_spy.take_requested_fault(),
+            },
+        )
+    }
+
+    #[cfg(test)]
+    async fn arm_private_peer(
+        &self,
+        lease: AuthenticatedConnectionLease,
+        authority: CanonicalLoopbackAuthority,
+    ) -> Result<PrivateClassicConnectFlow, FoundationError> {
+        let command_tx = self
+            .command_tx
+            .as_ref()
+            .ok_or(FoundationError::ManagerClosed)?
+            .clone();
+        let proof = lease_command_proof(&lease);
+        let (flow, endpoint) = private_classic_connect::new_flow_handle(lease, command_tx);
+        let (response_tx, response_rx) = oneshot::channel();
+        self.enqueue_private_flow(proof, endpoint, authority, response_tx)?;
+        timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, response_rx)
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::DriverStopped)??;
+        Ok(flow)
     }
 
     async fn acquire_authenticated(&self) -> Result<AuthenticatedConnectionLease, FoundationError> {
@@ -3964,8 +5741,13 @@ impl SingleIdentityQuicManager {
                 Err(_) => Err(FoundationError::DriverTimeout),
             };
         drop(command_tx);
-        let join_result = self.join_driver().await.map(|_| ());
-        send_result.and(join_result)
+        match self.join_driver().await {
+            Err(error) => Err(error),
+            Ok(_) if send_result == Err(FoundationError::DriverTimeout) => {
+                Err(FoundationError::DriverTimeout)
+            }
+            Ok(_) => Ok(()),
+        }
     }
 
     async fn join_driver(&mut self) -> Result<DriverExit, FoundationError> {
@@ -4104,6 +5886,39 @@ impl ClientRuntimePolicyOwner {
             Some(manager) => manager.acquire_authenticated().await,
             None => Err(FoundationError::ManagerClosed),
         };
+        if result.is_err() {
+            self.close_manager_after_failure().await;
+        }
+        result
+    }
+
+    async fn open_loopback_classic_connect(
+        &mut self,
+        lease: AuthenticatedConnectionLease,
+        target: SocketAddr,
+    ) -> Result<PrivateClassicConnectFlow, FoundationError> {
+        let authority = CanonicalLoopbackAuthority::from_socket_addr(target)?;
+        let result = async {
+            let manager = self
+                .manager
+                .as_ref()
+                .ok_or(FoundationError::ManagerClosed)?;
+            let command_tx = manager
+                .command_tx
+                .as_ref()
+                .ok_or(FoundationError::ManagerClosed)?
+                .clone();
+            let proof = lease_command_proof(&lease);
+            let (flow, endpoint) = private_classic_connect::new_flow_handle(lease, command_tx);
+            let (response_tx, response_rx) = oneshot::channel();
+            manager.enqueue_private_flow(proof, endpoint, authority, response_tx)?;
+            timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, response_rx)
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?
+                .map_err(|_| FoundationError::DriverStopped)??;
+            Ok(flow)
+        }
+        .await;
         if result.is_err() {
             self.close_manager_after_failure().await;
         }
@@ -4353,7 +6168,7 @@ struct FoundationDriver {
     #[cfg(test)]
     authentication_hold: Option<Arc<AtomicBool>>,
     auth_runtime: DriverAuthRuntime,
-    classic_connect: ClassicConnectReference,
+    classic_connect: ClassicConnectRoute,
 }
 
 enum DriverAuthRuntime {
@@ -4381,6 +6196,26 @@ impl DriverAuthRuntime {
 }
 
 impl FoundationDriver {
+    #[cfg(test)]
+    fn apply_real_private_header_pressure(&mut self) -> Result<(), FoundationError> {
+        let capacity = self
+            .connection
+            .stream_capacity(2)
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        let filler = [42_u8; 16_384];
+        let length = capacity.min(filler.len());
+        if length == 0
+            || self
+                .connection
+                .stream_send(2, &filler[..length], false)
+                .map_err(|_| FoundationError::PostAuthFlowRejected)?
+                != length
+        {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        Ok(())
+    }
+
     fn new(
         socket: UdpSocket,
         peer_address: SocketAddr,
@@ -4449,7 +6284,7 @@ impl FoundationDriver {
         }
 
         let classic_connect =
-            ClassicConnectReference::new(auth_runtime.generation().map(GenerationAuth::role));
+            ClassicConnectRoute::new(auth_runtime.generation().map(GenerationAuth::role));
         Ok(Self {
             socket,
             local_address,
@@ -4543,6 +6378,9 @@ impl FoundationDriver {
             }
             self.enforce_authenticated_hard_deadline()?;
             self.enforce_active_flow_lease()?;
+            if self.classic_connect.private_pending_response_is_closed() {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
             self.initialize_h3()?;
             #[cfg(test)]
             self.send_queued_pre_auth_request()?;
@@ -4557,6 +6395,7 @@ impl FoundationDriver {
             self.flush_packets(&mut send_buffer).await?;
             self.enforce_authenticated_hard_deadline()?;
             self.enforce_active_flow_lease()?;
+            self.classic_connect.reap_completed_private_flow();
 
             if let Some(response) = pending_authenticated_acquire.take() {
                 self.enforce_authenticated_hard_deadline()?;
@@ -4598,6 +6437,15 @@ impl FoundationDriver {
                                 ));
                                 return Err(FoundationError::PreAuthApplicationActivity);
                             }
+                            Some(DriverCommand::ArmPrivateClassicConnect { response, .. })
+                            | Some(DriverCommand::PrivateFlowWrite { response, .. })
+                            | Some(DriverCommand::PrivateFlowFinish { response, .. })
+                            | Some(DriverCommand::PrivateFlowCancel { response, .. }) => {
+                                let _ = response.send(Err(
+                                    FoundationError::PreAuthApplicationActivity,
+                                ));
+                                return Err(FoundationError::PreAuthApplicationActivity);
+                            }
                             #[cfg(test)]
                             Some(DriverCommand::Acquire { response }) => {
                                 let _ = response.send(generation);
@@ -4625,6 +6473,9 @@ impl FoundationDriver {
 
             let hard_deadline = self.authenticated_hard_deadline();
             let active_lease_notification = self.classic_connect.active_lease_notification();
+            let active_abort_notification = self.classic_connect.active_abort_notification();
+            let inbound_drained_notification = self.classic_connect.inbound_drained_notification();
+            self.enforce_active_flow_lease()?;
             #[cfg(test)]
             if active_lease_notification.is_some() {
                 self.classic_connect.test_spy().record_lease_wait_armed();
@@ -4639,6 +6490,18 @@ impl FoundationDriver {
             };
             let active_lease_wait = async move {
                 match active_lease_notification {
+                    Some(notification) => notification.notified().await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            let active_abort_wait = async move {
+                match active_abort_notification {
+                    Some(notification) => notification.notified().await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            let inbound_drained_wait = async move {
+                match inbound_drained_notification {
                     Some(notification) => notification.notified().await,
                     None => std::future::pending::<()>().await,
                 }
@@ -4660,6 +6523,13 @@ impl FoundationDriver {
                     }
                     active_lease_result?;
                 }
+                _ = active_abort_wait => {
+                    if self.classic_connect.private_aborted() {
+                        self.revoke_authenticated_state();
+                        return Err(FoundationError::PostAuthFlowRejected);
+                    }
+                }
+                _ = inbound_drained_wait => {}
                 command = command_rx.recv() => {
                     match command {
                         Some(DriverCommand::AcquireAuthenticated { response }) => {
@@ -4687,7 +6557,7 @@ impl FoundationDriver {
                                 let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
                                 return Err(FoundationError::PostAuthFlowRejected);
                             }
-                            self.classic_connect.arm(
+                            self.classic_connect.arm_reference(
                                 &authenticated,
                                 proof,
                                 *outbound,
@@ -4695,6 +6565,59 @@ impl FoundationDriver {
                                 #[cfg(test)]
                                 fault,
                             )?;
+                        }
+                        Some(DriverCommand::ArmPrivateClassicConnect {
+                            proof,
+                            endpoint,
+                            authority,
+                            response,
+                            #[cfg(test)]
+                            real_header_pressure,
+                            #[cfg(test)]
+                            fault,
+                        }) => {
+                            let Some(authenticated) = self.authenticated_generation() else {
+                                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                                return Err(FoundationError::PostAuthFlowRejected);
+                            };
+                            #[cfg(test)]
+                            if real_header_pressure {
+                                self.apply_real_private_header_pressure()?;
+                            }
+                            self.classic_connect.arm_private(
+                                &authenticated,
+                                proof,
+                                endpoint,
+                                authority,
+                                response,
+                                #[cfg(test)]
+                                fault,
+                            )?;
+                        }
+                        Some(DriverCommand::PrivateFlowWrite {
+                            identity,
+                            chunk,
+                            response,
+                        }) => {
+                            self.classic_connect
+                                .queue_private_write(identity, chunk, response)?;
+                        }
+                        Some(DriverCommand::PrivateFlowFinish { identity, response }) => {
+                            self.classic_connect
+                                .queue_private_finish(identity, response)?;
+                        }
+                        Some(DriverCommand::PrivateFlowCancel { identity, response }) => {
+                            if !self.classic_connect.validates_private_cancel(&identity) {
+                                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                                return Err(FoundationError::PostAuthFlowRejected);
+                            }
+                            let close_result = self.close_connection(&mut send_buffer).await;
+                            let response_result = match &close_result {
+                                Ok(_) => Ok(()),
+                                Err(error) => Err(*error),
+                            };
+                            let _ = response.send(response_result);
+                            return close_result;
                         }
                         #[cfg(test)]
                         Some(DriverCommand::Acquire { response }) => {
@@ -4749,6 +6672,7 @@ impl FoundationDriver {
         send_buffer: &mut [u8; MAX_UDP_PAYLOAD_BYTES],
     ) -> Result<DriverExit, FoundationError> {
         // This promises bounded reclamation, not a graceful QUIC drain.
+        self.revoke_authenticated_state();
         self.connection
             .close(true, 0, b"")
             .map_err(|_| FoundationError::ConnectionUnavailable)?;
@@ -6013,6 +7937,23 @@ mod tests {
         pin: ClientRoleAdapterPin,
         server_name: &str,
     ) -> ClientRoleAdapterPair {
+        start_client_role_adapter_pair_with_server_connection_window(
+            server_task_budget,
+            ca,
+            pin,
+            server_name,
+            None,
+        )
+        .await
+    }
+
+    async fn start_client_role_adapter_pair_with_server_connection_window(
+        server_task_budget: &ConnectionTaskBudget,
+        ca: ClientRoleAdapterCa,
+        pin: ClientRoleAdapterPin,
+        server_name: &str,
+        server_connection_window: Option<u64>,
+    ) -> ClientRoleAdapterPair {
         let temp = fixed_ok(
             TempDir::new(),
             "create client role adapter certificate directory",
@@ -6050,6 +7991,11 @@ mod tests {
             bounded_self_signed_loopback_quic_config(),
             "build client role adapter server config",
         );
+        if let Some(window) = server_connection_window {
+            server_config.set_initial_max_data(window);
+            server_config.set_max_connection_window(window);
+            server_config.set_initial_max_stream_data_uni(window.saturating_mul(2));
+        }
         fixed_ok(
             server_config.load_cert_chain_from_pem_file(fixed_some(
                 cert_path.to_str(),
@@ -6141,6 +8087,64 @@ mod tests {
         let (client_close, server_close) = tokio::join!(pair.client.close(), pair.server.close());
         fixed_ok(client_close, "close client role adapter client");
         fixed_ok(server_close, "close client role adapter server");
+    }
+
+    async fn open_private_flow_pair(
+        pair: &mut ClientRoleAdapterPair,
+        target: SocketAddr,
+    ) -> (PrivateClassicConnectFlow, PrivateClassicConnectFlow) {
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.client.receive_observation()).await,
+                "bound private-flow client observation",
+            ),
+            "receive private-flow client observation",
+        );
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
+                "bound private-flow server observation",
+            ),
+            "receive private-flow server observation",
+        );
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "acquire private-flow client lease");
+        let server_lease = fixed_ok(server_lease, "acquire private-flow server lease");
+        let authority = fixed_ok(
+            CanonicalLoopbackAuthority::from_socket_addr(target),
+            "canonicalize private-flow target",
+        );
+        let (client_flow, server_flow) = tokio::join!(
+            pair.client
+                .open_loopback_classic_connect(client_lease, target),
+            pair.server.arm_private_peer(server_lease, authority),
+        );
+        (
+            fixed_ok(client_flow, "open private-flow client handle"),
+            fixed_ok(server_flow, "arm private-flow server handle"),
+        )
+    }
+
+    async fn receive_private_exact(
+        reader: &mut private_classic_connect::PrivateClassicConnectReadHalf,
+        output: &mut [u8],
+    ) {
+        let mut offset = 0;
+        while offset < output.len() {
+            let chunk = fixed_some(
+                fixed_ok(reader.receive_chunk().await, "receive private-flow chunk"),
+                "private-flow EOF before exact body",
+            );
+            let end = offset
+                .checked_add(chunk.len())
+                .filter(|end| *end <= output.len());
+            let end = fixed_some(end, "private-flow body exceeded exact output");
+            output[offset..end].copy_from_slice(chunk.as_slice());
+            offset = end;
+        }
     }
 
     async fn start_verified_bootstrap_pair(
@@ -8449,6 +10453,1414 @@ mod tests {
         );
         assert_eq!(test_override.receipt_max_frame_size(), 1);
         assert_eq!(test_override.receipt_max_concurrent_flows(), 2);
+    }
+
+    #[test]
+    fn t027c2a_owner_open_consumes_a_lease_and_returns_the_private_flow_handle() {
+        async fn contract(
+            owner: &mut ClientRuntimePolicyOwner,
+            lease: AuthenticatedConnectionLease,
+            target: SocketAddr,
+        ) {
+            let flow = owner
+                .open_loopback_classic_connect(lease, target)
+                .await
+                .expect("open private loopback classic CONNECT flow");
+            let _: private_classic_connect::PrivateClassicConnectFlow = flow;
+        }
+
+        let _compile_contract = contract;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_foreign_owner_lease_fails_before_connect_io_and_reclaims() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire foreign-owner private-flow test lock",
+        );
+        let source_server_task_budget = ConnectionTaskBudget::new();
+        let target_server_task_budget = ConnectionTaskBudget::new();
+        let mut source = start_client_role_adapter_pair(
+            &source_server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+        )
+        .await;
+        let mut target = start_client_role_adapter_pair(
+            &target_server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+        )
+        .await;
+        for pair in [&mut source, &mut target] {
+            fixed_some(
+                fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.client.receive_observation()).await,
+                    "bound foreign-owner client observation",
+                ),
+                "receive foreign-owner client observation",
+            );
+            fixed_some(
+                fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
+                    "bound foreign-owner server observation",
+                ),
+                "receive foreign-owner server observation",
+            );
+        }
+
+        let source_spy = fixed_some(
+            source.client.manager.as_ref(),
+            "read foreign-owner source manager",
+        )
+        .private_flow_spy
+        .clone();
+        let target_spy = fixed_some(
+            target.client.manager.as_ref(),
+            "read foreign-owner target manager",
+        )
+        .private_flow_spy
+        .clone();
+        let target_server_spy = target.server.private_flow_spy.clone();
+        let source_lease_permits = Arc::clone(
+            &fixed_some(
+                source.client.manager.as_ref(),
+                "read foreign-owner source permits",
+            )
+            .lease_permits,
+        );
+        let target_lease_permits = Arc::clone(
+            &fixed_some(
+                target.client.manager.as_ref(),
+                "read foreign-owner target permits",
+            )
+            .lease_permits,
+        );
+        let source_lease = fixed_ok(
+            source.client.acquire_authenticated().await,
+            "acquire foreign-owner source lease",
+        );
+        assert_eq!(source_lease_permits.available_permits(), 0);
+
+        let error = fixed_some(
+            target
+                .client
+                .open_loopback_classic_connect(
+                    source_lease,
+                    SocketAddr::from(([127, 0, 0, 91], 10_021)),
+                )
+                .await
+                .err(),
+            "reject foreign-owner source lease",
+        );
+        assert_eq!(error, FoundationError::PostAuthFlowRejected);
+        assert_eq!(error.to_string(), "native H3 post-auth flow rejected");
+        assert!(std::error::Error::source(&error).is_none());
+        assert_eq!(target_spy.arm_commands(), 1);
+        assert_eq!(target_spy.header_send_attempts(), 0);
+        assert_eq!(target_spy.request_streams_opened(), 0);
+        assert_eq!(target_spy.body_send_calls(), 0);
+        assert_eq!(target_spy.recv_body_calls(), 0);
+        assert_eq!(source_spy.arm_commands(), 0);
+        assert_eq!(target_server_spy.arm_commands(), 0);
+        assert_eq!(target_server_spy.header_send_attempts(), 0);
+        assert_eq!(target_server_spy.request_streams_opened(), 0);
+        assert_eq!(target_server_spy.body_send_calls(), 0);
+        assert_eq!(
+            source_lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT
+        );
+        assert_eq!(
+            target_lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT
+        );
+        assert!(target.client.manager.is_none());
+        let reopen_error = fixed_some(
+            target.client.acquire_authenticated().await.err(),
+            "keep foreign-owner target manager closed",
+        );
+        assert_eq!(reopen_error, FoundationError::ManagerClosed);
+        assert!(std::error::Error::source(&reopen_error).is_none());
+        assert_eq!(target_spy.arm_commands(), 1);
+        assert_eq!(target_spy.header_send_attempts(), 0);
+        assert_eq!(target_spy.request_streams_opened(), 0);
+        assert_eq!(
+            target.client.available_task_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+
+        assert!(fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, target.server.take_driver_exit()).await,
+            "bound foreign-owner target peer exit",
+        )
+        .is_err());
+        assert_eq!(
+            source.server.lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT
+        );
+        assert_eq!(
+            target.server.lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT
+        );
+        close_client_role_adapter_pair(&mut source).await;
+        close_client_role_adapter_pair(&mut target).await;
+        assert_eq!(
+            source.client.available_task_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+        assert_eq!(
+            target.client.available_task_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+        assert_eq!(
+            source_server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+        assert_eq!(
+            target_server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_real_manager_driver_quiche_flow_is_ordered_full_duplex() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow loopback test lock",
+        );
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_client_role_adapter_pair(
+            &server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+        )
+        .await;
+        let client_spy = fixed_some(
+            pair.client.manager.as_ref(),
+            "read private-flow client manager",
+        )
+        .private_flow_spy
+        .clone();
+        let server_spy = pair.server.private_flow_spy.clone();
+        let target = SocketAddr::from(([127, 0, 0, 42], 8_443));
+        let (client_flow, server_flow) = fixed_ok(
+            timeout(
+                CONNECTION_RUN_TIMEOUT,
+                open_private_flow_pair(&mut pair, target),
+            )
+            .await,
+            "bound private-flow open",
+        );
+        let (mut client_reader, mut client_writer) = client_flow.into_halves();
+        let (mut server_reader, mut server_writer) = server_flow.into_halves();
+        let client_payload: Box<[u8; 24_577]> =
+            Box::new(std::array::from_fn(|index| ((index * 17 + 3) % 251) as u8));
+        let server_payload: Box<[u8; 25_601]> =
+            Box::new(std::array::from_fn(|index| ((index * 29 + 5) % 253) as u8));
+        let mut client_received = Box::new([0_u8; 25_601]);
+        let mut server_received = Box::new([0_u8; 24_577]);
+
+        fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, async {
+                tokio::join!(
+                    async {
+                        fixed_ok(
+                            client_writer
+                                .send_chunk(
+                                    &client_payload[..private_classic_connect::FLOW_CHUNK_LIMIT],
+                                )
+                                .await,
+                            "send private-flow client first chunk",
+                        );
+                        fixed_ok(
+                            client_writer
+                                .send_chunk(
+                                    &client_payload[private_classic_connect::FLOW_CHUNK_LIMIT..],
+                                )
+                                .await,
+                            "send private-flow client second chunk",
+                        );
+                        fixed_ok(client_writer.finish().await, "finish private-flow client");
+                    },
+                    async {
+                        fixed_ok(
+                            server_writer
+                                .send_chunk(
+                                    &server_payload[..private_classic_connect::FLOW_CHUNK_LIMIT],
+                                )
+                                .await,
+                            "send private-flow server first chunk",
+                        );
+                        fixed_ok(
+                            server_writer
+                                .send_chunk(
+                                    &server_payload[private_classic_connect::FLOW_CHUNK_LIMIT..],
+                                )
+                                .await,
+                            "send private-flow server second chunk",
+                        );
+                        fixed_ok(server_writer.finish().await, "finish private-flow server");
+                    },
+                    async {
+                        receive_private_exact(&mut client_reader, client_received.as_mut()).await;
+                        assert!(fixed_ok(
+                            client_reader.receive_chunk().await,
+                            "receive private-flow client EOF",
+                        )
+                        .is_none());
+                    },
+                    async {
+                        receive_private_exact(&mut server_reader, server_received.as_mut()).await;
+                        assert!(fixed_ok(
+                            server_reader.receive_chunk().await,
+                            "receive private-flow server EOF",
+                        )
+                        .is_none());
+                    },
+                );
+            })
+            .await,
+            "bound private-flow full duplex",
+        );
+
+        assert_eq!(client_received.as_ref(), server_payload.as_ref());
+        assert_eq!(server_received.as_ref(), client_payload.as_ref());
+        assert_eq!(client_spy.request_streams_opened(), 1);
+        assert_eq!(server_spy.request_streams_opened(), 1);
+        assert_eq!(client_spy.header_send_attempts(), 1);
+        assert_eq!(server_spy.header_send_attempts(), 1);
+        assert!(client_spy.body_send_calls() >= 3);
+        assert!(server_spy.body_send_calls() >= 3);
+        assert!(client_spy.recv_body_calls() >= 2);
+        assert!(server_spy.recv_body_calls() >= 2);
+        let observed_authority = fixed_some(
+            server_spy.observed_authority(),
+            "observe private-flow authority",
+        );
+        assert_eq!(observed_authority.as_bytes(), b"127.0.0.42:8443");
+        assert_eq!(
+            fixed_some(
+                pair.client.manager.as_ref(),
+                "read completed private-flow client manager",
+            )
+            .lease_permits
+            .available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+        assert_eq!(
+            pair.server.lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+
+        let client_lease_permits = Arc::clone(
+            &fixed_some(
+                pair.client.manager.as_ref(),
+                "read clean-complete client manager",
+            )
+            .lease_permits,
+        );
+        let (second_client_lease, second_server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let second_client_lease =
+            fixed_ok(second_client_lease, "acquire clean-complete client lease");
+        let second_server_lease =
+            fixed_ok(second_server_lease, "acquire clean-complete server lease");
+        let second_target = SocketAddr::from(([127, 0, 0, 43], 8_444));
+        let second_authority = fixed_ok(
+            CanonicalLoopbackAuthority::from_socket_addr(second_target),
+            "canonicalize clean-complete second target",
+        );
+        let (second_client_open, second_server_open) = tokio::join!(
+            pair.client
+                .open_loopback_classic_connect(second_client_lease, second_target),
+            pair.server
+                .arm_private_peer(second_server_lease, second_authority),
+        );
+        assert_eq!(
+            second_client_open.err(),
+            Some(FoundationError::PostAuthFlowRejected),
+        );
+        assert_eq!(
+            second_server_open.err(),
+            Some(FoundationError::PostAuthFlowRejected),
+        );
+        assert_eq!(client_spy.request_streams_opened(), 1);
+        assert_eq!(server_spy.request_streams_opened(), 1);
+        assert_eq!(
+            client_lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT
+        );
+        assert_eq!(
+            pair.server.lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+        assert!(fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, pair.server.take_driver_exit()).await,
+            "bound clean-complete no-reopen server exit",
+        )
+        .is_err());
+
+        drop(client_reader);
+        drop(client_writer);
+        drop(server_reader);
+        drop(server_writer);
+        close_client_role_adapter_pair(&mut pair).await;
+        assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_explicit_flow_close_then_owner_close_is_bounded_and_idempotent() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow close test lock",
+        );
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_client_role_adapter_pair(
+            &server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+        )
+        .await;
+        let (client_flow, server_flow) = fixed_ok(
+            timeout(
+                CONNECTION_RUN_TIMEOUT,
+                open_private_flow_pair(&mut pair, SocketAddr::from(([127, 0, 0, 7], 9_001))),
+            )
+            .await,
+            "bound private-flow close open",
+        );
+
+        let (client_close, server_close) = fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, async {
+                tokio::join!(client_flow.close(), server_flow.close())
+            })
+            .await,
+            "bound simultaneous private-flow close",
+        );
+        fixed_ok(client_close, "explicitly close private-flow client");
+        fixed_ok(server_close, "explicitly close private-flow server");
+        assert_eq!(
+            fixed_some(
+                pair.client.manager.as_ref(),
+                "read explicitly closed client manager",
+            )
+            .lease_permits
+            .available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+        assert_eq!(
+            pair.server.lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+
+        close_client_role_adapter_pair(&mut pair).await;
+        assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_targets_reject_pre_io_and_ipv6_authority_is_canonical() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow target test lock",
+        );
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_client_role_adapter_pair(
+            &server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+        )
+        .await;
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.client.receive_observation()).await,
+                "bound target-test client observation",
+            ),
+            "receive target-test client observation",
+        );
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
+                "bound target-test server observation",
+            ),
+            "receive target-test server observation",
+        );
+        let client_spy = fixed_some(
+            pair.client.manager.as_ref(),
+            "read target-test client manager",
+        )
+        .private_flow_spy
+        .clone();
+        let server_spy = pair.server.private_flow_spy.clone();
+        let rejected_targets = [
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            SocketAddr::from(([192, 0, 2, 1], 8_443)),
+            SocketAddr::V6(std::net::SocketAddrV6::new(
+                std::net::Ipv6Addr::LOCALHOST,
+                8_443,
+                0,
+                1,
+            )),
+            SocketAddr::V6(std::net::SocketAddrV6::new(
+                std::net::Ipv6Addr::LOCALHOST,
+                8_443,
+                1,
+                0,
+            )),
+        ];
+        for target in rejected_targets {
+            let lease = fixed_ok(
+                pair.client.acquire_authenticated().await,
+                "acquire pre-I/O target lease",
+            );
+            let error = fixed_some(
+                pair.client
+                    .open_loopback_classic_connect(lease, target)
+                    .await
+                    .err(),
+                "reject private-flow target before I/O",
+            );
+            assert_eq!(error, FoundationError::PostAuthFlowRejected);
+            assert_eq!(error.to_string(), "native H3 post-auth flow rejected");
+            assert!(std::error::Error::source(&error).is_none());
+            assert_eq!(client_spy.arm_commands(), 0);
+            assert_eq!(client_spy.header_send_attempts(), 0);
+            assert_eq!(client_spy.request_streams_opened(), 0);
+            assert_eq!(client_spy.body_send_calls(), 0);
+            assert_eq!(server_spy.arm_commands(), 0);
+            assert_eq!(server_spy.header_send_attempts(), 0);
+            assert_eq!(server_spy.request_streams_opened(), 0);
+            assert_eq!(server_spy.body_send_calls(), 0);
+        }
+
+        let target = SocketAddr::V6(std::net::SocketAddrV6::new(
+            std::net::Ipv6Addr::LOCALHOST,
+            9_443,
+            0,
+            0,
+        ));
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "acquire IPv6 client lease");
+        let server_lease = fixed_ok(server_lease, "acquire IPv6 server lease");
+        let authority = fixed_ok(
+            CanonicalLoopbackAuthority::from_socket_addr(target),
+            "canonicalize IPv6 private-flow target",
+        );
+        let (client_flow, server_flow) = tokio::join!(
+            pair.client
+                .open_loopback_classic_connect(client_lease, target),
+            pair.server.arm_private_peer(server_lease, authority),
+        );
+        let client_flow = fixed_ok(client_flow, "open IPv6 private-flow client");
+        let server_flow = fixed_ok(server_flow, "open IPv6 private-flow server");
+        let flow_debug = format!("{client_flow:?}");
+        assert_eq!(flow_debug, "private classic CONNECT flow handle");
+        assert!(!flow_debug.contains("9443"));
+        assert!(!flow_debug.contains("::1"));
+        let marker = b"private-flow-payload-marker";
+        let redacted_chunk = fixed_ok(
+            PrivateFlowChunk::from_slice(marker),
+            "construct privacy-check private-flow chunk",
+        );
+        let chunk_debug = format!("{redacted_chunk:?}");
+        assert_eq!(chunk_debug, "redacted private classic CONNECT chunk");
+        assert!(!chunk_debug.contains("private-flow-payload-marker"));
+        drop(redacted_chunk);
+        let (mut client_reader, mut client_writer) = client_flow.into_halves();
+        let (mut server_reader, mut server_writer) = server_flow.into_halves();
+        assert_eq!(
+            format!("{client_reader:?}"),
+            "private classic CONNECT read half"
+        );
+        assert_eq!(
+            format!("{client_writer:?}"),
+            "private classic CONNECT write half"
+        );
+        fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, async {
+                let (client_fin, server_fin) =
+                    tokio::join!(client_writer.finish(), server_writer.finish());
+                fixed_ok(client_fin, "finish IPv6 private-flow client");
+                fixed_ok(server_fin, "finish IPv6 private-flow server");
+                let (client_eof, server_eof) =
+                    tokio::join!(client_reader.receive_chunk(), server_reader.receive_chunk(),);
+                assert!(fixed_ok(client_eof, "receive IPv6 client EOF").is_none());
+                assert!(fixed_ok(server_eof, "receive IPv6 server EOF").is_none());
+            })
+            .await,
+            "bound IPv6 private-flow finish",
+        );
+        assert_eq!(client_spy.arm_commands(), 1);
+        assert_eq!(server_spy.arm_commands(), 1);
+        assert_eq!(client_spy.request_streams_opened(), 1);
+        assert_eq!(server_spy.request_streams_opened(), 1);
+        let observed = fixed_some(
+            server_spy.observed_authority(),
+            "observe canonical IPv6 private-flow authority",
+        );
+        assert_eq!(observed.as_bytes(), b"[::1]:9443");
+        assert_eq!(
+            format!("{observed:?}"),
+            "redacted loopback CONNECT authority"
+        );
+        assert!(!format!("{observed:?}").contains("9443"));
+
+        drop(client_reader);
+        drop(client_writer);
+        drop(server_reader);
+        drop(server_writer);
+        close_client_role_adapter_pair(&mut pair).await;
+        assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_real_header_streamblocked_retries_one_connect_stream() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow header pressure test lock",
+        );
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_client_role_adapter_pair_with_server_connection_window(
+            &server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+            Some(16_384),
+        )
+        .await;
+        let client_spy = fixed_some(
+            pair.client.manager.as_ref(),
+            "read header-pressure client manager",
+        )
+        .private_flow_spy
+        .clone();
+        client_spy.request_real_header_pressure();
+        let server_spy = pair.server.private_flow_spy.clone();
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.client.receive_observation()).await,
+                "bound header-pressure client observation",
+            ),
+            "receive header-pressure client observation",
+        );
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
+                "bound header-pressure server observation",
+            ),
+            "receive header-pressure server observation",
+        );
+        let (client_lease, server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let client_lease = fixed_ok(client_lease, "acquire header-pressure client lease");
+        let server_lease = fixed_ok(server_lease, "acquire header-pressure server lease");
+        let target = SocketAddr::from(([127, 0, 0, 55], 10_003));
+        let authority = fixed_ok(
+            CanonicalLoopbackAuthority::from_socket_addr(target),
+            "canonicalize header-pressure target",
+        );
+        let (client_flow, server_flow) = tokio::join!(
+            pair.client
+                .open_loopback_classic_connect(client_lease, target),
+            pair.server.arm_private_peer(server_lease, authority),
+        );
+        if client_flow.is_err() || server_flow.is_err() {
+            panic!(
+                "header-pressure open failed: client={:?}, server={:?}, attempts={}, blocked={}, streams={}",
+                client_flow.as_ref().err(),
+                server_flow.as_ref().err(),
+                client_spy.header_send_attempts(),
+                client_spy.header_stream_blocked_results(),
+                client_spy.request_streams_opened(),
+            );
+        }
+        let client_flow = fixed_ok(client_flow, "open header-pressure client flow");
+        let server_flow = fixed_ok(server_flow, "open header-pressure server flow");
+        let (mut client_reader, mut client_writer) = client_flow.into_halves();
+        let (mut server_reader, mut server_writer) = server_flow.into_halves();
+        let (client_fin, server_fin) = tokio::join!(client_writer.finish(), server_writer.finish());
+        fixed_ok(client_fin, "finish header-pressure client");
+        fixed_ok(server_fin, "finish header-pressure server");
+        let (client_eof, server_eof) =
+            tokio::join!(client_reader.receive_chunk(), server_reader.receive_chunk(),);
+        assert!(fixed_ok(client_eof, "receive header-pressure client EOF").is_none());
+        assert!(fixed_ok(server_eof, "receive header-pressure server EOF").is_none());
+        assert!(client_spy.header_stream_blocked_results() > 0);
+        assert_eq!(
+            client_spy.header_send_attempts(),
+            client_spy.header_stream_blocked_results() + 1,
+        );
+        assert_eq!(client_spy.request_streams_opened(), 1);
+        assert_eq!(server_spy.request_streams_opened(), 1);
+        let observed = fixed_some(
+            server_spy.observed_authority(),
+            "observe header-pressure authority",
+        );
+        assert_eq!(observed.as_bytes(), b"127.0.0.55:10003");
+        drop(client_reader);
+        drop(client_writer);
+        drop(server_reader);
+        drop(server_writer);
+        close_client_role_adapter_pair(&mut pair).await;
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_half_closes_are_independent_in_both_orderings() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow half-close test lock",
+        );
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_client_role_adapter_pair(
+            &server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+        )
+        .await;
+        let (client_flow, server_flow) =
+            open_private_flow_pair(&mut pair, SocketAddr::from(([127, 0, 0, 33], 10_001))).await;
+        let (mut client_reader, mut client_writer) = client_flow.into_halves();
+        let (mut server_reader, mut server_writer) = server_flow.into_halves();
+        let peer_first = *b"peer-data-before-client-fin";
+        let client_after_peer = *b"client-data-after-peer-data";
+        let peer_after_client_fin = *b"peer-data-after-client-fin";
+        let mut client_first_received = [0_u8; 27];
+        let mut server_received = [0_u8; 27];
+        let mut client_last_received = [0_u8; 26];
+
+        fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, async {
+                fixed_ok(
+                    server_writer.send_chunk(&peer_first).await,
+                    "send peer data before client FIN",
+                );
+                receive_private_exact(&mut client_reader, &mut client_first_received).await;
+                assert_eq!(client_first_received, peer_first);
+
+                fixed_ok(
+                    client_writer.send_chunk(&client_after_peer).await,
+                    "send client data after receiving peer data",
+                );
+                fixed_ok(
+                    client_writer.finish().await,
+                    "finish client before peer writer",
+                );
+                drop(client_writer);
+
+                receive_private_exact(&mut server_reader, &mut server_received).await;
+                assert_eq!(server_received, client_after_peer);
+                assert!(fixed_ok(
+                    server_reader.receive_chunk().await,
+                    "receive peer EOF before local writer finish",
+                )
+                .is_none());
+                drop(server_reader);
+                assert_eq!(
+                    pair.server.lease_permits.available_permits(),
+                    0,
+                    "remote EOF alone must retain the local write-half lease",
+                );
+
+                fixed_ok(
+                    server_writer.send_chunk(&peer_after_client_fin).await,
+                    "send peer data after client FIN and reader drop",
+                );
+                fixed_ok(server_writer.finish().await, "finish peer after client FIN");
+                assert_eq!(
+                    pair.server.lease_permits.available_permits(),
+                    CONNECTION_LEASE_LIMIT,
+                    "last FIN ack must follow terminal lease reclamation",
+                );
+                drop(server_writer);
+
+                receive_private_exact(&mut client_reader, &mut client_last_received).await;
+                assert_eq!(client_last_received, peer_after_client_fin);
+                assert!(fixed_ok(
+                    client_reader.receive_chunk().await,
+                    "receive client EOF after buffered peer data",
+                )
+                .is_none());
+                assert_eq!(
+                    fixed_some(pair.client.manager.as_ref(), "read EOF-last client manager",)
+                        .lease_permits
+                        .available_permits(),
+                    CONNECTION_LEASE_LIMIT,
+                    "final EOF wake must follow terminal lease reclamation",
+                );
+                drop(client_reader);
+            })
+            .await,
+            "bound private-flow half-close orderings",
+        );
+        assert_eq!(
+            fixed_some(
+                pair.client.manager.as_ref(),
+                "read half-closed client manager",
+            )
+            .lease_permits
+            .available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+        assert_eq!(
+            pair.server.lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+        close_client_role_adapter_pair(&mut pair).await;
+        assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_full_mailbox_pauses_real_h3_and_resumes_without_loss() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow backpressure test lock",
+        );
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_client_role_adapter_pair(
+            &server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+        )
+        .await;
+        let client_spy = fixed_some(
+            pair.client.manager.as_ref(),
+            "read backpressure client manager",
+        )
+        .private_flow_spy
+        .clone();
+        let server_spy = pair.server.private_flow_spy.clone();
+        let (client_flow, server_flow) =
+            open_private_flow_pair(&mut pair, SocketAddr::from(([127, 0, 0, 44], 10_002))).await;
+        let (mut client_reader, mut client_writer) = client_flow.into_halves();
+        let (mut server_reader, mut server_writer) = server_flow.into_halves();
+        let payload: Box<[u8; 65_536]> =
+            Box::new(std::array::from_fn(|index| ((index * 13 + 11) % 251) as u8));
+        let mut received = Box::new([0_u8; 65_536]);
+
+        fixed_ok(
+            client_writer.finish().await,
+            "finish backpressure client write half",
+        );
+        assert!(fixed_ok(
+            server_reader.receive_chunk().await,
+            "receive backpressure server EOF",
+        )
+        .is_none());
+        drop(server_reader);
+        drop(client_writer);
+        for index in 0..3 {
+            let start = index * private_classic_connect::FLOW_CHUNK_LIMIT;
+            let end = start + private_classic_connect::FLOW_CHUNK_LIMIT;
+            fixed_ok(
+                server_writer.send_chunk(&payload[start..end]).await,
+                "fill private-flow inbound backpressure slots",
+            );
+        }
+        let mailbox_fill = timeout(COMMAND_RESPONSE_TIMEOUT, async {
+            loop {
+                if client_reader.buffered_bytes() > 0 && client_spy.recv_body_calls() >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        if mailbox_fill.is_err() {
+            panic!(
+                "private-flow mailbox did not fill: buffered={}, recv_calls={}, client_finished={}, server_finished={}",
+                client_reader.buffered_bytes(),
+                client_spy.recv_body_calls(),
+                fixed_some(pair.client.manager.as_ref(), "read stalled client manager")
+                    .driver_is_finished(),
+                pair.server.driver_is_finished(),
+            );
+        }
+        let buffered_while_full = client_reader.buffered_bytes();
+        assert!(buffered_while_full <= private_classic_connect::FLOW_CHUNK_LIMIT);
+        let fourth_start = 3 * private_classic_connect::FLOW_CHUNK_LIMIT;
+        {
+            let fourth_send = server_writer.send_chunk(&payload[fourth_start..]);
+            tokio::pin!(fourth_send);
+            assert!(timeout(Duration::from_millis(100), &mut fourth_send)
+                .await
+                .is_err());
+            let recv_calls_while_full = client_spy.recv_body_calls();
+            fixed_ok(
+                timeout(COMMAND_RESPONSE_TIMEOUT, async {
+                    loop {
+                        let result = fixed_some(
+                            pair.client.manager.as_ref(),
+                            "read responsive backpressure client manager",
+                        )
+                        .observe_driver_tick()
+                        .await;
+                        match result {
+                            Ok(()) => break,
+                            Err(FoundationError::CommandQueueUnavailable) => {
+                                tokio::task::yield_now().await;
+                            }
+                            Err(_) => panic!("observe responsive private-flow driver"),
+                        }
+                    }
+                })
+                .await,
+                "observe driver while private-flow mailbox is full",
+            );
+            assert_eq!(client_spy.recv_body_calls(), recv_calls_while_full);
+            assert_eq!(client_reader.buffered_bytes(), buffered_while_full);
+
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, async {
+                    let (fourth_result, ()) = tokio::join!(
+                        &mut fourth_send,
+                        receive_private_exact(&mut client_reader, received.as_mut()),
+                    );
+                    fixed_ok(
+                        fourth_result,
+                        "resume exact private-flow fourth chunk suffix",
+                    );
+                })
+                .await,
+                "bound private-flow backpressure recovery",
+            );
+            assert!(server_spy.body_partial_writes() > 0);
+            assert!(server_spy.body_done_results() > 0);
+        }
+        fixed_ok(
+            server_writer.finish().await,
+            "finish backpressured private-flow writer",
+        );
+        assert!(fixed_ok(
+            client_reader.receive_chunk().await,
+            "receive EOF after backpressured bytes",
+        )
+        .is_none());
+        assert_eq!(received.as_ref(), payload.as_ref());
+        drop(client_reader);
+        drop(server_writer);
+        close_client_role_adapter_pair(&mut pair).await;
+        assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_unfinished_half_drop_immediately_fails_the_other_half() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow unfinished-half test lock",
+        );
+        for drop_reader_first in [false, true] {
+            let server_task_budget = ConnectionTaskBudget::new();
+            let mut pair = start_client_role_adapter_pair(
+                &server_task_budget,
+                ClientRoleAdapterCa::Custom,
+                ClientRoleAdapterPin::None,
+                T026C_AUTHORITY,
+            )
+            .await;
+            let port = if drop_reader_first { 10_011 } else { 10_010 };
+            let (client_flow, server_flow) =
+                open_private_flow_pair(&mut pair, SocketAddr::from(([127, 0, 0, 66], port))).await;
+            let (mut client_reader, mut client_writer) = client_flow.into_halves();
+            let (server_reader, server_writer) = server_flow.into_halves();
+            if drop_reader_first {
+                drop(client_reader);
+                assert_eq!(
+                    client_writer.send_chunk(b"bounded-drop-check").await,
+                    Err(FoundationError::PostAuthFlowRejected),
+                );
+                drop(client_writer);
+            } else {
+                drop(client_writer);
+                assert_eq!(
+                    fixed_ok(
+                        timeout(DRIVER_JOIN_TIMEOUT, client_reader.receive_chunk()).await,
+                        "wake reader after unfinished writer drop",
+                    )
+                    .err(),
+                    Some(FoundationError::PostAuthFlowRejected),
+                );
+                drop(client_reader);
+            }
+            drop(server_reader);
+            drop(server_writer);
+            let (client_exit, server_exit) = fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, async {
+                    tokio::join!(
+                        pair.client.take_driver_exit(),
+                        pair.server.take_driver_exit(),
+                    )
+                })
+                .await,
+                "bound unfinished-half driver exits",
+            );
+            assert_eq!(
+                client_exit.err(),
+                Some(FoundationError::PostAuthFlowRejected),
+            );
+            assert!(server_exit.is_err());
+            assert_eq!(
+                fixed_some(
+                    pair.client.manager.as_ref(),
+                    "read unfinished-half client manager",
+                )
+                .lease_permits
+                .available_permits(),
+                CONNECTION_LEASE_LIMIT,
+            );
+            assert_eq!(
+                pair.server.lease_permits.available_permits(),
+                CONNECTION_LEASE_LIMIT,
+            );
+            close_client_role_adapter_pair(&mut pair).await;
+            assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT,);
+            assert_eq!(
+                server_task_budget.available_permits(),
+                CONNECTION_TASK_LIMIT,
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_duplicate_fin_and_post_fin_write_fail_and_cannot_reopen() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow post-FIN test lock",
+        );
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_client_role_adapter_pair(
+            &server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::None,
+            T026C_AUTHORITY,
+        )
+        .await;
+        let (client_flow, server_flow) =
+            open_private_flow_pair(&mut pair, SocketAddr::from(([127, 0, 0, 77], 10_012))).await;
+        let (mut client_reader, mut client_writer) = client_flow.into_halves();
+        let (server_reader, server_writer) = server_flow.into_halves();
+        fixed_ok(
+            client_writer.finish().await,
+            "accept first private-flow FIN",
+        );
+        assert_eq!(
+            client_writer.finish().await,
+            Err(FoundationError::PostAuthFlowRejected),
+        );
+        assert_eq!(
+            client_writer.send_chunk(b"post-fin-rejected").await,
+            Err(FoundationError::PostAuthFlowRejected),
+        );
+        assert_eq!(
+            fixed_ok(
+                timeout(DRIVER_JOIN_TIMEOUT, client_reader.receive_chunk()).await,
+                "wake reader after duplicate private-flow FIN",
+            )
+            .err(),
+            Some(FoundationError::PostAuthFlowRejected),
+        );
+        drop(client_reader);
+        drop(client_writer);
+        drop(server_reader);
+        drop(server_writer);
+        let (client_exit, server_exit) = fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, async {
+                tokio::join!(
+                    pair.client.take_driver_exit(),
+                    pair.server.take_driver_exit(),
+                )
+            })
+            .await,
+            "bound post-FIN driver exits",
+        );
+        assert_eq!(
+            client_exit.err(),
+            Some(FoundationError::PostAuthFlowRejected),
+        );
+        assert!(server_exit.is_err());
+        assert_eq!(
+            fixed_some(pair.client.manager.as_ref(), "read post-FIN client manager",)
+                .lease_permits
+                .available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+        assert_eq!(
+            pair.client.acquire_authenticated().await.err(),
+            Some(FoundationError::ManagerClosed),
+        );
+        assert_eq!(
+            pair.server.lease_permits.available_permits(),
+            CONNECTION_LEASE_LIMIT,
+        );
+        close_client_role_adapter_pair(&mut pair).await;
+        assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT,);
+        assert_eq!(
+            server_task_budget.available_permits(),
+            CONNECTION_TASK_LIMIT,
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_full_mailbox_cancel_owner_close_and_hard_deadline_win_and_reclaim() {
+        #[derive(Clone, Copy, Eq, PartialEq)]
+        enum TerminalTrigger {
+            Cancel,
+            OwnerClose,
+            HardDeadline,
+        }
+
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow terminal-pressure test lock",
+        );
+        for trigger in [
+            TerminalTrigger::Cancel,
+            TerminalTrigger::OwnerClose,
+            TerminalTrigger::HardDeadline,
+        ] {
+            let server_task_budget = ConnectionTaskBudget::new();
+            let mut pair = start_client_role_adapter_pair(
+                &server_task_budget,
+                ClientRoleAdapterCa::Custom,
+                ClientRoleAdapterPin::None,
+                T026C_AUTHORITY,
+            )
+            .await;
+            let port = match trigger {
+                TerminalTrigger::Cancel => 10_013,
+                TerminalTrigger::OwnerClose => 10_014,
+                TerminalTrigger::HardDeadline => 10_015,
+            };
+            let (client_flow, server_flow) =
+                open_private_flow_pair(&mut pair, SocketAddr::from(([127, 0, 0, 88], port))).await;
+            let client_lease_permits = Arc::clone(
+                &fixed_some(
+                    pair.client.manager.as_ref(),
+                    "read terminal-pressure client manager",
+                )
+                .lease_permits,
+            );
+            let (mut client_reader, mut client_writer) = client_flow.into_halves();
+            let (server_reader, mut server_writer) = server_flow.into_halves();
+            let payload = Box::new([0x5a_u8; 65_536]);
+            for index in 0..3 {
+                let start = index * private_classic_connect::FLOW_CHUNK_LIMIT;
+                let end = start + private_classic_connect::FLOW_CHUNK_LIMIT;
+                fixed_ok(
+                    server_writer.send_chunk(&payload[start..end]).await,
+                    "fill terminal-pressure private-flow slots",
+                );
+            }
+            fixed_ok(
+                timeout(COMMAND_RESPONSE_TIMEOUT, async {
+                    loop {
+                        if client_reader.buffered_bytes() > 0 {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await,
+                "wait for occupied terminal-pressure mailbox",
+            );
+            let fourth_start = 3 * private_classic_connect::FLOW_CHUNK_LIMIT;
+            {
+                let fourth_send = server_writer.send_chunk(&payload[fourth_start..]);
+                tokio::pin!(fourth_send);
+                assert!(timeout(Duration::from_millis(100), &mut fourth_send)
+                    .await
+                    .is_err());
+                match trigger {
+                    TerminalTrigger::HardDeadline => {
+                        fixed_ok(
+                            fixed_some(
+                                pair.client.manager.as_ref(),
+                                "read hard-deadline client manager",
+                            )
+                            .expire_authenticated_at(
+                                Instant::now()
+                                    .checked_add(Duration::from_secs(172_800))
+                                    .expect("construct bounded hard-deadline test instant"),
+                            )
+                            .await,
+                            "expire full-mailbox private flow",
+                        );
+                        fixed_ok(
+                            timeout(DRIVER_JOIN_TIMEOUT, async {
+                                loop {
+                                    if fixed_some(
+                                        pair.client.manager.as_ref(),
+                                        "read expiring client manager",
+                                    )
+                                    .lease_permits
+                                    .available_permits()
+                                        == CONNECTION_LEASE_LIMIT
+                                    {
+                                        break;
+                                    }
+                                    tokio::task::yield_now().await;
+                                }
+                            })
+                            .await,
+                            "wait for hard-deadline terminal state",
+                        );
+                    }
+                    TerminalTrigger::Cancel => fixed_ok(
+                        client_writer.cancel().await,
+                        "cancel full-mailbox private flow",
+                    ),
+                    TerminalTrigger::OwnerClose => fixed_ok(
+                        pair.client.close().await,
+                        "owner-close full-mailbox private flow",
+                    ),
+                }
+                assert_eq!(
+                    fixed_ok(
+                        timeout(DRIVER_JOIN_TIMEOUT, client_reader.receive_chunk()).await,
+                        "wake full-mailbox reader after terminal",
+                    )
+                    .err(),
+                    Some(FoundationError::PostAuthFlowRejected),
+                );
+                assert_eq!(client_reader.buffered_bytes(), 0);
+                assert_eq!(
+                    client_writer.send_chunk(b"terminal-write-rejected").await,
+                    Err(FoundationError::PostAuthFlowRejected),
+                );
+                assert!(fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, &mut fourth_send).await,
+                    "wake blocked peer writer after terminal",
+                )
+                .is_err());
+            }
+            drop(client_reader);
+            drop(client_writer);
+            drop(server_reader);
+            drop(server_writer);
+            if trigger == TerminalTrigger::OwnerClose {
+                assert!(fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.server.take_driver_exit()).await,
+                    "bound owner-close peer driver exit",
+                )
+                .is_err());
+            } else {
+                let (client_exit, server_exit) = fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, async {
+                        tokio::join!(
+                            pair.client.take_driver_exit(),
+                            pair.server.take_driver_exit(),
+                        )
+                    })
+                    .await,
+                    "bound terminal-pressure driver exits",
+                );
+                if trigger == TerminalTrigger::HardDeadline {
+                    assert_eq!(
+                        client_exit.err(),
+                        Some(FoundationError::PostAuthFlowRejected),
+                    );
+                } else {
+                    assert!(client_exit.is_ok());
+                }
+                assert!(server_exit.is_err());
+            }
+            assert_eq!(
+                client_lease_permits.available_permits(),
+                CONNECTION_LEASE_LIMIT,
+            );
+            assert_eq!(
+                pair.server.lease_permits.available_permits(),
+                CONNECTION_LEASE_LIMIT,
+            );
+            close_client_role_adapter_pair(&mut pair).await;
+            assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT,);
+            assert_eq!(
+                server_task_budget.available_permits(),
+                CONNECTION_TASK_LIMIT,
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t027c2a_real_peer_faults_fail_closed_and_reclaim() {
+        async fn expect_faulted_handle(flow: PrivateClassicConnectFlow) {
+            let (mut reader, mut writer) = flow.into_halves();
+            let error = fixed_some(
+                fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, reader.receive_chunk()).await,
+                    "wake faulted private-flow reader",
+                )
+                .err(),
+                "receive fixed private-flow fault",
+            );
+            assert_eq!(error, FoundationError::PostAuthFlowRejected);
+            assert_eq!(error.to_string(), "native H3 post-auth flow rejected");
+            assert!(std::error::Error::source(&error).is_none());
+            assert_eq!(
+                writer.send_chunk(b"faulted-write-rejected").await,
+                Err(FoundationError::PostAuthFlowRejected),
+            );
+        }
+
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire private-flow peer-fault test lock",
+        );
+        for fault in [
+            PrivateFlowFault::Non200,
+            PrivateFlowFault::Trailer,
+            PrivateFlowFault::Reset,
+            PrivateFlowFault::StopSending,
+            PrivateFlowFault::GoAway,
+            PrivateFlowFault::SecondRequest,
+        ] {
+            let server_task_budget = ConnectionTaskBudget::new();
+            let mut pair = start_client_role_adapter_pair(
+                &server_task_budget,
+                ClientRoleAdapterCa::Custom,
+                ClientRoleAdapterPin::None,
+                T026C_AUTHORITY,
+            )
+            .await;
+            fixed_some(
+                fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.client.receive_observation()).await,
+                    "bound fault client observation",
+                ),
+                "receive fault client observation",
+            );
+            fixed_some(
+                fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
+                    "bound fault server observation",
+                ),
+                "receive fault server observation",
+            );
+            let client_spy = fixed_some(pair.client.manager.as_ref(), "read fault client manager")
+                .private_flow_spy
+                .clone();
+            let server_spy = pair.server.private_flow_spy.clone();
+            if fault == PrivateFlowFault::SecondRequest {
+                client_spy.request_fault(fault);
+            } else {
+                server_spy.request_fault(fault);
+            }
+            let (client_lease, server_lease) = tokio::join!(
+                pair.client.acquire_authenticated(),
+                pair.server.acquire_authenticated(),
+            );
+            let client_lease = fixed_ok(client_lease, "acquire fault client lease");
+            let server_lease = fixed_ok(server_lease, "acquire fault server lease");
+            let target = SocketAddr::from(([127, 0, 0, 99], 10_020 + fault as u16));
+            let authority = fixed_ok(
+                CanonicalLoopbackAuthority::from_socket_addr(target),
+                "canonicalize fault target",
+            );
+            let (client_flow, server_flow) = tokio::join!(
+                pair.client
+                    .open_loopback_classic_connect(client_lease, target),
+                pair.server.arm_private_peer(server_lease, authority),
+            );
+
+            match client_flow {
+                Ok(flow) => {
+                    assert_ne!(fault, PrivateFlowFault::Non200);
+                    expect_faulted_handle(flow).await;
+                }
+                Err(error) => {
+                    assert_eq!(error, FoundationError::PostAuthFlowRejected);
+                    assert_eq!(error.to_string(), "native H3 post-auth flow rejected");
+                    assert!(std::error::Error::source(&error).is_none());
+                }
+            }
+            if fault == PrivateFlowFault::SecondRequest {
+                match server_flow {
+                    Ok(flow) => expect_faulted_handle(flow).await,
+                    Err(error) => {
+                        assert_eq!(error, FoundationError::PostAuthFlowRejected);
+                        assert_eq!(error.to_string(), "native H3 post-auth flow rejected");
+                    }
+                }
+            } else {
+                expect_faulted_handle(fixed_ok(
+                    server_flow,
+                    "apply real peer fault before returning server handle",
+                ))
+                .await;
+            }
+            if fault == PrivateFlowFault::SecondRequest {
+                assert_eq!(client_spy.request_streams_opened(), 2);
+            } else {
+                assert_eq!(client_spy.request_streams_opened(), 1);
+            }
+            assert_eq!(server_spy.request_streams_opened(), 1);
+
+            if pair.client.manager.is_some() {
+                assert!(fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()).await,
+                    "bound fault client driver exit",
+                )
+                .is_err());
+                assert_eq!(
+                    fixed_some(pair.client.manager.as_ref(), "read faulted client manager",)
+                        .lease_permits
+                        .available_permits(),
+                    CONNECTION_LEASE_LIMIT,
+                );
+            }
+            assert!(fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.server.take_driver_exit()).await,
+                "bound fault server driver exit",
+            )
+            .is_err());
+            assert_eq!(
+                pair.server.lease_permits.available_permits(),
+                CONNECTION_LEASE_LIMIT,
+            );
+            close_client_role_adapter_pair(&mut pair).await;
+            assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT,);
+            assert_eq!(
+                server_task_budget.available_permits(),
+                CONNECTION_TASK_LIMIT,
+            );
+        }
     }
 
     #[tokio::test]

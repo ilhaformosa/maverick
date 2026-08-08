@@ -17,32 +17,24 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-0a — preserve Noise key zeroization in all-feature builds
+### T027c-0b — clear all-feature test-target clippy blockers
 
-- **User result:** The complete local feature combination compiles without
-  weakening the cleanup of the temporary Noise static private-key copy.
-- **Scope:** Replace the conflicting manual wipe in the existing Noise
-  handshake builder with the repository's existing RAII zeroization wrapper.
-  Keep the borrowed key live until Snow consumes its builder, then zeroize it
-  on both success and every error return. Do not add a dependency or change any
-  public API, configuration, stored schema, protocol, authentication, frame, or
-  wire version.
-- **Acceptance:** Preserve the original all-feature compiler failure as red
-  evidence. Prove the Noise initiator and responder paths, the core
-  `noise-experimental` target set, and the whole workspace all-feature target
-  set compile and test successfully. Keep errors privacy-safe and preserve all
-  default-feature behavior and the cumulative T020-Q1 through T027b-2d4b local
-  foundation gates.
-- **Out of scope:** This integration blocker repair does not enable Noise in a
-  product path, change runtime policy, or establish H3 product readiness,
-  real-network evidence, user results, release results, or publication
-  authorization. T027c-0 cumulative closure and the later product-wiring audit
-  remain separate work.
-- **Stop conditions:** Stop before changing any file outside `ROADMAP.md` and
-  `crates/maverick-core/src/noise.rs`; adding a dependency; removing private-key
-  cleanup; claiming physical-memory erasure from a unit test; or changing a
-  public surface, version domain, `STATUS.md`, runtime, remote, deployment,
-  release, infrastructure, credential, real-network, or system-network state.
+- **User result:** The local all-feature integration quality gate stays red-only
+  until it is cleanly green: no test-target-only `clippy` assertion/lint
+  blockers remain for production-runtime-neutral code.
+- **Scope:** Keep the local behavior and runtime unchanged while removing
+  non-valuable `cfg!(feature = "h3")` constant assertions and relocating
+  `read_next_h3_frame` to avoid `items_after_test_module` in `crates/maverick-client/src/tunnel.rs`.
+  This is a test-target lint cleanup only.
+- **Acceptance:** This task is an integration blocker for T027c-0 (`T027c-0b`) and is
+  specifically a `all-features` test-target lint blocker; it is not a product,
+  runtime, user-result, or release outcome.
+- **Out of scope:** This task does not alter `STATUS.md`, any product runtime,
+  protocol behavior, wire versions, public API, configuration schema, deployment,
+  remote, CI, or release posture.
+- **Stop conditions:** Stop before changing files outside this three-file task scope,
+  adding dependencies, editing public surfaces, or broadening the gate to runtime
+  or product claims.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

@@ -99,9 +99,22 @@ fn bind_addr_for(remote: SocketAddr) -> SocketAddr {
 }
 
 #[cfg(test)]
+#[cfg(feature = "h3")]
 mod tests {
     #[test]
-    fn h3_feature_stub_is_compiled() {
-        assert!(cfg!(feature = "h3"));
+    fn h3_feature_test_target_is_compiled() {
+        let loopback = super::bind_addr_for(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            443,
+        )));
+        assert!(loopback.ip().is_loopback());
+        assert_eq!(loopback.port(), 0);
+
+        let public_v4 = super::bind_addr_for(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::new(198, 51, 100, 2),
+            443,
+        )));
+        assert_eq!(public_v4.port(), 0);
+        assert!(matches!(public_v4.ip(), std::net::IpAddr::V4(ip) if ip.is_unspecified()));
     }
 }

@@ -813,6 +813,25 @@ fn validate_negotiated_max_frame_size(value: u32) -> Result<usize> {
     Ok(value)
 }
 
+#[cfg(feature = "h3")]
+async fn read_next_h3_frame(tunnel: &mut H3ClientTunnel) -> Result<Option<Frame>> {
+    loop {
+        if let Some(frame) = Frame::decode_from(&mut tunnel.recv_buf, tunnel.max_frame_size)? {
+            if frame.frame_type == FrameType::Padding {
+                continue;
+            }
+            return Ok(Some(frame));
+        }
+        match tunnel.stream.recv_data().await? {
+            Some(mut chunk) => {
+                let bytes = chunk.copy_to_bytes(chunk.remaining());
+                tunnel.recv_buf.extend_from_slice(&bytes);
+            }
+            None => return Ok(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1430,24 +1449,5 @@ mod tests {
 
         assert!(hello.verify_server_hello(&wrong_epoch.encode()?).is_err());
         Ok(())
-    }
-}
-
-#[cfg(feature = "h3")]
-async fn read_next_h3_frame(tunnel: &mut H3ClientTunnel) -> Result<Option<Frame>> {
-    loop {
-        if let Some(frame) = Frame::decode_from(&mut tunnel.recv_buf, tunnel.max_frame_size)? {
-            if frame.frame_type == FrameType::Padding {
-                continue;
-            }
-            return Ok(Some(frame));
-        }
-        match tunnel.stream.recv_data().await? {
-            Some(mut chunk) => {
-                let bytes = chunk.copy_to_bytes(chunk.remaining());
-                tunnel.recv_buf.extend_from_slice(&bytes);
-            }
-            None => return Ok(None),
-        }
     }
 }

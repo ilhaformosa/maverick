@@ -17,48 +17,53 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-1b — Independent client-foundation readiness and cancellation
+### T027c-1c — Private config-v3 client trust adapter
 
-**User result.** The private direct-H3 client foundation can advance from its
-own verified loopback connection facts instead of waiting for a second
-same-process test participant. An early close is serviced cooperatively, and a
-canceled pre-authentication wait no longer poisons the next authentication
-attempt. This is still a private loopback foundation seam, not config trust
-wiring, a SOCKS/CONNECT product path, real routing, product readiness, or a
-release result.
+**User result.** The private direct-H3 client foundation can consume one owned
+config-v3 H3 client role and explicit trusted authentication inputs, then apply
+its literal loopback address, server name, CA policy, and optional leaf
+certificate pin before authentication. This is still a private,
+feature-gated, loopback-only foundation seam. It is not a CLI/SOCKS product
+path, real routing, product readiness, or a release result.
 
 **Scope.** Limit this slice to `ROADMAP.md` and the client's private quiche
-foundation. Promote the existing low-level client construction into one
-production-compiled private bootstrap that accepts an already prepared QUIC
-trust configuration, an already-bound loopback socket, one owned auth runtime,
-and the existing task permit. Remove the production dependency on the
-test-pair readiness barrier, service close and authenticated-acquire commands
-before foundation readiness, and discard canceled pending acquire responders.
-Keep the existing manager, one-slot command queue, bounded join, generation
-owner, and authentication state machine.
+foundation. Add one private adapter that first transfers the complete client
+role into the existing generation-auth owner, accepts a task permit already
+reserved by its caller, rejects non-H3, DNS, non-loopback, and zero-port peers
+before CA or socket I/O, and performs a timeout-bounded matching-family
+loopback bind. When a custom CA is configured, build a fresh BoringSSL trust
+context containing only that CA; otherwise preserve quiche's platform-aware
+backend-default root handling. Keep server-name verification mandatory. Decode
+an optional SHA-256 leaf pin before I/O and compare it in constant time after
+verified TLS 1.3 and H3 ALPN, but before exporters, H3 construction,
+observation, or auth-v3.
 
-**Acceptance.** A client and server started independently without a shared
-barrier complete the same-generation auth-v3 exchange using peer verification
-and a synthetic loopback CA. Closing before handshake readiness completes
-inside the existing join bound and returns the task permit. Canceling one
-pre-authenticated acquire permits a later acquire to succeed without stopping
-the driver. Explicit async close remains the primary bounded reclamation path;
-Drop remains an abort-only fallback. Existing loopback limits, pre-auth
-application rejection, authenticated lease invalidation, default behavior,
-and all protocol, config, auth, frame, wire, and stored-profile versions remain
-unchanged.
+**Acceptance.** A malformed pin is rejected by the canonical parser before the
+adapter or a task permit exists. Invalid v1, H2, DNS, non-loopback, zero-port,
+and missing-CA inputs reaching the adapter fail with fixed privacy-safe errors
+before the next forbidden I/O stage and return the caller's task permit. A
+custom synthetic CA and matching server name authenticate with no pin or a
+matching pin. A wrong custom CA, backend-default roots against that private CA,
+a wrong server name, or a wrong pin cannot produce a client observation or
+authenticated lease; a matching pin never overrides failed PKI or name
+verification. Wrong-pin
+rejection occurs before any exporter/H3/auth observation. Explicit close
+invalidates the successful lease and reclaims tasks. Existing independent
+readiness, cancellation, bounded queues, default behavior, and all protocol,
+config, auth, frame, wire, and stored-profile versions remain unchanged.
 
-**Out of scope.** Do not add the `ClientRoleConfig` trust adapter, custom-CA
-policy, certificate-pin enforcement, DNS, non-loopback I/O, public runtime or
-lifecycle APIs, CLI/SDK wiring, SOCKS/CONNECT streaming, a second manager,
-queue, task framework, dependency, feature, schema, or wire change. The
-prepared QUIC configuration is a private lower-layer input and does not prove
-that product trust configuration is wired.
+**Out of scope.** Do not add public APIs, CLI/SDK/SOCKS wiring, CONNECT
+streaming, DNS or non-loopback support, real-network I/O, reconnect policy,
+telemetry, a second manager/queue/task framework, dependency, feature, schema,
+or wire changes. Backend-default root sets may differ between H2 and H3; this
+slice preserves the policy boundary of exclusive custom CA versus backend
+defaults, not byte-identical root stores. The private adapter does not prove a
+product client runtime.
 
 **Stop conditions.** Stop and re-adjudicate before touching any additional
-file, changing a manifest or feature graph, exposing quiche or a public handle,
-consuming the full client role, enabling DNS/non-loopback/real-network I/O, or
-requiring server, core, CLI, SDK, schema, or wire changes.
+file, changing a manifest or feature graph, exposing a public handle or quiche
+type, enabling DNS/non-loopback/real-network I/O, inventing trusted time or
+capability inputs, or requiring server, core, CLI, SDK, schema, or wire changes.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

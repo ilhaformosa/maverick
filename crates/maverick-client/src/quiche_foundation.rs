@@ -9,14 +9,20 @@ use std::fmt;
 #[cfg(test)]
 use std::marker::PhantomData;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use boring::ssl::{SslRef, SslVersion};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use boring::ssl::{SslContextBuilder, SslMethod, SslRef, SslVerifyMode, SslVersion};
 use maverick_core::auth::{TlsChannelBinding, TLS_CHANNEL_BINDING_EXPORTER_LABEL};
 use maverick_core::auth_v3::{AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN};
+use maverick_core::config::ClientRoleConfig;
 use rand::{rngs::OsRng, TryRngCore};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
@@ -66,6 +72,8 @@ const T026C_REQUEST_SPLIT: usize = 113;
 #[cfg(test)]
 const T026C_RESPONSE_SPLIT: usize = 127;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+static CLIENT_ROLE_SOCKET_BINDS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy)]
 enum EarlyDataPolicy {
@@ -526,6 +534,36 @@ mod generation_auth {
                 Self::Client(config) => config
                     .direct_v3()
                     .map(|config| config.server_name())
+                    .ok_or(FoundationError::PreAuthApplicationActivity),
+                Self::Server(_) => Err(FoundationError::PreAuthApplicationActivity),
+            }
+        }
+
+        fn client_server_address(&self) -> Result<&str, FoundationError> {
+            match self {
+                Self::Client(config) => config
+                    .direct_v3()
+                    .map(|config| config.server_address())
+                    .ok_or(FoundationError::PreAuthApplicationActivity),
+                Self::Server(_) => Err(FoundationError::PreAuthApplicationActivity),
+            }
+        }
+
+        fn client_ca_cert(&self) -> Result<Option<&Path>, FoundationError> {
+            match self {
+                Self::Client(config) => config
+                    .direct_v3()
+                    .map(|config| config.ca_cert())
+                    .ok_or(FoundationError::PreAuthApplicationActivity),
+                Self::Server(_) => Err(FoundationError::PreAuthApplicationActivity),
+            }
+        }
+
+        fn client_cert_pin(&self) -> Result<Option<&str>, FoundationError> {
+            match self {
+                Self::Client(config) => config
+                    .direct_v3()
+                    .map(|config| config.cert_pin())
                     .ok_or(FoundationError::PreAuthApplicationActivity),
                 Self::Server(_) => Err(FoundationError::PreAuthApplicationActivity),
             }
@@ -1594,6 +1632,18 @@ mod generation_auth {
             self.role_config.client_server_name()
         }
 
+        pub(super) fn client_server_address(&self) -> Result<&str, FoundationError> {
+            self.role_config.client_server_address()
+        }
+
+        pub(super) fn client_ca_cert(&self) -> Result<Option<&Path>, FoundationError> {
+            self.role_config.client_ca_cert()
+        }
+
+        pub(super) fn client_cert_pin(&self) -> Result<Option<&str>, FoundationError> {
+            self.role_config.client_cert_pin()
+        }
+
         fn request_chunk_end(&self) -> usize {
             #[cfg(test)]
             {
@@ -1634,7 +1684,7 @@ mod generation_auth {
     }
 
     #[cfg(test)]
-    fn test_trusted_inputs() -> Result<TrustedGenerationAuthInputs, FoundationError> {
+    pub(super) fn test_trusted_inputs() -> Result<TrustedGenerationAuthInputs, FoundationError> {
         TrustedGenerationAuthInputs::new(
             T026C_NOW,
             T026C_NOW + 1_800,
@@ -1875,7 +1925,7 @@ mod generation_auth {
     }
 
     #[cfg(test)]
-    fn test_client_role_yaml() -> String {
+    pub(super) fn test_client_role_yaml() -> String {
         format!(
             r#"version: 3
 role: client
@@ -3443,7 +3493,7 @@ mod classic_connect {
 
 use generation_auth::{
     bind_authenticated_lease, lease_command_proof, AuthenticatedConnectionLease,
-    AuthenticatedGeneration, AuthenticatedLeaseProof, GenerationAuth,
+    AuthenticatedGeneration, AuthenticatedLeaseProof, GenerationAuth, TrustedGenerationAuthInputs,
 };
 
 use classic_connect::{ClassicConnectOutcome, ClassicConnectReference, FlowBuffer};
@@ -3454,7 +3504,8 @@ use classic_connect::{ReferenceFault as ClassicConnectFault, ReferenceSpy as Cla
 #[cfg(test)]
 use generation_auth::{
     bounded_body_progress, exact_body_finished, request_header_pairs, response_header_pairs,
-    valid_request_headers, valid_response_headers, AuthRole, ReferenceFault, ReferenceOutcome,
+    test_client_role_yaml, test_trusted_inputs, valid_request_headers, valid_response_headers,
+    AuthRole, ReferenceFault, ReferenceOutcome,
 };
 
 #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
@@ -3476,10 +3527,12 @@ enum FoundationError {
     ManagerClosed,
     ObservationQueueUnavailable,
     PacketUnavailable,
+    PeerIdentityUnavailable,
     PreAuthApplicationActivity,
     SocketUnavailable,
     TaskBudgetUnavailable,
     TlsVersionMismatch,
+    TrustConfigurationUnavailable,
 }
 
 impl fmt::Display for FoundationError {
@@ -3499,10 +3552,12 @@ impl fmt::Display for FoundationError {
             Self::ManagerClosed => "native H3 manager closed",
             Self::ObservationQueueUnavailable => "native H3 observation queue unavailable",
             Self::PacketUnavailable => "native H3 packet unavailable",
+            Self::PeerIdentityUnavailable => "native H3 peer identity unavailable",
             Self::PreAuthApplicationActivity => "native H3 pre-auth activity rejected",
             Self::SocketUnavailable => "native H3 socket unavailable",
             Self::TaskBudgetUnavailable => "native H3 task budget unavailable",
             Self::TlsVersionMismatch => "native H3 TLS version mismatch",
+            Self::TrustConfigurationUnavailable => "native H3 trust configuration unavailable",
         })
     }
 }
@@ -3863,6 +3918,94 @@ struct ClientDriverBootstrap {
     observation_rx: mpsc::Receiver<FoundationObservation>,
 }
 
+struct PreparedClientTrust {
+    config: quiche::Config,
+    expected_leaf_sha256: Option<[u8; 32]>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+async fn bootstrap_client_role(
+    role: ClientRoleConfig,
+    trusted_inputs: TrustedGenerationAuthInputs,
+    task_permit: OwnedSemaphorePermit,
+) -> Result<ClientDriverBootstrap, FoundationError> {
+    let auth_runtime = GenerationAuth::client(role, trusted_inputs)?;
+    let (peer_address, prepared_trust) = prepare_client_role(&auth_runtime)?;
+    let local_address = if peer_address.is_ipv4() {
+        SocketAddr::from(([127, 0, 0, 1], 0))
+    } else {
+        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 0))
+    };
+    #[cfg(test)]
+    CLIENT_ROLE_SOCKET_BINDS.fetch_add(1, Ordering::Relaxed);
+    let socket = timeout(SOCKET_IO_TIMEOUT, UdpSocket::bind(local_address))
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?
+        .map_err(|_| FoundationError::SocketUnavailable)?;
+    bootstrap_client_driver_with_pin(
+        socket,
+        peer_address,
+        prepared_trust.config,
+        prepared_trust.expected_leaf_sha256,
+        auth_runtime,
+        task_permit,
+    )
+}
+
+fn prepare_client_role(
+    auth_runtime: &GenerationAuth,
+) -> Result<(SocketAddr, PreparedClientTrust), FoundationError> {
+    let peer_address = auth_runtime
+        .client_server_address()?
+        .parse::<SocketAddr>()
+        .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+    if !peer_address.ip().is_loopback() || peer_address.port() == 0 {
+        return Err(FoundationError::PreAuthApplicationActivity);
+    }
+    let expected_leaf_sha256 = auth_runtime
+        .client_cert_pin()?
+        .map(parse_expected_leaf_sha256)
+        .transpose()?;
+
+    let config = bounded_quic_config_with_trust(auth_runtime.client_ca_cert()?)?;
+    Ok((
+        peer_address,
+        PreparedClientTrust {
+            config,
+            expected_leaf_sha256,
+        },
+    ))
+}
+
+fn parse_expected_leaf_sha256(pin: &str) -> Result<[u8; 32], FoundationError> {
+    let encoded = pin
+        .strip_prefix("sha256/")
+        .ok_or(FoundationError::TrustConfigurationUnavailable)?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded.as_bytes())
+        .map_err(|_| FoundationError::TrustConfigurationUnavailable)?;
+    decoded
+        .try_into()
+        .map_err(|_| FoundationError::TrustConfigurationUnavailable)
+}
+
+fn bounded_quic_config_with_trust(
+    ca_cert: Option<&Path>,
+) -> Result<quiche::Config, FoundationError> {
+    let Some(ca_cert) = ca_cert else {
+        return bounded_quic_config().map_err(|_| FoundationError::TrustConfigurationUnavailable);
+    };
+    let mut builder = SslContextBuilder::new(SslMethod::tls())
+        .map_err(|_| FoundationError::TrustConfigurationUnavailable)?;
+    builder.set_verify(SslVerifyMode::PEER);
+    builder
+        .set_ca_file(ca_cert)
+        .map_err(|_| FoundationError::TrustConfigurationUnavailable)?;
+    let config = quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, builder)
+        .map_err(|_| FoundationError::TrustConfigurationUnavailable)?;
+    apply_bounded_quic_config(config)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn bootstrap_client_driver(
     socket: UdpSocket,
@@ -3871,9 +4014,33 @@ fn bootstrap_client_driver(
     auth_runtime: GenerationAuth,
     task_permit: OwnedSemaphorePermit,
 ) -> Result<ClientDriverBootstrap, FoundationError> {
+    bootstrap_client_driver_with_pin(
+        socket,
+        peer_address,
+        config,
+        None,
+        auth_runtime,
+        task_permit,
+    )
+}
+
+fn bootstrap_client_driver_with_pin(
+    socket: UdpSocket,
+    peer_address: SocketAddr,
+    config: quiche::Config,
+    expected_leaf_sha256: Option<[u8; 32]>,
+    auth_runtime: GenerationAuth,
+    task_permit: OwnedSemaphorePermit,
+) -> Result<ClientDriverBootstrap, FoundationError> {
     let (observation_tx, observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
-    let driver =
-        authenticated_client_driver(socket, peer_address, config, observation_tx, auth_runtime)?;
+    let driver = authenticated_client_driver(
+        socket,
+        peer_address,
+        config,
+        expected_leaf_sha256,
+        observation_tx,
+        auth_runtime,
+    )?;
     let manager = SingleIdentityQuicManager::start(driver, task_permit)?;
     Ok(ClientDriverBootstrap {
         manager,
@@ -3885,6 +4052,7 @@ fn authenticated_client_driver(
     socket: UdpSocket,
     peer_address: SocketAddr,
     mut config: quiche::Config,
+    expected_leaf_sha256: Option<[u8; 32]>,
     observation_tx: mpsc::Sender<FoundationObservation>,
     auth_runtime: GenerationAuth,
 ) -> Result<FoundationDriver, FoundationError> {
@@ -3908,11 +4076,12 @@ fn authenticated_client_driver(
         &mut config,
     )
     .map_err(|_| FoundationError::ConnectionUnavailable)?;
-    FoundationDriver::new(
+    FoundationDriver::new_client(
         socket,
         peer_address,
         connection,
         observation_tx,
+        expected_leaf_sha256,
         auth_runtime,
     )
 }
@@ -3925,6 +4094,7 @@ struct FoundationDriver {
     h3_config: Option<quiche::h3::Config>,
     h3_connection: Option<quiche::h3::Connection>,
     tls_observation: Option<TlsObservation>,
+    expected_leaf_sha256: Option<[u8; 32]>,
     observation_tx: mpsc::Sender<FoundationObservation>,
     #[cfg(test)]
     pre_auth_request_trigger: Option<Arc<AtomicBool>>,
@@ -3971,6 +4141,25 @@ impl FoundationDriver {
             peer_address,
             connection,
             observation_tx,
+            None,
+            DriverAuthRuntime::Authenticated(Box::new(auth_runtime)),
+        )
+    }
+
+    fn new_client(
+        socket: UdpSocket,
+        peer_address: SocketAddr,
+        connection: quiche::Connection,
+        observation_tx: mpsc::Sender<FoundationObservation>,
+        expected_leaf_sha256: Option<[u8; 32]>,
+        auth_runtime: GenerationAuth,
+    ) -> Result<Self, FoundationError> {
+        Self::new_inner(
+            socket,
+            peer_address,
+            connection,
+            observation_tx,
+            expected_leaf_sha256,
             DriverAuthRuntime::Authenticated(Box::new(auth_runtime)),
         )
     }
@@ -3987,6 +4176,7 @@ impl FoundationDriver {
             peer_address,
             connection,
             observation_tx,
+            None,
             DriverAuthRuntime::FoundationOnly,
         )
     }
@@ -3996,6 +4186,7 @@ impl FoundationDriver {
         peer_address: SocketAddr,
         connection: quiche::Connection,
         observation_tx: mpsc::Sender<FoundationObservation>,
+        expected_leaf_sha256: Option<[u8; 32]>,
         auth_runtime: DriverAuthRuntime,
     ) -> Result<Self, FoundationError> {
         let local_address = socket
@@ -4015,6 +4206,7 @@ impl FoundationDriver {
             h3_config: Some(bounded_h3_config()?),
             h3_connection: None,
             tls_observation: None,
+            expected_leaf_sha256,
             observation_tx,
             #[cfg(test)]
             pre_auth_request_trigger: None,
@@ -4358,11 +4550,30 @@ impl FoundationDriver {
             return Err(FoundationError::AlpnMismatch);
         }
 
-        let tls: &mut SslRef = self.connection.as_mut();
-        if tls.version2() != Some(SslVersion::TLS1_3) {
+        let tls_version = {
+            let tls: &mut SslRef = self.connection.as_mut();
+            tls.version2()
+        };
+        if tls_version != Some(SslVersion::TLS1_3) {
             return Err(FoundationError::TlsVersionMismatch);
         }
 
+        if let Some(expected_leaf_sha256) = &self.expected_leaf_sha256 {
+            let peer_certificate = self
+                .connection
+                .peer_cert()
+                .ok_or(FoundationError::PeerIdentityUnavailable)?;
+            let actual_leaf_sha256: [u8; 32] = Sha256::digest(peer_certificate).into();
+            if !bool::from(
+                actual_leaf_sha256
+                    .as_slice()
+                    .ct_eq(expected_leaf_sha256.as_slice()),
+            ) {
+                return Err(FoundationError::PeerIdentityUnavailable);
+            }
+        }
+
+        let tls: &mut SslRef = self.connection.as_mut();
         let legacy_label = std::str::from_utf8(TLS_CHANNEL_BINDING_EXPORTER_LABEL)
             .map_err(|_| FoundationError::ExporterUnavailable)?;
         let mut legacy_output = [0_u8; AUTH_V3_EXPORTER_LEN];
@@ -4730,7 +4941,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::{Mutex, MutexGuard, Once};
 
-    use boring::ssl::{SslContextBuilder, SslMethod, SslVerifyMode};
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, encode_auth_v3_server_confirmation,
         verify_auth_v3_client_control, verify_auth_v3_server_confirmation, AuthV3Carrier,
@@ -4860,6 +5070,28 @@ mod tests {
         server_address: SocketAddr,
     }
 
+    #[derive(Clone, Copy)]
+    enum ClientRoleAdapterCa {
+        Custom,
+        WrongCustom,
+        PlatformDefaults,
+    }
+
+    #[derive(Clone, Copy)]
+    enum ClientRoleAdapterPin {
+        None,
+        Matching,
+        Wrong,
+    }
+
+    struct ClientRoleAdapterPair {
+        _temp: TempDir,
+        client: SingleIdentityQuicManager,
+        server: SingleIdentityQuicManager,
+        client_observation_rx: mpsc::Receiver<FoundationObservation>,
+        server_observation_rx: mpsc::Receiver<FoundationObservation>,
+    }
+
     struct ClientStartFixture<'fixture> {
         connections_created: &'fixture AtomicUsize,
         pre_auth_request_trigger: Option<Arc<AtomicBool>>,
@@ -4879,20 +5111,6 @@ mod tests {
             Some(value) => value,
             None => panic!("{message}"),
         }
-    }
-
-    fn bounded_quic_config_with_exclusive_ca(
-        ca_path: &std::path::Path,
-    ) -> Result<quiche::Config, FoundationError> {
-        let mut builder = SslContextBuilder::new(SslMethod::tls())
-            .map_err(|_| FoundationError::ConnectionUnavailable)?;
-        builder.set_verify(SslVerifyMode::PEER);
-        builder
-            .set_ca_file(ca_path)
-            .map_err(|_| FoundationError::ConnectionUnavailable)?;
-        let config = quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, builder)
-            .map_err(|_| FoundationError::ConnectionUnavailable)?;
-        apply_bounded_quic_config(config)
     }
 
     #[cfg(feature = "unstable-quiche-strict-push-test-support")]
@@ -5269,6 +5487,7 @@ mod tests {
                 socket,
                 peer_address,
                 config,
+                None,
                 observation_tx,
                 auth_runtime,
             )?,
@@ -5398,7 +5617,7 @@ mod tests {
             "load temporary loopback key",
         );
         let client_config = fixed_ok(
-            bounded_quic_config_with_exclusive_ca(&cert_path),
+            bounded_quic_config_with_trust(Some(&cert_path)),
             "build verified loopback H3 client configuration",
         );
 
@@ -5490,6 +5709,181 @@ mod tests {
         }
     }
 
+    fn client_role_adapter_yaml(
+        server_address: SocketAddr,
+        server_name: &str,
+        ca_cert: Option<&Path>,
+        cert_pin: Option<&str>,
+    ) -> String {
+        let ca_cert = match ca_cert {
+            Some(path) => format!(
+                "  ca_cert: \"{}\"",
+                fixed_some(path.to_str(), "read client role CA fixture path")
+            ),
+            None => "  ca_cert: null".to_owned(),
+        };
+        let cert_pin = match cert_pin {
+            Some(pin) => format!("  cert_pin: \"{pin}\""),
+            None => "  cert_pin: null".to_owned(),
+        };
+        test_client_role_yaml()
+            .replace(
+                &format!("  address: \"{T026C_AUTHORITY}:443\""),
+                &format!("  address: \"{server_address}\""),
+            )
+            .replace(
+                &format!("  server_name: \"{T026C_AUTHORITY}\""),
+                &format!("  server_name: \"{server_name}\""),
+            )
+            .replace("  ca_cert: null", &ca_cert)
+            .replace("  cert_pin: null", &cert_pin)
+    }
+
+    async fn start_client_role_adapter_pair(
+        client_task_budget: &ConnectionTaskBudget,
+        server_task_budget: &ConnectionTaskBudget,
+        ca: ClientRoleAdapterCa,
+        pin: ClientRoleAdapterPin,
+        server_name: &str,
+    ) -> ClientRoleAdapterPair {
+        let temp = fixed_ok(
+            TempDir::new(),
+            "create client role adapter certificate directory",
+        );
+        let cert_path = temp.path().join("cert.pem");
+        let key_path = temp.path().join("key.pem");
+        let wrong_ca_path = temp.path().join("wrong-ca.pem");
+        let certified = fixed_ok(
+            rcgen::generate_simple_self_signed(vec![T026C_AUTHORITY.into()]),
+            "generate client role adapter certificate",
+        );
+        let wrong_ca = fixed_ok(
+            rcgen::generate_simple_self_signed(vec!["wrong.invalid".into()]),
+            "generate client role adapter wrong CA",
+        );
+        fixed_ok(
+            std::fs::write(&cert_path, certified.cert.pem()),
+            "write client role adapter certificate",
+        );
+        fixed_ok(
+            std::fs::write(&key_path, certified.key_pair.serialize_pem()),
+            "write client role adapter key",
+        );
+        fixed_ok(
+            std::fs::write(&wrong_ca_path, wrong_ca.cert.pem()),
+            "write client role adapter wrong CA",
+        );
+        let matching_pin = format!(
+            "sha256/{}",
+            URL_SAFE_NO_PAD.encode(Sha256::digest(certified.cert.der().as_ref()))
+        );
+        let wrong_pin = format!("sha256/{}", URL_SAFE_NO_PAD.encode([0xa5_u8; 32]));
+
+        let mut server_config = fixed_ok(
+            bounded_self_signed_loopback_quic_config(),
+            "build client role adapter server config",
+        );
+        fixed_ok(
+            server_config.load_cert_chain_from_pem_file(fixed_some(
+                cert_path.to_str(),
+                "read client role adapter certificate path",
+            )),
+            "load client role adapter certificate",
+        );
+        fixed_ok(
+            server_config.load_priv_key_from_pem_file(fixed_some(
+                key_path.to_str(),
+                "read client role adapter key path",
+            )),
+            "load client role adapter key",
+        );
+
+        let server_socket = fixed_ok(
+            bind_bounded_loopback_socket(SocketAddr::from(([127, 0, 0, 1], 0))).await,
+            "bind client role adapter server",
+        );
+        let server_address = fixed_ok(
+            server_socket.local_addr(),
+            "read client role adapter server address",
+        );
+        let ca_cert = match ca {
+            ClientRoleAdapterCa::Custom => Some(cert_path.as_path()),
+            ClientRoleAdapterCa::WrongCustom => Some(wrong_ca_path.as_path()),
+            ClientRoleAdapterCa::PlatformDefaults => None,
+        };
+        let cert_pin = match pin {
+            ClientRoleAdapterPin::None => None,
+            ClientRoleAdapterPin::Matching => Some(matching_pin.as_str()),
+            ClientRoleAdapterPin::Wrong => Some(wrong_pin.as_str()),
+        };
+        let role = fixed_ok(
+            ClientRoleConfig::from_yaml_str(&client_role_adapter_yaml(
+                server_address,
+                server_name,
+                ca_cert,
+                cert_pin,
+            )),
+            "parse client role adapter fixture",
+        );
+
+        let (server_tx, server_observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+        let server_connections_created = AtomicUsize::new(0);
+        let server_setup = start_server(
+            server_socket,
+            server_config,
+            server_tx,
+            fixed_ok(
+                server_task_budget.try_acquire(),
+                "reserve client role adapter server task",
+            ),
+            &server_connections_created,
+            Some(fixed_ok(
+                GenerationAuth::new_test(AuthRole::Server),
+                "construct client role adapter server auth",
+            )),
+        );
+        let ClientDriverBootstrap {
+            manager: client,
+            observation_rx: client_observation_rx,
+        } = fixed_ok(
+            bootstrap_client_role(
+                role,
+                fixed_ok(
+                    test_trusted_inputs(),
+                    "construct client role adapter trusted inputs",
+                ),
+                fixed_ok(
+                    client_task_budget.try_acquire(),
+                    "reserve client role adapter client task",
+                ),
+            )
+            .await,
+            "start client role adapter",
+        );
+        let server = fixed_ok(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, server_setup).await,
+                "bound client role adapter server setup",
+            ),
+            "start client role adapter server",
+        );
+        assert_eq!(server_connections_created.load(Ordering::Relaxed), 1);
+
+        ClientRoleAdapterPair {
+            _temp: temp,
+            client,
+            server,
+            client_observation_rx,
+            server_observation_rx,
+        }
+    }
+
+    async fn close_client_role_adapter_pair(pair: &mut ClientRoleAdapterPair) {
+        let (client_close, server_close) = tokio::join!(pair.client.close(), pair.server.close());
+        fixed_ok(client_close, "close client role adapter client");
+        fixed_ok(server_close, "close client role adapter server");
+    }
+
     async fn start_verified_bootstrap_pair(
         client_task_budget: &ConnectionTaskBudget,
         server_task_budget: &ConnectionTaskBudget,
@@ -5546,7 +5940,7 @@ mod tests {
             &wrong_ca_path
         };
         let client_config = fixed_ok(
-            bounded_quic_config_with_exclusive_ca(trusted_path),
+            bounded_quic_config_with_trust(Some(trusted_path)),
             "build verified bootstrap client config",
         );
 
@@ -7781,6 +8175,320 @@ mod tests {
         assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
     }
 
+    #[tokio::test]
+    async fn client_role_adapter_rejects_invalid_roles_before_socket_io() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire client role adapter pre-I/O test lock",
+        );
+        let missing_ca_marker = ["sensitive", "-fixture.invalid"].concat();
+        let legacy_role = format!(
+            r#"version: 1
+mode: auto
+local:
+  socks5:
+    listen: "127.0.0.1:0"
+server:
+  address: "example.invalid:443"
+  server_name: "example.invalid"
+  tunnel_path: "/assets/upload"
+  credential_id: "u_example"
+  secret: "{T022A_SECRET}"
+auth:
+  channel_binding:
+    enabled: true
+    require: false
+advanced:
+  crypto:
+    offered_suites:
+      - "tls13"
+    allow_experimental: false
+"#,
+        );
+        let cases = [
+            (legacy_role, FoundationError::PreAuthApplicationActivity),
+            (
+                test_client_role_yaml().replace("strategy: h3", "strategy: h2"),
+                FoundationError::PreAuthApplicationActivity,
+            ),
+            (
+                test_client_role_yaml().replace(
+                    "  ca_cert: null",
+                    &format!("  ca_cert: \"{missing_ca_marker}\""),
+                ),
+                FoundationError::PreAuthApplicationActivity,
+            ),
+            (
+                test_client_role_yaml().replace(
+                    &format!("  address: \"{T026C_AUTHORITY}:443\""),
+                    "  address: \"192.0.2.1:443\"",
+                ),
+                FoundationError::PreAuthApplicationActivity,
+            ),
+            (
+                test_client_role_yaml().replace(
+                    &format!("  address: \"{T026C_AUTHORITY}:443\""),
+                    "  address: \"127.0.0.1:0\"",
+                ),
+                FoundationError::PreAuthApplicationActivity,
+            ),
+            (
+                test_client_role_yaml()
+                    .replace(
+                        &format!("  address: \"{T026C_AUTHORITY}:443\""),
+                        "  address: \"127.0.0.1:443\"",
+                    )
+                    .replace(
+                        "  ca_cert: null",
+                        &format!("  ca_cert: \"{missing_ca_marker}\""),
+                    ),
+                FoundationError::TrustConfigurationUnavailable,
+            ),
+        ];
+        let binds_before = CLIENT_ROLE_SOCKET_BINDS.load(Ordering::Acquire);
+        let malformed_pin =
+            test_client_role_yaml().replace("  cert_pin: null", "  cert_pin: \"sha256/not-valid\"");
+        assert!(ClientRoleConfig::from_yaml_str(&malformed_pin).is_err());
+        for (role_yaml, expected_error) in cases {
+            let task_budget = ConnectionTaskBudget::new();
+            let role = fixed_ok(
+                ClientRoleConfig::from_yaml_str(&role_yaml),
+                "parse pre-I/O client role adapter fixture",
+            );
+            let result = bootstrap_client_role(
+                role,
+                fixed_ok(
+                    test_trusted_inputs(),
+                    "construct client role trusted inputs",
+                ),
+                fixed_ok(
+                    task_budget.try_acquire(),
+                    "reserve client role adapter task",
+                ),
+            )
+            .await;
+
+            let error = fixed_some(result.err(), "reject pre-I/O client role adapter fixture");
+            assert_eq!(error, expected_error);
+            assert!(std::error::Error::source(&error).is_none());
+            assert!(!error.to_string().contains(&missing_ca_marker));
+            assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+        }
+        assert_eq!(
+            CLIENT_ROLE_SOCKET_BINDS.load(Ordering::Acquire),
+            binds_before
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_role_adapter_custom_ca_and_optional_pin_authenticate() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire client role adapter positive test lock",
+        );
+        for pin in [ClientRoleAdapterPin::None, ClientRoleAdapterPin::Matching] {
+            let client_task_budget = ConnectionTaskBudget::new();
+            let server_task_budget = ConnectionTaskBudget::new();
+            let mut pair = start_client_role_adapter_pair(
+                &client_task_budget,
+                &server_task_budget,
+                ClientRoleAdapterCa::Custom,
+                pin,
+                T026C_AUTHORITY,
+            )
+            .await;
+            let client_observation = fixed_some(
+                fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.client_observation_rx.recv()).await,
+                    "bound client role adapter client observation",
+                ),
+                "receive client role adapter client observation",
+            );
+            let server_observation = fixed_some(
+                fixed_ok(
+                    timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
+                    "bound client role adapter server observation",
+                ),
+                "receive client role adapter server observation",
+            );
+            assert_eq!(
+                client_observation.auth_v3_exporter,
+                server_observation.auth_v3_exporter
+            );
+            let (client_lease, server_lease) = tokio::join!(
+                pair.client.acquire_authenticated(),
+                pair.server.acquire_authenticated(),
+            );
+            let client_lease = fixed_ok(client_lease, "authenticate client role adapter client");
+            let server_lease = fixed_ok(server_lease, "authenticate client role adapter server");
+            assert!(client_lease.is_active());
+            assert!(server_lease.is_active());
+
+            close_client_role_adapter_pair(&mut pair).await;
+            assert!(!client_lease.is_active());
+            assert!(!server_lease.is_active());
+            drop(client_lease);
+            drop(server_lease);
+            assert_eq!(
+                client_task_budget.available_permits(),
+                CONNECTION_TASK_LIMIT
+            );
+            assert_eq!(
+                server_task_budget.available_permits(),
+                CONNECTION_TASK_LIMIT
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_role_adapter_wrong_pin_fails_before_observation_or_auth() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire client role adapter wrong pin test lock",
+        );
+        let client_task_budget = ConnectionTaskBudget::new();
+        let server_task_budget = ConnectionTaskBudget::new();
+        let mut pair = start_client_role_adapter_pair(
+            &client_task_budget,
+            &server_task_budget,
+            ClientRoleAdapterCa::Custom,
+            ClientRoleAdapterPin::Wrong,
+            T026C_AUTHORITY,
+        )
+        .await;
+
+        let driver_exit = fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()).await,
+            "bound wrong pin client driver exit",
+        );
+        assert_eq!(
+            driver_exit.err(),
+            Some(FoundationError::PeerIdentityUnavailable)
+        );
+        assert_eq!(pair.client_observation_rx.recv().await, None);
+        assert_eq!(
+            pair.client.acquire_authenticated().await.err(),
+            Some(FoundationError::ManagerClosed)
+        );
+        drop(pair);
+        let client_permits = fixed_ok(
+            timeout(
+                DRIVER_JOIN_TIMEOUT,
+                client_task_budget
+                    .permits
+                    .clone()
+                    .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
+            )
+            .await,
+            "reclaim wrong pin client task permits",
+        );
+        drop(fixed_ok(
+            client_permits,
+            "hold wrong pin client task permits",
+        ));
+        let server_permits = fixed_ok(
+            timeout(
+                DRIVER_JOIN_TIMEOUT,
+                server_task_budget
+                    .permits
+                    .clone()
+                    .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
+            )
+            .await,
+            "reclaim wrong pin server task permits",
+        );
+        drop(fixed_ok(
+            server_permits,
+            "hold wrong pin server task permits",
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_role_adapter_ca_and_sni_fail_closed_before_auth() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "acquire client role adapter trust rejection test lock",
+        );
+        for (ca, pin, server_name) in [
+            (
+                ClientRoleAdapterCa::WrongCustom,
+                ClientRoleAdapterPin::None,
+                T026C_AUTHORITY,
+            ),
+            (
+                ClientRoleAdapterCa::PlatformDefaults,
+                ClientRoleAdapterPin::None,
+                T026C_AUTHORITY,
+            ),
+            (
+                ClientRoleAdapterCa::Custom,
+                ClientRoleAdapterPin::Matching,
+                "wrong.invalid",
+            ),
+            (
+                ClientRoleAdapterCa::WrongCustom,
+                ClientRoleAdapterPin::Matching,
+                T026C_AUTHORITY,
+            ),
+        ] {
+            let client_task_budget = ConnectionTaskBudget::new();
+            let server_task_budget = ConnectionTaskBudget::new();
+            let mut pair = start_client_role_adapter_pair(
+                &client_task_budget,
+                &server_task_budget,
+                ca,
+                pin,
+                server_name,
+            )
+            .await;
+            let driver_exit = fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.client.take_driver_exit()).await,
+                "bound client role adapter trust rejection",
+            );
+            let error = fixed_some(
+                driver_exit.err(),
+                "reject untrusted client role adapter peer",
+            );
+            assert!(std::error::Error::source(&error).is_none());
+            assert_eq!(pair.client_observation_rx.recv().await, None);
+            assert_eq!(
+                pair.client.acquire_authenticated().await.err(),
+                Some(FoundationError::ManagerClosed)
+            );
+            drop(pair);
+            let client_permits = fixed_ok(
+                timeout(
+                    DRIVER_JOIN_TIMEOUT,
+                    client_task_budget
+                        .permits
+                        .clone()
+                        .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
+                )
+                .await,
+                "reclaim trust rejection client permits",
+            );
+            drop(fixed_ok(
+                client_permits,
+                "hold trust rejection client permits",
+            ));
+            let server_permits = fixed_ok(
+                timeout(
+                    DRIVER_JOIN_TIMEOUT,
+                    server_task_budget
+                        .permits
+                        .clone()
+                        .acquire_many_owned(CONNECTION_TASK_LIMIT as u32),
+                )
+                .await,
+                "reclaim trust rejection server permits",
+            );
+            drop(fixed_ok(
+                server_permits,
+                "hold trust rejection server permits",
+            ));
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn private_client_bootstrap_uses_verified_sni_and_caller_ca() {
         let _test_guard = fixed_ok(
@@ -8503,6 +9211,10 @@ mod tests {
                 "native H3 packet unavailable",
             ),
             (
+                FoundationError::PeerIdentityUnavailable,
+                "native H3 peer identity unavailable",
+            ),
+            (
                 FoundationError::PostAuthFlowRejected,
                 "native H3 post-auth flow rejected",
             ),
@@ -8521,6 +9233,10 @@ mod tests {
             (
                 FoundationError::TlsVersionMismatch,
                 "native H3 TLS version mismatch",
+            ),
+            (
+                FoundationError::TrustConfigurationUnavailable,
+                "native H3 trust configuration unavailable",
             ),
         ];
 

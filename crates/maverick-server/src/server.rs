@@ -20,6 +20,7 @@ use maverick_core::auth::{
     TlsChannelBinding, AUTH_V2_PROTOCOL_VERSION, FEATURE_TLS_CHANNEL_BINDING, PROTOCOL_VERSION,
     TLS_CHANNEL_BINDING_EXPORTER_LABEL,
 };
+use maverick_core::config::{DirectV3TransportStrategy, ServerRoleConfig};
 use maverick_core::frame::{
     ErrorCode, Frame, FrameType, OpenTcpPayload, OpenUdpPayload, UdpPacketPayload, FRAME_HEADER_LEN,
 };
@@ -65,6 +66,14 @@ const UNAUTHENTICATED_FIRST_FRAME_TIMEOUT_MS: u64 = 1_000;
 const MAX_FALLBACK_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 const REPLAY_CACHE_SHARDS: usize = 16;
 const METRICS_READ_TIMEOUT: Duration = Duration::from_secs(2);
+const SERVER_ROLE_RUNTIME_UNAVAILABLE: &str = "server role runtime unavailable";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerRoleRuntimeSelection {
+    LegacyV1,
+    #[cfg(feature = "quiche-foundation")]
+    DirectV3H3,
+}
 
 fn server_padding(state: &ServerState) -> RuntimePadding {
     RuntimePadding::from_config(
@@ -231,6 +240,56 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     }
     let (_tx, rx) = oneshot::channel();
     serve(listener, metrics_listener, config, rx).await
+}
+
+/// Run one validated, version-first server role.
+///
+/// Config v1 enters the unchanged legacy runtime. Config v3 H3 remains
+/// feature-gated and loopback-only; this entry does not enable CLI or
+/// non-loopback product wiring.
+pub async fn run_server_role(role: ServerRoleConfig) -> Result<()> {
+    match select_server_role_runtime(&role)? {
+        ServerRoleRuntimeSelection::LegacyV1 => {
+            let config = take_legacy_server_config(role)?;
+            run_server(config).await
+        }
+        #[cfg(feature = "quiche-foundation")]
+        ServerRoleRuntimeSelection::DirectV3H3 => {
+            let role_owner = Arc::new(role);
+            let metrics_owner = Arc::new(ServerRuntimeMetrics::default());
+            crate::quiche_endpoint::run_server_role(role_owner, metrics_owner).await
+        }
+    }
+}
+
+fn take_legacy_server_config(role: ServerRoleConfig) -> Result<ServerConfig> {
+    let config = role
+        .legacy_v1()
+        .ok_or_else(server_role_runtime_unavailable)?
+        .clone();
+    drop(role);
+    Ok(config)
+}
+
+fn select_server_role_runtime(role: &ServerRoleConfig) -> Result<ServerRoleRuntimeSelection> {
+    match (role.version(), role.legacy_v1(), role.direct_v3()) {
+        (1, Some(_), None) => Ok(ServerRoleRuntimeSelection::LegacyV1),
+        (3, None, Some(direct)) if direct.transport_strategy() == DirectV3TransportStrategy::H3 => {
+            #[cfg(feature = "quiche-foundation")]
+            {
+                Ok(ServerRoleRuntimeSelection::DirectV3H3)
+            }
+            #[cfg(not(feature = "quiche-foundation"))]
+            {
+                Err(server_role_runtime_unavailable())
+            }
+        }
+        _ => Err(server_role_runtime_unavailable()),
+    }
+}
+
+fn server_role_runtime_unavailable() -> anyhow::Error {
+    anyhow::Error::msg(SERVER_ROLE_RUNTIME_UNAVAILABLE)
 }
 
 fn validate_runtime_features(config: &ServerConfig) -> Result<()> {
@@ -3247,4 +3306,144 @@ async fn handle_metrics_connection(
             .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod server_role_runtime_entry_tests {
+    use super::*;
+    use maverick_core::config::ServerRoleConfig;
+
+    fn direct_v3_server_role(transport_strategy: &str) -> ServerRoleConfig {
+        direct_v3_server_role_with_listen(transport_strategy, "127.0.0.1:0")
+    }
+
+    fn direct_v3_server_role_with_listen(
+        transport_strategy: &str,
+        listen: &str,
+    ) -> ServerRoleConfig {
+        let yaml = format!(
+            r#"version: 3
+role: server
+security: {{ posture: standard }}
+transport: {{ strategy: {transport_strategy} }}
+trust: {{ route: direct_to_maverick }}
+name_privacy: {{ minimum: plain_sni }}
+traffic_shaping: {{ policy: disabled }}
+listen: "{listen}"
+tls:
+  cert_path: "missing-certificate.pem"
+  key_path: "missing-private-key.pem"
+maverick:
+  tunnel_path: "/direct-v3"
+  expected_authority: "localhost"
+target_open:
+  timeout_ms: 1000
+  egress:
+    allow_loopback: false
+    allow_private: false
+    allow_link_local: false
+    allow_multicast: false
+    allow_unspecified: false
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding:
+      provisioning_handle: "EREREREREREREREREREREQ"
+      principal_id: "IiIiIiIiIiIiIiIiIiIiIg"
+      deployment_profile_id: "MzMzMzMzMzMzMzMzMzMzMw"
+      credential_namespace_id: "RERERERERERERERERERERA"
+      server_identity_id: "VVVVVVVVVVVVVVVVVVVVVQ"
+      credential_epoch: 7
+      credential_not_after_unix: 1800172800
+      secret: "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+"#,
+        );
+        ServerRoleConfig::from_yaml_str(&yaml).expect("parse synthetic direct-v3 server role")
+    }
+
+    fn legacy_server_role() -> ServerRoleConfig {
+        ServerRoleConfig::from_yaml_str(
+            r#"version: 1
+listen: "127.0.0.1:0"
+tls:
+  cert_path: "missing-certificate.pem"
+  key_path: "missing-private-key.pem"
+maverick:
+  tunnel_path: "/legacy"
+users:
+  - id: "synthetic-user"
+    secret: "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+fallback:
+  type: static
+  static_dir: "./public"
+"#,
+        )
+        .expect("parse synthetic legacy server role")
+    }
+
+    #[test]
+    fn t027c1a_selector_preserves_v1_and_drops_role_before_legacy_runtime() {
+        let role = legacy_server_role();
+        assert_eq!(
+            select_server_role_runtime(&role).expect("select legacy runtime"),
+            ServerRoleRuntimeSelection::LegacyV1
+        );
+
+        let legacy = take_legacy_server_config(role).expect("project legacy config");
+        assert_eq!(legacy.listen, "127.0.0.1:0".parse().expect("parse address"));
+        assert_eq!(legacy.version, 1);
+    }
+
+    #[tokio::test]
+    async fn t027c1a_h2_role_is_rejected_by_runtime_entry_before_io() {
+        let error = run_server_role(direct_v3_server_role("h2"))
+            .await
+            .expect_err("direct-v3 H2 must not enter the H3 runtime");
+
+        assert_eq!(error.to_string(), "server role runtime unavailable");
+        assert!(error.source().is_none());
+    }
+
+    #[cfg(not(feature = "quiche-foundation"))]
+    #[tokio::test]
+    async fn t027c1a_h3_role_requires_quiche_feature_before_io() {
+        let error = run_server_role(direct_v3_server_role("h3"))
+            .await
+            .expect_err("direct-v3 H3 must require its explicit feature");
+
+        assert_eq!(error.to_string(), "server role runtime unavailable");
+        assert!(error.source().is_none());
+    }
+
+    #[cfg(feature = "quiche-foundation")]
+    #[test]
+    fn t027c1a_h3_selector_accepts_only_the_quiche_foundation() {
+        assert_eq!(
+            select_server_role_runtime(&direct_v3_server_role("h3"))
+                .expect("select direct-v3 H3 runtime"),
+            ServerRoleRuntimeSelection::DirectV3H3
+        );
+    }
+
+    #[cfg(feature = "quiche-foundation")]
+    #[tokio::test]
+    async fn t027c1a_non_loopback_h3_rejects_before_certificate_or_socket_io() {
+        let error = run_server_role(direct_v3_server_role_with_listen("h3", "192.0.2.1:1"))
+            .await
+            .expect_err("non-loopback direct-v3 H3 must remain unavailable");
+
+        assert_eq!(error.to_string(), "server endpoint bind unavailable");
+        assert!(error.source().is_none());
+    }
+
+    #[cfg(feature = "quiche-foundation")]
+    #[tokio::test]
+    async fn t027c1a_loopback_h3_reaches_endpoint_after_selection() {
+        let error = run_server_role(direct_v3_server_role("h3"))
+            .await
+            .expect_err("missing synthetic certificate must stop endpoint setup");
+
+        assert_eq!(error.to_string(), "server endpoint registry unavailable");
+        assert!(error.source().is_none());
+    }
 }

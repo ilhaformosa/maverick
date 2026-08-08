@@ -17,15 +17,42 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-No repository-local product slice is currently queued. Local security review,
-dependency checks, and safe rejection do not change the product truth in
-`STATUS.md`.
+### T027c-1a — Version-first server-role runtime entry
 
-The next step is a standalone, read-only T027c-1 runtime-seam audit. It may
-inspect the client transport manager, server startup, config-v3, and CLI wiring
-only to identify one smallest implementation slice. It does not authorize
-product changes, and any recommendation must return here as a separately
-bounded queue item before implementation.
+**User result.** The server library can accept one validated, version-first
+server role and select either the unchanged config-v1 runtime or the existing
+bounded config-v3 H3 foundation. The new config-v3 H3 branch remains a
+loopback-only library seam; this is not CLI wiring, real routing, product
+readiness, or a release result.
+
+**Scope.** Limit this slice to `ROADMAP.md`, the server crate's public re-export
+and runtime entry, and the private quiche endpoint wrapper. Config v1 may make
+one `ServerConfig` clone, must immediately drop the secret-bearing
+`ServerRoleConfig` before awaiting, and must call the existing `run_server`
+unchanged. Config v3 H3 may run only when `quiche-foundation` is compiled and
+must pass one
+`Arc<ServerRoleConfig>` into the existing loopback-only endpoint with a
+runtime-entry-owned metrics owner.
+
+**Acceptance.** Version and transport selection occurs before certificate
+reads or socket binds. Config-v3 H2, unavailable features, and inconsistent or
+unsupported role combinations fail with one fixed privacy-safe error. Config
+v1 behavior, endpoint bounds, authentication-before-CONNECT, target-open
+deadline and egress ownership, clean endpoint shutdown, and all protocol,
+config, auth, frame, wire, and stored-profile versions remain unchanged.
+Focused tests cover selection, pre-I/O rejection, real loopback endpoint
+lifecycle, cleanup, and both default and `quiche-foundation` builds.
+
+**Out of scope.** Do not change manifests, default features, core config, CLI,
+SDK, client routing, public lifecycle handles or metrics APIs, public quiche
+types, non-loopback binding, domain resolution, target relay ownership,
+schemas, wire formats, dependencies, system network settings, or real
+infrastructure.
+
+**Stop conditions.** Stop and re-adjudicate before touching any additional
+file, changing the feature graph, exposing quiche or a new lifecycle handle,
+adding a second listener/resolver/opener/task framework/queue, enabling
+non-loopback I/O, or requiring any schema, wire, CLI, client, or core change.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

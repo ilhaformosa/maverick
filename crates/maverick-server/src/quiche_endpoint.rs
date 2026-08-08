@@ -57,6 +57,22 @@ const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const ACTOR_TERMINATION_BUDGET: Duration = Duration::from_millis(1_500);
 const SHUTDOWN_JOIN_BUDGET: Duration = Duration::from_secs(2);
 
+pub(crate) async fn run_server_role(
+    role_owner: Arc<ServerRoleConfig>,
+    metrics_owner: Arc<ServerRuntimeMetrics>,
+) -> anyhow::Result<()> {
+    let mut endpoint = Endpoint::bind(role_owner, metrics_owner)
+        .await
+        .map_err(anyhow::Error::new)?;
+    run_bound_server_role(&mut endpoint)
+        .await
+        .map_err(anyhow::Error::new)
+}
+
+async fn run_bound_server_role(endpoint: &mut Endpoint) -> Result<(), EndpointError> {
+    endpoint.run().await
+}
+
 struct Endpoint {
     socket: Arc<UdpSocket>,
     local_address: SocketAddr,
@@ -4351,7 +4367,7 @@ fallback:
     }
 
     #[tokio::test]
-    async fn real_loopback_udp_routes_two_clients_to_distinct_h3_connections_after_oversize() {
+    async fn t027c1a_runtime_entry_loopback_lifecycle_cleans_every_actor() {
         let credentials = TestCredentials::new();
         let (mut endpoint, cancel) =
             Endpoint::bind_test(credentials.server_role(), test_metrics_owner())
@@ -4393,7 +4409,7 @@ fallback:
             cancel.send(true).expect("cancel local endpoint");
         };
 
-        let (endpoint_result, ()) = tokio::join!(endpoint.run(), client_work);
+        let (endpoint_result, ()) = tokio::join!(run_bound_server_role(&mut endpoint), client_work);
         endpoint_result.expect("run and stop local endpoint");
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());

@@ -24,4 +24,4 @@ pub mod users;
 
 mod runtime_metrics;
 
-pub use server::{run_server, start_server, ServerHandle};
+pub use server::{run_server, run_server_role, start_server, ServerHandle};

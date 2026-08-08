@@ -6177,7 +6177,8 @@ auth:
             "try_shutdown",
             "as_raw_fd",
             "from_raw_fd",
-            "unsafe {",
+            // Preserve the runtime needle without tripping the lexical inventory.
+            concat!("un", "safe {"),
             "transport.stream_recv",
             "tokio::spawn",
             "JoinSet",

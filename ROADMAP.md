@@ -17,24 +17,30 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-0b — clear all-feature test-target clippy blockers
+### T027c-0c — make the local dependency inventory honest and usable offline
 
-- **User result:** The local all-feature integration quality gate stays red-only
-  until it is cleanly green: no test-target-only `clippy` assertion/lint
-  blockers remain for production-runtime-neutral code.
-- **Scope:** Keep the local behavior and runtime unchanged while removing
-  non-valuable `cfg!(feature = "h3")` constant assertions and relocating
-  `read_next_h3_frame` to avoid `items_after_test_module` in `crates/maverick-client/src/tunnel.rs`.
-  This is a test-target lint cleanup only.
-- **Acceptance:** This task is an integration blocker for T027c-0 (`T027c-0b`) and is
-  specifically a `all-features` test-target lint blocker; it is not a product,
-  runtime, user-result, or release outcome.
-- **Out of scope:** This task does not alter `STATUS.md`, any product runtime,
-  protocol behavior, wire versions, public API, configuration schema, deployment,
-  remote, CI, or release posture.
-- **Stop conditions:** Stop before changing files outside this three-file task scope,
-  adding dependencies, editing public surfaces, or broadening the gate to runtime
-  or product claims.
+- **User result:** The cumulative H3 foundation check can run from local caches
+  without attempting network access, pretending cached package status is
+  current, or mistaking a test's forbidden-source needle for real unsafe Rust.
+- **Scope:** Add one explicit offline mode to
+  `scripts/security-dependency-inventory.sh`, make dependency-policy warnings
+  and scanner-tool errors fail closed, add one focused shell regression, and
+  split one test-only source needle without weakening the first-party unsafe
+  scanner. Limit product-file scope to the existing `quiche_runtime.rs` test
+  module.
+- **Acceptance:** Offline mode scans the cached RustSec database, uses locked
+  offline dependency metadata, checks cached advisory/yanked/policy data with
+  warnings denied, and states that online freshness remains unproved. The
+  existing online mode remains the release-facing path. Real unsafe constructs
+  still match the unchanged scanner, while the test-only literal no longer
+  creates a false positive.
+- **Out of scope:** No `STATUS.md`, product runtime, protocol, wire version,
+  public API, config schema, dependency, deployment, remote, CI, or release
+  change. This slice does not close T027c-0 or authorize T027c-1 by itself.
+- **Stop conditions:** Stop before changing any additional product file,
+  weakening or excluding scanner coverage, adding a dependency or coordination
+  framework, using the network, or presenting cached checks as current online
+  or release evidence.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

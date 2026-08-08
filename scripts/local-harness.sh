@@ -62,6 +62,9 @@ echo "==> isolated test-server preparation checks"
 echo "==> release publication gate checks"
 ./scripts/test-release-gates.sh
 
+echo "==> security dependency inventory focused checks"
+./scripts/test-security-dependency-inventory.sh
+
 echo "==> active-surface checks"
 active_python="$(
   find . \
@@ -102,7 +105,8 @@ rg -q "$active_privacy_pattern" \
   docs/TRANSPORT_ARCHITECTURE.md docs/TEST_SERVER_PREPARATION.md \
   docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md scripts/user-smoke.sh \
   scripts/build-pilot.sh scripts/generate-cyclonedx-sbom.sh \
-  scripts/prepare-test-server.sh scripts/test-cyclonedx-sbom.sh \
+  scripts/prepare-test-server.sh scripts/security-dependency-inventory.sh \
+  scripts/test-cyclonedx-sbom.sh scripts/test-security-dependency-inventory.sh \
   scripts/test-prepare-test-server.sh scripts/verify-pilot-artifact.sh \
   scripts/verify-cyclonedx-sbom.sh scripts/verify-release-tag.sh \
   scripts/test-release-gates.sh \
@@ -139,7 +143,8 @@ git diff --check
 bash -n scripts/local-harness.sh scripts/user-smoke.sh scripts/build-pilot.sh \
   scripts/generate-cyclonedx-sbom.sh scripts/security-dependency-inventory.sh \
   scripts/prepare-test-server.sh scripts/test-cyclonedx-sbom.sh \
-  scripts/test-prepare-test-server.sh scripts/verify-cyclonedx-sbom.sh \
+  scripts/test-prepare-test-server.sh scripts/test-security-dependency-inventory.sh \
+  scripts/verify-cyclonedx-sbom.sh \
   scripts/verify-pilot-artifact.sh scripts/verify-release-tag.sh \
   scripts/test-release-gates.sh
 if command -v shellcheck >/dev/null 2>&1; then

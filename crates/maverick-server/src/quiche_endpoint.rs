@@ -2014,7 +2014,7 @@ mod tests {
 
     use boring::ssl::{SslRef, SslVersion};
     use maverick_client::{
-        run_direct_v3_h3_active_flow_shutdown_test_support,
+        run_direct_v3_h3_active_flow_shutdown_test_support, run_direct_v3_h3_client_once,
         run_direct_v3_h3_loopback_connect_test_support,
         run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support,
         run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support,
@@ -2077,6 +2077,12 @@ mod tests {
         let _ = runner;
     }
 
+    #[test]
+    fn t027c2h_normal_one_shot_entry_is_present_in_the_server_test_graph() {
+        let runner = run_direct_v3_h3_client_once;
+        let _ = runner;
+    }
+
     type ActorReceiveFn = fn(
         &mut ConnectionRegistry,
         [u8; MAX_PACKET_BYTES],
@@ -2102,6 +2108,28 @@ mod tests {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum T027c2gTargetOutcome {
         TriggerAcknowledgedThenShutdownObserved,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum T027c2hPeerOutcome {
+        TriggerAcknowledgedThenEof,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum T027c2hTargetOutcome {
+        TriggerAcknowledgedThenEof,
+    }
+
+    #[derive(Clone, Copy)]
+    enum T027c2hRejectedRequest {
+        ParsedDomain,
+        UnsupportedCommand,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum T027c2hRejectedPeerOutcome {
+        FixedPolicyFailureThenEof,
+        ParserFailureThenEof,
     }
 
     fn t027c2c_test_byte(offset: usize) -> u8 {
@@ -2410,6 +2438,21 @@ auth:
             credential_not_after_unix: u64,
             secret: &str,
         ) -> ClientRoleConfig {
+            self.client_role_with_listen(
+                server_address,
+                "127.0.0.1:0".parse().expect("parse test client listen"),
+                credential_not_after_unix,
+                secret,
+            )
+        }
+
+        fn client_role_with_listen(
+            &self,
+            server_address: SocketAddr,
+            client_listen: SocketAddr,
+            credential_not_after_unix: u64,
+            secret: &str,
+        ) -> ClientRoleConfig {
             let yaml = format!(
                 r#"version: 3
 role: client
@@ -2420,7 +2463,7 @@ name_privacy: {{ minimum: plain_sni }}
 traffic_shaping: {{ policy: disabled }}
 local:
   socks5:
-    listen: "127.0.0.1:0"
+    listen: "{client_listen}"
 server:
   address: "{server_address}"
   server_name: "localhost"
@@ -2728,6 +2771,288 @@ fallback:
         .await
         .expect("active-flow shutdown composition finishes within the wall bound");
         endpoint_result.expect("active-flow shutdown endpoint shuts down cleanly");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+        results
+    }
+
+    async fn t027c2h_reserve_client_listener_address() -> SocketAddr {
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("one-shot normal client address reservation stays bounded")
+        .expect("reserve one-shot normal client address");
+        let address = listener
+            .local_addr()
+            .expect("read one-shot normal client address");
+        assert!(address.ip().is_loopback());
+        assert_ne!(address.port(), 0);
+        drop(listener);
+        address
+    }
+
+    async fn t027c2h_connect_external_peer(listener_address: SocketAddr) -> TcpStream {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match timeout(
+                    Duration::from_millis(250),
+                    TcpStream::connect(listener_address),
+                )
+                .await
+                {
+                    Ok(Ok(stream)) => return stream,
+                    Ok(Err(error))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::ConnectionRefused
+                                | std::io::ErrorKind::AddrNotAvailable
+                                | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok(Err(_)) | Err(_) => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await
+        .expect("external one-shot SOCKS peer reaches configured listener")
+    }
+
+    async fn t027c2h_drive_external_peer(
+        listener_address: SocketAddr,
+        target: SocketAddr,
+    ) -> T027c2hPeerOutcome {
+        let mut stream = t027c2h_connect_external_peer(listener_address).await;
+        timeout(
+            Duration::from_secs(5),
+            stream.write_all(&[0x05, 0x01, 0x00]),
+        )
+        .await
+        .expect("external SOCKS greeting write stays bounded")
+        .expect("write external SOCKS greeting");
+        let mut method = [0_u8; 2];
+        timeout(Duration::from_secs(5), stream.read_exact(&mut method))
+            .await
+            .expect("external SOCKS method read stays bounded")
+            .expect("read external SOCKS method");
+        assert_eq!(method, [0x05, 0x00]);
+        method.fill(0);
+
+        let SocketAddr::V4(target) = target else {
+            panic!("one-shot normal client test target must be IPv4");
+        };
+        let mut request = [0_u8; 10];
+        request[..4].copy_from_slice(&[0x05, 0x01, 0x00, 0x01]);
+        request[4..8].copy_from_slice(&target.ip().octets());
+        request[8..].copy_from_slice(&target.port().to_be_bytes());
+        timeout(Duration::from_secs(5), stream.write_all(&request))
+            .await
+            .expect("external SOCKS request write stays bounded")
+            .expect("write external SOCKS request");
+        request.fill(0);
+
+        let mut reply = [0_u8; 10];
+        timeout(Duration::from_secs(5), stream.read_exact(&mut reply))
+            .await
+            .expect("external SOCKS reply read stays bounded")
+            .expect("read external SOCKS reply");
+        let outcome = match reply {
+            [0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0] => {
+                panic!("normal one-shot green must not return the red fixed failure")
+            }
+            [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0] => {
+                timeout(
+                    Duration::from_secs(5),
+                    stream.write_all(&[t027c2c_test_byte(0)]),
+                )
+                .await
+                .expect("external SOCKS trigger write stays bounded")
+                .expect("write external SOCKS trigger");
+                let mut acknowledgement = [0_u8; 1];
+                timeout(
+                    Duration::from_secs(5),
+                    stream.read_exact(&mut acknowledgement),
+                )
+                .await
+                .expect("external SOCKS acknowledgement read stays bounded")
+                .expect("read external SOCKS acknowledgement");
+                assert_eq!(acknowledgement, [0xa5]);
+                acknowledgement.fill(0);
+                timeout(Duration::from_secs(5), stream.shutdown())
+                    .await
+                    .expect("external SOCKS half-close stays bounded")
+                    .expect("half-close external SOCKS peer");
+                let mut closed = [0_u8; 1];
+                let closure = timeout(Duration::from_secs(5), stream.read(&mut closed))
+                    .await
+                    .expect("external SOCKS EOF stays bounded");
+                closed.fill(0);
+                assert_eq!(
+                    closure.expect("external SOCKS peer reads clean terminal EOF"),
+                    0
+                );
+                T027c2hPeerOutcome::TriggerAcknowledgedThenEof
+            }
+            _ => panic!("external SOCKS peer observes one bounded reply category"),
+        };
+        reply.fill(0);
+        outcome
+    }
+
+    async fn t027c2h_drive_real_target(listener: TcpListener) -> T027c2hTargetOutcome {
+        let (mut target, _) = timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("normal one-shot client reaches real target within bound")
+            .expect("accept normal one-shot client target connection");
+        let mut trigger = [0_u8; 1];
+        timeout(Duration::from_secs(5), target.read_exact(&mut trigger))
+            .await
+            .expect("normal one-shot target trigger read stays bounded")
+            .expect("read normal one-shot target trigger");
+        assert_eq!(trigger, [t027c2c_test_byte(0)]);
+        trigger.fill(0);
+        timeout(Duration::from_secs(5), target.write_all(&[0xa5]))
+            .await
+            .expect("normal one-shot target acknowledgement stays bounded")
+            .expect("write normal one-shot target acknowledgement");
+        timeout(Duration::from_secs(5), target.shutdown())
+            .await
+            .expect("normal one-shot target half-close stays bounded")
+            .expect("half-close normal one-shot target");
+
+        let mut closed = [0_u8; 1];
+        let closure = timeout(Duration::from_secs(5), target.read(&mut closed))
+            .await
+            .expect("normal one-shot target EOF stays bounded");
+        closed.fill(0);
+        assert_eq!(
+            closure.expect("normal one-shot target reads clean terminal EOF"),
+            0
+        );
+        drop(target);
+
+        let listener = listener
+            .into_std()
+            .expect("convert completed target listener to nonblocking std listener");
+        match listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            _ => panic!("normal one-shot client opens exactly one target connection"),
+        }
+        drop(listener);
+        T027c2hTargetOutcome::TriggerAcknowledgedThenEof
+    }
+
+    async fn t027c2h_drive_rejected_external_peer(
+        listener_address: SocketAddr,
+        request: T027c2hRejectedRequest,
+    ) -> T027c2hRejectedPeerOutcome {
+        let mut stream = t027c2h_connect_external_peer(listener_address).await;
+        timeout(
+            Duration::from_secs(5),
+            stream.write_all(&[0x05, 0x01, 0x00]),
+        )
+        .await
+        .expect("rejected external SOCKS greeting write stays bounded")
+        .expect("write rejected external SOCKS greeting");
+        let mut method = [0_u8; 2];
+        timeout(Duration::from_secs(5), stream.read_exact(&mut method))
+            .await
+            .expect("rejected external SOCKS method read stays bounded")
+            .expect("read rejected external SOCKS method");
+        assert_eq!(method, [0x05, 0x00]);
+        method.fill(0);
+
+        let (request_bytes, reply_code, outcome): (&[u8], u8, T027c2hRejectedPeerOutcome) =
+            match request {
+                T027c2hRejectedRequest::ParsedDomain => (
+                    &[
+                        0x05, 0x01, 0x00, 0x03, 0x07, b'i', b'n', b'v', b'a', b'l', b'i', b'd',
+                        0x01, 0xbb,
+                    ],
+                    0x05,
+                    T027c2hRejectedPeerOutcome::FixedPolicyFailureThenEof,
+                ),
+                T027c2hRejectedRequest::UnsupportedCommand => (
+                    &[0x05, 0x02, 0x00, 0x01],
+                    0x07,
+                    T027c2hRejectedPeerOutcome::ParserFailureThenEof,
+                ),
+            };
+        timeout(Duration::from_secs(5), stream.write_all(request_bytes))
+            .await
+            .expect("rejected external SOCKS request write stays bounded")
+            .expect("write rejected external SOCKS request");
+
+        let mut reply = [0_u8; 10];
+        timeout(Duration::from_secs(5), stream.read_exact(&mut reply))
+            .await
+            .expect("rejected external SOCKS reply read stays bounded")
+            .expect("read rejected external SOCKS reply");
+        let mut expected = [0_u8; 10];
+        expected[..4].copy_from_slice(&[0x05, reply_code, 0x00, 0x01]);
+        assert_eq!(reply, expected);
+        reply.fill(0);
+        expected.fill(0);
+
+        let mut extra = [0_u8; 10];
+        let closure = timeout(Duration::from_secs(5), stream.read(&mut extra))
+            .await
+            .expect("rejected external SOCKS EOF stays bounded")
+            .expect("rejected external SOCKS peer reads terminal EOF");
+        extra.fill(0);
+        assert_eq!(
+            closure, 0,
+            "rejected SOCKS request receives exactly one reply"
+        );
+        outcome
+    }
+
+    async fn t027c2h_run_rejected_public_entry(
+        role: ClientRoleConfig,
+        listener_address: SocketAddr,
+        request: T027c2hRejectedRequest,
+    ) -> (anyhow::Result<()>, T027c2hRejectedPeerOutcome) {
+        let (client_result, peer_outcome) = tokio::join!(
+            timeout(Duration::from_secs(12), run_direct_v3_h3_client_once(role),),
+            t027c2h_drive_rejected_external_peer(listener_address, request),
+        );
+        (
+            client_result.expect("rejected normal one-shot entry stays within caller bound"),
+            peer_outcome,
+        )
+    }
+
+    async fn t027c2h_run_entry_peer_and_endpoint(
+        endpoint: &mut Endpoint,
+        cancel: watch::Sender<bool>,
+        role: ClientRoleConfig,
+        listener_address: SocketAddr,
+        target: SocketAddr,
+        target_listener: TcpListener,
+    ) -> (anyhow::Result<()>, T027c2hPeerOutcome, T027c2hTargetOutcome) {
+        let client_peer_and_target = async move {
+            let (client_result, peer_outcome, target_outcome) = tokio::join!(
+                timeout(Duration::from_secs(12), run_direct_v3_h3_client_once(role),),
+                t027c2h_drive_external_peer(listener_address, target),
+                t027c2h_drive_real_target(target_listener),
+            );
+            let _ = cancel.send(true);
+            (
+                client_result.expect("normal one-shot client entry stays within caller bound"),
+                peer_outcome,
+                target_outcome,
+            )
+        };
+        let (endpoint_result, results) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(endpoint.run(), client_peer_and_target)
+        })
+        .await
+        .expect("normal one-shot client composition stays within wall bound");
+        endpoint_result.expect("normal one-shot client endpoint shuts down cleanly");
         assert_eq!(endpoint.registry.actor_count(), 0);
         assert!(endpoint.actors.is_empty());
         assert!(endpoint.unregistered_actor.is_none());
@@ -3241,6 +3566,198 @@ fallback:
             .await
             .expect("active-flow shutdown UDP rebind stays bounded")
             .expect("active-flow shutdown server UDP address is released");
+        drop(rebound_udp);
+    }
+
+    #[tokio::test]
+    async fn t027c2h_normal_one_shot_client_entry_reaches_external_peer() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize normal one-shot client loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("normal one-shot client server bind stays bounded")
+        .expect("bind normal one-shot client server endpoint");
+        let actor_gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&actor_gate));
+        let server_address = endpoint.local_address;
+        let target_listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("normal one-shot client target bind stays bounded")
+        .expect("bind normal one-shot client target sentinel");
+        let target = target_listener
+            .local_addr()
+            .expect("read normal one-shot client target address");
+        let client_listener_address = t027c2h_reserve_client_listener_address().await;
+        assert_ne!(client_listener_address, target);
+        let client_role = credentials.client_role_with_listen(
+            server_address,
+            client_listener_address,
+            credential_not_after_unix,
+            T027C2B_SECRET,
+        );
+
+        let (client_result, peer_outcome, target_outcome) = t027c2h_run_entry_peer_and_endpoint(
+            &mut endpoint,
+            cancel,
+            client_role,
+            client_listener_address,
+            target,
+            target_listener,
+        )
+        .await;
+
+        client_result.expect("normal one-shot client carries the validated external peer");
+        assert_eq!(peer_outcome, T027c2hPeerOutcome::TriggerAcknowledgedThenEof);
+        assert_eq!(
+            target_outcome,
+            T027c2hTargetOutcome::TriggerAcknowledgedThenEof
+        );
+        assert_one_successful_target_open(&metrics_owner);
+        assert_eq!(actor_gate.completion_snapshot(), (1, 1, true, 1));
+
+        let rebound_client = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind(client_listener_address),
+        )
+        .await
+        .expect("normal one-shot client listener rebind stays bounded")
+        .expect("normal one-shot client listener address is released");
+        drop(rebound_client);
+        let rebound_target = timeout(Duration::from_secs(5), TcpListener::bind(target))
+            .await
+            .expect("normal one-shot client target rebind stays bounded")
+            .expect("normal one-shot client target address is released");
+        drop(rebound_target);
+        drop(endpoint);
+        let rebound_udp = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("normal one-shot client UDP rebind stays bounded")
+            .expect("normal one-shot client server UDP address is released");
+        drop(rebound_udp);
+    }
+
+    #[tokio::test]
+    async fn t027c2h_invalid_and_unsupported_requests_stop_before_udp_auth_or_target() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize normal one-shot rejection loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("normal one-shot rejection server bind stays bounded")
+        .expect("bind normal one-shot rejection server endpoint");
+        let actor_gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&actor_gate));
+        let server_address = endpoint.local_address;
+        let target_listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("normal one-shot rejection target bind stays bounded")
+        .expect("bind normal one-shot rejection target sentinel");
+        let target = target_listener
+            .local_addr()
+            .expect("read normal one-shot rejection target address");
+        let target_listener = target_listener
+            .into_std()
+            .expect("convert rejection target sentinel to nonblocking std listener");
+
+        let cases = async {
+            for (request, expected_peer_outcome) in [
+                (
+                    T027c2hRejectedRequest::ParsedDomain,
+                    T027c2hRejectedPeerOutcome::FixedPolicyFailureThenEof,
+                ),
+                (
+                    T027c2hRejectedRequest::UnsupportedCommand,
+                    T027c2hRejectedPeerOutcome::ParserFailureThenEof,
+                ),
+            ] {
+                let client_listener_address = t027c2h_reserve_client_listener_address().await;
+                assert_ne!(client_listener_address, target);
+                let client_role = credentials.client_role_with_listen(
+                    server_address,
+                    client_listener_address,
+                    credential_not_after_unix,
+                    T027C2B_SECRET,
+                );
+                let (client_result, peer_outcome) = t027c2h_run_rejected_public_entry(
+                    client_role,
+                    client_listener_address,
+                    request,
+                )
+                .await;
+                let error = client_result.expect_err("rejected normal entry returns fixed error");
+                assert_eq!(
+                    error.to_string(),
+                    "direct-v3 H3 one-shot client unavailable"
+                );
+                let public_error: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+                assert!(std::error::Error::source(public_error).is_none());
+                assert_eq!(peer_outcome, expected_peer_outcome);
+                match target_listener.accept() {
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    _ => panic!("rejected normal entry must not queue a target connection"),
+                }
+                let rebound_client = timeout(
+                    Duration::from_secs(5),
+                    TcpListener::bind(client_listener_address),
+                )
+                .await
+                .expect("rejected normal client listener rebind stays bounded")
+                .expect("rejected normal client listener address is released");
+                drop(rebound_client);
+            }
+            let _ = cancel.send(true);
+        };
+        let (endpoint_result, ()) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(endpoint.run(), cases)
+        })
+        .await
+        .expect("normal one-shot rejection matrix stays within wall bound");
+        endpoint_result.expect("normal one-shot rejection endpoint shuts down cleanly");
+
+        assert_zero_target_open_metrics(&metrics_owner);
+        assert_eq!(actor_gate.inbound_observed.load(Ordering::Acquire), 0);
+        assert_eq!(actor_gate.completion_snapshot(), (0, 0, false, 0));
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+        match target_listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            _ => panic!("rejected normal entries never reach the target sentinel"),
+        }
+        drop(target_listener);
+        let rebound_target = timeout(Duration::from_secs(5), TcpListener::bind(target))
+            .await
+            .expect("rejected normal entry target rebind stays bounded")
+            .expect("rejected normal entry target address is released");
+        drop(rebound_target);
+        drop(endpoint);
+        let rebound_udp = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("rejected normal entry UDP rebind stays bounded")
+            .expect("rejected normal entry server UDP address is released");
         drop(rebound_udp);
     }
 

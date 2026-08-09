@@ -17,119 +17,123 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-2g — Private active-flow controller shutdown lifecycle
+### T027c-2h — Feature-gated one-shot normal client entry
 
-**User result.** A fixed repository-controlled loopback SOCKS5 peer receives
-success, sends one trigger byte through the real H3 path, and receives the TCP
-target's acknowledgement while both sockets remain open. A controller future
-outside the private service future then sends one shutdown signal. The service
-stops admission, explicitly cancels the active H3 flow, closes its accepted
-SOCKS connection and sole owner, and reclaims every client and server resource
-within fixed bounds. The peer and target must observe closure caused by that
-service cleanup; neither may disconnect first.
+**User result.** An external library caller can pass one validated config-v3
+H3 client role to a normal, non-test `maverick-client` entry. That entry binds
+the role's configured loopback SOCKS5 address, accepts exactly one external
+loopback peer, and carries one valid loopback IP-literal CONNECT flow through
+the existing native-quiche owner and server endpoint before explicitly
+reclaiming the complete client lifecycle.
 
-This is repository-local private lifecycle-composition evidence. It is not a
-normal `start_client` or `ClientHandle::shutdown` path, a public shutdown
-handle, a normal product SOCKS/H3 service, product end-to-end behavior,
-readiness, recovery, release, or real-network evidence.
+This is an opt-in, workspace-source, single-peer library runtime. It is not the
+existing `start_client`, `ClientHandle`, CLI or SDK path; not an open-ended or
+long-duration listener; not concurrent-flow, retry, replacement or recovery
+support; and not default-build, release, user, non-loopback or real-network
+evidence.
 
-**Scope.** Limit this slice to `ROADMAP.md`,
-`crates/maverick-client/src/lib.rs`,
+**Scope.** Limit the complete slice to `ROADMAP.md`, `STATUS.md`,
+`docs/AUTH_V3_DIRECT_SPEC.md`, `crates/maverick-client/src/lib.rs`,
 `crates/maverick-client/src/quiche_foundation.rs`, and
-`crates/maverick-server/src/quiche_endpoint.rs`. Preserve the T027c-2e clean
-two-peer and T027c-2f first-peer-failure runners unchanged. Add at most one
-sibling fixed-result repository-test seam under the existing
-`unstable-direct-v3-reference-test-support` plus `quiche-foundation` feature
-combination. It may return only the existing fixed error/result and must not
-expose a shutdown sender or receiver, listener, owner, manager, generation,
-lease, flow, stream, target, probe, secret, or quiche type.
+`crates/maverick-server/src/quiche_endpoint.rs`. Do not update `STATUS.md` or
+the auth-v3 specification until the behavioral green and full local gates are
+complete.
 
-Use one real loopback SOCKS peer, one private client owner, one manager, one
-driver task, one client UDP socket, one authenticated generation, one real
-server endpoint and actor, and one real loopback TCP target. The repository
-runner may create exactly one bounded `oneshot<()>`: its sender belongs only to
-the fixed peer/controller future and its receiver only to the accepted-service
-future. The peer may send the signal only after observing SOCKS success,
-sending the exact trigger, and receiving the exact target acknowledgement. It
-must then keep its TCP stream open and wait for service-induced EOF or reset.
-The target must likewise stay open after acknowledging the trigger and wait for
-service-induced EOF or reset.
+Under `quiche-foundation` alone, add one public
+`run_direct_v3_h3_client_once(ClientRoleConfig) -> anyhow::Result<()>`. It must
+not depend on or return the unstable repository-test feature or error. The
+public entry consumes the secret-bearing role by value, accepts only the exact
+config-v3/H3 combination, and maps every internal failure to one fixed,
+privacy-safe public error with no value-bearing source.
 
-On the received signal, the accepted-service future must drop its bounded
-listener, explicitly cancel the private flow and wait for that command to
-complete, close the accepted local connection, return the sole lease permit,
-and explicitly close the owner before returning its task permit. After cleanup,
-a connection probe to the internal SOCKS listener must be refused and its exact
-address must be reusable. Owner or manager Drop abort fallback is not an
-accepted shutdown result.
+Copy the already validated local listener address before transferring the
+complete role into the existing private auth owner. Bind exactly that nonzero
+loopback address; a port of zero is rejected because this one-shot API does not
+return an OS-assigned address. After the first peer is accepted, drop the
+listener before parsing or starting transport work so no second peer can enter.
+The accept is governed by the caller's task lifetime, not a test-only whole-run
+watchdog. Map every attempt failure to the fixed public `anyhow` error. Preserve
+the existing SOCKS parser's protocol-safe failure or EOF for malformed and
+unsupported wire input, without appending a second reply when the parser has
+already replied. Reject a parsed non-loopback peer, UDP ASSOCIATE, Domain
+target, zero port or non-loopback IP with the fixed SOCKS `0x05` failure. Only
+after the first request parses into one valid loopback IP-literal CONNECT may
+the entry start the sole client owner, UDP socket, manager, driver and
+authenticated generation.
 
-**Acceptance.** Record a focused behavioral red on the clean T027c-2f parent.
-The red must traverse the real SOCKS, client quiche, server endpoint and TCP
-target path; observe the exact trigger and acknowledgement; and positively
-observe that the peer's shutdown signal was sent and received. Before the
-explicit cancel branch exists, the private scaffold must return a fixed typed
-failure rather than treating future drop as shutdown. The red must not be a
-missing symbol, mock, source scan, arbitrary quiet period, or timeout-only
-result. Record its command, exit status, fixed observed result, and root cause.
-This closes a missing private proof contract; it is not evidence that the
-normal product shutdown path is broken.
+Use the existing capacity-one command queue, lease and active route, fixed
+buffers, authentication barriers, explicit flow finish/cancel and explicit
+owner close. Do not promote the repository test's fixed whole-run watchdog into
+a long-duration product claim. The entry ends after that first accepted peer's
+single flow succeeds or fails; it never executes a second accept.
 
-The green cross-crate test requires mutually matching typed outcomes: the
-controller sent the signal only after real success and acknowledgement, the
-service received it and completed flow cancellation, and both the peer and
-target observed bounded closure only afterward. Receiver closure, ordinary
-relay failure, `DriverStopped`, timeout, owner-close failure, or a peer/target
-disconnect before the signal must fail the test rather than count as expected
-shutdown.
+**Behavioral red.** First add the real public signature, configured listener,
+external peer accept and SOCKS parse/validation scaffold. On a valid request,
+the red scaffold must deliberately send the fixed SOCKS failure and return the
+fixed public error before starting the owner. A real cross-crate test must bind
+the real server endpoint and TCP target, connect an independently driven peer
+to the configured client listener, complete the real SOCKS method and request
+exchange, and observe this exact fixed failure with zero target-open metrics and
+no queued target connection. This red must compile and fail its green
+expectation; it must not be a missing symbol, mock, source scan, arbitrary
+sleep, or timeout-only result. Record the exact command, exit status, observed
+result and missing product branch before implementing green.
 
-Require exactly one successful target-open metric observation, with all target
-resolution and connection failure/timeout counters zero. One server actor's
-existing test gate must observe exactly one target-open completion. Send the
-endpoint cancellation only after the client runner and target observer have
-both completed, so endpoint shutdown cannot impersonate client cleanup. Then
-require the server registry, actor set and unregistered slot to be empty.
-Rebind the target address, internal SOCKS-listener address, and server UDP
-address after their owners are dropped. Require all task and lease permits
-returned and no transport-drain entry, collection, timeout, hard-expiry or
-join-abort observation.
+Before behavioral green closes, add a malformed or unsupported SOCKS regression
+that locks the existing single protocol-safe failure/EOF and proves no second
+reply is appended.
 
-Preserve the T027c-2f failure-isolation, T027c-2e two-clean-peer, T027c-2d
-exact-collection and two-stream, and T027c-2c active-disconnect regressions,
-plus the existing rejection, expiry, reset, stale-handle, cancellation and
-close-drain tests. Repeat the focused T027c-2g cross-crate test at least 20
-times, then run the complete client and server quiche suites, default and
-no-default compatibility, Clippy, Rustdoc, `user-smoke.sh`, and
+**Acceptance.** The same cross-crate test must turn green only when the public
+entry, not an unstable fixed-result wrapper, carries one trigger to the real TCP
+target and returns its exact acknowledgement to the external SOCKS peer. The
+entry must write SOCKS success only after the authenticated Classic CONNECT is
+open. Clean half-close must finish the H3 request; local failure must complete
+explicit cancel. In every case drop the accepted local socket, return the sole
+lease, explicitly close the owner and return its task permit.
+
+Require exactly one successful target-open observation with every target
+resolution/connect failure and timeout counter at zero, and exactly one server
+actor target-open completion. After cleanup, require no second listener
+connection, no server registry entry, actor or unregistered slot. Rebind the
+configured client listener, TCP target and server UDP addresses. Preserve the
+T027c-2g active shutdown, T027c-2f failure isolation, T027c-2e sequential,
+T027c-2d collection/reuse and T027c-2c one-shot regressions. Repeat the focused
+T027c-2h test at least 20 times, then run the complete client and server quiche
+suites, compatibility matrices, Clippy, Rustdoc, `user-smoke.sh`, and
 `local-harness.sh`.
 
-**Out of scope.** Do not modify `STATUS.md`, manifests, `Cargo.lock`, core,
-normal `start_client`, `ClientHandle`, the normal SOCKS/session/HTTP CONNECT
-service, CLI, SDK, default features, protocol, authentication, frame, schema,
-stored profile, metrics schema, or version. Do not change the production
-manager, driver, authenticated-generation, route, server actor, target-open, or
-relay state machines merely to make the test pass.
+After green only, update `STATUS.md` to record exactly one opt-in,
+workspace-source, loopback-only, single-peer library runtime and state plainly
+that the published Beta.4 artifact does not contain it. Update only the
+now-stale opening runtime callout and H3 product-integration paragraph of the
+auth-v3 specification; preserve every wire byte, label, vector, version and
+broader deferred boundary.
 
-Do not expose a public shutdown capability, accept a second peer, open a second
-flow or target, add an open-ended listener loop, concurrent flows, a second
-active route, a flow map, replacement generation, reconnect, retry, backoff,
-Domain/DNS, UDP relay, non-loopback or real-network I/O. Do not broaden this
-slice into shutdown matrices, idle shutdown, wrong-auth, egress-policy,
-target-open-failure, peer-failure, or recovery work.
+**Out of scope.** Do not modify manifests, `Cargo.lock`, core, default features,
+the existing `start_client`, `ClientHandle`, normal `serve_socks`, session, DNS,
+HTTP CONNECT, TUN, CLI, SDK, server production code, metrics schema, protocol,
+authentication, frame, config or stored-profile schema, or any version. Do not
+expose a listener, owner, manager, generation, lease, flow, stream, target,
+shutdown sender/receiver, secret, observation or quiche type.
 
-**Stop conditions.** Stop and re-adjudicate before touching a fifth file;
-changing production runtime behavior; increasing a queue, lease, task, flow,
-actor, target or buffer capacity; adding more than the one private oneshot; or
-adding a command, `Notify`, task, manager, driver, actor or reusable shutdown
-coordinator. Stop if proof requires the peer or target to disconnect first,
-relies on Drop/abort as graceful shutdown, or uses a generic error,
-timeout-only silence, source scan, mock transport or synthetic counter as the
-sole shutdown evidence.
+Do not add a returned lifecycle handle, external shutdown claim, second accept,
+second peer or flow, concurrent flow, open-ended loop, flow map, second route,
+replacement generation, reconnect, retry, backoff, Domain/DNS, UDP relay,
+non-loopback or real-network I/O. Dropping a future, owner or manager is not a
+successful graceful-cleanup result.
 
-Stop on any need for normal product wiring, a stable public API or returned
-shutdown handle, concurrency, automatic replacement, a second peer or target,
-Domain/DNS, UDP, non-loopback I/O, or a wire, schema or version change. If
-bounded explicit cancellation and cleanup cannot be proven through the private
-test seam without production-state changes, stop rather than weakening the
-acceptance contract.
+**Stop conditions.** Stop and re-adjudicate before touching a seventh file;
+changing the feature graph or any existing public API; increasing a queue,
+lease, task, route, target, actor or buffer capacity; or adding a task, manager,
+driver, actor, reusable shutdown coordinator or public error type. Stop if the
+normal entry needs the legacy concurrent `serve_socks`, `ClientHandle`, a
+second accept, owner cloning, secret cloning, replacement generation, public
+shutdown, or an additional runtime policy.
+
+Stop if a successful result relies on Drop/abort, a generic or value-bearing
+error, a fixed sleep, timeout-only silence, source scan, mock transport,
+unstable wrapper or synthetic counter as its sole evidence. Stop rather than
+weakening the single-peer, loopback, explicit-close contract.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

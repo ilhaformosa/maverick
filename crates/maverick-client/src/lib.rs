@@ -11,7 +11,7 @@ pub mod h2_transport;
 #[cfg(feature = "h3")]
 pub mod h3_transport;
 pub mod http_connect;
-// Private preflight seam; product integration belongs to a later authorized slice.
+// Private implementation for the opt-in direct-v3 H3 foundation and entry.
 #[cfg(feature = "quiche-foundation")]
 #[allow(dead_code)]
 mod quiche_foundation;
@@ -37,6 +37,26 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use connection_manager::{ClientTunnelPool, H2ConnectionPoolSnapshot, H2PoolShutdownSnapshot};
+
+#[cfg(feature = "quiche-foundation")]
+const DIRECT_V3_H3_CLIENT_ONCE_UNAVAILABLE: &str = "direct-v3 H3 one-shot client unavailable";
+
+/// Run one feature-gated, config-v3 H3 SOCKS client attempt.
+///
+/// This normal library entry consumes one validated role, binds that role's
+/// configured loopback SOCKS5 listener, and accepts at most one external peer.
+/// It is deliberately separate from [`start_client`] and [`ClientHandle`]. It
+/// exposes no listener, transport, owner, flow, secret, or shutdown capability
+/// and makes no concurrent, long-running, retry, CLI, SDK, or non-loopback
+/// runtime commitment.
+#[cfg(feature = "quiche-foundation")]
+pub async fn run_direct_v3_h3_client_once(
+    role: maverick_core::config::ClientRoleConfig,
+) -> Result<()> {
+    quiche_foundation::run_direct_v3_h3_client_once(role)
+        .await
+        .map_err(|()| anyhow::Error::msg(DIRECT_V3_H3_CLIENT_ONCE_UNAVAILABLE))
+}
 
 /// Fixed failure from opt-in repository cross-crate direct-v3 verification.
 ///

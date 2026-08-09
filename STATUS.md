@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-08-02
+Date: 2026-08-09
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -92,9 +92,9 @@ censorship resistance, production readiness, or browser identity.
   Alpha.6 installation, ordinary-browsing, browser-diagnosis, and sleep/resume
   gates described below passed. This is a development-stage decision, not a
   retroactive rename of an already published artifact.
-- Workspace source, current published Beta prerelease, and last independently
-  reverified public artifact: `v1.2.0-beta.4`. PR #27 merged the reviewed
-  candidate as main commit
+- Declared workspace package version, current published Beta prerelease, and
+  last independently reverified public artifact: `v1.2.0-beta.4`. PR #27
+  merged the reviewed candidate as main commit
   `5109d89bdddc23a2830eda2c0c56a954d3b214a9`. Annotated tag object
   `18f18eee87f8a89c662356334ae3f85d80bc577e` directly targets that commit.
   Pilot-release run `30718828654` completed successfully: its exact-tag/current-
@@ -148,6 +148,20 @@ censorship resistance, production readiness, or browser identity.
 - Config version: `1` (unchanged).
 - Stored-client-profile schema version: `1` (unchanged).
 - Existing authentication and frame wire formats: unchanged.
+- Unpublished workspace source now includes the opt-in, library-only
+  `run_direct_v3_h3_client_once(ClientRoleConfig)` entry under
+  `quiche-foundation`. It binds one configured nonzero loopback SOCKS5
+  address, accepts exactly the first external peer attempt, starts the sole
+  direct-v3 H3 owner only after one loopback IP-literal CONNECT parses and
+  passes policy, carries that one flow, and then explicitly finishes or cancels
+  the flow and closes the owner. Local cross-crate tests cover the real
+  SOCKS/H3/server/TCP path, exact clean EOF, fixed rejection, zero server
+  ingress/actor/target activity for pre-owner rejection, and address/resource
+  reclamation. This is local quality evidence, not a new human user or
+  real-network result. It does not alter published Beta.4, the default H2 path,
+  normal `start_client`, CLI or SDK wiring, non-loopback use, concurrent or
+  long-running service, retry or replacement, release state, or deployment
+  authorization.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

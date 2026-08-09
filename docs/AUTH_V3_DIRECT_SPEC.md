@@ -1,9 +1,14 @@
 # Maverick Direct Auth-v3 Canonical Contract
 
-> **Pre-runtime contract:** this document and its canonical vectors freeze a
-> docs/test-only protocol contract. Maverick does not currently enable auth-v3
-> in its client or server. Nothing here is a peer-confirmed product result, a
-> runtime state-transfer proof, a post-quantum guarantee, a release decision, or
+> **Canonical contract and narrow runtime boundary:** this document and its
+> canonical vectors freeze the auth-v3 protocol contract. Unpublished workspace
+> source now includes one opt-in `quiche-foundation`, loopback-only, one-shot
+> client library entry that consumes one validated config-v3 role and compares
+> its trusted authority and singleton-binding facts through the existing exact
+> checks. The published Beta.4/default H2 product, normal `start_client`, CLI,
+> SDK, default/CLI server product path, and real-network paths still do not
+> enable it. Nothing here is a peer-confirmed product result, a runtime
+> state-transfer proof, a post-quantum guarantee, a release decision, or
 > authorization to deploy or use a real network.
 
 ## 1. Scope and compatibility boundary
@@ -940,23 +945,30 @@ diagnostics, and complete resource reclamation. All existing T022a and T023a-1
 tests remain controls. That reference still would not be product H3, CONNECT
 support, a data plane, a product authority source, or a release result.
 
-Product integration is a separate later decision and is not promised to fit
-the two-file reference boundary. Config schema 3 now represents the independent
-trusted textual authority prerequisite before runtime, but no product runtime
-consumes or compares it. A future integration MUST take the value and singleton
-binding from the same validated role config and MUST NOT infer the value from a
-request, peer SNI, listen address, certificate, DNS, or other runtime input.
+One narrow unpublished product integration now exists outside the former
+two-file reference boundary: the opt-in `quiche-foundation` client library can
+consume one validated config-v3 role, accept one external loopback SOCKS peer
+attempt, and carry one validated loopback IP-literal CONNECT through one
+authenticated direct-H3 generation before explicit flow finish/cancel and owner
+close. It takes the singleton binding and deployment/server mapping only from
+that same validated role config; the SOCKS target does not select authentication
+authority. It MUST NOT infer authenticated authority from a request, peer SNI,
+listen address, certificate, DNS, or other runtime input. This is neither the
+default H2 product path nor normal `start_client`, the default/CLI server
+product path, CLI, SDK, long-running, concurrent, non-loopback, retry,
+replacement, release, deployment, or real-network integration.
 
-Stop that runtime slice before changing a third file; any wire byte, vector,
-label, exporter context, carrier ID, core primitive, config/schema/auth/frame/
-protocol version, public API, or direct-H2 behavior; or before permitting a
-pre-auth CONNECT, target, flow, user DATA, or Datagram. Also stop if quiche
-cannot expose the raw ordered fields, same-generation SNI/exporter facts,
-bounded body/FIN progress, or event distinctions needed above; if the existing
-resource framework cannot contain the work; if neither the public API nor a
-separately reviewed narrow seam can observe or reject every forbidden known H3
-activity hidden from `Event`; or if success requires private data, a remote
-action, CI, real networking, or a host-network change. T023a-2
+Stop the test-private runtime-reference slice before changing a third file; any
+wire byte, vector, label, exporter context, carrier ID, core primitive,
+config/schema/auth/frame/protocol version, public API, or direct-H2 behavior;
+or before permitting a pre-auth CONNECT, target, flow, user DATA, or Datagram.
+Also stop if quiche cannot expose the raw ordered fields, same-generation
+SNI/exporter facts, bounded body/FIN progress, or event distinctions needed
+above; if the existing resource framework cannot contain the work; if neither
+the public API nor a separately reviewed narrow seam can observe or reject
+every forbidden known H3 activity hidden from `Event`; or if success requires
+private data, a remote action, CI, real networking, or a host-network change.
+T023a-2
 Stateless Retry and multi-connection admission and T023b post-auth quotas,
 expiry, and revocation remain deferred. Product integration must additionally
 stop unless it consumes the independent trusted textual authority from the

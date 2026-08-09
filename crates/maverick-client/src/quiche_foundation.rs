@@ -19,7 +19,7 @@ use base64::Engine as _;
 use boring::ssl::{SslContextBuilder, SslMethod, SslRef, SslVerifyMode, SslVersion};
 use maverick_core::auth::{TlsChannelBinding, TLS_CHANNEL_BINDING_EXPORTER_LABEL};
 use maverick_core::auth_v3::{AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN};
-use maverick_core::config::ClientRoleConfig;
+use maverick_core::config::{ClientRoleConfig, DirectV3TransportStrategy};
 use rand::{rngs::OsRng, TryRngCore};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -6146,14 +6146,20 @@ impl ClientRuntimePolicyOwner {
     async fn acquire_authenticated(
         &mut self,
     ) -> Result<AuthenticatedConnectionLease, FoundationError> {
-        let result = match self.manager.as_ref() {
-            Some(manager) => manager.acquire_authenticated().await,
-            None => Err(FoundationError::ManagerClosed),
-        };
+        let result = self.acquire_authenticated_once().await;
         if result.is_err() {
             self.close_manager_after_failure().await;
         }
         result
+    }
+
+    async fn acquire_authenticated_once(
+        &self,
+    ) -> Result<AuthenticatedConnectionLease, FoundationError> {
+        match self.manager.as_ref() {
+            Some(manager) => manager.acquire_authenticated().await,
+            None => Err(FoundationError::ManagerClosed),
+        }
     }
 
     async fn open_loopback_classic_connect(
@@ -6162,31 +6168,54 @@ impl ClientRuntimePolicyOwner {
         target: SocketAddr,
     ) -> Result<PrivateClassicConnectFlow, FoundationError> {
         let authority = CanonicalLoopbackAuthority::from_socket_addr(target)?;
-        let result = async {
-            let manager = self
-                .manager
-                .as_ref()
-                .ok_or(FoundationError::ManagerClosed)?;
-            let command_tx = manager
-                .command_tx
-                .as_ref()
-                .ok_or(FoundationError::ManagerClosed)?
-                .clone();
-            let proof = lease_command_proof(&lease);
-            let (flow, endpoint) = private_classic_connect::new_flow_handle(lease, command_tx);
-            let (response_tx, response_rx) = oneshot::channel();
-            manager.enqueue_private_flow(proof, endpoint, authority, response_tx)?;
-            timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, response_rx)
-                .await
-                .map_err(|_| FoundationError::DriverTimeout)?
-                .map_err(|_| FoundationError::DriverStopped)??;
-            Ok(flow)
-        }
-        .await;
+        let result = self
+            .open_canonical_loopback_classic_connect_once(lease, authority)
+            .await;
         if result.is_err() {
             self.close_manager_after_failure().await;
         }
         result
+    }
+
+    async fn open_loopback_classic_connect_once(
+        &self,
+        lease: AuthenticatedConnectionLease,
+        target: SocketAddr,
+    ) -> Result<PrivateClassicConnectFlow, FoundationError> {
+        let authority = CanonicalLoopbackAuthority::from_socket_addr(target)?;
+        self.open_canonical_loopback_classic_connect_once(lease, authority)
+            .await
+    }
+
+    async fn open_canonical_loopback_classic_connect_once(
+        &self,
+        lease: AuthenticatedConnectionLease,
+        authority: CanonicalLoopbackAuthority,
+    ) -> Result<PrivateClassicConnectFlow, FoundationError> {
+        let manager = self
+            .manager
+            .as_ref()
+            .ok_or(FoundationError::ManagerClosed)?;
+        let command_tx = manager
+            .command_tx
+            .as_ref()
+            .ok_or(FoundationError::ManagerClosed)?
+            .clone();
+        let proof = lease_command_proof(&lease);
+        let (flow, endpoint) = private_classic_connect::new_flow_handle(lease, command_tx);
+        let (response_tx, response_rx) = oneshot::channel();
+        manager.enqueue_private_flow(proof, endpoint, authority, response_tx)?;
+        timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, response_rx)
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::DriverStopped)??;
+        Ok(flow)
+    }
+
+    fn all_lease_permits_available(&self) -> bool {
+        self.manager.as_ref().is_some_and(|manager| {
+            manager.lease_permits.available_permits() == CONNECTION_LEASE_LIMIT
+        })
     }
 
     async fn receive_observation(&mut self) -> Option<FoundationObservation> {
@@ -6230,6 +6259,214 @@ impl Drop for ClientRuntimePolicyOwner {
             drop(manager);
         }
     }
+}
+
+mod one_shot_client_entry {
+    use std::net::IpAddr;
+
+    use maverick_core::frame::TargetAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::*;
+
+    fn validated_loopback_target(request: crate::socks5::SocksRequest) -> Option<SocketAddr> {
+        if request.command != crate::socks5::SocksCommand::Connect || request.port == 0 {
+            return None;
+        }
+        let ip = match request.target {
+            TargetAddr::Ipv4(ip) => IpAddr::V4(ip),
+            TargetAddr::Ipv6(ip) => IpAddr::V6(ip),
+            TargetAddr::Domain(_) => return None,
+        };
+        let target = SocketAddr::new(ip, request.port);
+        if !target.ip().is_loopback() {
+            return None;
+        }
+        match target {
+            SocketAddr::V4(_) => Some(target),
+            SocketAddr::V6(address) if address.flowinfo() == 0 && address.scope_id() == 0 => {
+                Some(target)
+            }
+            SocketAddr::V6(_) => None,
+        }
+    }
+
+    async fn write_fixed_failure(stream: &mut TcpStream) -> Result<(), FoundationError> {
+        timeout(SOCKET_IO_TIMEOUT, crate::socks5::write_failure(stream))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)
+    }
+
+    pub(super) async fn relay_one_flow(
+        stream: TcpStream,
+        flow: PrivateClassicConnectFlow,
+        cancel_completed: &AtomicBool,
+        run_bound: Option<Duration>,
+    ) -> Result<(), FoundationError> {
+        let (mut local_reader, mut local_writer) = stream.into_split();
+        let (mut h3_reader, mut h3_writer) = flow.into_halves();
+        let transfer = {
+            let joined = async {
+                let upload = async {
+                    let mut buffer = [0_u8; private_classic_connect::FLOW_CHUNK_LIMIT];
+                    loop {
+                        let length = match local_reader.read(&mut buffer).await {
+                            Ok(length) => length,
+                            Err(_) => {
+                                buffer.fill(0);
+                                return Err(FoundationError::PostAuthFlowRejected);
+                            }
+                        };
+                        if length == 0 {
+                            buffer.fill(0);
+                            return h3_writer.finish().await;
+                        }
+                        let result = h3_writer.send_chunk(&buffer[..length]).await;
+                        buffer[..length].fill(0);
+                        result?;
+                    }
+                };
+                let download = async {
+                    while let Some(chunk) = h3_reader.receive_chunk().await? {
+                        let write = local_writer
+                            .write_all(chunk.as_slice())
+                            .await
+                            .map_err(|_| FoundationError::PostAuthFlowRejected);
+                        drop(chunk);
+                        write?;
+                    }
+                    local_writer
+                        .shutdown()
+                        .await
+                        .map_err(|_| FoundationError::PostAuthFlowRejected)
+                };
+                tokio::pin!(upload);
+                tokio::pin!(download);
+                tokio::select! {
+                    result = &mut upload => {
+                        result?;
+                        download.await
+                    }
+                    result = &mut download => {
+                        result?;
+                        upload.await
+                    }
+                }
+            };
+            let mut joined = Box::pin(joined);
+            match run_bound {
+                Some(bound) => match timeout(bound, &mut joined).await {
+                    Ok(result) => result,
+                    Err(_) => Err(FoundationError::DriverTimeout),
+                },
+                None => joined.await,
+            }
+        };
+        if let Err(error) = transfer {
+            timeout(COMMAND_RESPONSE_TIMEOUT, h3_writer.cancel())
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)??;
+            cancel_completed.store(true, Ordering::Relaxed);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn run_owner_flow(
+        mut stream: TcpStream,
+        target: SocketAddr,
+        owner: &mut ClientRuntimePolicyOwner,
+    ) -> Result<(), FoundationError> {
+        let open_result = async {
+            timeout(HANDSHAKE_TIMEOUT, owner.receive_observation())
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?
+                .ok_or(FoundationError::ObservationQueueUnavailable)?;
+            let lease = owner.acquire_authenticated_once().await?;
+            owner
+                .open_loopback_classic_connect_once(lease, target)
+                .await
+        }
+        .await;
+        let flow = match open_result {
+            Ok(flow) => flow,
+            Err(error) => {
+                write_fixed_failure(&mut stream).await?;
+                return Err(error);
+            }
+        };
+        match timeout(SOCKET_IO_TIMEOUT, crate::socks5::write_success(&mut stream)).await {
+            Ok(Ok(())) => {}
+            _ => {
+                flow.close().await?;
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+        }
+        relay_one_flow(stream, flow, &AtomicBool::new(false), None).await
+    }
+
+    pub(super) async fn run(role: ClientRoleConfig) -> Result<(), FoundationError> {
+        let listen = match (role.version(), role.direct_v3()) {
+            (3, Some(direct)) if direct.transport_strategy() == DirectV3TransportStrategy::H3 => {
+                direct.local_socks5_listen()
+            }
+            _ => return Err(FoundationError::PreAuthApplicationActivity),
+        };
+        if !listen.ip().is_loopback() || listen.port() == 0 {
+            return Err(FoundationError::PreAuthApplicationActivity);
+        }
+
+        let listener = timeout(SOCKET_IO_TIMEOUT, TcpListener::bind(listen))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        let (mut stream, peer) = listener
+            .accept()
+            .await
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        drop(listener);
+
+        if !peer.ip().is_loopback() || peer.port() == 0 {
+            write_fixed_failure(&mut stream).await?;
+            return Err(FoundationError::PreAuthApplicationActivity);
+        }
+        let request =
+            match timeout(SOCKET_IO_TIMEOUT, crate::socks5::read_request(&mut stream)).await {
+                Ok(Ok(request)) => request,
+                _ => return Err(FoundationError::PostAuthFlowRejected),
+            };
+        let Some(target) = validated_loopback_target(request) else {
+            write_fixed_failure(&mut stream).await?;
+            return Err(FoundationError::PostAuthFlowRejected);
+        };
+
+        let mut owner = match ClientRuntimePolicyOwner::start(role).await {
+            Ok(owner) => owner,
+            Err(error) => {
+                write_fixed_failure(&mut stream).await?;
+                return Err(error);
+            }
+        };
+        let run_result = run_owner_flow(stream, target, &mut owner).await;
+        let leases_returned = owner.all_lease_permits_available();
+        let close_result = owner.close().await;
+        let tasks_returned = owner.task_budget.permits.available_permits() == CONNECTION_TASK_LIMIT;
+
+        close_result?;
+        if !tasks_returned {
+            return Err(FoundationError::TaskBudgetUnavailable);
+        }
+        if !leases_returned {
+            return Err(FoundationError::LeaseUnavailable);
+        }
+        run_result
+    }
+}
+
+pub(super) async fn run_direct_v3_h3_client_once(role: ClientRoleConfig) -> Result<(), ()> {
+    one_shot_client_entry::run(role).await.map_err(|_| ())
 }
 
 #[cfg(feature = "unstable-direct-v3-reference-test-support")]
@@ -6334,6 +6571,7 @@ mod one_shot_loopback_socks {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
+    use super::one_shot_client_entry::relay_one_flow;
     use super::*;
 
     const SOCKS_REPLY_BYTES: usize = 10;
@@ -6530,7 +6768,14 @@ mod one_shot_loopback_socks {
         let outcome_result = match open_result {
             Ok(flow) => {
                 match timeout(SOCKET_IO_TIMEOUT, crate::socks5::write_success(&mut stream)).await {
-                    Ok(Ok(())) => match relay_one_flow(stream, flow, &cancel_completed).await {
+                    Ok(Ok(())) => match relay_one_flow(
+                        stream,
+                        flow,
+                        &cancel_completed,
+                        Some(CONNECTION_RUN_TIMEOUT),
+                    )
+                    .await
+                    {
                         Ok(()) => Ok(AcceptedPeerOutcome::Success),
                         Err(_) if cancel_completed.load(Ordering::Relaxed) => {
                             Ok(AcceptedPeerOutcome::DisconnectCleaned)
@@ -6586,76 +6831,6 @@ mod one_shot_loopback_socks {
             return Err(FoundationError::PostAuthFlowRejected);
         }
         Ok(outcome)
-    }
-
-    async fn relay_one_flow(
-        stream: TcpStream,
-        flow: PrivateClassicConnectFlow,
-        cancel_completed: &AtomicBool,
-    ) -> Result<(), FoundationError> {
-        let (mut local_reader, mut local_writer) = stream.into_split();
-        let (mut h3_reader, mut h3_writer) = flow.into_halves();
-        let transfer = {
-            let upload = async {
-                let mut buffer = [0_u8; private_classic_connect::FLOW_CHUNK_LIMIT];
-                loop {
-                    let length = match local_reader.read(&mut buffer).await {
-                        Ok(length) => length,
-                        Err(_) => {
-                            buffer.fill(0);
-                            return Err(FoundationError::PostAuthFlowRejected);
-                        }
-                    };
-                    if length == 0 {
-                        buffer.fill(0);
-                        return h3_writer.finish().await;
-                    }
-                    let result = h3_writer.send_chunk(&buffer[..length]).await;
-                    buffer[..length].fill(0);
-                    result?;
-                }
-            };
-            let download = async {
-                while let Some(chunk) = h3_reader.receive_chunk().await? {
-                    let write = local_writer
-                        .write_all(chunk.as_slice())
-                        .await
-                        .map_err(|_| FoundationError::PostAuthFlowRejected);
-                    drop(chunk);
-                    write?;
-                }
-                local_writer
-                    .shutdown()
-                    .await
-                    .map_err(|_| FoundationError::PostAuthFlowRejected)
-            };
-            tokio::pin!(upload);
-            tokio::pin!(download);
-            let joined = async {
-                tokio::select! {
-                    result = &mut upload => {
-                        result?;
-                        download.await
-                    }
-                    result = &mut download => {
-                        result?;
-                        upload.await
-                    }
-                }
-            };
-            match timeout(CONNECTION_RUN_TIMEOUT, joined).await {
-                Ok(result) => result,
-                Err(_) => Err(FoundationError::DriverTimeout),
-            }
-        };
-        if let Err(error) = transfer {
-            timeout(COMMAND_RESPONSE_TIMEOUT, h3_writer.cancel())
-                .await
-                .map_err(|_| FoundationError::DriverTimeout)??;
-            cancel_completed.store(true, Ordering::Relaxed);
-            return Err(error);
-        }
-        Ok(())
     }
 
     async fn relay_one_flow_until_shutdown(
@@ -7061,7 +7236,7 @@ mod one_shot_loopback_socks {
                 };
             }
         }
-        relay_one_flow(stream, flow, cancel_completed).await?;
+        relay_one_flow(stream, flow, cancel_completed, Some(CONNECTION_RUN_TIMEOUT)).await?;
         Ok(generation)
     }
 

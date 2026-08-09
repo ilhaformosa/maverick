@@ -6365,6 +6365,7 @@ mod one_shot_loopback_socks {
         Success,
         Rejection,
         DisconnectAfterSuccess,
+        ControllerShutdownObserved,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -6377,6 +6378,23 @@ mod one_shot_loopback_socks {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum SequentialFailureAcceptedOutcome {
         FirstPeerDisconnectedAfterSuccess,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ActiveShutdownRelayOutcome {
+        ShutdownCanceled,
+    }
+
+    enum ActiveShutdownTransfer {
+        RelayCompleted,
+        RelayFailed(FoundationError),
+        ShutdownRequested,
+        ShutdownSenderDropped,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ActiveShutdownAcceptedOutcome {
+        ShutdownCleaned,
     }
 
     impl PeerRequest {
@@ -6640,6 +6658,102 @@ mod one_shot_loopback_socks {
         Ok(())
     }
 
+    async fn relay_one_flow_until_shutdown(
+        stream: TcpStream,
+        flow: PrivateClassicConnectFlow,
+        cancel_completed: &AtomicBool,
+        shutdown: oneshot::Receiver<()>,
+        listener: &mut Option<TcpListener>,
+    ) -> Result<ActiveShutdownRelayOutcome, FoundationError> {
+        let (mut local_reader, mut local_writer) = stream.into_split();
+        let (mut h3_reader, mut h3_writer) = flow.into_halves();
+        let transfer = {
+            let upload = async {
+                let mut buffer = [0_u8; private_classic_connect::FLOW_CHUNK_LIMIT];
+                loop {
+                    let length = match local_reader.read(&mut buffer).await {
+                        Ok(length) => length,
+                        Err(_) => {
+                            buffer.fill(0);
+                            return Err(FoundationError::PostAuthFlowRejected);
+                        }
+                    };
+                    if length == 0 {
+                        buffer.fill(0);
+                        return h3_writer.finish().await;
+                    }
+                    let result = h3_writer.send_chunk(&buffer[..length]).await;
+                    buffer[..length].fill(0);
+                    result?;
+                }
+            };
+            let download = async {
+                while let Some(chunk) = h3_reader.receive_chunk().await? {
+                    let write = local_writer
+                        .write_all(chunk.as_slice())
+                        .await
+                        .map_err(|_| FoundationError::PostAuthFlowRejected);
+                    drop(chunk);
+                    write?;
+                }
+                local_writer
+                    .shutdown()
+                    .await
+                    .map_err(|_| FoundationError::PostAuthFlowRejected)
+            };
+            tokio::pin!(upload);
+            tokio::pin!(download);
+            tokio::pin!(shutdown);
+            let watchdog = tokio::time::sleep(CONNECTION_RUN_TIMEOUT);
+            tokio::pin!(watchdog);
+            tokio::select! {
+                biased;
+                result = &mut upload => match result {
+                    Ok(()) => ActiveShutdownTransfer::RelayCompleted,
+                    Err(error) => ActiveShutdownTransfer::RelayFailed(error),
+                },
+                result = &mut download => match result {
+                    Ok(()) => ActiveShutdownTransfer::RelayCompleted,
+                    Err(error) => ActiveShutdownTransfer::RelayFailed(error),
+                },
+                result = &mut shutdown => match result {
+                    Ok(()) => ActiveShutdownTransfer::ShutdownRequested,
+                    Err(_) => ActiveShutdownTransfer::ShutdownSenderDropped,
+                },
+                _ = &mut watchdog => {
+                    ActiveShutdownTransfer::RelayFailed(FoundationError::DriverTimeout)
+                },
+            }
+        };
+
+        let listener_closed = if matches!(&transfer, ActiveShutdownTransfer::ShutdownRequested) {
+            listener.take().is_some()
+        } else {
+            true
+        };
+        let failure = match transfer {
+            ActiveShutdownTransfer::RelayCompleted => {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            ActiveShutdownTransfer::RelayFailed(error) => Some(error),
+            ActiveShutdownTransfer::ShutdownRequested => None,
+            ActiveShutdownTransfer::ShutdownSenderDropped => {
+                Some(FoundationError::PostAuthFlowRejected)
+            }
+        };
+        timeout(COMMAND_RESPONSE_TIMEOUT, h3_writer.cancel())
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)??;
+        cancel_completed.store(true, Ordering::Relaxed);
+        if !listener_closed {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(ActiveShutdownRelayOutcome::ShutdownCanceled),
+        }
+    }
+
     async fn drive_fixed_peer(
         listener_address: SocketAddr,
         request: PeerRequest,
@@ -6775,6 +6889,90 @@ mod one_shot_loopback_socks {
             .map_err(|_| FoundationError::DriverTimeout)?
             .map_err(|_| FoundationError::PostAuthFlowRejected)?;
         Ok(PeerOutcome::Success)
+    }
+
+    async fn drive_active_shutdown_peer(
+        listener_address: SocketAddr,
+        target: SocketAddr,
+        shutdown: oneshot::Sender<()>,
+    ) -> Result<PeerOutcome, FoundationError> {
+        let mut stream = timeout(SOCKET_IO_TIMEOUT, TcpStream::connect(listener_address))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        timeout(SOCKET_IO_TIMEOUT, stream.write_all(&[0x05, 0x01, 0x00]))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        let mut method = [0_u8; 2];
+        timeout(SOCKET_IO_TIMEOUT, stream.read_exact(&mut method))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        if method != [0x05, 0x00] {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+
+        let mut encoded = [0_u8; SOCKS_REQUEST_BYTES];
+        let request_length = PeerRequest::Connect(target).encode(&mut encoded);
+        let request_result = timeout(
+            SOCKET_IO_TIMEOUT,
+            stream.write_all(&encoded[..request_length]),
+        )
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?;
+        encoded.fill(0);
+        request_result.map_err(|_| FoundationError::PostAuthFlowRejected)?;
+
+        let mut reply = [0_u8; SOCKS_REPLY_BYTES];
+        timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, stream.read_exact(&mut reply))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        if reply != [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0] {
+            reply.fill(0);
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        reply.fill(0);
+
+        let trigger = [cross_crate_test_byte(0)];
+        timeout(SOCKET_IO_TIMEOUT, stream.write_all(&trigger))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        let mut acknowledgement = [0_u8; 1];
+        timeout(SOCKET_IO_TIMEOUT, stream.read_exact(&mut acknowledgement))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        if acknowledgement != [0xa5] {
+            acknowledgement.fill(0);
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        acknowledgement.fill(0);
+        shutdown
+            .send(())
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+
+        let mut closed = [0_u8; 1];
+        let closure = timeout(SOCKET_IO_TIMEOUT, stream.read(&mut closed))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?;
+        closed.fill(0);
+        match closure {
+            Ok(0) => Ok(PeerOutcome::ControllerShutdownObserved),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                Ok(PeerOutcome::ControllerShutdownObserved)
+            }
+            Ok(_) | Err(_) => Err(FoundationError::PostAuthFlowRejected),
+        }
     }
 
     async fn accept_validated_peer(
@@ -7024,6 +7222,128 @@ mod one_shot_loopback_socks {
         failure_result
     }
 
+    async fn run_active_shutdown_accepted(
+        listener: TcpListener,
+        role: ClientRoleConfig,
+        shutdown: oneshot::Receiver<()>,
+    ) -> Result<ActiveShutdownAcceptedOutcome, FoundationError> {
+        let listener_address = listener
+            .local_addr()
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        let mut listener = Some(listener);
+        let (mut stream, target) = accept_validated_peer(
+            listener
+                .as_ref()
+                .ok_or(FoundationError::SocketUnavailable)?,
+        )
+        .await?;
+        let mut owner = match ClientRuntimePolicyOwner::start(role).await {
+            Ok(owner) => owner,
+            Err(error) => {
+                listener.take();
+                fixed_write_failure(&mut stream).await;
+                return Err(error);
+            }
+        };
+        let drain_counts_before = owner.private_transport_drain_probe.snapshot();
+        let cancel_completed = AtomicBool::new(false);
+
+        let run_result = async {
+            timeout(CONNECTION_RUN_TIMEOUT, owner.receive_observation())
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?
+                .ok_or(FoundationError::ObservationQueueUnavailable)?;
+            let open_result = {
+                let open = async {
+                    let lease = owner.acquire_authenticated().await?;
+                    owner.open_loopback_classic_connect(lease, target).await
+                };
+                tokio::pin!(open);
+                let mut premature = [0_u8; 1];
+                let result = tokio::select! {
+                    result = &mut open => result,
+                    local = stream.read(&mut premature) => {
+                        premature.fill(0);
+                        let _ = local;
+                        Err(FoundationError::PostAuthFlowRejected)
+                    }
+                };
+                premature.fill(0);
+                result
+            };
+            let flow = match open_result {
+                Ok(flow) => flow,
+                Err(error) => {
+                    fixed_write_failure(&mut stream).await;
+                    return Err(error);
+                }
+            };
+            match timeout(SOCKET_IO_TIMEOUT, crate::socks5::write_success(&mut stream)).await {
+                Ok(Ok(())) => {}
+                _ => {
+                    let close_result = flow.close().await;
+                    return match close_result {
+                        Ok(()) => Err(FoundationError::PostAuthFlowRejected),
+                        Err(error) => Err(error),
+                    };
+                }
+            }
+            match relay_one_flow_until_shutdown(
+                stream,
+                flow,
+                &cancel_completed,
+                shutdown,
+                &mut listener,
+            )
+            .await?
+            {
+                ActiveShutdownRelayOutcome::ShutdownCanceled => {
+                    Ok(ActiveShutdownAcceptedOutcome::ShutdownCleaned)
+                }
+            }
+        }
+        .await;
+
+        listener.take();
+        let listener_result =
+            match timeout(SOCKET_IO_TIMEOUT, TcpStream::connect(listener_address)).await {
+                Ok(Err(_)) => Ok(()),
+                _ => Err(FoundationError::PostAuthFlowRejected),
+            };
+        let lease_result = owner_lease_permit_is_returned(&owner)
+            .then_some(())
+            .ok_or(FoundationError::LeaseUnavailable);
+        let close_result = owner.close().await;
+        let tasks_result = (owner.task_budget.permits.available_permits() == CONNECTION_TASK_LIMIT)
+            .then_some(())
+            .ok_or(FoundationError::TaskBudgetUnavailable);
+        let drain_result = owner
+            .private_transport_drain_probe
+            .snapshot()
+            .is_incremented_from(
+                drain_counts_before,
+                PrivateTransportDrainCounts {
+                    entries: 0,
+                    collections: 0,
+                    timeouts: 0,
+                    hard_expiries: 0,
+                    join_aborts: 0,
+                },
+            )
+            .then_some(())
+            .ok_or(FoundationError::PostAuthFlowRejected);
+        close_result?;
+        tasks_result?;
+        lease_result?;
+        listener_result?;
+        drain_result?;
+        let outcome = run_result?;
+        if !cancel_completed.load(Ordering::Relaxed) {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        Ok(outcome)
+    }
+
     pub(super) async fn run_sequential(
         role: ClientRoleConfig,
         first_target: SocketAddr,
@@ -7123,6 +7443,46 @@ mod one_shot_loopback_socks {
             (
                 Ok(SequentialFailureAcceptedOutcome::FirstPeerDisconnectedAfterSuccess),
                 Ok(PeerOutcome::DisconnectAfterSuccess),
+            ) => {}
+            (Err(error), _) | (_, Err(error)) => return Err(error),
+            _ => return Err(FoundationError::PostAuthFlowRejected),
+        }
+        let rebound = timeout(SOCKET_IO_TIMEOUT, TcpListener::bind(listener_address))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        drop(rebound);
+        Ok(())
+    }
+
+    pub(super) async fn run_active_shutdown(
+        role: ClientRoleConfig,
+        target: SocketAddr,
+    ) -> Result<(), FoundationError> {
+        if !valid_loopback_target(target) {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        let listener = timeout(
+            SOCKET_IO_TIMEOUT,
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?
+        .map_err(|_| FoundationError::SocketUnavailable)?;
+        let listener_address = listener
+            .local_addr()
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        if !listener_address.ip().is_loopback() || listener_address.port() == 0 {
+            return Err(FoundationError::SocketUnavailable);
+        }
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let accepted = run_active_shutdown_accepted(listener, role, shutdown_rx);
+        let peer = drive_active_shutdown_peer(listener_address, target, shutdown_tx);
+        let (accepted_result, peer_result) = tokio::join!(accepted, peer);
+        match (accepted_result, peer_result) {
+            (
+                Ok(ActiveShutdownAcceptedOutcome::ShutdownCleaned),
+                Ok(PeerOutcome::ControllerShutdownObserved),
             ) => {}
             (Err(error), _) | (_, Err(error)) => return Err(error),
             _ => return Err(FoundationError::PostAuthFlowRejected),
@@ -7255,6 +7615,16 @@ pub(super) async fn run_direct_v3_h3_sequential_first_peer_disconnect_test_suppo
     second_target: SocketAddr,
 ) -> Result<(), ()> {
     one_shot_loopback_socks::run_sequential_first_peer_disconnect(role, first_target, second_target)
+        .await
+        .map_err(|_| ())
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+pub(super) async fn run_direct_v3_h3_active_flow_shutdown_test_support(
+    role: ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), ()> {
+    one_shot_loopback_socks::run_active_shutdown(role, target)
         .await
         .map_err(|_| ())
 }

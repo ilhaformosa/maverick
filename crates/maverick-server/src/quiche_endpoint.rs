@@ -2014,6 +2014,7 @@ mod tests {
 
     use boring::ssl::{SslRef, SslVersion};
     use maverick_client::{
+        run_direct_v3_h3_active_flow_shutdown_test_support,
         run_direct_v3_h3_loopback_connect_test_support,
         run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support,
         run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support,
@@ -2070,6 +2071,12 @@ mod tests {
         let _ = runner;
     }
 
+    #[test]
+    fn t027c2g_active_flow_shutdown_runner_is_present_in_the_server_test_graph() {
+        let runner = run_direct_v3_h3_active_flow_shutdown_test_support;
+        let _ = runner;
+    }
+
     type ActorReceiveFn = fn(
         &mut ConnectionRegistry,
         [u8; MAX_PACKET_BYTES],
@@ -2090,6 +2097,11 @@ mod tests {
         Success,
         Rejection,
         DisconnectAfterSuccess,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum T027c2gTargetOutcome {
+        TriggerAcknowledgedThenShutdownObserved,
     }
 
     fn t027c2c_test_byte(offset: usize) -> u8 {
@@ -2686,6 +2698,42 @@ fallback:
         client_result.expect("first-peer failure runner finishes within its own bound")
     }
 
+    async fn t027c2g_run_client_target_and_endpoint(
+        endpoint: &mut Endpoint,
+        cancel: watch::Sender<bool>,
+        role: ClientRoleConfig,
+        target: SocketAddr,
+        target_listener: TcpListener,
+    ) -> (
+        Result<(), DirectV3ReferenceTestSupportError>,
+        T027c2gTargetOutcome,
+    ) {
+        let client_and_target = async move {
+            let (client_result, target_outcome) = tokio::join!(
+                timeout(
+                    Duration::from_secs(18),
+                    run_direct_v3_h3_active_flow_shutdown_test_support(role, target),
+                ),
+                t027c2g_target_observes_controller_shutdown(target_listener),
+            );
+            let _ = cancel.send(true);
+            (
+                client_result.expect("active-flow shutdown runner stays within its own bound"),
+                target_outcome,
+            )
+        };
+        let (endpoint_result, results) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(endpoint.run(), client_and_target)
+        })
+        .await
+        .expect("active-flow shutdown composition finishes within the wall bound");
+        endpoint_result.expect("active-flow shutdown endpoint shuts down cleanly");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+        results
+    }
+
     fn assert_one_successful_target_open(metrics_owner: &ServerRuntimeMetrics) {
         let sinks = metrics_owner.target_open_sinks();
         assert_eq!(sinks.resolution_latency.snapshot().count, 1);
@@ -2813,6 +2861,44 @@ fallback:
             .await
             .is_err());
         offset
+    }
+
+    async fn t027c2g_target_observes_controller_shutdown(
+        listener: TcpListener,
+    ) -> T027c2gTargetOutcome {
+        let (mut target, _) = timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("active-flow shutdown target is reached within the local bound")
+            .expect("accept active-flow shutdown loopback target");
+        let mut trigger = [0_u8; 1];
+        timeout(Duration::from_secs(5), target.read_exact(&mut trigger))
+            .await
+            .expect("active-flow shutdown target trigger read stays bounded")
+            .expect("read active-flow shutdown target trigger");
+        assert_eq!(trigger, [t027c2c_test_byte(0)]);
+        trigger.fill(0);
+        timeout(Duration::from_secs(5), target.write_all(&[0xa5]))
+            .await
+            .expect("active-flow shutdown acknowledgement stays bounded")
+            .expect("write active-flow shutdown acknowledgement");
+
+        let mut extra = [0_u8; 1];
+        let closure = timeout(Duration::from_secs(5), target.read(&mut extra))
+            .await
+            .expect("active-flow shutdown target close stays bounded");
+        extra.fill(0);
+        match closure {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) => {}
+            Ok(_) | Err(_) => panic!("active-flow shutdown target receives only the trigger"),
+        }
+        T027c2gTargetOutcome::TriggerAcknowledgedThenShutdownObserved
     }
 
     #[tokio::test]
@@ -3094,6 +3180,68 @@ fallback:
             .expect("first-peer failure UDP rebind stays bounded")
             .expect("first-peer failure server UDP address is released");
         drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn t027c2g_controller_shutdown_closes_active_socks_flow() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize active-flow shutdown loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("active-flow shutdown server bind stays bounded")
+        .expect("bind active-flow shutdown server endpoint");
+        let actor_gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&actor_gate));
+        let server_address = endpoint.local_address;
+        let target_listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("active-flow shutdown target bind stays bounded")
+        .expect("bind active-flow shutdown target");
+        let target = target_listener
+            .local_addr()
+            .expect("read active-flow shutdown target address");
+        let client_role =
+            credentials.client_role(server_address, credential_not_after_unix, T027C2B_SECRET);
+
+        let (client_result, target_outcome) = t027c2g_run_client_target_and_endpoint(
+            &mut endpoint,
+            cancel,
+            client_role,
+            target,
+            target_listener,
+        )
+        .await;
+        client_result.expect("controller shutdown explicitly cancels the active private flow");
+        assert_eq!(
+            target_outcome,
+            T027c2gTargetOutcome::TriggerAcknowledgedThenShutdownObserved
+        );
+        assert_one_successful_target_open(&metrics_owner);
+        assert_eq!(actor_gate.completion_snapshot(), (1, 1, true, 1));
+
+        let rebound_target = timeout(Duration::from_secs(5), TcpListener::bind(target))
+            .await
+            .expect("active-flow shutdown target rebind stays bounded")
+            .expect("active-flow shutdown target address is released");
+        drop(rebound_target);
+        drop(endpoint);
+        let rebound_udp = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("active-flow shutdown UDP rebind stays bounded")
+            .expect("active-flow shutdown server UDP address is released");
+        drop(rebound_udp);
     }
 
     #[tokio::test]

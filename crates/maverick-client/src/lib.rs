@@ -217,6 +217,29 @@ pub async fn run_direct_v3_h3_sequential_first_peer_disconnect_test_support(
     .map_err(|_| DirectV3ReferenceTestSupportError)
 }
 
+/// Verify repository-controlled shutdown of one active private H3 flow.
+///
+/// This fixed-result repository-test symbol is visible only with the same
+/// explicitly unstable feature combination as the private quiche foundation.
+/// The combination is SemVer-observable, but this function is not a stable API
+/// and downstream products must not depend on it. Success means a fixed
+/// loopback controller requested shutdown only after a real SOCKS success and
+/// target acknowledgement, and the private runner completed bounded teardown.
+/// It exposes no shutdown handle or runtime capability and is not
+/// `start_client`, `ClientHandle::shutdown`, or a normal product SOCKS service.
+#[cfg(all(
+    feature = "unstable-direct-v3-reference-test-support",
+    feature = "quiche-foundation"
+))]
+pub async fn run_direct_v3_h3_active_flow_shutdown_test_support(
+    role: maverick_core::config::ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), DirectV3ReferenceTestSupportError> {
+    quiche_foundation::run_direct_v3_h3_active_flow_shutdown_test_support(role, target)
+        .await
+        .map_err(|_| DirectV3ReferenceTestSupportError)
+}
+
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
 fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {

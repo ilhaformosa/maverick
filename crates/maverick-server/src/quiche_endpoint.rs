@@ -2017,7 +2017,8 @@ mod tests {
         run_direct_v3_h3_loopback_connect_test_support,
         run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support,
         run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support,
-        run_direct_v3_h3_one_shot_loopback_socks_test_support, DirectV3ReferenceTestSupportError,
+        run_direct_v3_h3_one_shot_loopback_socks_test_support,
+        run_direct_v3_h3_sequential_loopback_socks_test_support, DirectV3ReferenceTestSupportError,
     };
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, AuthV3Carrier, AuthV3ClientControlInput, AuthV3TlsVersion,
@@ -2056,6 +2057,12 @@ mod tests {
         let _ = disconnect;
     }
 
+    #[test]
+    fn t027c2e_sequential_socks_runner_is_present_in_the_server_test_graph() {
+        let runner = run_direct_v3_h3_sequential_loopback_socks_test_support;
+        let _ = runner;
+    }
+
     type ActorReceiveFn = fn(
         &mut ConnectionRegistry,
         [u8; MAX_PACKET_BYTES],
@@ -2067,6 +2074,8 @@ mod tests {
     const T027C2B_SECRET: &str = "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
     const T027C2B_TEST_WALL_TIMEOUT: Duration = Duration::from_secs(20);
     const T027C2C_PAYLOAD_BYTES: usize = 16 * 1_024 + 8_193;
+    const T027C2E_FIRST_PAYLOAD_SEED: usize = 17;
+    const T027C2E_SECOND_PAYLOAD_SEED: usize = 83;
     static T027C2B_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[derive(Clone, Copy)]
@@ -2077,7 +2086,11 @@ mod tests {
     }
 
     fn t027c2c_test_byte(offset: usize) -> u8 {
-        ((offset % 251) + 1) as u8
+        t027c2e_test_byte(0, offset)
+    }
+
+    fn t027c2e_test_byte(seed: usize, offset: usize) -> u8 {
+        (((offset + seed) % 251) + 1) as u8
     }
 
     fn test_metrics_owner() -> Arc<ServerRuntimeMetrics> {
@@ -2602,6 +2615,38 @@ fallback:
         client_result.expect("one-shot SOCKS runner finishes within its own bound")
     }
 
+    async fn t027c2e_run_client_and_endpoint(
+        endpoint: &mut Endpoint,
+        cancel: watch::Sender<bool>,
+        role: ClientRoleConfig,
+        first_target: SocketAddr,
+        second_target: SocketAddr,
+    ) -> Result<(), DirectV3ReferenceTestSupportError> {
+        let client = async move {
+            let result = timeout(
+                Duration::from_secs(18),
+                run_direct_v3_h3_sequential_loopback_socks_test_support(
+                    role,
+                    first_target,
+                    second_target,
+                ),
+            )
+            .await;
+            let _ = cancel.send(true);
+            result
+        };
+        let (endpoint_result, client_result) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(endpoint.run(), client)
+        })
+        .await
+        .expect("sequential SOCKS endpoint and client finish within the wall bound");
+        endpoint_result.expect("sequential SOCKS endpoint shuts down cleanly");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+        client_result.expect("sequential SOCKS runner finishes within its own bound")
+    }
+
     fn assert_one_successful_target_open(metrics_owner: &ServerRuntimeMetrics) {
         let sinks = metrics_owner.target_open_sinks();
         assert_eq!(sinks.resolution_latency.snapshot().count, 1);
@@ -2612,7 +2657,21 @@ fallback:
         assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
     }
 
+    fn assert_two_successful_target_opens(metrics_owner: &ServerRuntimeMetrics) {
+        let sinks = metrics_owner.target_open_sinks();
+        assert_eq!(sinks.resolution_latency.snapshot().count, 2);
+        assert_eq!(sinks.connect_latency.snapshot().count, 2);
+        assert_eq!(sinks.resolution_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
+    }
+
     async fn t027c2c_remote_first_target(listener: TcpListener) -> usize {
+        t027c2e_remote_first_target(listener, 0).await
+    }
+
+    async fn t027c2e_remote_first_target(listener: TcpListener, seed: usize) -> usize {
         let (mut target, _) = timeout(Duration::from_secs(10), listener.accept())
             .await
             .expect("one-shot target is reached within the local bound")
@@ -2622,7 +2681,7 @@ fallback:
         while offset < T027C2C_PAYLOAD_BYTES {
             let length = (T027C2C_PAYLOAD_BYTES - offset).min(buffer.len());
             for (index, byte) in buffer[..length].iter_mut().enumerate() {
-                *byte = t027c2c_test_byte(offset + index);
+                *byte = t027c2e_test_byte(seed, offset + index);
             }
             timeout(Duration::from_secs(5), target.write_all(&buffer[..length]))
                 .await
@@ -2652,7 +2711,7 @@ fallback:
             assert!(buffer[..length]
                 .iter()
                 .enumerate()
-                .all(|(index, byte)| *byte == t027c2c_test_byte(offset + index)));
+                .all(|(index, byte)| *byte == t027c2e_test_byte(seed, offset + index)));
             buffer[..length].fill(0);
             offset = end;
         }
@@ -2822,6 +2881,90 @@ fallback:
             .await
             .expect("one-shot SOCKS UDP rebind stays bounded")
             .expect("one-shot SOCKS server UDP address is released");
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn t027c2e_two_sequential_socks_peers_reuse_one_h3_generation() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize sequential SOCKS loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("sequential SOCKS server bind stays bounded")
+        .expect("bind sequential SOCKS server endpoint");
+        let actor_gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&actor_gate));
+        let server_address = endpoint.local_address;
+        let first_listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("first sequential target bind stays bounded")
+        .expect("bind first sequential loopback target");
+        let first_target = first_listener
+            .local_addr()
+            .expect("read first sequential target address");
+        let second_listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("second sequential target bind stays bounded")
+        .expect("bind second sequential loopback target");
+        let second_target = second_listener
+            .local_addr()
+            .expect("read second sequential target address");
+        assert_ne!(first_target, second_target);
+        let client_role =
+            credentials.client_role(server_address, credential_not_after_unix, T027C2B_SECRET);
+
+        let (client_result, first_bytes, second_bytes) =
+            timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+                tokio::join!(
+                    t027c2e_run_client_and_endpoint(
+                        &mut endpoint,
+                        cancel,
+                        client_role,
+                        first_target,
+                        second_target,
+                    ),
+                    t027c2e_remote_first_target(first_listener, T027C2E_FIRST_PAYLOAD_SEED,),
+                    t027c2e_remote_first_target(second_listener, T027C2E_SECOND_PAYLOAD_SEED,),
+                )
+            })
+            .await
+            .expect("sequential SOCKS composition remains bounded");
+        client_result.expect("two SOCKS relays share one authenticated H3 owner");
+        assert_eq!(first_bytes, T027C2C_PAYLOAD_BYTES);
+        assert_eq!(second_bytes, T027C2C_PAYLOAD_BYTES);
+        assert_two_successful_target_opens(&metrics_owner);
+        assert_eq!(actor_gate.completion_snapshot(), (2, 1, true, 1));
+
+        let first_rebound = timeout(Duration::from_secs(5), TcpListener::bind(first_target))
+            .await
+            .expect("first sequential target rebind stays bounded")
+            .expect("first sequential target address is released");
+        drop(first_rebound);
+        let second_rebound = timeout(Duration::from_secs(5), TcpListener::bind(second_target))
+            .await
+            .expect("second sequential target rebind stays bounded")
+            .expect("second sequential target address is released");
+        drop(second_rebound);
+        drop(endpoint);
+        let rebound = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("sequential SOCKS UDP rebind stays bounded")
+            .expect("sequential SOCKS server UDP address is released");
         drop(rebound);
     }
 

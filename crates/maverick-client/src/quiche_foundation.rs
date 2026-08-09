@@ -6237,7 +6237,12 @@ const CROSS_CRATE_TEST_PAYLOAD_BYTES: usize = private_classic_connect::FLOW_CHUN
 
 #[cfg(feature = "unstable-direct-v3-reference-test-support")]
 fn cross_crate_test_byte(offset: usize) -> u8 {
-    u8::try_from((offset % 251) + 1).unwrap_or(1)
+    cross_crate_test_byte_with_seed(0, offset)
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+fn cross_crate_test_byte_with_seed(seed: usize, offset: usize) -> u8 {
+    u8::try_from(((offset + seed) % 251) + 1).unwrap_or(1)
 }
 
 #[cfg(feature = "unstable-direct-v3-reference-test-support")]
@@ -6333,6 +6338,8 @@ mod one_shot_loopback_socks {
 
     const SOCKS_REPLY_BYTES: usize = 10;
     const SOCKS_REQUEST_BYTES: usize = 64;
+    const FIRST_SEQUENTIAL_PAYLOAD_SEED: usize = 17;
+    const SECOND_SEQUENTIAL_PAYLOAD_SEED: usize = 83;
 
     #[derive(Clone, Copy)]
     pub(super) enum PeerRequest {
@@ -6507,10 +6514,10 @@ mod one_shot_loopback_socks {
                         }
                         Err(error) => Err(error),
                     },
-                    _ => {
-                        flow.close().await?;
-                        Err(FoundationError::PostAuthFlowRejected)
-                    }
+                    _ => match flow.close().await {
+                        Ok(()) => Err(FoundationError::PostAuthFlowRejected),
+                        Err(error) => Err(error),
+                    },
                 }
             }
             Err(_) => {
@@ -6631,6 +6638,8 @@ mod one_shot_loopback_socks {
     async fn drive_fixed_peer(
         listener_address: SocketAddr,
         request: PeerRequest,
+        payload_seed: usize,
+        require_listener_closed: bool,
     ) -> Result<PeerOutcome, FoundationError> {
         let mut stream = timeout(SOCKET_IO_TIMEOUT, TcpStream::connect(listener_address))
             .await
@@ -6676,9 +6685,11 @@ mod one_shot_loopback_socks {
             return Err(FoundationError::PostAuthFlowRejected);
         }
         reply.fill(0);
-        match timeout(SOCKET_IO_TIMEOUT, TcpStream::connect(listener_address)).await {
-            Ok(Err(_)) => {}
-            _ => return Err(FoundationError::PostAuthFlowRejected),
+        if require_listener_closed {
+            match timeout(SOCKET_IO_TIMEOUT, TcpStream::connect(listener_address)).await {
+                Ok(Err(_)) => {}
+                _ => return Err(FoundationError::PostAuthFlowRejected),
+            }
         }
 
         let mut buffer = [0_u8; private_classic_connect::FLOW_CHUNK_LIMIT];
@@ -6725,10 +6736,9 @@ mod one_shot_loopback_socks {
                 .checked_add(length)
                 .ok_or(FoundationError::PostAuthFlowRejected)?;
             if end > CROSS_CRATE_TEST_PAYLOAD_BYTES
-                || buffer[..length]
-                    .iter()
-                    .enumerate()
-                    .any(|(index, byte)| *byte != cross_crate_test_byte(offset + index))
+                || buffer[..length].iter().enumerate().any(|(index, byte)| {
+                    *byte != cross_crate_test_byte_with_seed(payload_seed, offset + index)
+                })
             {
                 buffer.fill(0);
                 return Err(FoundationError::PostAuthFlowRejected);
@@ -6745,7 +6755,7 @@ mod one_shot_loopback_socks {
         while offset < CROSS_CRATE_TEST_PAYLOAD_BYTES {
             let length = (CROSS_CRATE_TEST_PAYLOAD_BYTES - offset).min(buffer.len());
             for (index, byte) in buffer[..length].iter_mut().enumerate() {
-                *byte = cross_crate_test_byte(offset + index);
+                *byte = cross_crate_test_byte_with_seed(payload_seed, offset + index);
             }
             let write = timeout(SOCKET_IO_TIMEOUT, stream.write_all(&buffer[..length]))
                 .await
@@ -6760,6 +6770,212 @@ mod one_shot_loopback_socks {
             .map_err(|_| FoundationError::DriverTimeout)?
             .map_err(|_| FoundationError::PostAuthFlowRejected)?;
         Ok(PeerOutcome::Success)
+    }
+
+    async fn accept_validated_peer(
+        listener: &TcpListener,
+    ) -> Result<(TcpStream, SocketAddr), FoundationError> {
+        let (mut stream, peer) = timeout(CONNECTION_RUN_TIMEOUT, listener.accept())
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        if !peer.ip().is_loopback() || peer.port() == 0 {
+            return Err(FoundationError::PreAuthApplicationActivity);
+        }
+        let request =
+            match timeout(SOCKET_IO_TIMEOUT, crate::socks5::read_request(&mut stream)).await {
+                Ok(Ok(request)) => request,
+                _ => return Err(FoundationError::PostAuthFlowRejected),
+            };
+        let Some(target) = validated_target(request) else {
+            fixed_write_failure(&mut stream).await;
+            return Err(FoundationError::PostAuthFlowRejected);
+        };
+        Ok((stream, target))
+    }
+
+    async fn relay_validated_peer(
+        mut stream: TcpStream,
+        target: SocketAddr,
+        owner: &mut ClientRuntimePolicyOwner,
+        expected_generation: Option<ConnectionGeneration>,
+    ) -> Result<ConnectionGeneration, FoundationError> {
+        let open_result = {
+            let open = async {
+                let lease = owner.acquire_authenticated().await?;
+                let generation = lease.generation();
+                if expected_generation.is_some_and(|expected| expected != generation) {
+                    lease.release();
+                    return Err(FoundationError::PostAuthFlowRejected);
+                }
+                let flow = owner.open_loopback_classic_connect(lease, target).await?;
+                Ok((flow, generation))
+            };
+            tokio::pin!(open);
+            let mut premature = [0_u8; 1];
+            let result = tokio::select! {
+                result = &mut open => result,
+                local = stream.read(&mut premature) => {
+                    premature.fill(0);
+                    let _ = local;
+                    Err(FoundationError::PostAuthFlowRejected)
+                }
+            };
+            premature.fill(0);
+            result
+        };
+        let (flow, generation) = match open_result {
+            Ok(opened) => opened,
+            Err(error) => {
+                fixed_write_failure(&mut stream).await;
+                return Err(error);
+            }
+        };
+        match timeout(SOCKET_IO_TIMEOUT, crate::socks5::write_success(&mut stream)).await {
+            Ok(Ok(())) => {}
+            _ => {
+                let close_result = flow.close().await;
+                return match close_result {
+                    Ok(()) => Err(FoundationError::PostAuthFlowRejected),
+                    Err(error) => Err(error),
+                };
+            }
+        }
+        relay_one_flow(stream, flow, &AtomicBool::new(false)).await?;
+        Ok(generation)
+    }
+
+    fn owner_lease_permit_is_returned(owner: &ClientRuntimePolicyOwner) -> bool {
+        owner.manager.as_ref().is_some_and(|manager| {
+            manager.lease_permits.available_permits() == CONNECTION_LEASE_LIMIT
+        })
+    }
+
+    async fn run_sequential_accepted_peers(
+        listener: TcpListener,
+        role: ClientRoleConfig,
+    ) -> Result<(), FoundationError> {
+        let mut listener = Some(listener);
+        let (mut first_stream, first_target) = accept_validated_peer(
+            listener
+                .as_ref()
+                .ok_or(FoundationError::SocketUnavailable)?,
+        )
+        .await?;
+        let mut owner = match ClientRuntimePolicyOwner::start(role).await {
+            Ok(owner) => owner,
+            Err(error) => {
+                listener.take();
+                fixed_write_failure(&mut first_stream).await;
+                return Err(error);
+            }
+        };
+
+        let run_result = async {
+            timeout(CONNECTION_RUN_TIMEOUT, owner.receive_observation())
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?
+                .ok_or(FoundationError::ObservationQueueUnavailable)?;
+            let first_generation =
+                relay_validated_peer(first_stream, first_target, &mut owner, None).await?;
+            if !owner_lease_permit_is_returned(&owner) {
+                return Err(FoundationError::LeaseUnavailable);
+            }
+
+            let (second_stream, second_target) = accept_validated_peer(
+                listener
+                    .as_ref()
+                    .ok_or(FoundationError::SocketUnavailable)?,
+            )
+            .await?;
+            listener.take();
+            let second_generation = relay_validated_peer(
+                second_stream,
+                second_target,
+                &mut owner,
+                Some(first_generation),
+            )
+            .await?;
+            if second_generation != first_generation {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            if !owner_lease_permit_is_returned(&owner) {
+                return Err(FoundationError::LeaseUnavailable);
+            }
+            Ok(())
+        }
+        .await;
+
+        listener.take();
+        let close_result = owner.close().await;
+        let tasks_returned = owner.task_budget.permits.available_permits() == CONNECTION_TASK_LIMIT;
+        if !tasks_returned {
+            return Err(FoundationError::TaskBudgetUnavailable);
+        }
+        close_result?;
+        run_result
+    }
+
+    pub(super) async fn run_sequential(
+        role: ClientRoleConfig,
+        first_target: SocketAddr,
+        second_target: SocketAddr,
+    ) -> Result<(), FoundationError> {
+        if first_target == second_target
+            || !valid_loopback_target(first_target)
+            || !valid_loopback_target(second_target)
+        {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        let listener = timeout(
+            SOCKET_IO_TIMEOUT,
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?
+        .map_err(|_| FoundationError::SocketUnavailable)?;
+        let listener_address = listener
+            .local_addr()
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        if !listener_address.ip().is_loopback() || listener_address.port() == 0 {
+            return Err(FoundationError::SocketUnavailable);
+        }
+
+        let accepted = run_sequential_accepted_peers(listener, role);
+        let peers = async {
+            if drive_fixed_peer(
+                listener_address,
+                PeerRequest::Connect(first_target),
+                FIRST_SEQUENTIAL_PAYLOAD_SEED,
+                false,
+            )
+            .await?
+                != PeerOutcome::Success
+            {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            if drive_fixed_peer(
+                listener_address,
+                PeerRequest::Connect(second_target),
+                SECOND_SEQUENTIAL_PAYLOAD_SEED,
+                true,
+            )
+            .await?
+                != PeerOutcome::Success
+            {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            Ok(())
+        };
+        let (accepted_result, peer_result) = tokio::join!(accepted, peers);
+        accepted_result?;
+        peer_result?;
+        let rebound = timeout(SOCKET_IO_TIMEOUT, TcpListener::bind(listener_address))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        drop(rebound);
+        Ok(())
     }
 
     pub(super) async fn run(
@@ -6789,7 +7005,7 @@ mod one_shot_loopback_socks {
             drop(listener);
             run_accepted_peer(stream, role).await
         };
-        let peer = drive_fixed_peer(listener_address, request);
+        let peer = drive_fixed_peer(listener_address, request, 0, true);
         let (accepted_result, peer_result) = tokio::join!(accepted, peer);
         match (expected, accepted_result, peer_result) {
             (
@@ -6862,6 +7078,17 @@ pub(super) async fn run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_sup
     )
     .await
     .map_err(|_| ())
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+pub(super) async fn run_direct_v3_h3_sequential_loopback_socks_test_support(
+    role: ClientRoleConfig,
+    first_target: SocketAddr,
+    second_target: SocketAddr,
+) -> Result<(), ()> {
+    one_shot_loopback_socks::run_sequential(role, first_target, second_target)
+        .await
+        .map_err(|_| ())
 }
 
 struct PreparedClientTrust {

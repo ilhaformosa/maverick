@@ -162,6 +162,33 @@ pub async fn run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support(
     .map_err(|_| DirectV3ReferenceTestSupportError)
 }
 
+/// Run opt-in sequential SOCKS-to-direct-H3 loopback verification.
+///
+/// This public symbol is visible only with the same opt-in, explicitly
+/// unstable repository-test feature combination as the private quiche
+/// foundation. The feature combination is SemVer-observable, but this function
+/// is not a stable compatibility commitment and downstream products must not
+/// depend on it. It accepts exactly two repository-controlled loopback peers
+/// and exposes no listener, owner, connection, generation, lease, flow, target,
+/// or quiche capability. It is not the normal product SOCKS service.
+#[cfg(all(
+    feature = "unstable-direct-v3-reference-test-support",
+    feature = "quiche-foundation"
+))]
+pub async fn run_direct_v3_h3_sequential_loopback_socks_test_support(
+    role: maverick_core::config::ClientRoleConfig,
+    first_target: SocketAddr,
+    second_target: SocketAddr,
+) -> Result<(), DirectV3ReferenceTestSupportError> {
+    quiche_foundation::run_direct_v3_h3_sequential_loopback_socks_test_support(
+        role,
+        first_target,
+        second_target,
+    )
+    .await
+    .map_err(|_| DirectV3ReferenceTestSupportError)
+}
+
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
 fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {

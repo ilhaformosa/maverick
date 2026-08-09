@@ -17,82 +17,85 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-2d — Same-generation sequential private CONNECT reuse
+### T027c-2e — Same-owner sequential SOCKS composition
 
-**User result.** One private native-quiche client owner can finish one
-loopback IP-literal Classic CONNECT flow, wait until the peer QUIC transport
-has collected that exact request stream, and then open one second sequential
-flow on the same physical connection and authenticated generation. The second
-flow uses a distinct request stream and distinct authority. This remains
-repository-local private-foundation evidence. It is not concurrent-flow
-support, a long-running SOCKS service, automatic reconnection, the normal
-`start_client`, CLI, SDK, product end-to-end behavior, readiness, release, or
-real-network evidence.
+**User result.** Two fixed repository-controlled SOCKS5 peers can finish two
+different loopback IP-literal CONNECT flows in sequence through one private
+native-quiche client owner. Both flows use the same manager, physical QUIC
+connection, and authenticated generation, but distinct H3 request streams and
+different TCP targets. This remains repository-local private-composition
+evidence. It is not concurrent-flow support, a listener service, the normal
+`start_client`, CLI, SDK, product end-to-end behavior, automatic reconnection,
+readiness, release, or real-network evidence.
 
-**Scope.** Limit this slice to `ROADMAP.md` and
-`crates/maverick-client/src/quiche_foundation.rs`. Preserve the existing single
-driver task, capacity-one command queue, capacity-one authenticated lease,
-fixed 16-KiB flow buffers, loopback-only authority, and privacy-safe fixed
-errors. Only a private flow that completed cleanly in both directions may
-return to the same role's `Dormant` route, and only after
-`stream_capacity(stream_id)` reports the exact matching
-`InvalidStreamState(stream_id)`. Local FIN acceptance, application EOF, lease
-reclamation, `stream_finished`, `stream_closed`, a counter, or elapsed time is
-not collection evidence.
+**Scope.** Limit this slice to `ROADMAP.md`,
+`crates/maverick-client/src/lib.rs`,
+`crates/maverick-client/src/quiche_foundation.rs`, and
+`crates/maverick-server/src/quiche_endpoint.rs`. Reuse the existing explicitly
+unstable fixed-result repository-test seam and real server endpoint. Preserve
+the single client owner, manager, driver task and UDP socket; capacity-one
+command queue and authenticated lease; fixed 16-KiB flow buffers; strict
+loopback IP-literal target projection; privacy-safe fixed errors; and the
+server endpoint's existing bounded actor, target and relay ownership.
 
-If a second authenticated acquire arrives while the first clean stream is
-waiting for collection, retain that one response in the existing bounded
-pending-acquire slot. Do not return a usable lease early and then reject its
-open as a route race. After exact collection, clear the first flow's stream,
-authority, identity, proof, mailbox, pending buffers, and half-close state
-before waking the acquire. Reference CONNECT remains one-shot and `Consumed`.
-Cancellation, reset, STOP_SENDING, malformed events, dirty completion,
-authentication failure, admission or hard expiry, owner close, and driver
-error remain fail-closed and never rearm the generation.
+The private runner accepts exactly two peers with two explicit accepts, not an
+open-ended listener loop. Parse and validate each SOCKS request before H3
+application I/O for that flow. Start one client owner, receive one foundation
+observation, and retain it until both flows finish. After the first clean relay,
+accept, parse, and validate the second peer, then start its authenticated
+acquire immediately without sleep or polling. The existing manager must
+withhold that acquire until the exact first request stream is transport-
+collected, then return a lease for the same authenticated generation. Fail
+closed and tear down the sole owner if
+either peer, flow, target, authentication, admission, collection, or cleanup
+step fails.
 
-**Acceptance.** Preserve a behavioral red on the clean baseline: the existing
-real manager/driver/quiche full-duplex test completes its first private flow,
-then the second open is rejected and only one request stream exists. Add the
-new expectation before changing product code so the same authenticated owner
-and generation must complete a second sequential flow instead.
+**Acceptance.** First add a focused real client/server/SOCKS behavioral test on
+the clean T027c-2d parent and record its red result and root cause before adding
+the sequential composition. The green test uses two real loopback `TcpStream`
+SOCKS peers, two different real loopback TCP listeners, distinct fixed payload
+patterns, one real server endpoint, one client owner, one manager, one driver
+task, one UDP socket, and one auth-v3 exchange. Internally require both acquired
+lease generation identifiers to match. Require one server actor's existing
+test gate to observe both target-open completions, require each target to
+receive and return only its own exact payload, and require two successful
+target-open metric observations. Preserve the T027c-2d real-quiche regression
+that records exactly two different request-stream identifiers; do not claim
+that the cross-crate fixed-result seam exports those identifiers.
 
-The green test uses the existing real loopback quiche pair, one client owner,
-one manager, one driver task, one UDP socket, and one authentication exchange.
-It records both lease generation identifiers and requires them to match. The
-two flows use different canonical loopback authorities and different fixed
-payloads, finish both directions independently, open exactly two distinct H3
-request streams, and return the sole lease permit after each flow. The second
-acquire starts without a sleep or polling loop. Final explicit close returns
-all client and peer task permits.
+After each clean flow, require the sole authenticated lease permit to return.
+The second successful acquire remains governed by the existing exact-collection
+gate without sleep or polling; preserve the T027c-2d real-ACK regression that
+is blocked before collection and ready afterward rather than claiming this
+composition always observes the pending slot. The final stream may be collected
+by the normal reaper or by the existing bounded close drain, depending on
+scheduling. Preserve the existing close-drain regressions without changing
+their counter meaning. After the second flow, explicitly close the owner and
+endpoint, return all task permits, release both TCP listeners and the endpoint
+UDP address, and leave no server actor or target task behind.
+Repeat the focused cross-crate sequential SOCKS test at least 20 times to catch
+acquire/collection races. Then run the complete client and server quiche
+feature suites, default and no-default compatibility, Clippy, Rustdoc,
+`user-smoke.sh`, and `local-harness.sh`.
 
-Extend the strict real-quiche collection regression so the route is not ready
-for another private flow while the first request FIN remains unacknowledged.
-After the real peer acknowledgement arrives and only the exact first stream is
-collected, the route becomes ready. Keep the withheld-ACK timeout, hard-expiry,
-active-cancel, unfinished-half, duplicate-FIN, stale-handle, and legacy
-reference one-shot regressions green. Repeat the focused two-flow test at least
-20 times to catch acquire/collection scheduling races. Then run the complete
-client quiche feature suite, default and no-default compatibility, Clippy,
-Rustdoc, `user-smoke.sh`, and `local-harness.sh`.
+**Out of scope.** Do not modify `STATUS.md`, manifests, `Cargo.lock`, core,
+normal `start_client`, `ClientHandle`, the normal SOCKS/session/HTTP CONNECT
+service, CLI, SDK, default features, protocol, authentication, frame, schema,
+stored profile, or version. Do not add concurrent flows, a second active route,
+flow map, open-ended listener loop, replacement generation, reconnect, retry,
+backoff, Domain/DNS, UDP relay, non-loopback or real-network I/O. Do not expose
+a stable public owner, manager, lease, flow, stream, listener, exporter,
+observation, secret, or quiche type.
 
-**Out of scope.** Do not add concurrent client flows, a second active route,
-flow map, listener loop, another local peer, replacement generation,
-reconnection, retry, backoff, external service-shutdown control, Domain/DNS,
-UDP relay, non-loopback or real-network I/O. Do not modify `lib.rs`, the normal
-`start_client`, `ClientHandle`, session, SOCKS or HTTP CONNECT service, core,
-server, CLI, SDK, manifests, `Cargo.lock`, protocol, authentication, frame,
-schema, stored profile, or version. Do not add or expose a public API, feature,
-owner, lease, flow, stream, listener, exporter, secret, observation, or quiche
-type. This private quality evidence does not update `STATUS.md`.
-
-**Stop conditions.** Stop and re-adjudicate before touching a third file;
-increasing any queue, lease, task, flow, or buffer capacity; adding a command,
-channel, `Notify`, task, manager, driver, actor, or runtime coordinator;
-allowing rearm before exact collection or after any failure, cancel, dirty
-completion, or expiry; requiring client concurrency, automatic replacement,
-server changes, a public symbol, Domain/DNS, non-loopback I/O, or a wire,
-schema, or version change. Stop rather than using two owners or two QUIC
-connections as evidence for same-generation sequential reuse.
+**Stop conditions.** Stop and re-adjudicate before touching a fifth file;
+increasing a queue, lease, task, flow, actor, target, or buffer capacity; adding
+a command, channel, `Notify`, task, manager, driver, actor, or runtime
+coordinator; accepting a third peer; allowing the second flow before exact
+first-stream collection; or using two owners, two client UDP sockets, two QUIC
+connections, or two authentication exchanges as evidence for same-owner
+sequential composition. Stop on any need for concurrency, automatic
+replacement, a stable public API, Domain/DNS, UDP, non-loopback I/O, wire,
+schema, or version change.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

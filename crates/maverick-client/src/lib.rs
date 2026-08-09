@@ -38,7 +38,7 @@ use tracing::{debug, info, warn};
 
 use connection_manager::{ClientTunnelPool, H2ConnectionPoolSnapshot, H2PoolShutdownSnapshot};
 
-/// Fixed failure from opt-in cross-crate direct-v3 reference verification.
+/// Fixed failure from opt-in repository cross-crate direct-v3 verification.
 ///
 /// This public type is SemVer-observable when the explicitly unstable
 /// `unstable-direct-v3-reference-test-support` feature is enabled. It exists
@@ -69,6 +69,27 @@ pub async fn run_direct_v3_reference_test_support(
     direct_v3_h2::run_direct_v3_h2_reference(config, direct_v3_h2::DirectV3H2Backend::Rustls)
         .await
         .result()
+        .map_err(|_| DirectV3ReferenceTestSupportError)
+}
+
+/// Run opt-in, unstable cross-crate direct-H3 loopback verification.
+///
+/// This symbol is visible only when the explicitly unstable repository-test
+/// feature and the private quiche foundation are both enabled. That feature
+/// combination is SemVer-observable, but this function is not a stable API and
+/// downstream products must not depend on it. It consumes the role, exposes no
+/// connection capability or peer value, and returns only a fixed result after
+/// bounded teardown.
+#[cfg(all(
+    feature = "unstable-direct-v3-reference-test-support",
+    feature = "quiche-foundation"
+))]
+pub async fn run_direct_v3_h3_loopback_connect_test_support(
+    role: maverick_core::config::ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), DirectV3ReferenceTestSupportError> {
+    quiche_foundation::run_direct_v3_h3_loopback_connect_test_support(role, target)
+        .await
         .map_err(|_| DirectV3ReferenceTestSupportError)
 }
 

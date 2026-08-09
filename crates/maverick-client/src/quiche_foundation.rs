@@ -5968,6 +5968,95 @@ impl Drop for ClientRuntimePolicyOwner {
     }
 }
 
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+const CROSS_CRATE_TEST_PAYLOAD_BYTES: usize = private_classic_connect::FLOW_CHUNK_LIMIT + 8_193;
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+fn cross_crate_test_byte(offset: usize) -> u8 {
+    u8::try_from((offset % 251) + 1).unwrap_or(1)
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+pub(super) async fn run_direct_v3_h3_loopback_connect_test_support(
+    role: ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), ()> {
+    run_direct_v3_h3_loopback_connect_test_support_inner(role, target)
+        .await
+        .map_err(|_| ())
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+async fn run_direct_v3_h3_loopback_connect_test_support_inner(
+    role: ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), FoundationError> {
+    let mut owner = ClientRuntimePolicyOwner::start(role).await?;
+    let run_result = async {
+        timeout(CONNECTION_RUN_TIMEOUT, owner.receive_observation())
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .ok_or(FoundationError::ObservationQueueUnavailable)?;
+        let lease = owner.acquire_authenticated().await?;
+        let flow = owner.open_loopback_classic_connect(lease, target).await?;
+        let (mut reader, mut writer) = flow.into_halves();
+
+        timeout(CONNECTION_RUN_TIMEOUT, async {
+            let send = async {
+                let mut offset = 0_usize;
+                let mut chunk = [0_u8; private_classic_connect::FLOW_CHUNK_LIMIT];
+                while offset < CROSS_CRATE_TEST_PAYLOAD_BYTES {
+                    let length = (CROSS_CRATE_TEST_PAYLOAD_BYTES - offset).min(chunk.len());
+                    for (index, byte) in chunk[..length].iter_mut().enumerate() {
+                        *byte = cross_crate_test_byte(offset + index);
+                    }
+                    writer.send_chunk(&chunk[..length]).await?;
+                    chunk[..length].fill(0);
+                    offset += length;
+                }
+                writer.finish().await
+            };
+
+            let receive = async {
+                let mut offset = 0_usize;
+                while let Some(chunk) = reader.receive_chunk().await? {
+                    let bytes = chunk.as_slice();
+                    let end = offset
+                        .checked_add(bytes.len())
+                        .ok_or(FoundationError::PostAuthFlowRejected)?;
+                    if end > CROSS_CRATE_TEST_PAYLOAD_BYTES
+                        || bytes
+                            .iter()
+                            .enumerate()
+                            .any(|(index, byte)| *byte != cross_crate_test_byte(offset + index))
+                    {
+                        return Err(FoundationError::PostAuthFlowRejected);
+                    }
+                    offset = end;
+                }
+                if offset == CROSS_CRATE_TEST_PAYLOAD_BYTES {
+                    Ok(())
+                } else {
+                    Err(FoundationError::PostAuthFlowRejected)
+                }
+            };
+
+            let (send_result, receive_result) = tokio::join!(send, receive);
+            send_result?;
+            receive_result
+        })
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?
+    }
+    .await;
+
+    let close_result = owner.close().await;
+    if owner.task_budget.permits.available_permits() != CONNECTION_TASK_LIMIT {
+        return Err(FoundationError::TaskBudgetUnavailable);
+    }
+    run_result.and(close_result)
+}
+
 struct PreparedClientTrust {
     config: quiche::Config,
     expected_leaf_sha256: Option<[u8; 32]>,

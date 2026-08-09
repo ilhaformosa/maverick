@@ -17,63 +17,96 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-2a — Private loopback IP-literal Classic CONNECT flow handle
+### T027c-2b — Private cross-crate loopback H3 CONNECT relay proof
 
-**User result.** The private direct-H3 client runtime-policy owner can consume
-one authenticated connection lease and open one Classic CONNECT stream to a
-canonical loopback IPv4 or IPv6 literal. Exact `200` response headers return a
-private bounded flow handle whose independent read, write, finish, cancel, and
-close lifecycle is driven by the existing manager and quiche driver. This is a
-private loopback wire/lifecycle foundation only. It is not SOCKS, CLI, SDK, or
-product runtime; it is not a cross-crate client-to-server-to-TCP-target
-end-to-end result and does not support Domain/DNS, non-loopback targets,
-multiple flows, reconnection, or transparent retry.
+**User result.** One opt-in repository test composes the real private
+native-quiche client runtime-policy owner, the real private server endpoint,
+and one real TCP echo target on OS-assigned loopback ports. After auth-v3
+succeeds, one IP-literal Classic CONNECT stream carries ordered bytes in both
+directions, propagates request and response half-close, and shuts down within
+fixed bounds. This is repository-local composition evidence for private
+foundation seams. It is not the SOCKS, CLI, SDK, or normal product runtime; it
+is not a process-level product end-to-end result, user result, readiness
+result, release result, or real-network result.
 
-**Scope.** Limit this slice to `ROADMAP.md` and the client's private quiche
-foundation. Put the only open entry on `ClientRuntimePolicyOwner`; accept only
-a nonzero-port loopback `SocketAddr` with zero IPv6 scope and flow information,
-then construct the canonical IPv4 `ip:port` or IPv6 `[ip]:port` authority
-before any command, header, stream, or data I/O. Consume the authenticated
-lease and retain it in the returned flow handle. Reuse the single existing
-manager and driver, with one Classic CONNECT application stream per
-authenticated generation, fixed buffers, separate send and receive state, at
-most one application slot plus one driver-pending slot per direction, and
-chunks no larger than 16 KiB.
+**Scope.** Limit this slice to `ROADMAP.md`, the client library entry and
+private quiche foundation, the server manifest's existing client
+dev-dependency, and the server's private quiche endpoint and runtime. Extend
+the existing explicitly unstable direct-v3 repository-test feature with one
+fixed-result runner that is present only together with the client
+`quiche-foundation` feature. The server test graph may enable that combination;
+ordinary product builds must not. The runner consumes a complete client role
+and accepts one loopback target address, then reuses the existing client owner,
+manager, driver, authenticated lease, private flow, fixed buffers, deadlines,
+and cleanup. It exposes no owner, lease, flow, quiche object, exporter, secret,
+endpoint, authority, payload, observation, or receipt.
 
-**Acceptance.** Exact `200` response headers are the only success boundary.
-Writes acknowledge only after quiche accepts every byte in the submitted
-chunk. Request-header `StreamBlocked` retries the same authority without
-opening a second stream; body partial writes and `Done` retain the exact unsent
-suffix.
-Inbound application backpressure neither overwrites data nor stops hard
-deadline, reset, cancellation, lease-drop, or owner-close handling. Local FIN
-waits for queued bytes, remote FIN becomes EOF only after buffered bytes are
-read, and the two halves terminate independently. Reset, STOP_SENDING,
-`GoAway`, trailers, non-`200`, wrong-stream events, invalid lease, hard expiry,
-owner close, duplicate FIN, and post-FIN writes fail with fixed privacy-safe
-errors, clear fixed buffers, wake waiters, reclaim permits, and close the
-generation without reopen. Focused local loopback tests cross the real
-manager/driver/quiche path for canonical IPv4 and available IPv6, pre-I/O
-rejection counters, more-than-16-KiB ordered full-duplex traffic, real low-
-window send pressure, inbound backpressure, both half-close orders, bounded
-explicit close, and fail-closed cleanup. T027a-1, T027c-1d, and server T027b-2d
-remain separate regression evidence and are not combined into an end-to-end
-claim.
+The preserved real-loopback red also permits one narrowly proven server
+runtime repair. For the unique active slot matching that stream, after exact
+`200`, a DATA readiness notification moves `Idle` to `RecvPending`. Further
+notifications while the same fixed upload is already `RecvPending` or valid
+`WritePending` are state-preserving coalescing only: they neither clear nor
+overwrite the buffer or cursor. Every wrong stream, duplicate slot, pre-`200`,
+absent target, peer-FIN, malformed pending state, shutdown, or
+write-half-closed case remains fail-closed.
 
-**Out of scope.** Do not add a public API, second or independent manager,
-task-level driver, router, command channel or queue, or framework; CLI, SDK,
-SOCKS, TCP-target dialing, Domain/DNS, non-loopback I/O, multiple streams,
-reconnection, transparent retry, real-network use, and manifest, feature,
-schema, protocol, authentication-wire, or stored-profile changes remain
-deferred. Do not buffer an entire flow in a `Vec` or an unbounded queue.
-Explicit close is the bounded primary path; `Drop` remains only lease-drop and
-abort fallback and does not claim graceful shutdown.
+The server test must use the existing private `Endpoint::bind_test`, its real
+registry and actors, and the production target opener without an
+`ActorTestGate`. Client UDP, server UDP, and the TCP target bind only to
+loopback addresses with OS-assigned ephemeral ports. No new runtime task,
+manager, driver, actor, channel, queue, framework, or dependency is permitted.
 
-**Stop conditions.** Stop and re-adjudicate before touching a third file,
-exposing the owner, flow handle, clock, or quiche type publicly, adding a
-second manager/driver/task framework, enabling Domain/DNS or non-loopback I/O,
-requiring a cross-crate target seam, weakening fixed resource or privacy
-bounds, or changing wire/schema/version contracts.
+**Acceptance.** A credible pre-change compile test fails only because the new
+cross-crate runner is absent. The green path traverses real quiche UDP,
+TLS 1.3/H3, auth-v3, exact `200`, server IP-literal target dispatch, a real
+loopback `TcpListener`/`TcpStream`, request DATA and FIN, response DATA and
+EOF, and bounded client/server shutdown. A fixed neutral payload larger than
+one 16-KiB client chunk is verified byte-for-byte and in order; the target
+accepts exactly one connection. Corrupt echo must be detected rather than
+counted as success. Wrong authentication and correct authentication with
+loopback egress denied must both fail with zero target accepts.
+
+After the runner exists, a second preserved red reaches auth-v3, exact `200`,
+and one real target accept, then closes with fixed Classic CONNECT DATA
+rejection and delivers zero target bytes because a second valid same-stream
+DATA readiness notification arrives while the first fixed upload is still
+`WritePending`. A focused runtime regression and the full cross-crate transfer
+must prove that coalescing preserves the exact pending bytes and cursor, later
+drains all queued H3 bytes to the target, and does not weaken the existing
+invalid-stream, lifecycle, target, response, or half-close rejection gates.
+
+Every wait is bounded. The runner and its public error return only fixed,
+privacy-safe results. The client explicitly closes its owner and reclaims its
+task budget; the echo task is joined; the server is cancelled through its
+existing test seam and finishes with no registered connection or actor. Target
+resolution and connection success are counted once on the positive path, with
+no failure counter. Existing T027c-2a client lifecycle and T027b-2d server relay
+tests remain separate regression evidence, not substitutes for this
+composition test.
+
+**Out of scope.** Do not connect the runner to `start_client`, SOCKS, HTTP
+CONNECT, CLI, SDK, config files, or the normal server entry. Do not add a
+stable public API, new feature, dependency, task, manager, driver, actor,
+channel, queue, framework, integration-test crate, or test binary. Domain/DNS,
+non-loopback targets, real-network use, multiple flows, reconnection,
+transparent retry, process-level product validation, and protocol, config,
+authentication, frame, stored-profile, or version changes remain deferred.
+This quality evidence does not update `STATUS.md`.
+
+Do not rewrite H3 polling or actor scheduling, add buffering or readiness
+queues, relax authentication, admission, lifecycle, target, or half-close
+checks, or accept DATA outside the exact same-stream pending-work coalescing
+described above.
+
+**Stop conditions.** Stop and re-adjudicate before touching a seventh file,
+changing `Cargo.lock`, exposing any private capability or quiche type, making
+the runner reachable through a normal product feature alone, substituting a
+synthetic target for real TCP dialing, adding another runtime task or
+coordination framework, enabling Domain/DNS or non-loopback I/O, weakening
+fixed resource or privacy bounds, changing event-loop ownership or ordering,
+changing any other DATA state transition, or changing any wire/schema/version
+contract. Stop rather than relabeling a partial handshake, queued bytes, or a
+same-file fixture as the required cross-crate composition result.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

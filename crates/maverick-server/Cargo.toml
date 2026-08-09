@@ -36,7 +36,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
-maverick-client = { path = "../maverick-client", default-features = false, features = ["unstable-direct-v3-reference-test-support"] }
+maverick-client = { path = "../maverick-client", default-features = false, features = ["quiche-foundation", "unstable-direct-v3-reference-test-support"] }
 rcgen.workspace = true
 sha2.workspace = true
 tempfile.workspace = true

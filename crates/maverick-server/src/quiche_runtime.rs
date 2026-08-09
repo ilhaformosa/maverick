@@ -1359,13 +1359,34 @@ impl ServerConnection {
             || !pending.dispatch_state.response_was_accepted()
             || pending.opened_target.is_none()
             || pending.peer_write_half_closed
-            || pending.upload_state != UploadDispatchState::Idle
         {
             return Err(RuntimeError::ClassicConnectDataRejected);
         }
-        pending.upload_payload.fill(0);
-        pending.upload_state = UploadDispatchState::RecvPending;
-        Ok(())
+        match pending.upload_state {
+            UploadDispatchState::Idle => {
+                pending.upload_payload.fill(0);
+                pending.upload_state = UploadDispatchState::RecvPending;
+                Ok(())
+            }
+            UploadDispatchState::RecvPending
+                if pending.upload_payload.iter().all(|byte| *byte == 0) =>
+            {
+                Ok(())
+            }
+            UploadDispatchState::WritePending { offset, length }
+                if offset < length
+                    && length <= pending.upload_payload.len()
+                    && pending.upload_payload[length..]
+                        .iter()
+                        .all(|byte| *byte == 0) =>
+            {
+                Ok(())
+            }
+            UploadDispatchState::RecvPending
+            | UploadDispatchState::WritePending { .. }
+            | UploadDispatchState::ShutdownPending
+            | UploadDispatchState::WriteHalfClosed => Err(RuntimeError::ClassicConnectDataRejected),
+        }
     }
 
     fn receive_auth_body(
@@ -9087,6 +9108,152 @@ auth:
             .drive_h3()
             .expect("drained event does not reveal a second DATA event");
         assert_eq!(pair.server.upload_data_events, data_events_before + 1);
+    }
+
+    #[tokio::test]
+    async fn t027c2b_same_stream_data_readiness_coalesces_only_pending_upload_states() {
+        let (mut pair, stream_id, _target_peer) =
+            response_accepted_pair(b"coalesced-data.invalid:443").await;
+        let mut h3 = pair.server.h3.take().expect("coalescing server H3 exists");
+
+        pair.server
+            .handle_h3_event(&mut h3, stream_id, quiche::h3::Event::Data)
+            .expect("first DATA readiness arms bounded receive work");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("coalescing slot remains occupied");
+        assert_eq!(pending.upload_state, UploadDispatchState::RecvPending);
+        assert!(pending.upload_payload.iter().all(|byte| *byte == 0));
+
+        pair.server
+            .handle_h3_event(&mut h3, stream_id, quiche::h3::Event::Data)
+            .expect("same-stream receive readiness coalesces without mutation");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_mut()
+            .expect("receive-pending slot remains occupied");
+        assert_eq!(pending.upload_state, UploadDispatchState::RecvPending);
+        assert!(pending.upload_payload.iter().all(|byte| *byte == 0));
+
+        let marker = [0x51, 0x52, 0x53, 0x54];
+        pending.upload_payload[..marker.len()].copy_from_slice(&marker);
+        pending.upload_state = UploadDispatchState::WritePending {
+            offset: 1,
+            length: marker.len(),
+        };
+        pair.server
+            .handle_h3_event(&mut h3, stream_id, quiche::h3::Event::Data)
+            .expect("same-stream write-pending readiness preserves the fixed suffix");
+        let pending = pair.server.pending_connects.slots[0]
+            .as_ref()
+            .expect("write-pending slot remains occupied");
+        assert_eq!(
+            pending.upload_state,
+            UploadDispatchState::WritePending {
+                offset: 1,
+                length: marker.len(),
+            }
+        );
+        assert_eq!(&pending.upload_payload[..marker.len()], &marker);
+        assert!(pending.upload_payload[marker.len()..]
+            .iter()
+            .all(|byte| *byte == 0));
+        pair.server.h3 = Some(h3);
+    }
+
+    #[tokio::test]
+    async fn t027c2b_invalid_data_readiness_states_remain_fail_closed() {
+        #[derive(Clone, Copy)]
+        enum InvalidState {
+            WrongStream,
+            DirtyReceivePending,
+            EmptyWritePending,
+            OversizedWritePending,
+            DirtyWritePendingTail,
+            ShutdownPending,
+            WriteHalfClosed,
+        }
+
+        for invalid in [
+            InvalidState::WrongStream,
+            InvalidState::DirtyReceivePending,
+            InvalidState::EmptyWritePending,
+            InvalidState::OversizedWritePending,
+            InvalidState::DirtyWritePendingTail,
+            InvalidState::ShutdownPending,
+            InvalidState::WriteHalfClosed,
+        ] {
+            let (mut pair, stream_id, target_peer) =
+                response_accepted_pair(b"invalid-data-state.invalid:443").await;
+            let event_stream_id = match invalid {
+                InvalidState::WrongStream => stream_id + 4,
+                InvalidState::DirtyReceivePending => {
+                    let pending = pair.server.pending_connects.slots[0]
+                        .as_mut()
+                        .expect("dirty receive slot exists");
+                    pending.upload_state = UploadDispatchState::RecvPending;
+                    pending.upload_payload[0] = 0x31;
+                    stream_id
+                }
+                InvalidState::EmptyWritePending => {
+                    let pending = pair.server.pending_connects.slots[0]
+                        .as_mut()
+                        .expect("empty write slot exists");
+                    pending.upload_state = UploadDispatchState::WritePending {
+                        offset: 4,
+                        length: 4,
+                    };
+                    stream_id
+                }
+                InvalidState::OversizedWritePending => {
+                    let pending = pair.server.pending_connects.slots[0]
+                        .as_mut()
+                        .expect("oversized write slot exists");
+                    pending.upload_state = UploadDispatchState::WritePending {
+                        offset: 0,
+                        length: CLIENT_TO_TARGET_BUFFER_BYTES + 1,
+                    };
+                    stream_id
+                }
+                InvalidState::DirtyWritePendingTail => {
+                    let pending = pair.server.pending_connects.slots[0]
+                        .as_mut()
+                        .expect("dirty write slot exists");
+                    pending.upload_payload[..4].copy_from_slice(b"data");
+                    pending.upload_payload[4] = 0x32;
+                    pending.upload_state = UploadDispatchState::WritePending {
+                        offset: 0,
+                        length: 4,
+                    };
+                    stream_id
+                }
+                InvalidState::ShutdownPending => {
+                    pair.server.pending_connects.slots[0]
+                        .as_mut()
+                        .expect("shutdown slot exists")
+                        .upload_state = UploadDispatchState::ShutdownPending;
+                    stream_id
+                }
+                InvalidState::WriteHalfClosed => {
+                    pair.server.pending_connects.slots[0]
+                        .as_mut()
+                        .expect("closed write slot exists")
+                        .upload_state = UploadDispatchState::WriteHalfClosed;
+                    stream_id
+                }
+            };
+            let mut h3 = pair
+                .server
+                .h3
+                .take()
+                .expect("invalid-state server H3 exists");
+            let error = pair
+                .server
+                .handle_h3_event(&mut h3, event_stream_id, quiche::h3::Event::Data)
+                .expect_err("invalid DATA readiness closes the generation");
+            assert_eq!(error, RuntimeError::ClassicConnectDataRejected);
+            assert_eq!(pair.server.pending_connects.len(), 0);
+            assert_target_peer_closed(target_peer).await;
+        }
     }
 
     #[tokio::test]

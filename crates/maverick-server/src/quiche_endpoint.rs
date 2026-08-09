@@ -2011,10 +2011,14 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use boring::ssl::{SslRef, SslVersion};
+    use maverick_client::{
+        run_direct_v3_h3_loopback_connect_test_support, DirectV3ReferenceTestSupportError,
+    };
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, AuthV3Carrier, AuthV3ClientControlInput, AuthV3TlsVersion,
         AUTH_V3_CLIENT_CONTROL_LEN, AUTH_V3_EXPORTER_LABEL, AUTH_V3_EXPORTER_LEN,
     };
+    use maverick_core::config::ClientRoleConfig;
     use quiche::h3::NameValue;
 
     use crate::quiche_registry::{
@@ -2031,12 +2035,23 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn t027c2b_cross_crate_runner_is_present_in_the_server_test_graph() {
+        let runner = run_direct_v3_h3_loopback_connect_test_support;
+        let _ = runner;
+    }
+
     type ActorReceiveFn = fn(
         &mut ConnectionRegistry,
         [u8; MAX_PACKET_BYTES],
         usize,
         PacketMeta,
     ) -> Result<ActorInboundDisposition, RegistryError>;
+
+    const T027C2B_ALTERNATE_SECRET: &str = "mv1_AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const T027C2B_SECRET: &str = "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const T027C2B_TEST_WALL_TIMEOUT: Duration = Duration::from_secs(20);
+    static T027C2B_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn test_metrics_owner() -> Arc<ServerRuntimeMetrics> {
         Arc::new(ServerRuntimeMetrics::default())
@@ -2211,6 +2226,36 @@ mod tests {
             )
         }
 
+        fn server_role_with_loopback_target_and_expiry(
+            &self,
+            timeout_ms: u64,
+            credential_not_after_unix: u64,
+        ) -> Arc<ServerRoleConfig> {
+            self.server_role_with_policy_and_expiry(
+                "h3",
+                "localhost",
+                (&self.certificate_path, &self.key_path),
+                timeout_ms,
+                true,
+                credential_not_after_unix,
+            )
+        }
+
+        fn server_role_without_loopback_target_and_expiry(
+            &self,
+            timeout_ms: u64,
+            credential_not_after_unix: u64,
+        ) -> Arc<ServerRoleConfig> {
+            self.server_role_with_policy_and_expiry(
+                "h3",
+                "localhost",
+                (&self.certificate_path, &self.key_path),
+                timeout_ms,
+                false,
+                credential_not_after_unix,
+            )
+        }
+
         fn server_role_with_timeout(
             &self,
             transport_strategy: &str,
@@ -2238,6 +2283,26 @@ mod tests {
             timeout_ms: u64,
             allow_loopback: bool,
         ) -> Arc<ServerRoleConfig> {
+            self.server_role_with_policy_and_expiry(
+                transport_strategy,
+                expected_authority,
+                (certificate_path, key_path),
+                timeout_ms,
+                allow_loopback,
+                1_800_172_800,
+            )
+        }
+
+        fn server_role_with_policy_and_expiry(
+            &self,
+            transport_strategy: &str,
+            expected_authority: &str,
+            credential_paths: (&std::path::Path, &std::path::Path),
+            timeout_ms: u64,
+            allow_loopback: bool,
+            credential_not_after_unix: u64,
+        ) -> Arc<ServerRoleConfig> {
+            let (certificate_path, key_path) = credential_paths;
             let yaml = format!(
                 r#"version: 3
 role: server
@@ -2271,13 +2336,54 @@ auth:
       credential_namespace_id: "RERERERERERERERERERERA"
       server_identity_id: "VVVVVVVVVVVVVVVVVVVVVQ"
       credential_epoch: 7
-      credential_not_after_unix: 1800172800
-      secret: "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+      credential_not_after_unix: {credential_not_after_unix}
+      secret: "{T027C2B_SECRET}"
 "#,
                 certificate_path.display(),
                 key_path.display(),
             );
             Arc::new(ServerRoleConfig::from_yaml_str(&yaml).expect("parse synthetic server role"))
+        }
+
+        fn client_role(
+            &self,
+            server_address: SocketAddr,
+            credential_not_after_unix: u64,
+            secret: &str,
+        ) -> ClientRoleConfig {
+            let yaml = format!(
+                r#"version: 3
+role: client
+security: {{ posture: standard }}
+transport: {{ strategy: h3 }}
+trust: {{ route: direct_to_maverick }}
+name_privacy: {{ minimum: plain_sni }}
+traffic_shaping: {{ policy: disabled }}
+local:
+  socks5:
+    listen: "127.0.0.1:0"
+server:
+  address: "{server_address}"
+  server_name: "localhost"
+  tunnel_path: "/direct-v3"
+  ca_cert: "{}"
+  cert_pin: null
+auth:
+  minimum: direct_v3_only
+  direct_v3:
+    binding:
+      provisioning_handle: "EREREREREREREREREREREQ"
+      principal_id: "IiIiIiIiIiIiIiIiIiIiIg"
+      deployment_profile_id: "MzMzMzMzMzMzMzMzMzMzMw"
+      credential_namespace_id: "RERERERERERERERERERERA"
+      server_identity_id: "VVVVVVVVVVVVVVVVVVVVVQ"
+      credential_epoch: 7
+      credential_not_after_unix: {credential_not_after_unix}
+      secret: "{secret}"
+"#,
+                self.certificate_path.display(),
+            );
+            ClientRoleConfig::from_yaml_str(&yaml).expect("parse synthetic client role")
         }
 
         fn frozen_role(&self) -> FrozenDirectV3ServerRole {
@@ -2309,6 +2415,323 @@ fallback:
             );
             Arc::new(ServerRoleConfig::from_yaml_str(&yaml).expect("parse synthetic legacy role"))
         }
+    }
+
+    fn t027c2b_credential_not_after_unix() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock remains after the Unix epoch")
+            .as_secs()
+            .checked_add(3_600)
+            .expect("test credential expiry remains representable")
+    }
+
+    fn t027c2b_expected_corrupt_disconnect(kind: std::io::ErrorKind) -> bool {
+        matches!(
+            kind,
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::NotConnected
+        )
+    }
+
+    async fn t027c2b_echo_once(listener: TcpListener, corrupt_first_byte: bool) -> usize {
+        let (mut target, _) = timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("cross-crate target is reached within the local bound")
+            .expect("accept cross-crate loopback target");
+        let mut buffer = [0_u8; 8 * 1_024];
+        let mut total = 0_usize;
+        let mut corrupted = false;
+        loop {
+            let read_result = timeout(Duration::from_secs(5), target.read(&mut buffer))
+                .await
+                .expect("cross-crate target read stays bounded");
+            let length = match read_result {
+                Ok(length) => length,
+                Err(error)
+                    if corrupt_first_byte
+                        && corrupted
+                        && t027c2b_expected_corrupt_disconnect(error.kind()) =>
+                {
+                    break;
+                }
+                Err(_) => panic!("read cross-crate target bytes"),
+            };
+            if length == 0 {
+                break;
+            }
+            total = total
+                .checked_add(length)
+                .expect("cross-crate byte count remains bounded");
+            let mut write_offset = 0_usize;
+            if corrupt_first_byte && !corrupted {
+                buffer[0] ^= 0x01;
+                timeout(Duration::from_secs(5), target.write_all(&buffer[..1]))
+                    .await
+                    .expect("first corrupt target byte write stays bounded")
+                    .expect("write first corrupt target byte");
+                corrupted = true;
+                write_offset = 1;
+            }
+            let write_result = timeout(
+                Duration::from_secs(5),
+                target.write_all(&buffer[write_offset..length]),
+            )
+            .await
+            .expect("cross-crate target write stays bounded");
+            match write_result {
+                Ok(()) => {}
+                Err(error)
+                    if corrupt_first_byte
+                        && corrupted
+                        && t027c2b_expected_corrupt_disconnect(error.kind()) =>
+                {
+                    break;
+                }
+                Err(_) => panic!("echo cross-crate target bytes"),
+            }
+        }
+        let shutdown_result = timeout(Duration::from_secs(5), target.shutdown())
+            .await
+            .expect("cross-crate target shutdown stays bounded");
+        if let Err(error) = shutdown_result {
+            assert!(
+                corrupt_first_byte
+                    && corrupted
+                    && t027c2b_expected_corrupt_disconnect(error.kind()),
+                "half-close cross-crate target response"
+            );
+        }
+        assert_eq!(corrupt_first_byte, corrupted);
+        assert!(timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err());
+        total
+    }
+
+    async fn t027c2b_run_client_and_endpoint(
+        endpoint: &mut Endpoint,
+        cancel: watch::Sender<bool>,
+        role: ClientRoleConfig,
+        target: SocketAddr,
+    ) -> Result<(), DirectV3ReferenceTestSupportError> {
+        let client = async move {
+            let result = timeout(
+                Duration::from_secs(12),
+                run_direct_v3_h3_loopback_connect_test_support(role, target),
+            )
+            .await;
+            let _ = cancel.send(true);
+            result
+        };
+        let (endpoint_result, client_result) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(endpoint.run(), client)
+        })
+        .await
+        .expect("cross-crate endpoint and client finish within the wall bound");
+        endpoint_result.expect("cross-crate endpoint shuts down cleanly");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+        client_result.expect("cross-crate client runner finishes within its own bound")
+    }
+
+    fn assert_one_successful_target_open(metrics_owner: &ServerRuntimeMetrics) {
+        let sinks = metrics_owner.target_open_sinks();
+        assert_eq!(sinks.resolution_latency.snapshot().count, 1);
+        assert_eq!(sinks.connect_latency.snapshot().count, 1);
+        assert_eq!(sinks.resolution_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn t027c2b_real_client_server_and_tcp_echo_cross_crate_seams() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize cross-crate loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("cross-crate server bind stays bounded")
+        .expect("bind cross-crate server endpoint");
+        let server_address = endpoint.local_address;
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("cross-crate target bind stays bounded")
+        .expect("bind cross-crate echo target");
+        let target = listener
+            .local_addr()
+            .expect("read cross-crate echo target address");
+        let client_role =
+            credentials.client_role(server_address, credential_not_after_unix, T027C2B_SECRET);
+
+        let (client_result, echoed_bytes) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(
+                t027c2b_run_client_and_endpoint(&mut endpoint, cancel, client_role, target),
+                t027c2b_echo_once(listener, false),
+            )
+        })
+        .await
+        .expect("cross-crate positive composition remains bounded");
+        client_result.expect("cross-crate echo is verified exactly");
+        assert!(echoed_bytes > 16 * 1_024);
+        assert_one_successful_target_open(&metrics_owner);
+
+        drop(endpoint);
+        let rebound = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("cross-crate UDP rebind stays bounded")
+            .expect("cross-crate server UDP address is released");
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn t027c2b_wrong_authentication_never_reaches_the_tcp_target() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize cross-crate loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("wrong-auth server bind stays bounded")
+        .expect("bind wrong-auth server endpoint");
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("wrong-auth target bind stays bounded")
+        .expect("bind wrong-auth target sentinel");
+        let target = listener
+            .local_addr()
+            .expect("read wrong-auth target sentinel address");
+        let client_role = credentials.client_role(
+            endpoint.local_address,
+            credential_not_after_unix,
+            T027C2B_ALTERNATE_SECRET,
+        );
+
+        let error = t027c2b_run_client_and_endpoint(&mut endpoint, cancel, client_role, target)
+            .await
+            .expect_err("wrong authentication fails with the fixed result");
+        assert_eq!(error, DirectV3ReferenceTestSupportError);
+        assert!(timeout(Duration::from_millis(150), listener.accept())
+            .await
+            .is_err());
+        assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    #[tokio::test]
+    async fn t027c2b_egress_rejection_never_reaches_the_tcp_target() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize cross-crate loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_without_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("egress-rejection server bind stays bounded")
+        .expect("bind egress-rejection server endpoint");
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("egress-rejection target bind stays bounded")
+        .expect("bind egress-rejection target sentinel");
+        let target = listener
+            .local_addr()
+            .expect("read egress-rejection target sentinel address");
+        let client_role = credentials.client_role(
+            endpoint.local_address,
+            credential_not_after_unix,
+            T027C2B_SECRET,
+        );
+
+        let error = t027c2b_run_client_and_endpoint(&mut endpoint, cancel, client_role, target)
+            .await
+            .expect_err("egress rejection fails with the fixed result");
+        assert_eq!(error, DirectV3ReferenceTestSupportError);
+        assert!(timeout(Duration::from_millis(150), listener.accept())
+            .await
+            .is_err());
+        assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    #[tokio::test]
+    async fn t027c2b_corrupt_echo_is_never_counted_as_success() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize cross-crate loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("corrupt-echo server bind stays bounded")
+        .expect("bind corrupt-echo server endpoint");
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("corrupt-echo target bind stays bounded")
+        .expect("bind corrupt-echo target");
+        let target = listener
+            .local_addr()
+            .expect("read corrupt-echo target address");
+        let client_role = credentials.client_role(
+            endpoint.local_address,
+            credential_not_after_unix,
+            T027C2B_SECRET,
+        );
+
+        let (client_result, echoed_bytes) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(
+                t027c2b_run_client_and_endpoint(&mut endpoint, cancel, client_role, target),
+                t027c2b_echo_once(listener, true),
+            )
+        })
+        .await
+        .expect("cross-crate corrupt-echo composition remains bounded");
+        assert_eq!(
+            client_result.expect_err("corrupt echo must be rejected"),
+            DirectV3ReferenceTestSupportError
+        );
+        assert_ne!(echoed_bytes, 0);
+        assert_one_successful_target_open(&metrics_owner);
     }
 
     #[derive(Clone)]

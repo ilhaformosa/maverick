@@ -93,6 +93,75 @@ pub async fn run_direct_v3_h3_loopback_connect_test_support(
         .map_err(|_| DirectV3ReferenceTestSupportError)
 }
 
+/// Run opt-in, unstable one-shot SOCKS-to-direct-H3 loopback verification.
+///
+/// This repository-test symbol is visible only with the same explicitly
+/// unstable feature combination as the private quiche foundation. That
+/// combination is SemVer-observable, but this function is not a stable API and
+/// downstream products must not depend on it. It accepts exactly one fixed
+/// repository-controlled peer over a real loopback `TcpStream`, returns only a
+/// fixed result after bounded teardown, and exposes no listener, connection,
+/// lease, flow, target, or quiche capability. It is not a normal product
+/// runtime.
+#[cfg(all(
+    feature = "unstable-direct-v3-reference-test-support",
+    feature = "quiche-foundation"
+))]
+pub async fn run_direct_v3_h3_one_shot_loopback_socks_test_support(
+    role: maverick_core::config::ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), DirectV3ReferenceTestSupportError> {
+    quiche_foundation::run_direct_v3_h3_one_shot_loopback_socks_test_support(role, target)
+        .await
+        .map_err(|_| DirectV3ReferenceTestSupportError)
+}
+
+/// Verify that opt-in one-shot SOCKS/H3 rejection reaches the real peer.
+///
+/// This fixed-result repository-test symbol is visible only with the same
+/// explicitly unstable feature combination as the private quiche foundation.
+/// The combination is SemVer-observable, but this function is not a stable API
+/// and downstream products must not depend on it. Success means the fixed
+/// repository-controlled loopback peer observed rejection or EOF before any
+/// SOCKS success reply. No listener, connection, lease, flow, target, or
+/// quiche capability is returned.
+#[cfg(all(
+    feature = "unstable-direct-v3-reference-test-support",
+    feature = "quiche-foundation"
+))]
+pub async fn run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support(
+    role: maverick_core::config::ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), DirectV3ReferenceTestSupportError> {
+    quiche_foundation::run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support(role, target)
+        .await
+        .map_err(|_| DirectV3ReferenceTestSupportError)
+}
+
+/// Verify bounded cleanup after an opt-in one-shot SOCKS peer disconnects.
+///
+/// This fixed-result repository-test symbol is visible only with the same
+/// explicitly unstable feature combination as the private quiche foundation.
+/// The combination is SemVer-observable, but this function is not a stable API
+/// and downstream products must not depend on it. Success means the fixed
+/// repository-controlled loopback peer received SOCKS success, disconnected
+/// during the active flow, and the private runner attempted cancellation before
+/// bounded teardown. No runtime capability is returned.
+#[cfg(all(
+    feature = "unstable-direct-v3-reference-test-support",
+    feature = "quiche-foundation"
+))]
+pub async fn run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support(
+    role: maverick_core::config::ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), DirectV3ReferenceTestSupportError> {
+    quiche_foundation::run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support(
+        role, target,
+    )
+    .await
+    .map_err(|_| DirectV3ReferenceTestSupportError)
+}
+
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
 fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {

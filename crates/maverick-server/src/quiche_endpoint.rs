@@ -2006,13 +2006,18 @@ enum ActorFault {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::PathBuf;
+    use std::pin::Pin;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use boring::ssl::{SslRef, SslVersion};
     use maverick_client::{
-        run_direct_v3_h3_loopback_connect_test_support, DirectV3ReferenceTestSupportError,
+        run_direct_v3_h3_loopback_connect_test_support,
+        run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support,
+        run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support,
+        run_direct_v3_h3_one_shot_loopback_socks_test_support, DirectV3ReferenceTestSupportError,
     };
     use maverick_core::auth_v3::{
         encode_auth_v3_client_control, AuthV3Carrier, AuthV3ClientControlInput, AuthV3TlsVersion,
@@ -2041,6 +2046,16 @@ mod tests {
         let _ = runner;
     }
 
+    #[test]
+    fn t027c2c_one_shot_socks_runner_is_present_in_the_server_test_graph() {
+        let runner = run_direct_v3_h3_one_shot_loopback_socks_test_support;
+        let rejection = run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support;
+        let disconnect = run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support;
+        let _ = runner;
+        let _ = rejection;
+        let _ = disconnect;
+    }
+
     type ActorReceiveFn = fn(
         &mut ConnectionRegistry,
         [u8; MAX_PACKET_BYTES],
@@ -2051,7 +2066,19 @@ mod tests {
     const T027C2B_ALTERNATE_SECRET: &str = "mv1_AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
     const T027C2B_SECRET: &str = "mv1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
     const T027C2B_TEST_WALL_TIMEOUT: Duration = Duration::from_secs(20);
+    const T027C2C_PAYLOAD_BYTES: usize = 16 * 1_024 + 8_193;
     static T027C2B_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[derive(Clone, Copy)]
+    enum T027c2cRunner {
+        Success,
+        Rejection,
+        DisconnectAfterSuccess,
+    }
+
+    fn t027c2c_test_byte(offset: usize) -> u8 {
+        ((offset % 251) + 1) as u8
+    }
 
     fn test_metrics_owner() -> Arc<ServerRuntimeMetrics> {
         Arc::new(ServerRuntimeMetrics::default())
@@ -2538,6 +2565,43 @@ fallback:
         client_result.expect("cross-crate client runner finishes within its own bound")
     }
 
+    async fn t027c2c_run_client_and_endpoint(
+        endpoint: &mut Endpoint,
+        cancel: watch::Sender<bool>,
+        role: ClientRoleConfig,
+        target: SocketAddr,
+        runner: T027c2cRunner,
+    ) -> Result<(), DirectV3ReferenceTestSupportError> {
+        let client = async move {
+            let run: Pin<
+                Box<dyn Future<Output = Result<(), DirectV3ReferenceTestSupportError>> + Send>,
+            > = match runner {
+                T027c2cRunner::Success => Box::pin(
+                    run_direct_v3_h3_one_shot_loopback_socks_test_support(role, target),
+                ),
+                T027c2cRunner::Rejection => Box::pin(
+                    run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support(role, target),
+                ),
+                T027c2cRunner::DisconnectAfterSuccess => Box::pin(
+                    run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support(role, target),
+                ),
+            };
+            let result = timeout(Duration::from_secs(15), run).await;
+            let _ = cancel.send(true);
+            result
+        };
+        let (endpoint_result, client_result) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(endpoint.run(), client)
+        })
+        .await
+        .expect("one-shot SOCKS endpoint and client finish within the wall bound");
+        endpoint_result.expect("one-shot SOCKS endpoint shuts down cleanly");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+        client_result.expect("one-shot SOCKS runner finishes within its own bound")
+    }
+
     fn assert_one_successful_target_open(metrics_owner: &ServerRuntimeMetrics) {
         let sinks = metrics_owner.target_open_sinks();
         assert_eq!(sinks.resolution_latency.snapshot().count, 1);
@@ -2546,6 +2610,111 @@ fallback:
         assert_eq!(sinks.resolution_failures.load(Ordering::Relaxed), 0);
         assert_eq!(sinks.connect_timeouts.load(Ordering::Relaxed), 0);
         assert_eq!(sinks.connect_failures.load(Ordering::Relaxed), 0);
+    }
+
+    async fn t027c2c_remote_first_target(listener: TcpListener) -> usize {
+        let (mut target, _) = timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("one-shot target is reached within the local bound")
+            .expect("accept one-shot loopback target");
+        let mut buffer = [0_u8; 8 * 1_024];
+        let mut offset = 0_usize;
+        while offset < T027C2C_PAYLOAD_BYTES {
+            let length = (T027C2C_PAYLOAD_BYTES - offset).min(buffer.len());
+            for (index, byte) in buffer[..length].iter_mut().enumerate() {
+                *byte = t027c2c_test_byte(offset + index);
+            }
+            timeout(Duration::from_secs(5), target.write_all(&buffer[..length]))
+                .await
+                .expect("one-shot target response write stays bounded")
+                .expect("write one-shot target response");
+            buffer[..length].fill(0);
+            offset += length;
+        }
+        timeout(Duration::from_secs(5), target.shutdown())
+            .await
+            .expect("one-shot target response half-close stays bounded")
+            .expect("half-close one-shot target response");
+
+        offset = 0;
+        loop {
+            let length = timeout(Duration::from_secs(5), target.read(&mut buffer))
+                .await
+                .expect("one-shot target request read stays bounded")
+                .expect("read one-shot target request");
+            if length == 0 {
+                break;
+            }
+            let end = offset
+                .checked_add(length)
+                .expect("one-shot request byte count remains bounded");
+            assert!(end <= T027C2C_PAYLOAD_BYTES);
+            assert!(buffer[..length]
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| *byte == t027c2c_test_byte(offset + index)));
+            buffer[..length].fill(0);
+            offset = end;
+        }
+        buffer.fill(0);
+        assert_eq!(offset, T027C2C_PAYLOAD_BYTES);
+        assert!(timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err());
+        offset
+    }
+
+    async fn t027c2c_observe_target_close_after_local_disconnect(listener: TcpListener) -> usize {
+        let (mut target, _) = timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("disconnect target is reached within the local bound")
+            .expect("accept disconnect loopback target");
+        let mut buffer = [0_u8; 8 * 1_024];
+        timeout(Duration::from_secs(5), target.read_exact(&mut buffer[..1]))
+            .await
+            .expect("disconnect target first-byte read stays bounded")
+            .expect("read disconnect target first byte");
+        assert_eq!(buffer[0], t027c2c_test_byte(0));
+        buffer[0] = 0;
+        timeout(Duration::from_secs(5), target.write_all(&[0xa5]))
+            .await
+            .expect("disconnect target acknowledgement stays bounded")
+            .expect("write disconnect target acknowledgement");
+        let mut offset = 1_usize;
+        loop {
+            let length = match timeout(Duration::from_secs(5), target.read(&mut buffer)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(length)) => length,
+                Ok(Err(error))
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ) =>
+                {
+                    break;
+                }
+                Ok(Err(_)) => panic!("unexpected disconnect target read error"),
+                Err(_) => panic!("disconnect target close stays bounded"),
+            };
+            let end = offset
+                .checked_add(length)
+                .expect("disconnect target byte count remains bounded");
+            assert!(end <= T027C2C_PAYLOAD_BYTES);
+            assert!(buffer[..length]
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| *byte == t027c2c_test_byte(offset + index)));
+            buffer[..length].fill(0);
+            offset = end;
+        }
+        buffer.fill(0);
+        assert!(offset > 0);
+        assert!(timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err());
+        offset
     }
 
     #[tokio::test]
@@ -2596,6 +2765,217 @@ fallback:
             .await
             .expect("cross-crate UDP rebind stays bounded")
             .expect("cross-crate server UDP address is released");
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn t027c2c_real_one_shot_socks_peer_crosses_h3_and_tcp_echo() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize one-shot SOCKS loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("one-shot SOCKS server bind stays bounded")
+        .expect("bind one-shot SOCKS server endpoint");
+        let server_address = endpoint.local_address;
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("one-shot SOCKS target bind stays bounded")
+        .expect("bind one-shot SOCKS echo target");
+        let target = listener
+            .local_addr()
+            .expect("read one-shot SOCKS echo target address");
+        let client_role =
+            credentials.client_role(server_address, credential_not_after_unix, T027C2B_SECRET);
+
+        let (client_result, echoed_bytes) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(
+                t027c2c_run_client_and_endpoint(
+                    &mut endpoint,
+                    cancel,
+                    client_role,
+                    target,
+                    T027c2cRunner::Success,
+                ),
+                t027c2c_remote_first_target(listener),
+            )
+        })
+        .await
+        .expect("one-shot SOCKS composition remains bounded");
+        client_result.expect("one-shot SOCKS remote-first transfer is verified exactly");
+        assert!(echoed_bytes > 16 * 1_024);
+        assert_one_successful_target_open(&metrics_owner);
+
+        drop(endpoint);
+        let rebound = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("one-shot SOCKS UDP rebind stays bounded")
+            .expect("one-shot SOCKS server UDP address is released");
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn t027c2c_wrong_auth_never_replies_success_or_reaches_target() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize one-shot SOCKS wrong-auth test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("one-shot SOCKS wrong-auth bind stays bounded")
+        .expect("bind one-shot SOCKS wrong-auth endpoint");
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("one-shot SOCKS wrong-auth target bind stays bounded")
+        .expect("bind one-shot SOCKS wrong-auth sentinel");
+        let target = listener
+            .local_addr()
+            .expect("read one-shot SOCKS wrong-auth sentinel address");
+        let client_role = credentials.client_role(
+            endpoint.local_address,
+            credential_not_after_unix,
+            T027C2B_ALTERNATE_SECRET,
+        );
+
+        t027c2c_run_client_and_endpoint(
+            &mut endpoint,
+            cancel,
+            client_role,
+            target,
+            T027c2cRunner::Rejection,
+        )
+        .await
+        .expect("fixed peer observes wrong-auth rejection before SOCKS success");
+        assert!(timeout(Duration::from_millis(150), listener.accept())
+            .await
+            .is_err());
+        assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    #[tokio::test]
+    async fn t027c2c_egress_denial_never_replies_success_or_reaches_target() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize one-shot SOCKS egress-denial test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_without_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("one-shot SOCKS egress-denial bind stays bounded")
+        .expect("bind one-shot SOCKS egress-denial endpoint");
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("one-shot SOCKS egress-denial target bind stays bounded")
+        .expect("bind one-shot SOCKS egress-denial sentinel");
+        let target = listener
+            .local_addr()
+            .expect("read one-shot SOCKS egress-denial sentinel address");
+        let client_role = credentials.client_role(
+            endpoint.local_address,
+            credential_not_after_unix,
+            T027C2B_SECRET,
+        );
+
+        t027c2c_run_client_and_endpoint(
+            &mut endpoint,
+            cancel,
+            client_role,
+            target,
+            T027c2cRunner::Rejection,
+        )
+        .await
+        .expect("fixed peer observes egress rejection before SOCKS success");
+        assert!(timeout(Duration::from_millis(150), listener.accept())
+            .await
+            .is_err());
+        assert_zero_target_open_metrics(&metrics_owner);
+    }
+
+    #[tokio::test]
+    async fn t027c2c_active_local_disconnect_cancels_and_reclaims() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize one-shot SOCKS disconnect test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("one-shot SOCKS disconnect bind stays bounded")
+        .expect("bind one-shot SOCKS disconnect endpoint");
+        let server_address = endpoint.local_address;
+        let listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("one-shot SOCKS disconnect target bind stays bounded")
+        .expect("bind one-shot SOCKS disconnect target");
+        let target = listener
+            .local_addr()
+            .expect("read one-shot SOCKS disconnect target address");
+        let client_role =
+            credentials.client_role(server_address, credential_not_after_unix, T027C2B_SECRET);
+
+        let (client_result, target_bytes) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(
+                t027c2c_run_client_and_endpoint(
+                    &mut endpoint,
+                    cancel,
+                    client_role,
+                    target,
+                    T027c2cRunner::DisconnectAfterSuccess,
+                ),
+                t027c2c_observe_target_close_after_local_disconnect(listener),
+            )
+        })
+        .await
+        .expect("one-shot SOCKS active disconnect remains bounded");
+        client_result.expect("active local disconnect attempts cancellation and closes owner");
+        assert!(target_bytes > 0);
+        assert!(target_bytes <= T027C2C_PAYLOAD_BYTES);
+        assert_one_successful_target_open(&metrics_owner);
+
+        drop(endpoint);
+        let rebound = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("one-shot SOCKS disconnect UDP rebind stays bounded")
+            .expect("one-shot SOCKS disconnect releases server UDP address");
         drop(rebound);
     }
 

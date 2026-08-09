@@ -54,6 +54,7 @@ const CONNECTION_RUN_TIMEOUT: Duration = Duration::from_secs(10);
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTHENTICATED_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 const DRIVER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+const PRIVATE_FLOW_TRANSPORT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(2);
 const AUTH_FAILURE_CLOSE_CODE: u64 = 0x100;
 const CLIENT_RECEIPT_MAX_FRAME_SIZE: u32 = 65_536;
@@ -76,6 +77,50 @@ const T026C_RESPONSE_SPLIT: usize = 127;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 #[cfg(test)]
 static CLIENT_ROLE_SOCKET_BINDS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PrivateTransportDrainCounts {
+    entries: u64,
+    collections: u64,
+    timeouts: u64,
+    hard_expiries: u64,
+    join_aborts: u64,
+}
+
+#[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+impl PrivateTransportDrainCounts {
+    fn is_incremented_from(self, prior: Self, expected: Self) -> bool {
+        prior.entries.checked_add(expected.entries) == Some(self.entries)
+            && prior.collections.checked_add(expected.collections) == Some(self.collections)
+            && prior.timeouts.checked_add(expected.timeouts) == Some(self.timeouts)
+            && prior.hard_expiries.checked_add(expected.hard_expiries) == Some(self.hard_expiries)
+            && prior.join_aborts.checked_add(expected.join_aborts) == Some(self.join_aborts)
+    }
+}
+
+#[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+#[derive(Clone, Default)]
+struct PrivateTransportDrainProbe {
+    entries: Arc<AtomicU64>,
+    collections: Arc<AtomicU64>,
+    timeouts: Arc<AtomicU64>,
+    hard_expiries: Arc<AtomicU64>,
+    join_aborts: Arc<AtomicU64>,
+}
+
+#[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+impl PrivateTransportDrainProbe {
+    fn snapshot(&self) -> PrivateTransportDrainCounts {
+        PrivateTransportDrainCounts {
+            entries: self.entries.load(Ordering::Relaxed),
+            collections: self.collections.load(Ordering::Relaxed),
+            timeouts: self.timeouts.load(Ordering::Relaxed),
+            hard_expiries: self.hard_expiries.load(Ordering::Relaxed),
+            join_aborts: self.join_aborts.load(Ordering::Relaxed),
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum EarlyDataPolicy {
@@ -1069,6 +1114,37 @@ mod generation_auth {
             Self::with_fault(role, ReferenceFault::None)
         }
 
+        #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
+        pub(super) fn authenticated_client_for_transport_deadline_test(
+            hard_deadline: Instant,
+        ) -> Result<Self, FoundationError> {
+            let now = Instant::now();
+            let remaining = hard_deadline
+                .checked_duration_since(now)
+                .filter(|remaining| {
+                    !remaining.is_zero() && *remaining < PRIVATE_FLOW_TRANSPORT_DRAIN_TIMEOUT
+                })
+                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            let elapsed = Duration::from_secs(2)
+                .checked_sub(remaining)
+                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            let monotonic_anchor = now
+                .checked_sub(elapsed)
+                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            let time_anchor = TrustedTimeAnchor::new(T026C_NOW, monotonic_anchor)?;
+            let inputs = TrustedClientGenerationAuthInputs::new_test(time_anchor, 131_072, 256)?;
+            let config = ClientRoleConfig::from_yaml_str(&test_client_role_yaml())
+                .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
+            let verified = test_verified_confirmation_with_expiries(T026C_NOW + 1, T026C_NOW + 2);
+            let policy = Arc::new(AuthenticatedGenerationPolicy::new(verified, &time_anchor)?);
+            let mut runtime = Self::client(config, inputs)?;
+            runtime.slot = AuthSlot::Authenticated;
+            runtime.phase = AuthPhase::Authenticated;
+            runtime.authenticated_generation = Some(ConnectionGeneration(0x27c2c));
+            runtime.authenticated_policy = Some(policy);
+            Ok(runtime)
+        }
+
         #[cfg(test)]
         pub(super) fn with_fault(
             role: AuthRole,
@@ -1832,6 +1908,14 @@ mod generation_auth {
 
     #[cfg(test)]
     fn test_verified_confirmation() -> VerifiedAuthV3ServerConfirmation {
+        test_verified_confirmation_with_expiries(T026C_NOW + 1_800, T026C_NOW + 86_400)
+    }
+
+    #[cfg(test)]
+    fn test_verified_confirmation_with_expiries(
+        admission_expiry: u64,
+        hard_expiry: u64,
+    ) -> VerifiedAuthV3ServerConfirmation {
         let config = ClientRoleConfig::from_yaml_str(&test_client_role_yaml())
             .expect("parse verified-policy client role");
         let direct = config
@@ -1867,8 +1951,8 @@ mod generation_auth {
             &context,
             &AuthV3ServerConfirmationInput::new(
                 T026C_NOW,
-                T026C_NOW + 1_800,
-                T026C_NOW + 86_400,
+                admission_expiry,
+                hard_expiry,
                 [0x62; 32],
                 [0x63; 16],
                 65_536,
@@ -4379,6 +4463,16 @@ mod private_classic_connect {
             Self::new_inner(role, spy)
         }
 
+        #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
+        pub(super) fn completed_client_for_transport_test(stream_id: u64) -> Self {
+            let mut driver = Self::new(Some(AuthRole::Client));
+            driver.phase = DriverFlowPhase::Complete;
+            driver.stream_id = Some(stream_id);
+            driver.local_fin_accepted = true;
+            driver.remote_eof_seen = true;
+            driver
+        }
+
         fn new_inner(role: Option<AuthRole>, #[cfg(test)] spy: PrivateFlowSpy) -> Self {
             Self {
                 role,
@@ -4456,6 +4550,22 @@ mod private_classic_connect {
 
         pub(super) fn is_complete(&self) -> bool {
             self.phase == DriverFlowPhase::Complete
+        }
+
+        pub(super) fn completed_client_stream_id(&self) -> Result<Option<u64>, FoundationError> {
+            if self.phase != DriverFlowPhase::Complete {
+                return Ok(None);
+            }
+            let stream_id = self
+                .stream_id
+                .as_ref()
+                .copied()
+                .ok_or(FoundationError::PostAuthFlowRejected)?;
+            match self.role {
+                Some(AuthRole::Client) => Ok(Some(stream_id)),
+                Some(AuthRole::Server) => Ok(None),
+                None => Err(FoundationError::PostAuthFlowRejected),
+            }
         }
 
         pub(super) fn route_is_open_for(&self, current: &AuthenticatedGeneration) -> bool {
@@ -4945,7 +5055,6 @@ mod private_classic_connect {
                 self.authority = None;
                 self.proof = None;
                 self.identity = None;
-                self.stream_id = None;
                 if let Some(identity) = identity {
                     identity.mark_terminal();
                 }
@@ -5103,6 +5212,17 @@ impl ClassicConnectRoute {
             #[cfg(test)]
             reference_spy: ClassicConnectSpy::new(),
             #[cfg(test)]
+            private_spy: PrivateFlowSpy::new(),
+        }
+    }
+
+    #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
+    fn completed_client_for_transport_test(stream_id: u64) -> Self {
+        Self {
+            state: ClassicConnectRouteState::Private(Box::new(
+                PrivateClassicConnectDriver::completed_client_for_transport_test(stream_id),
+            )),
+            reference_spy: ClassicConnectSpy::new(),
             private_spy: PrivateFlowSpy::new(),
         }
     }
@@ -5301,14 +5421,45 @@ impl ClassicConnectRoute {
         )
     }
 
-    fn reap_completed_private_flow(&mut self) {
-        let completed = matches!(
-            &self.state,
-            ClassicConnectRouteState::Private(private) if private.is_complete()
-        );
-        if completed {
+    fn reap_completed_private_flow(
+        &mut self,
+        connection: &mut quiche::Connection,
+    ) -> Result<(), FoundationError> {
+        let should_consume = match &self.state {
+            ClassicConnectRouteState::Private(private) if private.is_complete() => {
+                match private.completed_client_stream_id()? {
+                    Some(stream_id) => {
+                        if connection.is_closed() {
+                            return Err(FoundationError::DriverStopped);
+                        }
+                        match connection.stream_capacity(stream_id) {
+                            Err(quiche::Error::InvalidStreamState(candidate))
+                                if candidate == stream_id =>
+                            {
+                                true
+                            }
+                            Ok(_) => false,
+                            Err(_) => return Err(FoundationError::PostAuthFlowRejected),
+                        }
+                    }
+                    None => true,
+                }
+            }
+            _ => false,
+        };
+        if should_consume {
             let completed = std::mem::replace(&mut self.state, ClassicConnectRouteState::Consumed);
             drop(completed);
+        }
+        Ok(())
+    }
+
+    fn has_completed_client_transport_drain(&self) -> Result<bool, FoundationError> {
+        match &self.state {
+            ClassicConnectRouteState::Private(private) => {
+                Ok(private.completed_client_stream_id()?.is_some())
+            }
+            _ => Ok(false),
         }
     }
 
@@ -5469,6 +5620,8 @@ struct SingleIdentityQuicManager {
     classic_connect_spy: ClassicConnectSpy,
     #[cfg(test)]
     private_flow_spy: PrivateFlowSpy,
+    #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+    private_transport_drain_probe: PrivateTransportDrainProbe,
 }
 
 impl SingleIdentityQuicManager {
@@ -5482,6 +5635,8 @@ impl SingleIdentityQuicManager {
         let classic_connect_spy = driver.classic_connect.test_spy();
         #[cfg(test)]
         let private_flow_spy = driver.classic_connect.test_private_spy();
+        #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+        let private_transport_drain_probe = driver.private_transport_drain_probe.clone();
         let driver_task = tokio::spawn(async move {
             let _task_permit = task_permit;
             driver.run(command_rx, generation).await
@@ -5494,6 +5649,8 @@ impl SingleIdentityQuicManager {
             classic_connect_spy,
             #[cfg(test)]
             private_flow_spy,
+            #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+            private_transport_drain_probe,
         })
     }
 
@@ -5758,6 +5915,10 @@ impl SingleIdentityQuicManager {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(FoundationError::DriverStopped),
             Err(_) => {
+                #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+                self.private_transport_drain_probe
+                    .join_aborts
+                    .fetch_add(1, Ordering::Relaxed);
                 driver_task.abort();
                 let _ = timeout(DRIVER_JOIN_TIMEOUT, driver_task).await;
                 Err(FoundationError::DriverTimeout)
@@ -5841,6 +6002,8 @@ struct ClientRuntimePolicyOwner {
     task_budget: ConnectionTaskBudget,
     manager: Option<SingleIdentityQuicManager>,
     observation_rx: mpsc::Receiver<FoundationObservation>,
+    #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+    private_transport_drain_probe: PrivateTransportDrainProbe,
 }
 
 impl ClientRuntimePolicyOwner {
@@ -5872,10 +6035,14 @@ impl ClientRuntimePolicyOwner {
             manager,
             observation_rx,
         } = bootstrap;
+        #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+        let private_transport_drain_probe = manager.private_transport_drain_probe.clone();
         Self {
             task_budget,
             manager: Some(manager),
             observation_rx,
+            #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+            private_transport_drain_probe,
         }
     }
 
@@ -6055,6 +6222,549 @@ async fn run_direct_v3_h3_loopback_connect_test_support_inner(
         return Err(FoundationError::TaskBudgetUnavailable);
     }
     run_result.and(close_result)
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+mod one_shot_loopback_socks {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use maverick_core::frame::TargetAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::*;
+
+    const SOCKS_REPLY_BYTES: usize = 10;
+    const SOCKS_REQUEST_BYTES: usize = 64;
+
+    #[derive(Clone, Copy)]
+    pub(super) enum PeerRequest {
+        Connect(SocketAddr),
+        #[cfg(test)]
+        Domain,
+        #[cfg(test)]
+        Udp,
+        #[cfg(test)]
+        Malformed,
+        DisconnectAfterSuccess(SocketAddr),
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) enum ExpectedPeerOutcome {
+        Success,
+        Rejection,
+        DisconnectAfterSuccess,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PeerOutcome {
+        Success,
+        Rejection,
+        DisconnectAfterSuccess,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum AcceptedPeerOutcome {
+        Success,
+        RejectedBeforeSuccess,
+        DisconnectCleaned,
+    }
+
+    impl PeerRequest {
+        fn disconnects_after_success(self) -> bool {
+            matches!(self, Self::DisconnectAfterSuccess(_))
+        }
+
+        fn encode(self, output: &mut [u8; SOCKS_REQUEST_BYTES]) -> usize {
+            output.fill(0);
+            #[cfg(test)]
+            if matches!(self, Self::Domain) {
+                let domain = b"target.invalid";
+                output[..5].copy_from_slice(&[0x05, 0x01, 0x00, 0x03, domain.len() as u8]);
+                output[5..5 + domain.len()].copy_from_slice(domain);
+                let port_offset = 5 + domain.len();
+                output[port_offset..port_offset + 2].copy_from_slice(&443_u16.to_be_bytes());
+                return port_offset + 2;
+            }
+            #[cfg(test)]
+            if matches!(self, Self::Udp) {
+                output[..10].copy_from_slice(&[0x05, 0x03, 0x00, 0x01, 127, 0, 0, 1, 0x01, 0xbb]);
+                return 10;
+            }
+            #[cfg(test)]
+            if matches!(self, Self::Malformed) {
+                output[..10].copy_from_slice(&[0x05, 0x01, 0x01, 0x01, 127, 0, 0, 1, 0x01, 0xbb]);
+                return 10;
+            }
+
+            let target = match self {
+                Self::Connect(target) => target,
+                Self::DisconnectAfterSuccess(target) => target,
+                #[cfg(test)]
+                Self::Domain | Self::Udp | Self::Malformed => unreachable!(),
+            };
+            match target {
+                SocketAddr::V4(address) => {
+                    output[..4].copy_from_slice(&[0x05, 0x01, 0x00, 0x01]);
+                    output[4..8].copy_from_slice(&address.ip().octets());
+                    output[8..10].copy_from_slice(&address.port().to_be_bytes());
+                    10
+                }
+                SocketAddr::V6(address) => {
+                    output[..4].copy_from_slice(&[0x05, 0x01, 0x00, 0x04]);
+                    output[4..20].copy_from_slice(&address.ip().octets());
+                    output[20..22].copy_from_slice(&address.port().to_be_bytes());
+                    22
+                }
+            }
+        }
+    }
+
+    fn valid_loopback_target(target: SocketAddr) -> bool {
+        if target.port() == 0 || !target.ip().is_loopback() {
+            return false;
+        }
+        match target {
+            SocketAddr::V4(_) => true,
+            SocketAddr::V6(address) => address.flowinfo() == 0 && address.scope_id() == 0,
+        }
+    }
+
+    pub(super) fn validated_target(request: crate::socks5::SocksRequest) -> Option<SocketAddr> {
+        if request.command != crate::socks5::SocksCommand::Connect || request.port == 0 {
+            return None;
+        }
+        let ip = match request.target {
+            TargetAddr::Ipv4(ip) => IpAddr::V4(ip),
+            TargetAddr::Ipv6(ip) => IpAddr::V6(ip),
+            TargetAddr::Domain(_) => return None,
+        };
+        let target = SocketAddr::new(ip, request.port);
+        valid_loopback_target(target).then_some(target)
+    }
+
+    async fn fixed_write_failure(stream: &mut TcpStream) {
+        let _ = timeout(SOCKET_IO_TIMEOUT, crate::socks5::write_failure(stream)).await;
+    }
+
+    async fn run_accepted_peer(
+        mut stream: TcpStream,
+        role: ClientRoleConfig,
+    ) -> Result<AcceptedPeerOutcome, FoundationError> {
+        let peer = stream
+            .peer_addr()
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        if !peer.ip().is_loopback() || peer.port() == 0 {
+            return Err(FoundationError::PreAuthApplicationActivity);
+        }
+        let request =
+            match timeout(SOCKET_IO_TIMEOUT, crate::socks5::read_request(&mut stream)).await {
+                Ok(Ok(request)) => request,
+                _ => return Ok(AcceptedPeerOutcome::RejectedBeforeSuccess),
+            };
+        let Some(target) = validated_target(request) else {
+            fixed_write_failure(&mut stream).await;
+            return Ok(AcceptedPeerOutcome::RejectedBeforeSuccess);
+        };
+
+        #[cfg(test)]
+        OWNER_STARTS.fetch_add(1, Ordering::Relaxed);
+        let mut owner = match ClientRuntimePolicyOwner::start(role).await {
+            Ok(owner) => owner,
+            Err(_) => {
+                fixed_write_failure(&mut stream).await;
+                return Ok(AcceptedPeerOutcome::RejectedBeforeSuccess);
+            }
+        };
+        let drain_counts_before = owner.private_transport_drain_probe.snapshot();
+        let cancel_completed = AtomicBool::new(false);
+
+        let open_result = {
+            let open = async {
+                timeout(CONNECTION_RUN_TIMEOUT, owner.receive_observation())
+                    .await
+                    .map_err(|_| FoundationError::DriverTimeout)?
+                    .ok_or(FoundationError::ObservationQueueUnavailable)?;
+                let lease = owner.acquire_authenticated().await?;
+                owner.open_loopback_classic_connect(lease, target).await
+            };
+            tokio::pin!(open);
+            let mut premature = [0_u8; 1];
+            tokio::select! {
+                result = &mut open => result,
+                local = stream.read(&mut premature) => {
+                    premature.fill(0);
+                    let _ = local;
+                    Err(FoundationError::PostAuthFlowRejected)
+                }
+            }
+        };
+
+        let outcome_result = match open_result {
+            Ok(flow) => {
+                match timeout(SOCKET_IO_TIMEOUT, crate::socks5::write_success(&mut stream)).await {
+                    Ok(Ok(())) => match relay_one_flow(stream, flow, &cancel_completed).await {
+                        Ok(()) => Ok(AcceptedPeerOutcome::Success),
+                        Err(_) if cancel_completed.load(Ordering::Relaxed) => {
+                            Ok(AcceptedPeerOutcome::DisconnectCleaned)
+                        }
+                        Err(error) => Err(error),
+                    },
+                    _ => {
+                        flow.close().await?;
+                        Err(FoundationError::PostAuthFlowRejected)
+                    }
+                }
+            }
+            Err(_) => {
+                fixed_write_failure(&mut stream).await;
+                Ok(AcceptedPeerOutcome::RejectedBeforeSuccess)
+            }
+        };
+
+        let close_result = owner.close().await;
+        if owner.task_budget.permits.available_permits() != CONNECTION_TASK_LIMIT {
+            return Err(FoundationError::TaskBudgetUnavailable);
+        }
+        close_result?;
+        let outcome = outcome_result?;
+        let expected_drain_counts = match outcome {
+            AcceptedPeerOutcome::Success => PrivateTransportDrainCounts {
+                entries: 1,
+                collections: 1,
+                timeouts: 0,
+                hard_expiries: 0,
+                join_aborts: 0,
+            },
+            AcceptedPeerOutcome::RejectedBeforeSuccess | AcceptedPeerOutcome::DisconnectCleaned => {
+                PrivateTransportDrainCounts {
+                    entries: 0,
+                    collections: 0,
+                    timeouts: 0,
+                    hard_expiries: 0,
+                    join_aborts: 0,
+                }
+            }
+        };
+        if !owner
+            .private_transport_drain_probe
+            .snapshot()
+            .is_incremented_from(drain_counts_before, expected_drain_counts)
+        {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        if cancel_completed.load(Ordering::Relaxed)
+            != matches!(outcome, AcceptedPeerOutcome::DisconnectCleaned)
+        {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        Ok(outcome)
+    }
+
+    async fn relay_one_flow(
+        stream: TcpStream,
+        flow: PrivateClassicConnectFlow,
+        cancel_completed: &AtomicBool,
+    ) -> Result<(), FoundationError> {
+        let (mut local_reader, mut local_writer) = stream.into_split();
+        let (mut h3_reader, mut h3_writer) = flow.into_halves();
+        let transfer = {
+            let upload = async {
+                let mut buffer = [0_u8; private_classic_connect::FLOW_CHUNK_LIMIT];
+                loop {
+                    let length = match local_reader.read(&mut buffer).await {
+                        Ok(length) => length,
+                        Err(_) => {
+                            buffer.fill(0);
+                            return Err(FoundationError::PostAuthFlowRejected);
+                        }
+                    };
+                    if length == 0 {
+                        buffer.fill(0);
+                        return h3_writer.finish().await;
+                    }
+                    let result = h3_writer.send_chunk(&buffer[..length]).await;
+                    buffer[..length].fill(0);
+                    result?;
+                }
+            };
+            let download = async {
+                while let Some(chunk) = h3_reader.receive_chunk().await? {
+                    let write = local_writer
+                        .write_all(chunk.as_slice())
+                        .await
+                        .map_err(|_| FoundationError::PostAuthFlowRejected);
+                    drop(chunk);
+                    write?;
+                }
+                local_writer
+                    .shutdown()
+                    .await
+                    .map_err(|_| FoundationError::PostAuthFlowRejected)
+            };
+            tokio::pin!(upload);
+            tokio::pin!(download);
+            let joined = async {
+                tokio::select! {
+                    result = &mut upload => {
+                        result?;
+                        download.await
+                    }
+                    result = &mut download => {
+                        result?;
+                        upload.await
+                    }
+                }
+            };
+            match timeout(CONNECTION_RUN_TIMEOUT, joined).await {
+                Ok(result) => result,
+                Err(_) => Err(FoundationError::DriverTimeout),
+            }
+        };
+        if let Err(error) = transfer {
+            timeout(COMMAND_RESPONSE_TIMEOUT, h3_writer.cancel())
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)??;
+            cancel_completed.store(true, Ordering::Relaxed);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn drive_fixed_peer(
+        listener_address: SocketAddr,
+        request: PeerRequest,
+    ) -> Result<PeerOutcome, FoundationError> {
+        let mut stream = timeout(SOCKET_IO_TIMEOUT, TcpStream::connect(listener_address))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        timeout(SOCKET_IO_TIMEOUT, stream.write_all(&[0x05, 0x01, 0x00]))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        let mut method = [0_u8; 2];
+        timeout(SOCKET_IO_TIMEOUT, stream.read_exact(&mut method))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        if method != [0x05, 0x00] {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        let mut encoded = [0_u8; SOCKS_REQUEST_BYTES];
+        let request_length = request.encode(&mut encoded);
+        timeout(
+            SOCKET_IO_TIMEOUT,
+            stream.write_all(&encoded[..request_length]),
+        )
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?
+        .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        encoded.fill(0);
+
+        let mut reply = [0_u8; SOCKS_REPLY_BYTES];
+        let reply_result = timeout(AUTHENTICATED_ACQUIRE_TIMEOUT, stream.read_exact(&mut reply))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?;
+        if reply_result.is_err() {
+            reply.fill(0);
+            return Ok(PeerOutcome::Rejection);
+        }
+        if reply[0] == 0x05 && reply[1] != 0x00 {
+            reply.fill(0);
+            return Ok(PeerOutcome::Rejection);
+        }
+        if reply != [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0] {
+            reply.fill(0);
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        reply.fill(0);
+        match timeout(SOCKET_IO_TIMEOUT, TcpStream::connect(listener_address)).await {
+            Ok(Err(_)) => {}
+            _ => return Err(FoundationError::PostAuthFlowRejected),
+        }
+
+        let mut buffer = [0_u8; private_classic_connect::FLOW_CHUNK_LIMIT];
+        if request.disconnects_after_success() {
+            buffer[0] = cross_crate_test_byte(0);
+            timeout(SOCKET_IO_TIMEOUT, stream.write_all(&buffer[..1]))
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?
+                .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+            buffer[0] = 0;
+            timeout(SOCKET_IO_TIMEOUT, stream.read_exact(&mut buffer[..1]))
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?
+                .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+            if buffer[0] != 0xa5 {
+                buffer.fill(0);
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            buffer.fill(0);
+            stream
+                .set_zero_linger()
+                .map_err(|_| FoundationError::SocketUnavailable)?;
+            drop(stream);
+            return Ok(PeerOutcome::DisconnectAfterSuccess);
+        }
+
+        let mut offset = 0_usize;
+        loop {
+            let length = match timeout(SOCKET_IO_TIMEOUT, stream.read(&mut buffer)).await {
+                Ok(Ok(length)) => length,
+                Ok(Err(_)) => {
+                    buffer.fill(0);
+                    return Err(FoundationError::PostAuthFlowRejected);
+                }
+                Err(_) => {
+                    buffer.fill(0);
+                    return Err(FoundationError::DriverTimeout);
+                }
+            };
+            if length == 0 {
+                break;
+            }
+            let end = offset
+                .checked_add(length)
+                .ok_or(FoundationError::PostAuthFlowRejected)?;
+            if end > CROSS_CRATE_TEST_PAYLOAD_BYTES
+                || buffer[..length]
+                    .iter()
+                    .enumerate()
+                    .any(|(index, byte)| *byte != cross_crate_test_byte(offset + index))
+            {
+                buffer.fill(0);
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            buffer[..length].fill(0);
+            offset = end;
+        }
+        buffer.fill(0);
+        if offset != CROSS_CRATE_TEST_PAYLOAD_BYTES {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+
+        offset = 0;
+        while offset < CROSS_CRATE_TEST_PAYLOAD_BYTES {
+            let length = (CROSS_CRATE_TEST_PAYLOAD_BYTES - offset).min(buffer.len());
+            for (index, byte) in buffer[..length].iter_mut().enumerate() {
+                *byte = cross_crate_test_byte(offset + index);
+            }
+            let write = timeout(SOCKET_IO_TIMEOUT, stream.write_all(&buffer[..length]))
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?;
+            buffer[..length].fill(0);
+            write.map_err(|_| FoundationError::PostAuthFlowRejected)?;
+            offset += length;
+        }
+        buffer.fill(0);
+        timeout(SOCKET_IO_TIMEOUT, stream.shutdown())
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::PostAuthFlowRejected)?;
+        Ok(PeerOutcome::Success)
+    }
+
+    pub(super) async fn run(
+        role: ClientRoleConfig,
+        request: PeerRequest,
+        expected: ExpectedPeerOutcome,
+    ) -> Result<(), FoundationError> {
+        let listener = timeout(
+            SOCKET_IO_TIMEOUT,
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?
+        .map_err(|_| FoundationError::SocketUnavailable)?;
+        let listener_address = listener
+            .local_addr()
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        if !listener_address.ip().is_loopback() || listener_address.port() == 0 {
+            return Err(FoundationError::SocketUnavailable);
+        }
+
+        let accepted = async {
+            let (stream, _) = timeout(CONNECTION_RUN_TIMEOUT, listener.accept())
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?
+                .map_err(|_| FoundationError::SocketUnavailable)?;
+            drop(listener);
+            run_accepted_peer(stream, role).await
+        };
+        let peer = drive_fixed_peer(listener_address, request);
+        let (accepted_result, peer_result) = tokio::join!(accepted, peer);
+        match (expected, accepted_result, peer_result) {
+            (
+                ExpectedPeerOutcome::Success,
+                Ok(AcceptedPeerOutcome::Success),
+                Ok(PeerOutcome::Success),
+            )
+            | (
+                ExpectedPeerOutcome::Rejection,
+                Ok(AcceptedPeerOutcome::RejectedBeforeSuccess),
+                Ok(PeerOutcome::Rejection),
+            ) => Ok(()),
+            (
+                ExpectedPeerOutcome::DisconnectAfterSuccess,
+                Ok(AcceptedPeerOutcome::DisconnectCleaned),
+                Ok(PeerOutcome::DisconnectAfterSuccess),
+            ) => Ok(()),
+            (_, Err(error), _) => Err(error),
+            (_, _, Err(error)) => Err(error),
+            _ => Err(FoundationError::PostAuthFlowRejected),
+        }
+    }
+
+    #[cfg(test)]
+    static OWNER_STARTS: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(test)]
+    pub(super) fn owner_starts() -> u64 {
+        OWNER_STARTS.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+pub(super) async fn run_direct_v3_h3_one_shot_loopback_socks_test_support(
+    role: ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), ()> {
+    one_shot_loopback_socks::run(
+        role,
+        one_shot_loopback_socks::PeerRequest::Connect(target),
+        one_shot_loopback_socks::ExpectedPeerOutcome::Success,
+    )
+    .await
+    .map_err(|_| ())
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+pub(super) async fn run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support(
+    role: ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), ()> {
+    one_shot_loopback_socks::run(
+        role,
+        one_shot_loopback_socks::PeerRequest::Connect(target),
+        one_shot_loopback_socks::ExpectedPeerOutcome::Rejection,
+    )
+    .await
+    .map_err(|_| ())
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+pub(super) async fn run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support(
+    role: ClientRoleConfig,
+    target: SocketAddr,
+) -> Result<(), ()> {
+    one_shot_loopback_socks::run(
+        role,
+        one_shot_loopback_socks::PeerRequest::DisconnectAfterSuccess(target),
+        one_shot_loopback_socks::ExpectedPeerOutcome::DisconnectAfterSuccess,
+    )
+    .await
+    .map_err(|_| ())
 }
 
 struct PreparedClientTrust {
@@ -6258,12 +6968,58 @@ struct FoundationDriver {
     authentication_hold: Option<Arc<AtomicBool>>,
     auth_runtime: DriverAuthRuntime,
     classic_connect: ClassicConnectRoute,
+    #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+    private_transport_drain_probe: PrivateTransportDrainProbe,
 }
 
 enum DriverAuthRuntime {
     Authenticated(Box<GenerationAuth>),
     #[cfg(test)]
     FoundationOnly,
+}
+
+async fn bounded_completed_client_transport_drain<F>(
+    hard_deadline: Option<Instant>,
+    #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+    probe: &PrivateTransportDrainProbe,
+    drain: F,
+) -> Result<(), FoundationError>
+where
+    F: std::future::Future<Output = Result<(), FoundationError>>,
+{
+    #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+    probe.entries.fetch_add(1, Ordering::Relaxed);
+    let hard_deadline_wait = async move {
+        match hard_deadline {
+            Some(deadline) => {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = hard_deadline_wait => {
+            #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+            probe.hard_expiries.fetch_add(1, Ordering::Relaxed);
+            Err(FoundationError::PostAuthFlowRejected)
+        }
+        result = timeout(PRIVATE_FLOW_TRANSPORT_DRAIN_TIMEOUT, drain) => {
+            match result {
+                Ok(Ok(())) => {
+                    #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+                    probe.collections.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }
+                Ok(Err(error)) => Err(error),
+                Err(_) => {
+                    #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+                    probe.timeouts.fetch_add(1, Ordering::Relaxed);
+                    Err(FoundationError::DriverTimeout)
+                }
+            }
+        }
+    }
 }
 
 impl DriverAuthRuntime {
@@ -6390,6 +7146,8 @@ impl FoundationDriver {
             authentication_hold: None,
             auth_runtime,
             classic_connect,
+            #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+            private_transport_drain_probe: PrivateTransportDrainProbe::default(),
         })
     }
 
@@ -6481,10 +7239,14 @@ impl FoundationDriver {
                 foundation_ready = true;
             }
             self.drive_generation_auth(foundation_ready)?;
+            if self.connection.is_closed() {
+                return Err(FoundationError::DriverStopped);
+            }
+            self.classic_connect
+                .reap_completed_private_flow(&mut self.connection)?;
             self.flush_packets(&mut send_buffer).await?;
             self.enforce_authenticated_hard_deadline()?;
             self.enforce_active_flow_lease()?;
-            self.classic_connect.reap_completed_private_flow();
 
             if let Some(response) = pending_authenticated_acquire.take() {
                 self.enforce_authenticated_hard_deadline()?;
@@ -6495,9 +7257,6 @@ impl FoundationDriver {
                 }
             }
 
-            if self.connection.is_closed() {
-                return Err(FoundationError::DriverStopped);
-            }
             if !self.connection.is_established() && handshake_started.elapsed() >= HANDSHAKE_TIMEOUT
             {
                 return Err(FoundationError::DriverTimeout);
@@ -6549,7 +7308,7 @@ impl FoundationDriver {
                                 return Err(FoundationError::PostAuthFlowRejected);
                             }
                             Some(DriverCommand::Close) | None => {
-                                return self.close_connection(&mut send_buffer).await;
+                                return self.close_connection(&mut send_buffer, generation).await;
                             }
                         }
                     }
@@ -6700,7 +7459,8 @@ impl FoundationDriver {
                                 let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
                                 return Err(FoundationError::PostAuthFlowRejected);
                             }
-                            let close_result = self.close_connection(&mut send_buffer).await;
+                            let close_result =
+                                self.close_connection(&mut send_buffer, generation).await;
                             let response_result = match &close_result {
                                 Ok(_) => Ok(()),
                                 Err(error) => Err(*error),
@@ -6731,7 +7491,7 @@ impl FoundationDriver {
                             }
                         }
                         Some(DriverCommand::Close) | None => {
-                            return self.close_connection(&mut send_buffer).await;
+                            return self.close_connection(&mut send_buffer, generation).await;
                         }
                     }
                 }
@@ -6759,14 +7519,73 @@ impl FoundationDriver {
     async fn close_connection(
         &mut self,
         send_buffer: &mut [u8; MAX_UDP_PAYLOAD_BYTES],
+        generation: ConnectionGeneration,
     ) -> Result<DriverExit, FoundationError> {
-        // This promises bounded reclamation, not a graceful QUIC drain.
+        let drain_result = if self
+            .classic_connect
+            .has_completed_client_transport_drain()?
+        {
+            let hard_deadline = self.authenticated_hard_deadline();
+            #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+            let probe = self.private_transport_drain_probe.clone();
+            bounded_completed_client_transport_drain(
+                hard_deadline,
+                #[cfg(any(test, feature = "unstable-direct-v3-reference-test-support"))]
+                &probe,
+                self.drain_completed_client_transport(send_buffer, generation),
+            )
+            .await
+        } else {
+            Ok(())
+        };
         self.revoke_authenticated_state();
-        self.connection
+        let close_result = self
+            .connection
             .close(true, 0, b"")
-            .map_err(|_| FoundationError::ConnectionUnavailable)?;
-        self.flush_packets(send_buffer).await?;
+            .map_err(|_| FoundationError::ConnectionUnavailable);
+        let flush_result = self.flush_packets(send_buffer).await;
+        drain_result?;
+        close_result?;
+        flush_result?;
         Ok(self.driver_exit())
+    }
+
+    async fn drain_completed_client_transport(
+        &mut self,
+        send_buffer: &mut [u8; MAX_UDP_PAYLOAD_BYTES],
+        generation: ConnectionGeneration,
+    ) -> Result<(), FoundationError> {
+        let mut receive_buffer = [0_u8; MAX_UDP_PAYLOAD_BYTES];
+        loop {
+            self.enforce_authenticated_hard_deadline()?;
+            self.enforce_active_flow_lease()?;
+            let _ = self.process_h3(generation)?;
+            self.enforce_authenticated_hard_deadline()?;
+            if self.connection.is_closed() {
+                receive_buffer.fill(0);
+                return Err(FoundationError::DriverStopped);
+            }
+            self.classic_connect
+                .reap_completed_private_flow(&mut self.connection)?;
+            if !self
+                .classic_connect
+                .has_completed_client_transport_drain()?
+            {
+                receive_buffer.fill(0);
+                return Ok(());
+            }
+            self.flush_packets(send_buffer).await?;
+            let wait = self
+                .connection
+                .timeout()
+                .unwrap_or(MAX_IDLE_TIMEOUT)
+                .min(MAX_IDLE_TIMEOUT);
+            let packet = timeout(wait, self.socket.recv_from(&mut receive_buffer)).await;
+            if let Err(error) = self.process_received_packet(packet, &mut receive_buffer) {
+                receive_buffer.fill(0);
+                return Err(error);
+            }
+        }
     }
 
     async fn receive_packet(
@@ -7453,6 +8272,138 @@ mod tests {
     fn foundation_strict_test_session() -> (TempDir, quiche::h3::testing::Session) {
         let h3_config = fixed_ok(bounded_h3_config(), "build strict H3 configuration");
         foundation_test_session_with_h3_config(&h3_config)
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    fn t027c2c_transfer_transport_one_way(
+        sender: &mut quiche::Connection,
+        receiver: &mut quiche::Connection,
+    ) -> Result<bool, FoundationError> {
+        let mut packet = [0_u8; MAX_UDP_PAYLOAD_BYTES];
+        let mut transferred = false;
+        loop {
+            let (length, info) = match sender.send(&mut packet) {
+                Ok(value) => value,
+                Err(quiche::Error::Done) => {
+                    packet.fill(0);
+                    return Ok(transferred);
+                }
+                Err(_) => {
+                    packet.fill(0);
+                    return Err(FoundationError::PacketUnavailable);
+                }
+            };
+            transferred = true;
+            receiver
+                .recv(
+                    &mut packet[..length],
+                    quiche::RecvInfo {
+                        from: info.from,
+                        to: info.to,
+                    },
+                )
+                .map_err(|_| FoundationError::PacketUnavailable)?;
+            packet[..length].fill(0);
+        }
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    fn t027c2c_unacked_clean_client_stream() -> (TempDir, quiche::h3::testing::Session, u64) {
+        let h3_config = fixed_ok(
+            bounded_h3_config(),
+            "build collection-gate H3 configuration",
+        );
+        let transport = fixed_ok(
+            bounded_self_signed_loopback_quic_config(),
+            "build collection-gate transport configuration",
+        );
+        let (temp, mut session) = foundation_test_session_with_configs(transport, &h3_config);
+        fixed_ok(session.handshake(), "handshake collection-gate session");
+
+        let request_headers: Vec<_> = classic_connect::request_header_pairs()
+            .iter()
+            .map(|(name, value)| quiche::h3::Header::new(name, value))
+            .collect();
+        let stream_id = fixed_ok(
+            session
+                .client
+                .send_request(&mut session.pipe.client, &request_headers, false),
+            "open collection-gate request stream",
+        );
+        fixed_ok(session.advance(), "deliver collection-gate request headers");
+        assert!(matches!(
+            session.poll_server(),
+            Ok((candidate, quiche::h3::Event::Headers { .. })) if candidate == stream_id
+        ));
+
+        let response_headers: Vec<_> = classic_connect::response_header_pairs()
+            .iter()
+            .map(|(name, value)| quiche::h3::Header::new(name, value))
+            .collect();
+        fixed_ok(
+            session.server.send_response(
+                &mut session.pipe.server,
+                stream_id,
+                &response_headers,
+                true,
+            ),
+            "send collection-gate response FIN",
+        );
+        fixed_ok(
+            session.advance(),
+            "deliver collection-gate response FIN and its ACK",
+        );
+        assert!(matches!(
+            session.poll_client(),
+            Ok((candidate, quiche::h3::Event::Headers { more_frames: false, .. }))
+                if candidate == stream_id
+        ));
+        assert_eq!(
+            session.poll_client(),
+            Ok((stream_id, quiche::h3::Event::Finished))
+        );
+
+        let request_body = [0x5a_u8; 4 * 1_024];
+        assert_eq!(
+            session
+                .client
+                .send_body(&mut session.pipe.client, stream_id, &request_body, true,),
+            Ok(request_body.len())
+        );
+        assert!(fixed_ok(
+            t027c2c_transfer_transport_one_way(&mut session.pipe.client, &mut session.pipe.server,),
+            "deliver collection-gate request body without returning its ACK",
+        ));
+        assert_eq!(
+            session.poll_server(),
+            Ok((stream_id, quiche::h3::Event::Data))
+        );
+        let mut received = [0_u8; 4 * 1_024];
+        let mut offset = 0_usize;
+        loop {
+            match session.server.recv_body(
+                &mut session.pipe.server,
+                stream_id,
+                &mut received[offset..],
+            ) {
+                Ok(length) => {
+                    offset = offset
+                        .checked_add(length)
+                        .expect("collection-gate body length remains bounded");
+                }
+                Err(quiche::h3::Error::Done) => break,
+                Err(_) => panic!("read collection-gate request body"),
+            }
+        }
+        assert_eq!(offset, request_body.len());
+        assert_eq!(received, request_body);
+        received.fill(0);
+        assert_eq!(
+            session.poll_server(),
+            Ok((stream_id, quiche::h3::Event::Finished))
+        );
+        assert!(session.pipe.client.stream_capacity(stream_id).is_ok());
+        (temp, session, stream_id)
     }
 
     #[cfg(feature = "unstable-quiche-strict-push-test-support")]
@@ -11996,6 +12947,317 @@ mod tests {
             NEXT_CONNECTION_GENERATION.load(Ordering::Acquire),
             generation_before
         );
+    }
+
+    #[cfg(feature = "unstable-direct-v3-reference-test-support")]
+    #[tokio::test]
+    async fn t027c2c_invalid_socks_requests_stop_before_h3_owner_start() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "serialize one-shot SOCKS pre-H3 rejection test",
+        );
+        let owner_starts_before = one_shot_loopback_socks::owner_starts();
+        let cases = [
+            one_shot_loopback_socks::PeerRequest::Domain,
+            one_shot_loopback_socks::PeerRequest::Udp,
+            one_shot_loopback_socks::PeerRequest::Malformed,
+            one_shot_loopback_socks::PeerRequest::Connect(SocketAddr::from(([192, 0, 2, 1], 443))),
+            one_shot_loopback_socks::PeerRequest::Connect(SocketAddr::from(([127, 0, 0, 1], 0))),
+        ];
+
+        for request in cases {
+            let role = fixed_ok(
+                ClientRoleConfig::from_yaml_str(&test_client_role_yaml()),
+                "parse one-shot SOCKS rejection role",
+            );
+            fixed_ok(
+                one_shot_loopback_socks::run(
+                    role,
+                    request,
+                    one_shot_loopback_socks::ExpectedPeerOutcome::Rejection,
+                )
+                .await,
+                "fixed peer observes invalid one-shot SOCKS rejection",
+            );
+        }
+        assert_eq!(one_shot_loopback_socks::owner_starts(), owner_starts_before);
+    }
+
+    #[cfg(feature = "unstable-direct-v3-reference-test-support")]
+    #[test]
+    fn t027c2c_socks_target_projection_is_canonical_and_loopback_only() {
+        let ipv4 = crate::socks5::SocksRequest {
+            command: crate::socks5::SocksCommand::Connect,
+            target: maverick_core::frame::TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+            port: 8443,
+        };
+        let ipv6 = crate::socks5::SocksRequest {
+            command: crate::socks5::SocksCommand::Connect,
+            target: maverick_core::frame::TargetAddr::Ipv6(std::net::Ipv6Addr::LOCALHOST),
+            port: 9443,
+        };
+        assert_eq!(
+            one_shot_loopback_socks::validated_target(ipv4),
+            Some(SocketAddr::from(([127, 0, 0, 1], 8443)))
+        );
+        assert_eq!(
+            one_shot_loopback_socks::validated_target(ipv6),
+            Some(SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), 9443))
+        );
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    #[test]
+    fn t027c2c_clean_client_route_waits_for_real_transport_collection() {
+        let (_temp, mut session, stream_id) = t027c2c_unacked_clean_client_stream();
+        let mut route = ClassicConnectRoute::completed_client_for_transport_test(stream_id);
+
+        fixed_ok(
+            route.reap_completed_private_flow(&mut session.pipe.client),
+            "keep clean client route until the request FIN is acknowledged",
+        );
+        assert!(fixed_ok(
+            route.has_completed_client_transport_drain(),
+            "observe pending clean client transport drain",
+        ));
+        assert!(session.pipe.client.stream_capacity(stream_id).is_ok());
+
+        assert!(fixed_ok(
+            t027c2c_transfer_transport_one_way(&mut session.pipe.server, &mut session.pipe.client,),
+            "return the real request-body and FIN acknowledgement",
+        ));
+        assert_eq!(
+            session.pipe.client.stream_capacity(stream_id),
+            Err(quiche::Error::InvalidStreamState(stream_id))
+        );
+        fixed_ok(
+            route.reap_completed_private_flow(&mut session.pipe.client),
+            "consume only the exact collected client stream",
+        );
+        assert!(!fixed_ok(
+            route.has_completed_client_transport_drain(),
+            "observe completed client transport drain",
+        ));
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    #[tokio::test]
+    async fn t027c2c_hard_expiry_wraps_the_entire_pending_transport_drain() {
+        let probe = PrivateTransportDrainProbe::default();
+        let drain_counts_before = probe.snapshot();
+        let hard_deadline = Instant::now() + Duration::from_millis(50);
+        assert!(hard_deadline
+            .checked_duration_since(Instant::now())
+            .is_some_and(|remaining| remaining < PRIVATE_FLOW_TRANSPORT_DRAIN_TIMEOUT));
+
+        let error = fixed_some(
+            bounded_completed_client_transport_drain(
+                Some(hard_deadline),
+                &probe,
+                std::future::pending::<Result<(), FoundationError>>(),
+            )
+            .await
+            .err(),
+            "hard expiry interrupts the entire pending transport drain",
+        );
+        assert_eq!(error, FoundationError::PostAuthFlowRejected);
+        assert!(probe.snapshot().is_incremented_from(
+            drain_counts_before,
+            PrivateTransportDrainCounts {
+                entries: 1,
+                collections: 0,
+                timeouts: 0,
+                hard_expiries: 1,
+                join_aborts: 0,
+            },
+        ));
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    #[tokio::test]
+    async fn t027c2c_withheld_transport_ack_times_out_and_returns_driver_permit() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "serialize withheld transport acknowledgement test",
+        );
+        let socket = fixed_ok(
+            fixed_ok(
+                timeout(
+                    SOCKET_IO_TIMEOUT,
+                    UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)),
+                )
+                .await,
+                "bound withheld-ack client socket bind",
+            ),
+            "bind withheld-ack client socket",
+        );
+        let socket_address = fixed_ok(
+            socket.local_addr(),
+            "read withheld-ack client socket address",
+        );
+        assert!(socket_address.ip().is_loopback());
+        // The strict quiche Session deliberately keeps its peer in memory so
+        // the final ACK cannot reach this real receive-silent socket. The
+        // cross-crate positive test separately covers matching production UDP
+        // addresses; this negative locks only bounded failure and task reclaim.
+        let (_temp, session, stream_id) = t027c2c_unacked_clean_client_stream();
+        let (local_address, peer_address) = fixed_some(
+            session
+                .pipe
+                .client
+                .path_stats()
+                .find(|path| path.active)
+                .map(|path| (path.local_addr, path.peer_addr)),
+            "read withheld-ack active transport path",
+        );
+        let (observation_tx, _observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+        let driver = FoundationDriver {
+            socket,
+            local_address,
+            peer_address,
+            connection: session.pipe.client,
+            h3_config: None,
+            h3_connection: Some(session.client),
+            tls_observation: None,
+            expected_leaf_sha256: None,
+            observation_tx,
+            pre_auth_request_trigger: None,
+            authentication_hold: None,
+            auth_runtime: DriverAuthRuntime::FoundationOnly,
+            classic_connect: ClassicConnectRoute::completed_client_for_transport_test(stream_id),
+            private_transport_drain_probe: PrivateTransportDrainProbe::default(),
+        };
+        let task_budget = ConnectionTaskBudget::new();
+        let task_permit = fixed_ok(
+            task_budget.try_acquire(),
+            "reserve withheld-ack driver task permit",
+        );
+        let mut manager = fixed_ok(
+            SingleIdentityQuicManager::start(driver, task_permit),
+            "start withheld-ack client driver",
+        );
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT - 1);
+        let drain_counts_before = manager.private_transport_drain_probe.snapshot();
+
+        let error = fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, manager.close()).await,
+                "bound withheld-ack manager close",
+            )
+            .err(),
+            "withheld transport acknowledgement must fail closed",
+        );
+        assert_eq!(error, FoundationError::DriverTimeout);
+        assert_eq!(error.to_string(), "native H3 driver timeout");
+        assert!(std::error::Error::source(&error).is_none());
+        assert!(manager.driver_task.is_none());
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+        assert!(manager
+            .private_transport_drain_probe
+            .snapshot()
+            .is_incremented_from(
+                drain_counts_before,
+                PrivateTransportDrainCounts {
+                    entries: 1,
+                    collections: 0,
+                    timeouts: 1,
+                    hard_expiries: 0,
+                    join_aborts: 0,
+                },
+            ));
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    #[tokio::test]
+    async fn t027c2c_hard_expiry_wins_over_uncollected_transport_drain() {
+        let _test_guard = fixed_ok(
+            bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
+            "serialize hard-expiry transport drain test",
+        );
+        let socket = fixed_ok(
+            fixed_ok(
+                timeout(
+                    SOCKET_IO_TIMEOUT,
+                    UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)),
+                )
+                .await,
+                "bound hard-expiry client socket bind",
+            ),
+            "bind hard-expiry client socket",
+        );
+        let socket_address = fixed_ok(socket.local_addr(), "read hard-expiry socket address");
+        assert!(socket_address.ip().is_loopback());
+        let (_temp, session, stream_id) = t027c2c_unacked_clean_client_stream();
+        let (local_address, peer_address) = fixed_some(
+            session
+                .pipe
+                .client
+                .path_stats()
+                .find(|path| path.active)
+                .map(|path| (path.local_addr, path.peer_addr)),
+            "read hard-expiry active transport path",
+        );
+        let (observation_tx, _observation_rx) = mpsc::channel(OBSERVATION_QUEUE_LIMIT);
+        let auth_runtime = fixed_ok(
+            GenerationAuth::authenticated_client_for_transport_deadline_test(
+                Instant::now() + Duration::from_millis(300),
+            ),
+            "construct near-expiry authenticated client runtime",
+        );
+        let driver = FoundationDriver {
+            socket,
+            local_address,
+            peer_address,
+            connection: session.pipe.client,
+            h3_config: None,
+            h3_connection: Some(session.client),
+            tls_observation: None,
+            expected_leaf_sha256: None,
+            observation_tx,
+            pre_auth_request_trigger: None,
+            authentication_hold: None,
+            auth_runtime: DriverAuthRuntime::Authenticated(Box::new(auth_runtime)),
+            classic_connect: ClassicConnectRoute::completed_client_for_transport_test(stream_id),
+            private_transport_drain_probe: PrivateTransportDrainProbe::default(),
+        };
+        let task_budget = ConnectionTaskBudget::new();
+        let task_permit = fixed_ok(
+            task_budget.try_acquire(),
+            "reserve hard-expiry driver task permit",
+        );
+        let mut manager = fixed_ok(
+            SingleIdentityQuicManager::start(driver, task_permit),
+            "start hard-expiry client driver",
+        );
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT - 1);
+        let drain_counts_before = manager.private_transport_drain_probe.snapshot();
+
+        let error = fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, manager.close()).await,
+                "bound hard-expiry manager close",
+            )
+            .err(),
+            "hard expiry must fail the transport drain",
+        );
+        assert_eq!(error, FoundationError::PostAuthFlowRejected);
+        assert_eq!(error.to_string(), "native H3 post-auth flow rejected");
+        assert!(std::error::Error::source(&error).is_none());
+        assert!(manager.driver_task.is_none());
+        assert_eq!(task_budget.available_permits(), CONNECTION_TASK_LIMIT);
+        assert!(manager
+            .private_transport_drain_probe
+            .snapshot()
+            .is_incremented_from(
+                drain_counts_before,
+                PrivateTransportDrainCounts {
+                    entries: 1,
+                    collections: 0,
+                    timeouts: 0,
+                    hard_expiries: 1,
+                    join_aborts: 0,
+                },
+            ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

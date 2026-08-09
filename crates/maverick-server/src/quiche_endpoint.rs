@@ -2018,6 +2018,7 @@ mod tests {
         run_direct_v3_h3_one_shot_loopback_socks_disconnect_test_support,
         run_direct_v3_h3_one_shot_loopback_socks_rejection_test_support,
         run_direct_v3_h3_one_shot_loopback_socks_test_support,
+        run_direct_v3_h3_sequential_first_peer_disconnect_test_support,
         run_direct_v3_h3_sequential_loopback_socks_test_support, DirectV3ReferenceTestSupportError,
     };
     use maverick_core::auth_v3::{
@@ -2060,6 +2061,12 @@ mod tests {
     #[test]
     fn t027c2e_sequential_socks_runner_is_present_in_the_server_test_graph() {
         let runner = run_direct_v3_h3_sequential_loopback_socks_test_support;
+        let _ = runner;
+    }
+
+    #[test]
+    fn t027c2f_first_peer_failure_runner_is_present_in_the_server_test_graph() {
+        let runner = run_direct_v3_h3_sequential_first_peer_disconnect_test_support;
         let _ = runner;
     }
 
@@ -2647,6 +2654,38 @@ fallback:
         client_result.expect("sequential SOCKS runner finishes within its own bound")
     }
 
+    async fn t027c2f_run_client_and_endpoint(
+        endpoint: &mut Endpoint,
+        cancel: watch::Sender<bool>,
+        role: ClientRoleConfig,
+        first_target: SocketAddr,
+        second_target: SocketAddr,
+    ) -> Result<(), DirectV3ReferenceTestSupportError> {
+        let client = async move {
+            let result = timeout(
+                Duration::from_secs(18),
+                run_direct_v3_h3_sequential_first_peer_disconnect_test_support(
+                    role,
+                    first_target,
+                    second_target,
+                ),
+            )
+            .await;
+            let _ = cancel.send(true);
+            result
+        };
+        let (endpoint_result, client_result) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(endpoint.run(), client)
+        })
+        .await
+        .expect("first-peer failure composition finishes within the wall bound");
+        endpoint_result.expect("first-peer failure endpoint shuts down cleanly");
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+        client_result.expect("first-peer failure runner finishes within its own bound")
+    }
+
     fn assert_one_successful_target_open(metrics_owner: &ServerRuntimeMetrics) {
         let sinks = metrics_owner.target_open_sinks();
         assert_eq!(sinks.resolution_latency.snapshot().count, 1);
@@ -2965,6 +3004,95 @@ fallback:
             .await
             .expect("sequential SOCKS UDP rebind stays bounded")
             .expect("sequential SOCKS server UDP address is released");
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn t027c2f_first_peer_failure_prevents_second_socks_flow() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize first-peer failure loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("first-peer failure server bind stays bounded")
+        .expect("bind first-peer failure server endpoint");
+        let actor_gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&actor_gate));
+        let server_address = endpoint.local_address;
+        let first_listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("first failure target bind stays bounded")
+        .expect("bind first failure target");
+        let first_target = first_listener
+            .local_addr()
+            .expect("read first failure target address");
+        let second_listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("second failure sentinel bind stays bounded")
+        .expect("bind second failure sentinel");
+        let second_target = second_listener
+            .local_addr()
+            .expect("read second failure sentinel address");
+        assert_ne!(first_target, second_target);
+        let client_role =
+            credentials.client_role(server_address, credential_not_after_unix, T027C2B_SECRET);
+
+        let (client_result, target_bytes) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(
+                t027c2f_run_client_and_endpoint(
+                    &mut endpoint,
+                    cancel,
+                    client_role,
+                    first_target,
+                    second_target,
+                ),
+                t027c2c_observe_target_close_after_local_disconnect(first_listener),
+            )
+        })
+        .await
+        .expect("first-peer failure composition remains bounded");
+        client_result.expect("expected first-peer failure is safely isolated");
+        assert_eq!(target_bytes, 1);
+        assert_one_successful_target_open(&metrics_owner);
+        assert_eq!(actor_gate.completion_snapshot(), (1, 1, true, 1));
+        let second_listener = second_listener
+            .into_std()
+            .expect("convert second target sentinel to nonblocking std listener");
+        match second_listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            _ => panic!("second target must have no queued connection"),
+        }
+
+        let first_rebound = timeout(Duration::from_secs(5), TcpListener::bind(first_target))
+            .await
+            .expect("first failure target rebind stays bounded")
+            .expect("first failure target address is released");
+        drop(first_rebound);
+        drop(second_listener);
+        let second_rebound = timeout(Duration::from_secs(5), TcpListener::bind(second_target))
+            .await
+            .expect("second failure target rebind stays bounded")
+            .expect("second failure target address is released");
+        drop(second_rebound);
+        drop(endpoint);
+        let rebound = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("first-peer failure UDP rebind stays bounded")
+            .expect("first-peer failure server UDP address is released");
         drop(rebound);
     }
 

@@ -17,85 +17,100 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T027c-2e — Same-owner sequential SOCKS composition
+### T027c-2f — First-flow post-success peer-failure isolation
 
-**User result.** Two fixed repository-controlled SOCKS5 peers can finish two
-different loopback IP-literal CONNECT flows in sequence through one private
-native-quiche client owner. Both flows use the same manager, physical QUIC
-connection, and authenticated generation, but distinct H3 request streams and
-different TCP targets. This remains repository-local private-composition
-evidence. It is not concurrent-flow support, a listener service, the normal
-`start_client`, CLI, SDK, product end-to-end behavior, automatic reconnection,
-readiness, release, or real-network evidence.
+**User result.** After the first fixed repository-controlled loopback SOCKS5
+peer receives success and exchanges an initial byte and acknowledgement through
+the real H3 and TCP target path, that peer resets its local connection. The sole
+client owner cancels and closes the dirty flow; no second
+SOCKS peer, authenticated acquire, H3 request stream, or TCP target is admitted.
+All client and server resources are reclaimed within fixed bounds.
+
+This remains repository-local private failure-composition evidence. It is not
+the normal `start_client` SOCKS service, external service shutdown, recovery,
+retry, reconnect, product end-to-end behavior, readiness, release, or
+real-network evidence.
 
 **Scope.** Limit this slice to `ROADMAP.md`,
 `crates/maverick-client/src/lib.rs`,
 `crates/maverick-client/src/quiche_foundation.rs`, and
-`crates/maverick-server/src/quiche_endpoint.rs`. Reuse the existing explicitly
-unstable fixed-result repository-test seam and real server endpoint. Preserve
-the single client owner, manager, driver task and UDP socket; capacity-one
-command queue and authenticated lease; fixed 16-KiB flow buffers; strict
-loopback IP-literal target projection; privacy-safe fixed errors; and the
-server endpoint's existing bounded actor, target and relay ownership.
+`crates/maverick-server/src/quiche_endpoint.rs`. Preserve the T027c-2e clean
+two-peer runner unchanged. Add at most one sibling fixed-result repository-test
+seam under the existing `unstable-direct-v3-reference-test-support` plus
+`quiche-foundation` feature combination. It may return only the existing fixed
+error/result and must not expose a listener, owner, manager, generation, lease,
+flow, stream, target, probe, secret, or quiche type.
 
-The private runner accepts exactly two peers with two explicit accepts, not an
-open-ended listener loop. Parse and validate each SOCKS request before H3
-application I/O for that flow. Start one client owner, receive one foundation
-observation, and retain it until both flows finish. After the first clean relay,
-accept, parse, and validate the second peer, then start its authenticated
-acquire immediately without sleep or polling. The existing manager must
-withhold that acquire until the exact first request stream is transport-
-collected, then return a lease for the same authenticated generation. Fail
-closed and tear down the sole owner if
-either peer, flow, target, authentication, admission, collection, or cleanup
-step fails.
+Use one real loopback SOCKS peer, one private client owner, one manager, one
+driver task, one client UDP socket, one authenticated generation, one real
+server endpoint and actor, and one real loopback TCP target. The peer must
+receive SOCKS success and send one fixed trigger byte. The target must read that
+byte and return one fixed acknowledgement before the peer resets its local TCP
+connection. Require the client flow cancel to complete, return the sole lease
+permit, explicitly close the owner, return its task permit, and drop the bounded
+listener. Do not execute the second
+accept, SOCKS parse, authenticated acquire, flow open, or peer driver. After
+cleanup, a connection probe to the internal SOCKS listener must be refused.
 
-**Acceptance.** First add a focused real client/server/SOCKS behavioral test on
-the clean T027c-2d parent and record its red result and root cause before adding
-the sequential composition. The green test uses two real loopback `TcpStream`
-SOCKS peers, two different real loopback TCP listeners, distinct fixed payload
-patterns, one real server endpoint, one client owner, one manager, one driver
-task, one UDP socket, and one auth-v3 exchange. Internally require both acquired
-lease generation identifiers to match. Require one server actor's existing
-test gate to observe both target-open completions, require each target to
-receive and return only its own exact payload, and require two successful
-target-open metric observations. Preserve the T027c-2d real-quiche regression
-that records exactly two different request-stream identifiers; do not claim
-that the cross-crate fixed-result seam exports those identifiers.
+**Acceptance.** Record a focused behavioral red on the clean T027c-2e parent
+before teaching the fixed-result seam to recognize this exact expected failure.
+The red must traverse the real SOCKS, client quiche, server endpoint and TCP
+target path; it must not be a missing symbol, mock, source scan, arbitrary quiet
+period, or timeout-only result. Record its command, exit status, fixed observed
+result, and root cause. This closes a missing proof contract; it is not evidence
+that the normal product is broken or that the current runtime admitted a
+second flow.
 
-After each clean flow, require the sole authenticated lease permit to return.
-The second successful acquire remains governed by the existing exact-collection
-gate without sleep or polling; preserve the T027c-2d real-ACK regression that
-is blocked before collection and ready afterward rather than claiming this
-composition always observes the pending slot. The final stream may be collected
-by the normal reaper or by the existing bounded close drain, depending on
-scheduling. Preserve the existing close-drain regressions without changing
-their counter meaning. After the second flow, explicitly close the owner and
-endpoint, return all task permits, release both TCP listeners and the endpoint
-UDP address, and leave no server actor or target task behind.
-Repeat the focused cross-crate sequential SOCKS test at least 20 times to catch
-acquire/collection races. Then run the complete client and server quiche
-feature suites, default and no-default compatibility, Clippy, Rustdoc,
-`user-smoke.sh`, and `local-harness.sh`.
+The green cross-crate test requires the peer to observe SOCKS success, the
+first target to receive the exact trigger and return the exact acknowledgement,
+and both sides to observe bounded failure cleanup. Require exactly one
+successful target-open metric observation,
+with all target resolution and connection failure/timeout counters zero. One
+server actor's existing test gate must observe exactly one target-open
+completion. Keep a different real loopback second-target listener open as a
+sentinel. After the client, endpoint, actor and target task have joined, require
+its nonblocking accept to report no queued connection; timeout-only silence is
+not the sole proof because the sequential coordinator itself must return before
+the endpoint is cancelled and the listener is examined.
+
+Require no second SOCKS success or authenticated acquire. Rebind the first and
+second target addresses, the internal SOCKS listener address, and the server
+UDP address after their owners are dropped. Require the server registry, actor
+set and unregistered slot to be empty, all task and lease permits returned, and
+no transport-drain entry, collection, timeout, hard-expiry or join-abort
+observation. Preserve the T027c-2e two-clean-peer composition, T027c-2d
+exact-collection and two-stream regressions, T027c-2c one-shot
+active-disconnect regression, and the existing rejection, expiry, reset,
+stale-handle, cancellation and close-drain tests.
+Repeat the focused T027c-2f cross-crate test at least 20 times, then run the
+complete client and server quiche suites, default and no-default compatibility,
+Clippy, Rustdoc, `user-smoke.sh`, and `local-harness.sh`.
 
 **Out of scope.** Do not modify `STATUS.md`, manifests, `Cargo.lock`, core,
 normal `start_client`, `ClientHandle`, the normal SOCKS/session/HTTP CONNECT
 service, CLI, SDK, default features, protocol, authentication, frame, schema,
-stored profile, or version. Do not add concurrent flows, a second active route,
-flow map, open-ended listener loop, replacement generation, reconnect, retry,
-backoff, Domain/DNS, UDP relay, non-loopback or real-network I/O. Do not expose
-a stable public owner, manager, lease, flow, stream, listener, exporter,
-observation, secret, or quiche type.
+stored profile, metrics schema, or version. Do not change the production
+manager, driver, authenticated-generation, route, server actor, target-open, or
+relay state machines merely to make the test pass.
+
+Do not add external shutdown control, a successful second flow, a third peer,
+an open-ended listener loop, concurrent flows, a second active route, a flow
+map, replacement generation, reconnect, retry, backoff, Domain/DNS, UDP relay,
+non-loopback or real-network I/O. Do not broaden this slice into wrong-auth,
+egress-policy, target-open-failure, second-flow-failure, or failure-matrix work.
 
 **Stop conditions.** Stop and re-adjudicate before touching a fifth file;
-increasing a queue, lease, task, flow, actor, target, or buffer capacity; adding
-a command, channel, `Notify`, task, manager, driver, actor, or runtime
-coordinator; accepting a third peer; allowing the second flow before exact
-first-stream collection; or using two owners, two client UDP sockets, two QUIC
-connections, or two authentication exchanges as evidence for same-owner
-sequential composition. Stop on any need for concurrency, automatic
-replacement, a stable public API, Domain/DNS, UDP, non-loopback I/O, wire,
-schema, or version change.
+changing production runtime behavior; increasing a queue, lease, task, flow,
+actor, target or buffer capacity; adding a command, channel, `Notify`, task,
+manager, driver, actor or coordinator; accepting a second peer after the dirty
+first flow; or using a generic error, timeout-only silence, source scan, mock
+transport or synthetic counter as the sole isolation proof.
+
+Stop on any need for external shutdown, concurrency, automatic replacement, a
+stable public API, a third peer, Domain/DNS, UDP, non-loopback I/O, or a wire,
+schema or version change. If bounded cancellation and cleanup cannot be proven
+through the existing private test seam without production-state changes, stop
+rather than weakening the acceptance contract.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user

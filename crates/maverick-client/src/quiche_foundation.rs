@@ -6374,6 +6374,11 @@ mod one_shot_loopback_socks {
         DisconnectCleaned,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SequentialFailureAcceptedOutcome {
+        FirstPeerDisconnectedAfterSuccess,
+    }
+
     impl PeerRequest {
         fn disconnects_after_success(self) -> bool {
             matches!(self, Self::DisconnectAfterSuccess(_))
@@ -6795,10 +6800,27 @@ mod one_shot_loopback_socks {
     }
 
     async fn relay_validated_peer(
+        stream: TcpStream,
+        target: SocketAddr,
+        owner: &mut ClientRuntimePolicyOwner,
+        expected_generation: Option<ConnectionGeneration>,
+    ) -> Result<ConnectionGeneration, FoundationError> {
+        relay_validated_peer_with_cancel(
+            stream,
+            target,
+            owner,
+            expected_generation,
+            &AtomicBool::new(false),
+        )
+        .await
+    }
+
+    async fn relay_validated_peer_with_cancel(
         mut stream: TcpStream,
         target: SocketAddr,
         owner: &mut ClientRuntimePolicyOwner,
         expected_generation: Option<ConnectionGeneration>,
+        cancel_completed: &AtomicBool,
     ) -> Result<ConnectionGeneration, FoundationError> {
         let open_result = {
             let open = async {
@@ -6841,7 +6863,7 @@ mod one_shot_loopback_socks {
                 };
             }
         }
-        relay_one_flow(stream, flow, &AtomicBool::new(false)).await?;
+        relay_one_flow(stream, flow, cancel_completed).await?;
         Ok(generation)
     }
 
@@ -6916,6 +6938,92 @@ mod one_shot_loopback_socks {
         run_result
     }
 
+    async fn run_sequential_first_peer_disconnect_accepted(
+        listener: TcpListener,
+        role: ClientRoleConfig,
+    ) -> Result<SequentialFailureAcceptedOutcome, FoundationError> {
+        let listener_address = listener
+            .local_addr()
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        let mut listener = Some(listener);
+        let (mut first_stream, first_target) = accept_validated_peer(
+            listener
+                .as_ref()
+                .ok_or(FoundationError::SocketUnavailable)?,
+        )
+        .await?;
+        let mut owner = match ClientRuntimePolicyOwner::start(role).await {
+            Ok(owner) => owner,
+            Err(error) => {
+                listener.take();
+                fixed_write_failure(&mut first_stream).await;
+                return Err(error);
+            }
+        };
+        let drain_counts_before = owner.private_transport_drain_probe.snapshot();
+        let cancel_completed = AtomicBool::new(false);
+
+        let failure_result = async {
+            timeout(CONNECTION_RUN_TIMEOUT, owner.receive_observation())
+                .await
+                .map_err(|_| FoundationError::DriverTimeout)?
+                .ok_or(FoundationError::ObservationQueueUnavailable)?;
+            match relay_validated_peer_with_cancel(
+                first_stream,
+                first_target,
+                &mut owner,
+                None,
+                &cancel_completed,
+            )
+            .await
+            {
+                Err(FoundationError::PostAuthFlowRejected)
+                    if cancel_completed.load(Ordering::Relaxed) =>
+                {
+                    Ok(SequentialFailureAcceptedOutcome::FirstPeerDisconnectedAfterSuccess)
+                }
+                Err(error) => Err(error),
+                Ok(_) => Err(FoundationError::PostAuthFlowRejected),
+            }
+        }
+        .await;
+
+        listener.take();
+        let listener_result =
+            match timeout(SOCKET_IO_TIMEOUT, TcpStream::connect(listener_address)).await {
+                Ok(Err(_)) => Ok(()),
+                _ => Err(FoundationError::PostAuthFlowRejected),
+            };
+        let lease_result = owner_lease_permit_is_returned(&owner)
+            .then_some(())
+            .ok_or(FoundationError::LeaseUnavailable);
+        let close_result = owner.close().await;
+        let tasks_result = (owner.task_budget.permits.available_permits() == CONNECTION_TASK_LIMIT)
+            .then_some(())
+            .ok_or(FoundationError::TaskBudgetUnavailable);
+        let drain_result = owner
+            .private_transport_drain_probe
+            .snapshot()
+            .is_incremented_from(
+                drain_counts_before,
+                PrivateTransportDrainCounts {
+                    entries: 0,
+                    collections: 0,
+                    timeouts: 0,
+                    hard_expiries: 0,
+                    join_aborts: 0,
+                },
+            )
+            .then_some(())
+            .ok_or(FoundationError::PostAuthFlowRejected);
+        close_result?;
+        tasks_result?;
+        lease_result?;
+        listener_result?;
+        drain_result?;
+        failure_result
+    }
+
     pub(super) async fn run_sequential(
         role: ClientRoleConfig,
         first_target: SocketAddr,
@@ -6970,6 +7078,55 @@ mod one_shot_loopback_socks {
         let (accepted_result, peer_result) = tokio::join!(accepted, peers);
         accepted_result?;
         peer_result?;
+        let rebound = timeout(SOCKET_IO_TIMEOUT, TcpListener::bind(listener_address))
+            .await
+            .map_err(|_| FoundationError::DriverTimeout)?
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        drop(rebound);
+        Ok(())
+    }
+
+    pub(super) async fn run_sequential_first_peer_disconnect(
+        role: ClientRoleConfig,
+        first_target: SocketAddr,
+        second_target: SocketAddr,
+    ) -> Result<(), FoundationError> {
+        if first_target == second_target
+            || !valid_loopback_target(first_target)
+            || !valid_loopback_target(second_target)
+        {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        let listener = timeout(
+            SOCKET_IO_TIMEOUT,
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .map_err(|_| FoundationError::DriverTimeout)?
+        .map_err(|_| FoundationError::SocketUnavailable)?;
+        let listener_address = listener
+            .local_addr()
+            .map_err(|_| FoundationError::SocketUnavailable)?;
+        if !listener_address.ip().is_loopback() || listener_address.port() == 0 {
+            return Err(FoundationError::SocketUnavailable);
+        }
+
+        let accepted = run_sequential_first_peer_disconnect_accepted(listener, role);
+        let peer = drive_fixed_peer(
+            listener_address,
+            PeerRequest::DisconnectAfterSuccess(first_target),
+            FIRST_SEQUENTIAL_PAYLOAD_SEED,
+            false,
+        );
+        let (accepted_result, peer_result) = tokio::join!(accepted, peer);
+        match (accepted_result, peer_result) {
+            (
+                Ok(SequentialFailureAcceptedOutcome::FirstPeerDisconnectedAfterSuccess),
+                Ok(PeerOutcome::DisconnectAfterSuccess),
+            ) => {}
+            (Err(error), _) | (_, Err(error)) => return Err(error),
+            _ => return Err(FoundationError::PostAuthFlowRejected),
+        }
         let rebound = timeout(SOCKET_IO_TIMEOUT, TcpListener::bind(listener_address))
             .await
             .map_err(|_| FoundationError::DriverTimeout)?
@@ -7087,6 +7244,17 @@ pub(super) async fn run_direct_v3_h3_sequential_loopback_socks_test_support(
     second_target: SocketAddr,
 ) -> Result<(), ()> {
     one_shot_loopback_socks::run_sequential(role, first_target, second_target)
+        .await
+        .map_err(|_| ())
+}
+
+#[cfg(feature = "unstable-direct-v3-reference-test-support")]
+pub(super) async fn run_direct_v3_h3_sequential_first_peer_disconnect_test_support(
+    role: ClientRoleConfig,
+    first_target: SocketAddr,
+    second_target: SocketAddr,
+) -> Result<(), ()> {
+    one_shot_loopback_socks::run_sequential_first_peer_disconnect(role, first_target, second_target)
         .await
         .map_err(|_| ())
 }

@@ -189,6 +189,34 @@ pub async fn run_direct_v3_h3_sequential_loopback_socks_test_support(
     .map_err(|_| DirectV3ReferenceTestSupportError)
 }
 
+/// Verify first-peer failure isolation in the private sequential H3 seam.
+///
+/// This fixed-result repository-test symbol is visible only with the same
+/// explicitly unstable feature combination as the private quiche foundation.
+/// The combination is SemVer-observable, but this function is not a stable API
+/// and downstream products must not depend on it. Success means one fixed
+/// loopback SOCKS peer exchanged a trigger and acknowledgement with its first
+/// TCP target before disconnecting, the sole private owner closed, and no
+/// second peer or target was admitted. No runtime capability is returned, and
+/// this is not the normal product SOCKS service.
+#[cfg(all(
+    feature = "unstable-direct-v3-reference-test-support",
+    feature = "quiche-foundation"
+))]
+pub async fn run_direct_v3_h3_sequential_first_peer_disconnect_test_support(
+    role: maverick_core::config::ClientRoleConfig,
+    first_target: SocketAddr,
+    second_target: SocketAddr,
+) -> Result<(), DirectV3ReferenceTestSupportError> {
+    quiche_foundation::run_direct_v3_h3_sequential_first_peer_disconnect_test_support(
+        role,
+        first_target,
+        second_target,
+    )
+    .await
+    .map_err(|_| DirectV3ReferenceTestSupportError)
+}
+
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
 fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {

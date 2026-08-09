@@ -992,7 +992,9 @@ mod generation_auth {
         authenticated: AuthenticatedGeneration,
         permit: OwnedSemaphorePermit,
     ) -> Result<AuthenticatedConnectionLease, FoundationError> {
-        if !authenticated.is_active() || authenticated.policy.effective_local_flow_limit() == 0 {
+        if !authenticated.admits_new_flow_at(Instant::now())
+            || authenticated.policy.effective_local_flow_limit() == 0
+        {
             return Err(FoundationError::PostAuthFlowRejected);
         }
         Ok(AuthenticatedConnectionLease {
@@ -1118,24 +1120,38 @@ mod generation_auth {
         pub(super) fn authenticated_client_for_transport_deadline_test(
             hard_deadline: Instant,
         ) -> Result<Self, FoundationError> {
-            let now = Instant::now();
-            let remaining = hard_deadline
-                .checked_duration_since(now)
-                .filter(|remaining| {
-                    !remaining.is_zero() && *remaining < PRIVATE_FLOW_TRANSPORT_DRAIN_TIMEOUT
-                })
+            let admission_deadline = hard_deadline
+                .checked_sub(Duration::from_secs(1))
                 .ok_or(FoundationError::PreAuthApplicationActivity)?;
-            let elapsed = Duration::from_secs(2)
-                .checked_sub(remaining)
+            Self::authenticated_client_for_transport_deadlines_test(
+                admission_deadline,
+                hard_deadline,
+            )
+        }
+
+        #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
+        pub(super) fn authenticated_client_for_transport_deadlines_test(
+            admission_deadline: Instant,
+            hard_deadline: Instant,
+        ) -> Result<Self, FoundationError> {
+            let hard_after_admission = hard_deadline
+                .checked_duration_since(admission_deadline)
+                .filter(|duration| !duration.is_zero() && duration.subsec_nanos() == 0)
                 .ok_or(FoundationError::PreAuthApplicationActivity)?;
-            let monotonic_anchor = now
-                .checked_sub(elapsed)
+            let hard_expiry = (T026C_NOW + 1)
+                .checked_add(hard_after_admission.as_secs())
+                .ok_or(FoundationError::PreAuthApplicationActivity)?;
+            if hard_expiry <= T026C_NOW + 1 {
+                return Err(FoundationError::PreAuthApplicationActivity);
+            }
+            let monotonic_anchor = admission_deadline
+                .checked_sub(Duration::from_secs(1))
                 .ok_or(FoundationError::PreAuthApplicationActivity)?;
             let time_anchor = TrustedTimeAnchor::new(T026C_NOW, monotonic_anchor)?;
             let inputs = TrustedClientGenerationAuthInputs::new_test(time_anchor, 131_072, 256)?;
             let config = ClientRoleConfig::from_yaml_str(&test_client_role_yaml())
                 .map_err(|_| FoundationError::PreAuthApplicationActivity)?;
-            let verified = test_verified_confirmation_with_expiries(T026C_NOW + 1, T026C_NOW + 2);
+            let verified = test_verified_confirmation_with_expiries(T026C_NOW + 1, hard_expiry);
             let policy = Arc::new(AuthenticatedGenerationPolicy::new(verified, &time_anchor)?);
             let mut runtime = Self::client(config, inputs)?;
             runtime.slot = AuthSlot::Authenticated;
@@ -4329,6 +4345,7 @@ mod private_classic_connect {
         header_send_attempts: Arc<std::sync::atomic::AtomicUsize>,
         header_stream_blocked_results: Arc<std::sync::atomic::AtomicUsize>,
         request_streams_opened: Arc<std::sync::atomic::AtomicUsize>,
+        request_stream_ids: Arc<Mutex<[Option<u64>; 2]>>,
         body_send_calls: Arc<std::sync::atomic::AtomicUsize>,
         body_partial_writes: Arc<std::sync::atomic::AtomicUsize>,
         body_done_results: Arc<std::sync::atomic::AtomicUsize>,
@@ -4346,6 +4363,7 @@ mod private_classic_connect {
                 header_send_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 header_stream_blocked_results: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 request_streams_opened: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                request_stream_ids: Arc::new(Mutex::new([None; 2])),
                 body_send_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 body_partial_writes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 body_done_results: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -4370,6 +4388,25 @@ mod private_classic_connect {
 
         pub(super) fn request_streams_opened(&self) -> usize {
             self.request_streams_opened.load(Ordering::Acquire)
+        }
+
+        pub(super) fn request_stream_ids(&self) -> [Option<u64>; 2] {
+            *self
+                .request_stream_ids
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        fn record_request_stream(&self, stream_id: u64) {
+            let mut stream_ids = self
+                .request_stream_ids
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(slot) = stream_ids.iter_mut().find(|slot| slot.is_none()) else {
+                panic!("private flow opened more than two request streams");
+            };
+            *slot = Some(stream_id);
+            self.request_streams_opened.fetch_add(1, Ordering::AcqRel);
         }
 
         pub(super) fn header_stream_blocked_results(&self) -> usize {
@@ -4465,7 +4502,17 @@ mod private_classic_connect {
 
         #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
         pub(super) fn completed_client_for_transport_test(stream_id: u64) -> Self {
-            let mut driver = Self::new(Some(AuthRole::Client));
+            Self::completed_for_transport_test(AuthRole::Client, stream_id)
+        }
+
+        #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
+        pub(super) fn completed_server_for_transport_test(stream_id: u64) -> Self {
+            Self::completed_for_transport_test(AuthRole::Server, stream_id)
+        }
+
+        #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
+        fn completed_for_transport_test(role: AuthRole, stream_id: u64) -> Self {
+            let mut driver = Self::new(Some(role));
             driver.phase = DriverFlowPhase::Complete;
             driver.stream_id = Some(stream_id);
             driver.local_fin_accepted = true;
@@ -4553,19 +4600,34 @@ mod private_classic_connect {
         }
 
         pub(super) fn completed_client_stream_id(&self) -> Result<Option<u64>, FoundationError> {
+            match self.clean_rearm_key()? {
+                Some((AuthRole::Client, stream_id)) => Ok(Some(stream_id)),
+                Some((AuthRole::Server, _)) | None => Ok(None),
+            }
+        }
+
+        pub(super) fn clean_rearm_key(&self) -> Result<Option<(AuthRole, u64)>, FoundationError> {
             if self.phase != DriverFlowPhase::Complete {
                 return Ok(None);
             }
-            let stream_id = self
-                .stream_id
-                .as_ref()
-                .copied()
-                .ok_or(FoundationError::PostAuthFlowRejected)?;
-            match self.role {
-                Some(AuthRole::Client) => Ok(Some(stream_id)),
-                Some(AuthRole::Server) => Ok(None),
-                None => Err(FoundationError::PostAuthFlowRejected),
+            if self.proof.is_some()
+                || self.identity.is_some()
+                || self.authority.is_some()
+                || self.open_response.is_some()
+                || self.pending_outbound.is_some()
+                || self.mailbox.is_some()
+                || self.pending_inbound.is_some()
+                || self.inbound_data_ready
+                || !self.local_fin_accepted
+                || !self.remote_eof_seen
+            {
+                return Err(FoundationError::PostAuthFlowRejected);
             }
+            Ok(Some((
+                self.role.ok_or(FoundationError::PostAuthFlowRejected)?,
+                self.stream_id
+                    .ok_or(FoundationError::PostAuthFlowRejected)?,
+            )))
         }
 
         pub(super) fn route_is_open_for(&self, current: &AuthenticatedGeneration) -> bool {
@@ -4692,18 +4754,14 @@ mod private_classic_connect {
                     match h3_connection.send_request(connection, &headers, false) {
                         Ok(stream_id) => {
                             #[cfg(test)]
-                            self.spy
-                                .request_streams_opened
-                                .fetch_add(1, Ordering::AcqRel);
+                            self.spy.record_request_stream(stream_id);
                             self.stream_id = Some(stream_id);
                             #[cfg(test)]
                             if self.fault == PrivateFlowFault::SecondRequest {
-                                h3_connection
+                                let second_stream_id = h3_connection
                                     .send_request(connection, &headers, false)
                                     .map_err(|_| FoundationError::PostAuthFlowRejected)?;
-                                self.spy
-                                    .request_streams_opened
-                                    .fetch_add(1, Ordering::AcqRel);
+                                self.spy.record_request_stream(second_stream_id);
                             }
                             self.phase = DriverFlowPhase::ClientWaitingResponse;
                         }
@@ -4816,9 +4874,7 @@ mod private_classic_connect {
                     self.stream_id = Some(stream_id);
                     #[cfg(test)]
                     {
-                        self.spy
-                            .request_streams_opened
-                            .fetch_add(1, Ordering::AcqRel);
+                        self.spy.record_request_stream(stream_id);
                         *self
                             .spy
                             .observed_authority
@@ -5227,6 +5283,17 @@ impl ClassicConnectRoute {
         }
     }
 
+    #[cfg(all(test, feature = "unstable-quiche-strict-push-test-support"))]
+    fn completed_server_for_transport_test(stream_id: u64) -> Self {
+        Self {
+            state: ClassicConnectRouteState::Private(Box::new(
+                PrivateClassicConnectDriver::completed_server_for_transport_test(stream_id),
+            )),
+            reference_spy: ClassicConnectSpy::new(),
+            private_spy: PrivateFlowSpy::new(),
+        }
+    }
+
     fn arm_reference(
         &mut self,
         current: &AuthenticatedGeneration,
@@ -5424,34 +5491,64 @@ impl ClassicConnectRoute {
     fn reap_completed_private_flow(
         &mut self,
         connection: &mut quiche::Connection,
+        authenticated: Option<&AuthenticatedGeneration>,
     ) -> Result<(), FoundationError> {
-        let should_consume = match &self.state {
+        let Some(role) = self.collected_private_role(connection)? else {
+            return Ok(());
+        };
+        let current = authenticated.ok_or(FoundationError::PostAuthFlowRejected)?;
+        if !current.admits_new_flow_at(Instant::now()) {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        let completed = std::mem::replace(
+            &mut self.state,
+            ClassicConnectRouteState::Dormant { role: Some(role) },
+        );
+        drop(completed);
+        Ok(())
+    }
+
+    fn consume_completed_private_flow(
+        &mut self,
+        connection: &mut quiche::Connection,
+    ) -> Result<(), FoundationError> {
+        let Some(_) = self.collected_private_role(connection)? else {
+            return Ok(());
+        };
+        let completed = std::mem::replace(&mut self.state, ClassicConnectRouteState::Consumed);
+        drop(completed);
+        Ok(())
+    }
+
+    fn collected_private_role(
+        &self,
+        connection: &mut quiche::Connection,
+    ) -> Result<Option<AuthRole>, FoundationError> {
+        Ok(match &self.state {
             ClassicConnectRouteState::Private(private) if private.is_complete() => {
-                match private.completed_client_stream_id()? {
-                    Some(stream_id) => {
-                        if connection.is_closed() {
-                            return Err(FoundationError::DriverStopped);
-                        }
-                        match connection.stream_capacity(stream_id) {
-                            Err(quiche::Error::InvalidStreamState(candidate))
-                                if candidate == stream_id =>
-                            {
-                                true
-                            }
-                            Ok(_) => false,
-                            Err(_) => return Err(FoundationError::PostAuthFlowRejected),
-                        }
+                let (role, stream_id) = private
+                    .clean_rearm_key()?
+                    .ok_or(FoundationError::PostAuthFlowRejected)?;
+                if connection.is_closed() {
+                    return Err(FoundationError::DriverStopped);
+                }
+                match connection.stream_capacity(stream_id) {
+                    Err(quiche::Error::InvalidStreamState(candidate)) if candidate == stream_id => {
+                        Some(role)
                     }
-                    None => true,
+                    Ok(_) => None,
+                    Err(_) => return Err(FoundationError::PostAuthFlowRejected),
                 }
             }
-            _ => false,
-        };
-        if should_consume {
-            let completed = std::mem::replace(&mut self.state, ClassicConnectRouteState::Consumed);
-            drop(completed);
-        }
-        Ok(())
+            _ => None,
+        })
+    }
+
+    fn can_acquire_authenticated(&self) -> bool {
+        matches!(
+            &self.state,
+            ClassicConnectRouteState::Dormant { role: Some(_) }
+        )
     }
 
     fn has_completed_client_transport_drain(&self) -> Result<bool, FoundationError> {
@@ -7041,6 +7138,33 @@ impl DriverAuthRuntime {
 }
 
 impl FoundationDriver {
+    fn authenticated_generation_ready_for_acquire(
+        &self,
+    ) -> Result<Option<AuthenticatedGeneration>, FoundationError> {
+        Self::admit_authenticated_acquire(
+            self.classic_connect.can_acquire_authenticated(),
+            self.authenticated_generation(),
+            Instant::now(),
+        )
+    }
+
+    fn admit_authenticated_acquire(
+        route_ready: bool,
+        authenticated: Option<AuthenticatedGeneration>,
+        now: Instant,
+    ) -> Result<Option<AuthenticatedGeneration>, FoundationError> {
+        if !route_ready {
+            return Ok(None);
+        }
+        let Some(authenticated) = authenticated else {
+            return Ok(None);
+        };
+        if !authenticated.admits_new_flow_at(now) {
+            return Err(FoundationError::PostAuthFlowRejected);
+        }
+        Ok(Some(authenticated))
+    }
+
     #[cfg(test)]
     fn apply_real_private_header_pressure(&mut self) -> Result<(), FoundationError> {
         let capacity = self
@@ -7242,15 +7366,17 @@ impl FoundationDriver {
             if self.connection.is_closed() {
                 return Err(FoundationError::DriverStopped);
             }
+            let authenticated = self.authenticated_generation();
             self.classic_connect
-                .reap_completed_private_flow(&mut self.connection)?;
+                .reap_completed_private_flow(&mut self.connection, authenticated.as_ref())?;
             self.flush_packets(&mut send_buffer).await?;
             self.enforce_authenticated_hard_deadline()?;
             self.enforce_active_flow_lease()?;
 
             if let Some(response) = pending_authenticated_acquire.take() {
                 self.enforce_authenticated_hard_deadline()?;
-                if let Some(authenticated) = self.authenticated_generation() {
+                let authenticated = self.authenticated_generation_ready_for_acquire()?;
+                if let Some(authenticated) = authenticated {
                     let _ = response.send(authenticated);
                 } else {
                     pending_authenticated_acquire = Some(response);
@@ -7381,7 +7507,9 @@ impl FoundationDriver {
                 command = command_rx.recv() => {
                     match command {
                         Some(DriverCommand::AcquireAuthenticated { response }) => {
-                            if let Some(authenticated) = self.authenticated_generation() {
+                            let authenticated =
+                                self.authenticated_generation_ready_for_acquire()?;
+                            if let Some(authenticated) = authenticated {
                                 let _ = response.send(authenticated);
                             } else {
                                 Self::queue_authenticated_acquire(
@@ -7428,6 +7556,10 @@ impl FoundationDriver {
                                 let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
                                 return Err(FoundationError::PostAuthFlowRejected);
                             };
+                            if !authenticated.admits_new_flow_at(Instant::now()) {
+                                let _ = response.send(Err(FoundationError::PostAuthFlowRejected));
+                                return Err(FoundationError::PostAuthFlowRejected);
+                            }
                             #[cfg(test)]
                             if real_header_pressure {
                                 self.apply_real_private_header_pressure()?;
@@ -7566,7 +7698,7 @@ impl FoundationDriver {
                 return Err(FoundationError::DriverStopped);
             }
             self.classic_connect
-                .reap_completed_private_flow(&mut self.connection)?;
+                .consume_completed_private_flow(&mut self.connection)?;
             if !self
                 .classic_connect
                 .has_completed_client_transport_drain()?
@@ -8404,6 +8536,122 @@ mod tests {
         );
         assert!(session.pipe.client.stream_capacity(stream_id).is_ok());
         (temp, session, stream_id)
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    fn t027c2d_unacked_clean_server_stream() -> (TempDir, quiche::h3::testing::Session, u64) {
+        let h3_config = fixed_ok(
+            bounded_h3_config(),
+            "build server collection-gate H3 configuration",
+        );
+        let transport = fixed_ok(
+            bounded_self_signed_loopback_quic_config(),
+            "build server collection-gate transport configuration",
+        );
+        let (temp, mut session) = foundation_test_session_with_configs(transport, &h3_config);
+        fixed_ok(
+            session.handshake(),
+            "handshake server collection-gate session",
+        );
+
+        let request_headers: Vec<_> = classic_connect::request_header_pairs()
+            .iter()
+            .map(|(name, value)| quiche::h3::Header::new(name, value))
+            .collect();
+        let stream_id = fixed_ok(
+            session
+                .client
+                .send_request(&mut session.pipe.client, &request_headers, false),
+            "open server collection-gate request stream",
+        );
+        fixed_ok(
+            session.advance(),
+            "deliver server collection-gate request headers",
+        );
+        assert!(matches!(
+            session.poll_server(),
+            Ok((candidate, quiche::h3::Event::Headers { .. })) if candidate == stream_id
+        ));
+        let request_body = [0x3c_u8; 2 * 1_024];
+        assert_eq!(
+            session
+                .client
+                .send_body(&mut session.pipe.client, stream_id, &request_body, true,),
+            Ok(request_body.len())
+        );
+        fixed_ok(
+            session.advance(),
+            "deliver and acknowledge server collection-gate request FIN",
+        );
+        assert_eq!(
+            session.poll_server(),
+            Ok((stream_id, quiche::h3::Event::Data))
+        );
+        let mut received = [0_u8; 2 * 1_024];
+        assert_eq!(
+            session
+                .server
+                .recv_body(&mut session.pipe.server, stream_id, &mut received,),
+            Ok(request_body.len())
+        );
+        assert_eq!(received, request_body);
+        received.fill(0);
+        assert_eq!(
+            session
+                .server
+                .recv_body(&mut session.pipe.server, stream_id, &mut received,),
+            Err(quiche::h3::Error::Done)
+        );
+        assert_eq!(
+            session.poll_server(),
+            Ok((stream_id, quiche::h3::Event::Finished))
+        );
+
+        let response_headers: Vec<_> = classic_connect::response_header_pairs()
+            .iter()
+            .map(|(name, value)| quiche::h3::Header::new(name, value))
+            .collect();
+        fixed_ok(
+            session.server.send_response(
+                &mut session.pipe.server,
+                stream_id,
+                &response_headers,
+                true,
+            ),
+            "send server collection-gate response FIN",
+        );
+        assert!(fixed_ok(
+            t027c2c_transfer_transport_one_way(&mut session.pipe.server, &mut session.pipe.client,),
+            "deliver server collection-gate response without returning its ACK",
+        ));
+        assert!(matches!(
+            session.poll_client(),
+            Ok((candidate, quiche::h3::Event::Headers { more_frames: false, .. }))
+                if candidate == stream_id
+        ));
+        assert_eq!(
+            session.poll_client(),
+            Ok((stream_id, quiche::h3::Event::Finished))
+        );
+        assert!(session.pipe.server.stream_capacity(stream_id).is_ok());
+        (temp, session, stream_id)
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    fn t027c2d_transport_rearm_generation() -> (GenerationAuth, AuthenticatedGeneration) {
+        let admission_deadline = Instant::now() + Duration::from_secs(10);
+        let runtime = fixed_ok(
+            GenerationAuth::authenticated_client_for_transport_deadlines_test(
+                admission_deadline,
+                admission_deadline + Duration::from_secs(5),
+            ),
+            "construct transport-rearm authenticated generation",
+        );
+        let authenticated = fixed_some(
+            runtime.authenticated_generation(),
+            "read transport-rearm authenticated generation",
+        );
+        (runtime, authenticated)
     }
 
     #[cfg(feature = "unstable-quiche-strict-push-test-support")]
@@ -11665,7 +11913,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn t027c2a_real_manager_driver_quiche_flow_is_ordered_full_duplex() {
+    async fn t027c2d_real_manager_driver_quiche_reuses_authenticated_generation_sequentially() {
         let _test_guard = fixed_ok(
             bounded_test_lock(&LOOPBACK_TEST_LOCK, LOOPBACK_TEST_LOCK_TIMEOUT).await,
             "acquire private-flow loopback test lock",
@@ -11685,15 +11933,40 @@ mod tests {
         .private_flow_spy
         .clone();
         let server_spy = pair.server.private_flow_spy.clone();
-        let target = SocketAddr::from(([127, 0, 0, 42], 8_443));
-        let (client_flow, server_flow) = fixed_ok(
-            timeout(
-                CONNECTION_RUN_TIMEOUT,
-                open_private_flow_pair(&mut pair, target),
-            )
-            .await,
-            "bound private-flow open",
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.client.receive_observation()).await,
+                "bound first private-flow client observation",
+            ),
+            "receive first private-flow client observation",
         );
+        fixed_some(
+            fixed_ok(
+                timeout(CONNECTION_RUN_TIMEOUT, pair.server_observation_rx.recv()).await,
+                "bound first private-flow server observation",
+            ),
+            "receive first private-flow server observation",
+        );
+        let (first_client_lease, first_server_lease) = tokio::join!(
+            pair.client.acquire_authenticated(),
+            pair.server.acquire_authenticated(),
+        );
+        let first_client_lease = fixed_ok(first_client_lease, "acquire first client lease");
+        let first_server_lease = fixed_ok(first_server_lease, "acquire first server lease");
+        let first_client_generation = first_client_lease.generation();
+        let first_server_generation = first_server_lease.generation();
+        let target = SocketAddr::from(([127, 0, 0, 42], 8_443));
+        let authority = fixed_ok(
+            CanonicalLoopbackAuthority::from_socket_addr(target),
+            "canonicalize first private-flow target",
+        );
+        let (client_flow, server_flow) = tokio::join!(
+            pair.client
+                .open_loopback_classic_connect(first_client_lease, target),
+            pair.server.arm_private_peer(first_server_lease, authority),
+        );
+        let client_flow = fixed_ok(client_flow, "open first private-flow client handle");
+        let server_flow = fixed_ok(server_flow, "arm first private-flow server handle");
         let (mut client_reader, mut client_writer) = client_flow.into_halves();
         let (mut server_reader, mut server_writer) = server_flow.into_halves();
         let client_payload: Box<[u8; 24_577]> =
@@ -11810,27 +12083,103 @@ mod tests {
             fixed_ok(second_client_lease, "acquire clean-complete client lease");
         let second_server_lease =
             fixed_ok(second_server_lease, "acquire clean-complete server lease");
+        assert_eq!(second_client_lease.generation(), first_client_generation);
+        assert_eq!(second_server_lease.generation(), first_server_generation);
         let second_target = SocketAddr::from(([127, 0, 0, 43], 8_444));
         let second_authority = fixed_ok(
             CanonicalLoopbackAuthority::from_socket_addr(second_target),
             "canonicalize clean-complete second target",
         );
-        let (second_client_open, second_server_open) = tokio::join!(
+        let (second_client_flow, second_server_flow) = tokio::join!(
             pair.client
                 .open_loopback_classic_connect(second_client_lease, second_target),
             pair.server
                 .arm_private_peer(second_server_lease, second_authority),
         );
-        assert_eq!(
-            second_client_open.err(),
-            Some(FoundationError::PostAuthFlowRejected),
+        let (mut second_client_reader, mut second_client_writer) =
+            fixed_ok(second_client_flow, "open second private-flow client handle").into_halves();
+        let (mut second_server_reader, mut second_server_writer) =
+            fixed_ok(second_server_flow, "arm second private-flow server handle").into_halves();
+        let second_client_payload = [0x6a_u8; 521];
+        let second_server_payload = [0xc3_u8; 1_031];
+        let mut second_client_received = [0_u8; 1_031];
+        let mut second_server_received = [0_u8; 521];
+        fixed_ok(
+            timeout(CONNECTION_RUN_TIMEOUT, async {
+                tokio::join!(
+                    async {
+                        fixed_ok(
+                            second_client_writer
+                                .send_chunk(&second_client_payload)
+                                .await,
+                            "send second private-flow client payload",
+                        );
+                        fixed_ok(
+                            second_client_writer.finish().await,
+                            "finish second private-flow client",
+                        );
+                    },
+                    async {
+                        fixed_ok(
+                            second_server_writer
+                                .send_chunk(&second_server_payload)
+                                .await,
+                            "send second private-flow server payload",
+                        );
+                        fixed_ok(
+                            second_server_writer.finish().await,
+                            "finish second private-flow server",
+                        );
+                    },
+                    async {
+                        receive_private_exact(
+                            &mut second_client_reader,
+                            &mut second_client_received,
+                        )
+                        .await;
+                        assert!(fixed_ok(
+                            second_client_reader.receive_chunk().await,
+                            "receive second private-flow client EOF",
+                        )
+                        .is_none());
+                    },
+                    async {
+                        receive_private_exact(
+                            &mut second_server_reader,
+                            &mut second_server_received,
+                        )
+                        .await;
+                        assert!(fixed_ok(
+                            second_server_reader.receive_chunk().await,
+                            "receive second private-flow server EOF",
+                        )
+                        .is_none());
+                    },
+                );
+            })
+            .await,
+            "bound second private-flow full duplex",
         );
-        assert_eq!(
-            second_server_open.err(),
-            Some(FoundationError::PostAuthFlowRejected),
+        assert_eq!(second_client_received, second_server_payload);
+        assert_eq!(second_server_received, second_client_payload);
+        assert_eq!(client_spy.request_streams_opened(), 2);
+        assert_eq!(server_spy.request_streams_opened(), 2);
+        let client_stream_ids = client_spy.request_stream_ids();
+        let server_stream_ids = server_spy.request_stream_ids();
+        assert_eq!(client_stream_ids, server_stream_ids);
+        let (first_stream_id, second_stream_id) = match client_stream_ids {
+            [Some(first), Some(second)] => (first, second),
+            _ => panic!("observe exactly two private request stream identifiers"),
+        };
+        assert_ne!(first_stream_id, second_stream_id);
+        assert_eq!(client_spy.arm_commands(), 2);
+        assert_eq!(server_spy.arm_commands(), 2);
+        let second_observed_authority = fixed_some(
+            server_spy.observed_authority(),
+            "observe second private-flow authority",
         );
-        assert_eq!(client_spy.request_streams_opened(), 1);
-        assert_eq!(server_spy.request_streams_opened(), 1);
+        assert_eq!(second_observed_authority.as_bytes(), b"127.0.0.43:8444");
+        assert_eq!(pair.time_snapshots.load(Ordering::Acquire), 1);
         assert_eq!(
             client_lease_permits.available_permits(),
             CONNECTION_LEASE_LIMIT
@@ -11839,16 +12188,14 @@ mod tests {
             pair.server.lease_permits.available_permits(),
             CONNECTION_LEASE_LIMIT,
         );
-        assert!(fixed_ok(
-            timeout(CONNECTION_RUN_TIMEOUT, pair.server.take_driver_exit()).await,
-            "bound clean-complete no-reopen server exit",
-        )
-        .is_err());
-
         drop(client_reader);
         drop(client_writer);
         drop(server_reader);
         drop(server_writer);
+        drop(second_client_reader);
+        drop(second_client_writer);
+        drop(second_server_reader);
+        drop(second_server_writer);
         close_client_role_adapter_pair(&mut pair).await;
         assert_eq!(pair.client.available_task_permits(), CONNECTION_TASK_LIMIT);
         assert_eq!(
@@ -13008,36 +13355,157 @@ mod tests {
 
     #[cfg(feature = "unstable-quiche-strict-push-test-support")]
     #[test]
-    fn t027c2c_clean_client_route_waits_for_real_transport_collection() {
-        let (_temp, mut session, stream_id) = t027c2c_unacked_clean_client_stream();
-        let mut route = ClassicConnectRoute::completed_client_for_transport_test(stream_id);
+    fn t027c2d_clean_private_routes_wait_for_exact_transport_collection() {
+        let (_runtime, authenticated) = t027c2d_transport_rearm_generation();
+        let (_client_temp, mut client_session, client_stream_id) =
+            t027c2c_unacked_clean_client_stream();
+        let mut client_route =
+            ClassicConnectRoute::completed_client_for_transport_test(client_stream_id);
 
         fixed_ok(
-            route.reap_completed_private_flow(&mut session.pipe.client),
+            client_route
+                .reap_completed_private_flow(&mut client_session.pipe.client, Some(&authenticated)),
             "keep clean client route until the request FIN is acknowledged",
         );
+        assert!(!client_route.can_acquire_authenticated());
         assert!(fixed_ok(
-            route.has_completed_client_transport_drain(),
+            client_route.has_completed_client_transport_drain(),
             "observe pending clean client transport drain",
         ));
-        assert!(session.pipe.client.stream_capacity(stream_id).is_ok());
+        assert!(client_session
+            .pipe
+            .client
+            .stream_capacity(client_stream_id)
+            .is_ok());
+
+        assert!(fixed_ok(
+            t027c2c_transfer_transport_one_way(
+                &mut client_session.pipe.server,
+                &mut client_session.pipe.client,
+            ),
+            "return the real request-body and FIN acknowledgement",
+        ));
+        assert_eq!(
+            client_session.pipe.client.stream_capacity(client_stream_id),
+            Err(quiche::Error::InvalidStreamState(client_stream_id))
+        );
+        fixed_ok(
+            client_route
+                .reap_completed_private_flow(&mut client_session.pipe.client, Some(&authenticated)),
+            "rearm only after the exact client stream is collected",
+        );
+        assert!(client_route.can_acquire_authenticated());
+        assert!(!fixed_ok(
+            client_route.has_completed_client_transport_drain(),
+            "observe completed client transport drain",
+        ));
+
+        let (_server_temp, mut server_session, server_stream_id) =
+            t027c2d_unacked_clean_server_stream();
+        let mut server_route =
+            ClassicConnectRoute::completed_server_for_transport_test(server_stream_id);
+        fixed_ok(
+            server_route
+                .reap_completed_private_flow(&mut server_session.pipe.server, Some(&authenticated)),
+            "keep clean server route until the response FIN is acknowledged",
+        );
+        assert!(!server_route.can_acquire_authenticated());
+        assert!(server_session
+            .pipe
+            .server
+            .stream_capacity(server_stream_id)
+            .is_ok());
+        assert!(fixed_ok(
+            t027c2c_transfer_transport_one_way(
+                &mut server_session.pipe.client,
+                &mut server_session.pipe.server,
+            ),
+            "return the real response FIN acknowledgement",
+        ));
+        assert_eq!(
+            server_session.pipe.server.stream_capacity(server_stream_id),
+            Err(quiche::Error::InvalidStreamState(server_stream_id))
+        );
+        fixed_ok(
+            server_route
+                .reap_completed_private_flow(&mut server_session.pipe.server, Some(&authenticated)),
+            "rearm only after the exact server stream is collected",
+        );
+        assert!(server_route.can_acquire_authenticated());
+        assert!(!fixed_ok(
+            server_route.has_completed_client_transport_drain(),
+            "keep server collection separate from client close drain",
+        ));
+    }
+
+    #[cfg(feature = "unstable-quiche-strict-push-test-support")]
+    #[test]
+    fn t027c2d_admission_expiry_before_collection_never_rearms() {
+        let (_temp, mut session, stream_id) = t027c2c_unacked_clean_client_stream();
+        let mut route = ClassicConnectRoute::completed_client_for_transport_test(stream_id);
+        let admission_deadline = fixed_some(
+            Instant::now().checked_sub(Duration::from_millis(100)),
+            "anchor expired admission deadline",
+        );
+        let hard_deadline = admission_deadline + Duration::from_secs(5);
+        let runtime = fixed_ok(
+            GenerationAuth::authenticated_client_for_transport_deadlines_test(
+                admission_deadline,
+                hard_deadline,
+            ),
+            "construct near-admission-expiry generation",
+        );
+        let authenticated = fixed_some(
+            runtime.authenticated_generation(),
+            "read near-admission-expiry generation",
+        );
+        assert!(!authenticated.admits_new_flow_at(Instant::now()));
+        assert!(authenticated.is_active());
+        fixed_ok(
+            route.reap_completed_private_flow(&mut session.pipe.client, Some(&authenticated)),
+            "keep expired route blocked before transport collection",
+        );
+        assert!(!route.can_acquire_authenticated());
 
         assert!(fixed_ok(
             t027c2c_transfer_transport_one_way(&mut session.pipe.server, &mut session.pipe.client,),
-            "return the real request-body and FIN acknowledgement",
+            "return collection acknowledgement after admission expiry",
         ));
         assert_eq!(
             session.pipe.client.stream_capacity(stream_id),
             Err(quiche::Error::InvalidStreamState(stream_id))
         );
-        fixed_ok(
-            route.reap_completed_private_flow(&mut session.pipe.client),
-            "consume only the exact collected client stream",
+        assert_eq!(
+            route
+                .reap_completed_private_flow(&mut session.pipe.client, Some(&authenticated),)
+                .err(),
+            Some(FoundationError::PostAuthFlowRejected)
         );
-        assert!(!fixed_ok(
-            route.has_completed_client_transport_drain(),
-            "observe completed client transport drain",
-        ));
+        assert!(!route.can_acquire_authenticated());
+
+        let dormant_route = ClassicConnectRoute::new(Some(AuthRole::Client));
+        assert!(dormant_route.can_acquire_authenticated());
+        assert_eq!(
+            FoundationDriver::admit_authenticated_acquire(
+                dormant_route.can_acquire_authenticated(),
+                runtime.authenticated_generation(),
+                Instant::now(),
+            )
+            .err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+
+        let lease_permits = Arc::new(Semaphore::new(CONNECTION_LEASE_LIMIT));
+        let permit = fixed_ok(
+            lease_permits.clone().try_acquire_owned(),
+            "reserve expired admission lease permit",
+        );
+        assert_eq!(lease_permits.available_permits(), 0);
+        assert_eq!(
+            bind_authenticated_lease(authenticated, permit).err(),
+            Some(FoundationError::PostAuthFlowRejected)
+        );
+        assert_eq!(lease_permits.available_permits(), CONNECTION_LEASE_LIMIT);
     }
 
     #[cfg(feature = "unstable-quiche-strict-push-test-support")]

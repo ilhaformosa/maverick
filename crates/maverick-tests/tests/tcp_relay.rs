@@ -5478,6 +5478,233 @@ async fn h3_negotiated_duplex_open_udp_allows_server_push() -> Result<()> {
 }
 
 #[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_duplex_ready_target_push_preempts_buffered_peer_burst() -> Result<()> {
+    const RATE_BYTES_PER_SECOND: u64 = 1_000;
+    const MAX_FRAME_SIZE: usize = 65_536;
+
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        metrics: true,
+        user_rate_limit_bytes_per_second: Some(RATE_BYTES_PER_SECOND),
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let metrics_addr = fixture
+        .server
+        .metrics_addr
+        .context("missing metrics listener")?;
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+
+    let sender = transport::connect(&config).await?;
+    let mut h3 = match sender {
+        transport::TunnelRequestSender::H3(h3) => h3,
+        _ => anyhow::bail!("ready-target test requires the Quinn/H3 transport"),
+    };
+    let uri = format!(
+        "https://{}{}",
+        config.server.server_name, config.server.tunnel_path
+    );
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("content-type", "application/octet-stream")
+        .body(())?;
+    let mut stream = h3.send_request(request).await?;
+    let hello = ClientHello::new(
+        config.server.credential_id.clone(),
+        &config.server.secret,
+        &config.server.tunnel_path,
+        config.mode,
+        FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+    )?;
+    stream
+        .send_data(Frame::new(FrameType::ClientHello, 0, 0, hello.encode()).encode(MAX_FRAME_SIZE)?)
+        .await?;
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::OpenUdp,
+                OPEN_UDP_FLAG_DUPLEX,
+                OPEN_UDP_FLOW_ID,
+                OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
+            )
+            .encode(MAX_FRAME_SIZE)?,
+        )
+        .await?;
+
+    let response = timeout(Duration::from_secs(2), stream.recv_response())
+        .await
+        .context("ready-target H3 response headers must remain bounded")??;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/octet-stream")
+    );
+
+    let mut response_bytes = BytesMut::new();
+    let server_hello_frame = timeout(
+        Duration::from_secs(2),
+        read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+    )
+    .await
+    .context("ready-target ServerHello must remain bounded")??
+    .context("missing ready-target ServerHello")?;
+    assert_eq!(server_hello_frame.frame_type, FrameType::ServerHello);
+    let server_hello = ServerHello::decode(&server_hello_frame.payload)?;
+    assert!(server_hello.verify(&config.server.secret, &hello.client_nonce));
+    assert_eq!(
+        server_hello.feature_flags_selected,
+        FEATURE_OPEN_UDP_MODE_NEGOTIATION
+    );
+    let open_response = timeout(
+        Duration::from_secs(2),
+        read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+    )
+    .await
+    .context("ready-target OpenUdp acknowledgement must remain bounded")??
+    .context("server closed before ready-target OpenUdp acknowledgement")?;
+    assert_eq!(
+        open_response,
+        Frame::new(
+            FrameType::WindowUpdate,
+            OPEN_UDP_FLAG_DUPLEX,
+            OPEN_UDP_FLOW_ID,
+            Bytes::new(),
+        )
+    );
+
+    let peer_payloads = [
+        Bytes::from_static(b"ready-peer-1"),
+        Bytes::from(vec![0x42; 300]),
+        Bytes::from_static(b"ready-peer-3"),
+    ];
+    let mut burst = BytesMut::new();
+    for payload in &peer_payloads {
+        let packet = UdpPacketPayload::new(
+            TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+            target_addr.port(),
+            payload.clone(),
+        );
+        burst.extend_from_slice(
+            &Frame::new(FrameType::UdpPacket, 0, OPEN_UDP_FLOW_ID, packet.encode()?)
+                .encode(MAX_FRAME_SIZE)?,
+        );
+    }
+    stream.send_data(burst.freeze()).await?;
+
+    let mut target_buf = vec![0_u8; 1_024];
+    let (len, exact_source) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+        .await
+        .context("ready-target peer packet 1 must arrive")??;
+    assert_eq!(&target_buf[..len], peer_payloads[0].as_ref());
+    match UdpSocket::bind(exact_source).await {
+        Ok(socket) => {
+            drop(socket);
+            anyhow::bail!("ready-target source was released before the target push")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+        Err(error) => return Err(error).context("probe active ready-target source"),
+    }
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let push_payload = Bytes::from(vec![0x50; 550]);
+    let sent = target.send_to(&push_payload, exact_source).await?;
+    assert_eq!(sent, push_payload.len());
+
+    let (len, source_2) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+        .await
+        .context("ready-target peer packet 2 must arrive")??;
+    assert_eq!(&target_buf[..len], peer_payloads[1].as_ref());
+    assert_eq!(source_2, exact_source);
+
+    let peer_3_arrived_before_ready_push = match timeout(
+        Duration::from_millis(200),
+        target.recv_from(&mut target_buf),
+    )
+    .await
+    {
+        Err(_) => false,
+        Ok(Ok((len, source_3))) => {
+            assert_eq!(&target_buf[..len], peer_payloads[2].as_ref());
+            assert_eq!(source_3, exact_source);
+            true
+        }
+        Ok(Err(error)) => return Err(error).context("observe ready-target peer packet 3"),
+    };
+
+    let push_frame = timeout(
+        Duration::from_secs(2),
+        read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+    )
+    .await
+    .context("ready-target push response must remain bounded")??
+    .context("server closed before forwarding the ready target push")?;
+    assert_eq!(push_frame.frame_type, FrameType::UdpPacket);
+    assert_eq!(push_frame.flags, 0);
+    assert_eq!(push_frame.flow_id, OPEN_UDP_FLOW_ID);
+    let push_packet = UdpPacketPayload::decode(&push_frame.payload)?;
+    assert_eq!(
+        push_packet.target,
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    assert_eq!(push_packet.port, target_addr.port());
+    assert_eq!(push_packet.data, push_payload);
+
+    if !peer_3_arrived_before_ready_push {
+        let (len, source_3) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+            .await
+            .context("ready-target peer packet 3 must eventually arrive")??;
+        assert_eq!(&target_buf[..len], peer_payloads[2].as_ref());
+        assert_eq!(source_3, exact_source);
+    }
+
+    stream
+        .send_data(
+            Frame::new(FrameType::CloseFlow, 0, OPEN_UDP_FLOW_ID, Bytes::new())
+                .encode(MAX_FRAME_SIZE)?,
+        )
+        .await?;
+    stream.finish().await?;
+    let response_fin = timeout(
+        Duration::from_secs(2),
+        read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+    )
+    .await
+    .context("ready-target CloseFlow FIN must remain bounded")??;
+    assert!(response_fin.is_none());
+    let trailers = timeout(Duration::from_secs(2), stream.recv_trailers())
+        .await
+        .context("ready-target trailers must remain bounded")??;
+    assert!(trailers.is_none());
+
+    let metrics = wait_for_metric(metrics_addr, "authenticated_sessions", 1).await?;
+    assert_eq!(metric_value(&metrics, "authenticated_sessions")?, 1);
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    assert_eq!(pool.active_streams, 0);
+    let rebound = rebind_released_udp_source(exact_source, "ready-target CloseFlow").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+
+    drop(rebound);
+    drop(stream);
+    drop(h3);
+    fixture.shutdown().await?;
+    if peer_3_arrived_before_ready_push {
+        panic!("legacy-H3 duplex ready target stayed starved behind peer burst");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
 async fn open_h3_duplex_test_tunnel(
     config: &ClientConfig,
     idle_timeout_ms: u64,

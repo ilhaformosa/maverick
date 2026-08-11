@@ -15,9 +15,9 @@ use maverick_core::config::{
     AuthV2Config, CdnFrontingCarrier, CdnFrontingConfig, ClientAdvancedConfig, ClientAuthConfig,
     ClientConfig, ClientCredentialRotationConfig, ClientDnsConfig, ClientServerConfig,
     FallbackConfig, HttpConnectConfig, LocalConfig, LogConfig, MaverickServerConfig, MetricsConfig,
-    PreviousCredentialConfig, SecretString, ServerAdvancedConfig, ServerAuthConfig, ServerConfig,
-    ServerDnsConfig, ShapingConfig, Socks5Config, TlsConfig, TlsFingerprintMode, UserConfig,
-    UserCredentialRotationConfig,
+    PreviousCredentialConfig, RateLimitConfig, SecretString, ServerAdvancedConfig,
+    ServerAuthConfig, ServerConfig, ServerDnsConfig, ShapingConfig, Socks5Config, TlsConfig,
+    TlsFingerprintMode, UserConfig, UserCredentialRotationConfig,
 };
 use maverick_core::frame::{Frame, FrameType};
 use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
@@ -34,6 +34,7 @@ pub struct HarnessOptions {
     pub metrics: bool,
     pub http_connect: bool,
     pub user_max_concurrent_flows: Option<u32>,
+    pub user_rate_limit_bytes_per_second: Option<u64>,
     pub client_max_concurrent_flows: Option<u32>,
     pub client_connect_timeout_ms: Option<u64>,
     pub client_idle_timeout_secs: Option<u64>,
@@ -71,6 +72,7 @@ impl Default for HarnessOptions {
             metrics: false,
             http_connect: false,
             user_max_concurrent_flows: None,
+            user_rate_limit_bytes_per_second: None,
             client_max_concurrent_flows: None,
             client_connect_timeout_ms: None,
             client_idle_timeout_secs: None,
@@ -279,7 +281,9 @@ impl MaverickHarness {
                 name: Some("test".into()),
                 secret: secret.clone(),
                 enabled: options.user_enabled,
-                rate_limit: None,
+                rate_limit: options
+                    .user_rate_limit_bytes_per_second
+                    .map(|bytes_per_second| RateLimitConfig { bytes_per_second }),
                 max_concurrent_flows: options.user_max_concurrent_flows,
                 rotation,
             }],

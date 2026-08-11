@@ -17,101 +17,115 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T025e — normal selected-H3 TUN reply-independent send-ahead
+### T025f — authenticated legacy-H3 duplex ready-target non-starvation
 
-**User result.** After a normal opt-in TUN client finishes submitting UDP packet
-A to one selected legacy-H3 association, local packet B for the same
-`{app, target}` can be submitted without waiting for the target to reply to A.
-This is sequential send-ahead after the current transport send completes. It is
-not concurrent progress while that send is blocked, target delivery proof,
-response correlation, general pipelining, or a product result.
+**Foundation result.** On one authenticated raw legacy-H3 duplex `OpenUdp`
+flow with a nonzero user rate limit, a target datagram that is already ready is
+forwarded before the tail of one buffered burst of otherwise valid same-flow,
+same-target peer datagrams. This is one bounded local server scheduling result,
+not a normal `start_client` result, a general fairness or no-loss guarantee, or
+a product result.
 
-**Confirmed source gap.** T025d lets the worker accept `Ok(None)` and continue,
-but `MaverickDuplexDatagramFlow` inherits the default `submit_datagram`, which
-calls its existing send-then-receive `exchange`. The real selected-H3 adapter
-therefore remains reply-gated even though the generic runtime foundation is
-ready.
+**Confirmed source gap.** The duplex server loop currently uses a biased select
+that always checks peer input before target receive. When one H3 DATA operation
+contains several complete Maverick frames, `h3_read_next_frame` can decode the
+remaining peer frames immediately from its existing receive buffer. A target
+datagram that becomes ready while a valid peer frame is waiting in the shared
+user limiter can therefore remain behind every buffered peer frame. `STATUS.md`
+already records this starvation boundary.
 
-**Scope.** Hard-limit the complete card to four files: `ROADMAP.md`,
-`STATUS.md`, `crates/maverick-client/src/tun_runtime.rs`, and
-`crates/maverick-tests/tests/tun_packet_runtime.rs`. Behavioral RED may change
-only the roadmap and real integration test. Production and `STATUS.md` stay
-untouched until independent Green authorization. Preserve maverick-tun,
-generic `UdpAssociation`, every serial H2/WebSocket/flags-zero path, SOCKS,
-server, core, DNS, TCP, direct-v3, connection-manager, transport, manifest,
-dependency, feature, `Cargo.lock`, public API, wire, protocol/frame/config/
-profile version, and published Beta.4 artifact.
-
-**Adapter contract.** Override `submit_datagram` only for the private
-`MaverickDuplexDatagramFlow`. Reject any endpoint different from the fixed open
-target before a send. Borrow the existing send half from the sole association
-owner, call its existing `send_packet` exactly once, and return `Ok(None)` only
-after that future succeeds. Do not wait for a target datagram, fabricate a
-response, replay, retry, resend, reopen, or add a second owner. Existing
-`exchange`, `receive_unsolicited`, and `close` behavior remain available and
-unchanged. Every serial implementation inherits T025d's default exact
-`exchange -> Some` behavior.
-
-Cancellation before the existing send guard is armed performs no transport
-send. Once that guard is armed, an in-progress send failure or cancellation
-retains the existing sticky invalidation and abort behavior. A completed send
-does not prove target delivery or identify a later response. The T025d worker
-continues to own one flow and its existing bounded command channel; add no
-production task, channel, queue, lock, map, buffer, pending response, counter,
-config, correlation identifier, or capability flag.
+**Scope.** Hard-limit the complete card to five files: `ROADMAP.md`,
+`STATUS.md`, `crates/maverick-server/src/server.rs`,
+`crates/maverick-tests/tests/tcp_relay.rs`, and
+`crates/maverick-tests/tests/support/mod.rs`. Behavioral RED changes exactly
+the roadmap and those two test files. Do not change production or `STATUS.md`
+until the compile-ready RED is independently accepted. Preserve H2,
+WebSocket, flags-zero and serial UDP, every client/SOCKS/TUN/direct-v3 path,
+the one target owner, every manifest, dependency, feature, `Cargo.lock`, public
+API, frame encoding, protocol/config/profile version, and published Beta.4
+artifact.
 
 **Behavioral RED.** Based on exact parent
-`c4f0421549d2ed11921dda8ada38a3d9687fcfa5`, start the normal client with H3 and
-TUN enabled and one real loopback UDP target. Send local A, require the target
-to receive A, record its exact source, and deliberately withhold a reply. Send
-local B for the same app and target. Before observing B, prove that the packet
-runtime accepted and parsed both local packets, emptied ingress, retained one
-active association, and recorded no rejection, malformed packet, or UDP drop.
-Capture whether the target receives B from the same exact source before any
-target response; absence is data and must not propagate as the test error.
+`d0f76b07457d8df3c59a105f0396a9907bac76d3`, add one test-only optional user
+rate-limit field to `HarnessOptions`, default it to `None`, and map it directly
+to the existing `UserConfig.rate_limit`. Use `1,000` bytes per second in one
+raw Quinn/H3 loopback test. Complete the production authenticated handshake,
+verify the MAC-valid `ServerHello` selected the existing mode-negotiation bit,
+open one flags-one duplex flow, and require the exact same-flow, flags-one,
+empty acknowledgement before sending application datagrams.
 
-Then reply to A, require its packet-runtime delivery, ensure B reaches the same
-target source if it was previously absent, reply to B, and require its delivery.
-With no new local packet, send and receive one exact-target push, then send C,
-require C from the same source, and return its response. Require actual H3 with
-no cooldown, zero H2 pool activity, exactly one opened and zero failed TUN UDP
-association, no drop, bounded stopped/quiescent cleanup, exact source rebind,
-and clean fixture shutdown before the sole fixed panic
-`normal TUN legacy-H3 UDP second send stayed reply-gated`. The parent must
-compile and exit 101 only there. Any earlier timeout/error, H2 path, second
-association, source change, fabricated output, forced cleanup, leak, or
-different panic is not an accepted RED. Freeze the exact command, output,
-files, diff check, privacy scan, and binary diff hash, then stop for independent
-Green authorization.
+Encode peer packets 1, 2, and 3 as valid same-flow, same-fixed-target frames,
+concatenate all three encoded frames, and submit them with exactly one H3
+`send_data` call. Packet 1 and packet 3 are tiny. Packet 2 carries about 300
+bytes so the real shared limiter creates an approximately 300-millisecond
+window. After the real target receives packet 1 and reveals the exact server
+source, wait about 50 milliseconds and complete a roughly 550-byte target push
+to that source. Require exact packet 2 from the same source, prove that source
+is still owned, then capture as a boolean—never as a propagated timeout—
+whether packet 3 reaches the target in a bounded middle window before the
+ready push is serviced.
 
-**Evidence and compatibility.** Green must make that same real-loopback test
-prove A and B reach the target in order from one exact source before either
-target reply, followed by both replies, one target push without local input, C,
-and bounded cleanup. Source review must separately establish exact-target
-pre-send rejection, one existing low-level send call, `Ok(None)` only after its
-success, one owner, and no retry or correlation claim. Re-run T025d's fake
-submission test, the T025c push test, TUN runtime and client feature matrices,
-relevant H2/flags-zero/SOCKS regressions, all-features workspace, strict Clippy,
-warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh` before updating
-`STATUS.md`.
+On the parent, the peer-biased loop must deliver packet 3 in that window. The
+Green branch must leave packet 3 absent while it forwards the exact push first.
+In both branches, eventually require exact packet 3 from the same source and
+require the raw H3 response to contain the exact push target, port, flags,
+flow, and payload. Then send exact `CloseFlow` plus request FIN, require
+response FIN with no trailers, rebind the exact target source, verify actual H3
+with no fallback or H2 pool activity, and shut the fixture down cleanly. Only
+after all cleanup may the parent fail at fixed panic
+`legacy-H3 duplex ready target stayed starved behind peer burst`, producing
+exit 101. A compile failure, multiple DATA submissions for the burst, missing
+MAC-selected bit, early target push, wrong payload/source, incomplete target
+send, H2/fallback path, leaked owner, cleanup failure, timeout propagated from
+the middle observation, or different panic is not an accepted RED.
 
-This changes normal opt-in public `start_client` TUN behavior and is
-SemVer-observable without adding or changing a public Rust signature. It does
-not change a package version or published artifact. Any future publication
-requires a new prerelease and must not rewrite Beta.4. This result will not
-prove progress during a transport-blocked send, request-response correlation,
-arbitrary response ordering, fairness, no loss, multi-target reuse, IPv6,
-malicious-peer or transport-pressure behavior, games or voice suitability, a
-real TUN device, real-network behavior, product readiness, deployment, or
-release authorization.
+**Green server contract.** Keep the outer peer-first select and every terminal
+or invalid-peer ordering rule. Only after the current peer frame has passed the
+existing same-flow check, is not `CloseFlow`, is an exact flags-zero
+`UdpPacket`, decodes successfully, and matches the already fixed target and
+port may the handler perform one nonblocking target-receive probe. Never probe
+before the first target owner exists. If one target datagram is immediately
+ready, process exactly that one through the existing shared user limiter,
+frame encoder, H3 response completion deadline, and error path before applying
+the limiter or target send for the current peer frame. If no target datagram is
+immediately ready, process the peer frame immediately on its existing path.
 
-**Stop conditions.** Stop if implementation needs a fifth file, a public API,
-client UDP/pool/transport change, any server/core/SOCKS/maverick-tun edit, a
-second owner, or a production task/channel/queue/lock/map/buffer/pending
-response. Also stop on any wire/config/version/manifest/dependency/`Cargo.lock`
-change, serial-path drift, retry/replay/reopen, target mismatch reaching the
-tunnel, inability to preserve cancellation fail-closed behavior, or any claim
-beyond sequential submission after the existing send future completes.
+Do not loop or drain, and do not add a task, channel, queue, buffer, lock, map,
+second owner, retry, replay, resend, or correlation identifier. A target
+receive or H3 response failure remains terminal and must prevent the current
+peer packet from reaching the target. Wrong-flow, close, malformed,
+wrong-type/flags, and wrong-target input must still terminate before any new
+target I/O. Peer EOF, incomplete tail, peer read failure, idle handling,
+source ownership, and response completion bounds remain on their existing
+paths.
+
+**Evidence and compatibility.** The focused test will prove only that one
+already-ready target packet crosses the tail of one finite valid peer burst
+under one nonzero-rate raw-H3 loopback setup. Source review must separately
+prove the validation-before-probe ordering, the one-probe ceiling, reuse of the
+single target owner and existing deadline/error paths, and absence of new
+resources. Re-run the existing negotiated push, wrong-flow, wrong-target,
+malformed, idle, blocked-response, flags-zero, H2, and WebSocket regressions,
+then all workspace matrices, strict Clippy, warning-denied Rustdoc,
+`user-smoke.sh`, and `local-harness.sh` before updating `STATUS.md`.
+
+The Green changes observable authenticated legacy-H3 server scheduling and
+shared-limiter accounting order. It is therefore SemVer-observable even though
+it adds no public signature or wire value. Any future publication requires a
+new prerelease and must not rewrite Beta.4. This does not prove fairness under
+an unbounded peer stream, arbitrary ordering, no loss, request correlation,
+multi-target behavior, transport pressure, games or voice suitability,
+non-loopback or real-network behavior, normal client behavior, human-user
+progress, product readiness, deployment, or release authorization.
+
+**Stop conditions.** Stop if RED cannot compile and fail only at the fixed
+post-cleanup panic, cannot deterministically make the push ready before packet
+3 processing, needs a fourth RED file, or cannot prove one H3 DATA submission,
+exact source ownership, and complete cleanup. Stop Green if it needs a sixth
+file, a public/wire/config/version/manifest/dependency/`Cargo.lock` change, a
+new production resource, a second or looping target probe, target I/O before
+complete peer validation, target failure followed by peer send, or any H2,
+WebSocket, serial, client, SOCKS, TUN, direct-v3, retry, replay, or owner drift.
 
 ## Execution Order
 

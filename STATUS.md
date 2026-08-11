@@ -334,12 +334,77 @@ censorship resistance, production readiness, or browser identity.
   remain rejected. WebSocket and direct-v3/quiche H3 are unchanged. The slice
   reuses one existing feature bit, flag, frame set, payload set, and encoding;
   it adds no number, wire field, protocol/config/profile version, public API
-  signature, feature, dependency, manifest, or `Cargo.lock` change. Biased
-  selection may starve target receive under continuously ready peer input, so
-  there is no fairness or no-loss claim. By itself it did not establish a
-  client consumer, general-purpose SOCKS/TUN UDP, games or voice suitability,
-  real-network evidence, a published-artifact change, product readiness, or
-  release authorization.
+  signature, feature, dependency, manifest, or `Cargo.lock` change. At that
+  slice, biased selection could starve target receive under continuously ready
+  peer input. The later bounded ready-target scheduling item below narrows only
+  one finite-buffered-burst case and still does not establish fairness or no
+  loss. By itself this earlier item did not establish a client consumer,
+  general-purpose SOCKS/TUN UDP, games or voice suitability, real-network
+  evidence, a published-artifact change, product readiness, or release
+  authorization.
+- Unpublished workspace source now also gives one already-ready target
+  datagram a bounded opportunity before the tail of a finite valid peer burst
+  on an authenticated legacy-H3 duplex UDP flow. The outer event select remains
+  peer-first. After one current peer frame has passed the existing exact-flow,
+  non-`CloseFlow`, flags-zero `UdpPacket`, decode, and fixed-target checks, and
+  only when the target owner is active, the handler performs one target-first
+  nonblocking receive probe. If one target datagram is immediately ready, it
+  passes through the same shared user limiter, exact flow/flags frame encoder,
+  and bounded H3 response path before the current peer packet enters its
+  existing limiter and target-send path. If no target datagram is ready, the
+  current peer packet continues immediately on its previous path.
+  Wrong-flow, close, wrong-type/flags, malformed, and target-changing current
+  peer frames still terminate before this probe and begin no new target I/O.
+  A probed target receive failure still sends the fixed
+  `TargetConnectFailed` terminal response; an encode or H3 response failure
+  still exits the handler. In all of those cases the current peer packet is not
+  sent. Peer EOF, incomplete tail, read failure, the existing target event,
+  response completion deadlines, FIN, source ownership, and error categories
+  retain their existing paths. The new target-first work can delay the next
+  idle poll, so this result does not claim unchanged wall-clock idle timing.
+  The change adds no task, channel, queue, buffer, lock, map, second owner,
+  loop, drain, retry, replay, resend, correlation identifier, log, or raw
+  diagnostic value.
+  One authenticated raw Quinn/H3 loopback test verifies the MAC-selected
+  existing mode-negotiation bit, the flags-one exact acknowledgement, and one
+  H3 DATA body containing three valid same-flow, same-target peer packets. At
+  `1,000` bytes per second, the real shared limiter holds the middle 300-byte
+  peer payload while a 550-byte target push is sent to the exact active UDP
+  source. The bounded middle observation sees no third peer packet while the
+  target-first path services that ready push; the test then reads the exact
+  push from the raw H3 flow and eventually receives the third peer packet.
+  The test also verifies exact flow, target, port, payload and source, request
+  and response FIN, no trailers, one authenticated session, zero H2 pool
+  activity, source rebinding, and clean fixture shutdown. The exact test passes
+  1/1 and 50/50 consecutive stability reruns.
+  Focused negotiated-push, five duplex terminal/idle cases, blocked-response,
+  H2/H3 flags-zero, H2/H3 mismatched-frame, and both WebSocket regressions pass.
+  The all-features workspace suite passes, including client 154/154, server
+  304/304, relay 110/110, TUN packet runtime 4/4, and TUN runtime/library 21/21
+  and 4/4. Client library matrices pass 74/74 without defaults, 82/82 without
+  defaults plus H3, 71/71 without defaults plus TUN, and 79/79 without defaults
+  plus H3 and TUN. Server library matrices pass 114/114 without defaults and
+  117/117 without defaults plus H3. The relay no-default matrix passes 69 tests
+  and its no-default-plus-H3 matrix passes 107; each retains only the same
+  pre-existing unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo` failure
+  because private mode rejects
+  `advanced.stealth.tls_fingerprint=rustls_default`. Seven strict workspace,
+  client, and server Clippy combinations, warning-denied all-features Rustdoc,
+  formatting, `user-smoke.sh`, and `local-harness.sh` all pass locally.
+  This changes observable authenticated legacy-H3 server scheduling and shared
+  limiter accounting order, so it is SemVer-observable without changing a
+  public Rust signature, wire value or encoding, protocol/config/profile
+  version, manifest, dependency, feature, `Cargo.lock`, package version, or the
+  published Beta.4 artifact. Any future publication requires a new prerelease
+  and must not rewrite Beta.4. H2, WebSocket, flags-zero and serial UDP, every
+  client/SOCKS/TUN/direct-v3 path, and the single target owner are unchanged.
+  The dynamic evidence is limited to authenticated raw-H3, local loopback, one
+  nonzero rate, and one finite valid burst. It does not prove normal
+  `start_client` behavior, fairness under an unbounded peer stream, arbitrary
+  ordering, no loss, request correlation, multi-target behavior, malicious
+  input, transport pressure, games or voice suitability, real-network or
+  human-user results, product readiness, deployment, or release authorization.
 - Unpublished workspace source now also exposes an additive, public,
   `feature = "h3"` library API for one opt-in legacy-H3 duplex UDP
   association. `LegacyH3DuplexUdpAssociation::open` fixes one target and port,

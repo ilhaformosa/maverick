@@ -2929,6 +2929,45 @@ async fn handle_h3_duplex_udp_flow(
                     // if the first owner-open attempt fails terminally.
                     fixed_target = Some((packet.target.clone(), packet.port));
                 }
+
+                let ready_target = if target_slot.has_active_target() {
+                    tokio::select! {
+                        biased;
+                        target = target_slot.recv_packet(&mut target_buf) => Some(target),
+                        _ = std::future::ready(()) => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(target) = ready_target {
+                    match target {
+                        Ok(packet) => {
+                            if let Some(limiter) = &user_policy.rate_limiter {
+                                limiter.throttle(packet.data.len()).await;
+                            }
+                            h3_send_server_frame(
+                                &mut send_stream,
+                                Frame::new(FrameType::UdpPacket, 0, flow_id, packet.encode()?),
+                                max_frame_size,
+                                false,
+                                state,
+                            )
+                            .await?;
+                        }
+                        Err(_) => {
+                            h3_send_server_frame(
+                                &mut send_stream,
+                                relay::error_frame(flow_id, ErrorCode::TargetConnectFailed),
+                                max_frame_size,
+                                true,
+                                state,
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                    }
+                }
+
                 if let Some(limiter) = &user_policy.rate_limiter {
                     limiter.throttle(packet.data.len()).await;
                 }

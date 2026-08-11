@@ -467,6 +467,70 @@ censorship resistance, production readiness, or browser identity.
   prerelease and must not rewrite Beta.4. This is one fixed-target legacy-H3
   SOCKS slice, not general multi-target duplex SOCKS, TUN integration, games or
   voice suitability, or a fairness/no-loss guarantee.
+- Unpublished workspace source now also bounds and cancels pending normal-SOCKS
+  legacy-H3 setup. After legacy-H3 transport connection succeeds, the common
+  tunnel-open path gives the request through complete, MAC-verified
+  `ServerHello` one fresh `connect_timeout_ms` budget. Expiry returns a fixed,
+  source-free, crate-private application-handshake category and dropping the
+  pending owner synchronously aborts its dedicated H3 request and connection.
+  This failure bound is common to callers of the normal legacy-H3 tunnel-open
+  path; successful opens are unchanged, and the public direct-H3 duplex API
+  retains its existing single outer connection-plus-handshake budget.
+  Dynamic stalled-peer evidence in this slice covers only normal
+  `start_client` SOCKS5 UDP, not TCP, DNS, HTTP CONNECT, TUN, or the direct-v3/
+  quiche H3 path.
+  A statically configured H3-candidate SOCKS association—H3 compiled, `auto`
+  mode, `experimental_h3` enabled, and WebSocket absent—now uses a biased,
+  EOF-first select between control EOF and the pending pool open. That select
+  remains active through H3 cooldown and the same open attempt's permitted
+  pre-request H3-connect-to-H2 fallback wait, avoiding a second dynamic
+  transport decision. Default-H2 `auto`, `stable`, `private`, and WebSocket
+  configurations retain their direct await. Non-EOF control bytes are still
+  ignored and do not cancel setup, but while a configured-H3-candidate open is
+  pending the new select may consume them earlier than before; this slice makes
+  no unchanged consumption- or scheduling-time claim. A pre-request H3
+  connection failure may still mark cooldown and fall back to H2. Once an H3
+  request has begun, its application-handshake timeout is terminal for that
+  SOCKS association: there is no cooldown, H2 fallback, replay, resend, or
+  reopen.
+  If the actual H3 carrier returns a valid `ServerHello` selecting flags-zero
+  compatibility, the SOCKS-only flags-zero `OpenUdp` acknowledgement wait gets
+  a separate fresh `connect_timeout_ms` budget. Only expiry maps to a fixed,
+  source-free terminal category. H2 and WebSocket serial setup and the
+  selected-bit duplex path with its existing deadlines remain unchanged. The
+  generic/public/TUN post-tunnel flags-zero `OpenUdp` acknowledgement wait is
+  unchanged; a caller that reaches the normal common legacy-H3 tunnel-open path
+  still inherits the application-handshake bound described above. Control EOF
+  can cancel the SOCKS pending setup through the same outer configured-H3-
+  candidate select, but this slice's independent flags-zero scripted-peer test
+  dynamically proves its deadline, not a second flags-zero-specific EOF case.
+  Real Quinn/H3 scripted-peer coverage through normal `start_client` first
+  verifies the production `ClientHello`, then either withholds the final byte
+  of a MAC-valid `ServerHello` or sends a complete selected-zero hello, observes
+  the exact flags-zero `OpenUdp`, and withholds its acknowledgement. The
+  partial-hello cases dynamically prove both the configured deadline and
+  prompt control-EOF cancellation; the flags-zero case proves the separate
+  deadline. Together they observe zero UDP-target contact, zero same-port TCP/
+  H2 fallback and pool activity, exactly one H3 connection and request, no
+  replay or cooldown, and bounded H3 abort cleanup. They do not prove other
+  callers' stall cancellation, a malicious peer's wrong acknowledgement or
+  malformed/wrong-flow/wrong-target response, partial client transport writes,
+  or blocked client-response transport pressure.
+  Formatting, the all-features workspace suite, the 108/108 all-features relay
+  target, client libraries at 74/74 without default features and 82/82 with H3,
+  strict workspace and client Clippy matrices, warning-denied Rustdoc,
+  `user-smoke.sh`, and `local-harness.sh` pass locally. The broader no-default
+  relay runs retain only the already recorded unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo`
+  private-mode/rustls-default mismatch: 68 other tests pass without H3 and 105
+  other tests pass with H3. The common application-handshake failure bound is
+  SemVer-observable through every public entry point that reaches the common
+  legacy-H3 tunnel-open path, including `start_client` and
+  `serve_udp_associate`, but adds no public signature and changes no package
+  version, published Beta.4 artifact, manifest, dependency, `Cargo.lock`, wire
+  number or encoding, protocol/config/profile version, deployment
+  authorization, real-network result, product-readiness result, or release
+  state.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

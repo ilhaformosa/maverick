@@ -1,6 +1,8 @@
 #[cfg(feature = "h3")]
 use std::future::poll_fn;
 use std::net::SocketAddr;
+#[cfg(feature = "h3")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -34,8 +36,12 @@ use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
 #[cfg(feature = "h3")]
 use maverick_core::GuiTransportCarrier;
 use maverick_core::{Mode, SecretString};
+#[cfg(feature = "h3")]
+use rustls::pki_types::PrivateKeyDer;
 use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
 use rustls::RootCertStore;
+#[cfg(feature = "h3")]
+use tempfile::TempDir;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3732,6 +3738,365 @@ fn socks_udp_ipv4_request(target: SocketAddr, payload: &[u8]) -> Vec<u8> {
     request.extend_from_slice(&target.port().to_be_bytes());
     request.extend_from_slice(payload);
     request
+}
+
+#[cfg(feature = "h3")]
+#[derive(Clone, Copy)]
+enum StalledH3SetupExit {
+    ConnectDeadline,
+    ControlEof,
+}
+
+#[cfg(feature = "h3")]
+#[derive(Clone, Copy)]
+enum StalledH3SetupStage {
+    PartialServerHello,
+    SerialOpenUdpAck,
+}
+
+#[cfg(feature = "h3")]
+async fn observe_normal_socks_stalled_h3_setup(
+    stage: StalledH3SetupStage,
+    exit: StalledH3SetupExit,
+) -> Result<bool> {
+    const DEADLINE_MS: u64 = 250;
+    const DEADLINE_LOWER_BOUND: Duration = Duration::from_millis(200);
+    const DEADLINE_UPPER_BOUND: Duration = Duration::from_millis(DEADLINE_MS + 750);
+    const CONTROL_EOF_BOUND: Duration = Duration::from_millis(500);
+
+    let fixture = MaverickHarness::start().await?;
+    let tmp = TempDir::new()?;
+    let cert_path = tmp.path().join("scripted-ca.pem");
+    let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+    tokio::fs::write(&cert_path, certified.cert.pem()).await?;
+    let cert: CertificateDer<'static> = certified.cert.into();
+    let key = PrivateKeyDer::Pkcs8(certified.key_pair.serialize_der().into());
+
+    let fallback_sentinel = TcpListener::bind("127.0.0.1:0").await?;
+    let server_addr = fallback_sentinel.local_addr()?;
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])?
+    .with_no_client_auth()
+    .with_single_cert(vec![cert], key)?;
+    tls.alpn_protocols = vec![b"h3".to_vec()];
+    tls.max_early_data_size = 0;
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
+        quinn::crypto::rustls::QuicServerConfig::try_from(tls)?,
+    ));
+    let mut server_transport = quinn::TransportConfig::default();
+    server_transport
+        .max_idle_timeout(Some(Duration::from_secs(10).try_into()?))
+        .initial_rtt(Duration::from_millis(10));
+    server_config.transport_config(Arc::new(server_transport));
+    let endpoint = quinn::Endpoint::server(server_config, server_addr)?;
+
+    let mut config = fixture.client_config();
+    config.local.socks5.listen = "127.0.0.1:0".parse()?;
+    config.server.address = server_addr.to_string();
+    config.server.ca_cert = Some(cert_path);
+    config.advanced.experimental_h3 = true;
+    config.advanced.connect_timeout_ms = match exit {
+        StalledH3SetupExit::ConnectDeadline => DEADLINE_MS,
+        StalledH3SetupExit::ControlEof => 5_000,
+    };
+    assert_h3_transport(&config);
+
+    let secret = config.server.secret.clone();
+    let credential_id = config.server.credential_id.clone();
+    let tunnel_path = config.server.tunnel_path.clone();
+    let expected_udp_idle_timeout_ms = config.advanced.udp_idle_timeout_ms;
+    let server_endpoint = endpoint.clone();
+    let (stall_reached_tx, stall_reached_rx) = oneshot::channel();
+    let (connection_aborted_tx, connection_aborted_rx) = oneshot::channel();
+    let mut connection_aborted_rx = Some(connection_aborted_rx);
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let server_request_count = Arc::clone(&request_count);
+    let server_task = tokio::spawn(async move {
+        let incoming = server_endpoint
+            .accept()
+            .await
+            .context("scripted H3 peer did not accept the normal client")?;
+        let connection = incoming
+            .await
+            .context("scripted H3 peer did not complete QUIC")?;
+        let mut h3 =
+            h3::server::Connection::new(h3_quinn::Connection::new(connection.clone())).await?;
+        let resolver = h3
+            .accept()
+            .await?
+            .context("normal SOCKS client did not send an H3 request")?;
+        server_request_count.fetch_add(1, Ordering::SeqCst);
+        let (request, mut stream) = resolver.resolve_request().await?;
+        anyhow::ensure!(request.method() == Method::POST, "unexpected H3 method");
+        anyhow::ensure!(
+            request.uri().path() == tunnel_path,
+            "unexpected H3 tunnel path"
+        );
+
+        let mut request_bytes = BytesMut::new();
+        let client_hello = 'read_hello: loop {
+            while let Some(frame) = Frame::decode_from(&mut request_bytes, 65_536)? {
+                if frame.frame_type == FrameType::Padding {
+                    continue;
+                }
+                anyhow::ensure!(
+                    frame.frame_type == FrameType::ClientHello,
+                    "scripted H3 peer did not receive ClientHello first"
+                );
+                break 'read_hello ClientHello::decode(&frame.payload)?;
+            }
+            let mut chunk = stream
+                .recv_data()
+                .await?
+                .context("normal H3 request ended before ClientHello")?;
+            let bytes = chunk.copy_to_bytes(chunk.remaining());
+            request_bytes.extend_from_slice(&bytes);
+        };
+        anyhow::ensure!(
+            client_hello.credential_id == credential_id,
+            "normal client used the wrong credential"
+        );
+        anyhow::ensure!(
+            client_hello.verify(&secret, &tunnel_path),
+            "normal client sent an invalid ClientHello"
+        );
+
+        anyhow::ensure!(
+            client_hello.feature_flags & FEATURE_OPEN_UDP_MODE_NEGOTIATION != 0,
+            "normal H3 client did not request UDP mode negotiation"
+        );
+        let selected_features = match stage {
+            StalledH3SetupStage::PartialServerHello => {
+                client_hello.feature_flags & FEATURE_OPEN_UDP_MODE_NEGOTIATION
+            }
+            StalledH3SetupStage::SerialOpenUdpAck => 0,
+        };
+        let server_hello = ServerHello::new(
+            &secret,
+            &client_hello.client_nonce,
+            65_536,
+            128,
+            selected_features,
+        )?;
+        anyhow::ensure!(
+            server_hello.verify(&secret, &client_hello.client_nonce),
+            "scripted peer constructed an invalid ServerHello"
+        );
+        let encoded =
+            Frame::new(FrameType::ServerHello, 0, 0, server_hello.encode()).encode(65_536)?;
+        anyhow::ensure!(encoded.len() > 1, "ServerHello frame had no proper prefix");
+        stream
+            .send_response(
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/octet-stream")
+                    .body(())?,
+            )
+            .await?;
+        match stage {
+            StalledH3SetupStage::PartialServerHello => {
+                stream.send_data(encoded.slice(..encoded.len() - 1)).await?;
+            }
+            StalledH3SetupStage::SerialOpenUdpAck => {
+                stream.send_data(encoded).await?;
+                let open_udp = 'read_open_udp: loop {
+                    while let Some(frame) = Frame::decode_from(&mut request_bytes, 65_536)? {
+                        if frame.frame_type == FrameType::Padding {
+                            continue;
+                        }
+                        break 'read_open_udp frame;
+                    }
+                    let mut chunk = stream
+                        .recv_data()
+                        .await?
+                        .context("normal H3 request ended before flags-zero OpenUdp")?;
+                    let bytes = chunk.copy_to_bytes(chunk.remaining());
+                    request_bytes.extend_from_slice(&bytes);
+                };
+                anyhow::ensure!(
+                    open_udp.frame_type == FrameType::OpenUdp,
+                    "normal H3 client did not send OpenUdp after selected mask zero"
+                );
+                anyhow::ensure!(
+                    open_udp.flags == 0,
+                    "normal H3 client did not send exact flags-zero OpenUdp"
+                );
+                anyhow::ensure!(open_udp.flow_id != 0, "OpenUdp used the reserved flow id");
+                let payload = OpenUdpPayload::decode(&open_udp.payload)?;
+                anyhow::ensure!(
+                    payload.idle_timeout_ms == expected_udp_idle_timeout_ms,
+                    "flags-zero OpenUdp changed its configured idle value"
+                );
+            }
+        }
+        let _ = stall_reached_tx.send(());
+
+        loop {
+            tokio::select! {
+                request = h3.accept() => {
+                    match request {
+                        Ok(Some(_)) => {
+                            server_request_count.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+                data = stream.recv_data() => {
+                    match data {
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+            }
+        }
+        let _ = connection.closed().await;
+        let _ = connection_aborted_tx.send(());
+        Result::<()>::Ok(())
+    });
+
+    let client = maverick_client::start_client(config.clone()).await?;
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let (mut control, udp, udp_bind) = open_normal_socks_udp_associate(client.local_addr).await?;
+    let started = Instant::now();
+    udp.send_to(
+        &socks_udp_ipv4_request(target_addr, b"must-not-leave-client"),
+        udp_bind,
+    )
+    .await?;
+    timeout(Duration::from_secs(2), stall_reached_rx)
+        .await
+        .context("scripted H3 peer did not reach the stalled setup stage")??;
+
+    let stopped = match exit {
+        StalledH3SetupExit::ConnectDeadline => {
+            let mut control_byte = [0_u8; 1];
+            let control_ended = matches!(
+                timeout(Duration::from_secs(1), control.read(&mut control_byte)).await,
+                Ok(Ok(0))
+            );
+            let deadline_elapsed = started.elapsed();
+            let abort_result = timeout(
+                Duration::from_millis(250),
+                connection_aborted_rx
+                    .as_mut()
+                    .expect("connection abort receiver must be pending"),
+            )
+            .await;
+            let abort_receiver_consumed = abort_result.is_ok();
+            let peer_aborted = matches!(abort_result, Ok(Ok(())));
+            if abort_receiver_consumed {
+                connection_aborted_rx = None;
+            }
+            control_ended
+                && peer_aborted
+                && deadline_elapsed >= DEADLINE_LOWER_BOUND
+                && deadline_elapsed <= DEADLINE_UPPER_BOUND
+        }
+        StalledH3SetupExit::ControlEof => {
+            control.shutdown().await?;
+            let mut control_byte = [0_u8; 1];
+            let abort_receiver = connection_aborted_rx
+                .as_mut()
+                .expect("connection abort receiver must be pending");
+            let (control_result, abort_result) = tokio::join!(
+                timeout(CONTROL_EOF_BOUND, control.read(&mut control_byte)),
+                timeout(CONTROL_EOF_BOUND, abort_receiver),
+            );
+            let abort_receiver_consumed = abort_result.is_ok();
+            let peer_aborted = matches!(abort_result, Ok(Ok(())));
+            if abort_receiver_consumed {
+                connection_aborted_rx = None;
+            }
+            matches!(control_result, Ok(Ok(0))) && peer_aborted
+        }
+    };
+
+    let mut target_buf = [0_u8; 1];
+    assert!(
+        timeout(
+            Duration::from_millis(150),
+            target.recv_from(&mut target_buf)
+        )
+        .await
+        .is_err(),
+        "stalled H3 setup contacted the real UDP target"
+    );
+    assert!(
+        timeout(Duration::from_millis(150), fallback_sentinel.accept())
+            .await
+            .is_err(),
+        "stalled H3 setup attempted TCP/H2 fallback"
+    );
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        1,
+        "stalled H3 setup replayed a second request on one connection"
+    );
+    assert!(
+        timeout(Duration::from_millis(150), endpoint.accept())
+            .await
+            .is_err(),
+        "stalled H3 setup opened a second H3 connection"
+    );
+    let pool = client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    assert_eq!(pool.active_streams, 0);
+    assert_h3_transport(&config);
+
+    drop(control);
+    timeout(Duration::from_secs(2), client.shutdown())
+        .await
+        .context("normal client cleanup stayed pending")??;
+    if let Some(mut connection_aborted_rx) = connection_aborted_rx.take() {
+        timeout(Duration::from_secs(1), &mut connection_aborted_rx)
+            .await
+            .context("normal client shutdown did not abort the H3 connection")??;
+    }
+    endpoint.close(0u32.into(), b"scripted-peer-complete");
+    timeout(Duration::from_secs(2), server_task)
+        .await
+        .context("scripted H3 peer task stayed pending")???;
+    fixture.shutdown().await?;
+    Ok(stopped)
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn normal_socks_h3_partial_server_hello_obeys_deadline_and_control_eof() -> Result<()> {
+    let deadline_stopped = observe_normal_socks_stalled_h3_setup(
+        StalledH3SetupStage::PartialServerHello,
+        StalledH3SetupExit::ConnectDeadline,
+    )
+    .await?;
+    let control_eof_stopped = observe_normal_socks_stalled_h3_setup(
+        StalledH3SetupStage::PartialServerHello,
+        StalledH3SetupExit::ControlEof,
+    )
+    .await?;
+
+    if !(deadline_stopped && control_eof_stopped) {
+        panic!("normal SOCKS stalled H3 setup stayed alive");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn normal_socks_h3_flags_zero_open_udp_ack_obeys_deadline() -> Result<()> {
+    let deadline_stopped = observe_normal_socks_stalled_h3_setup(
+        StalledH3SetupStage::SerialOpenUdpAck,
+        StalledH3SetupExit::ConnectDeadline,
+    )
+    .await?;
+
+    if !deadline_stopped {
+        panic!("normal SOCKS flags-zero H3 OpenUdp setup stayed alive");
+    }
+    Ok(())
 }
 
 async fn receive_socks_udp_ipv4_payload(

@@ -27,6 +27,10 @@ const MAX_NEGOTIATED_FRAME_SIZE: usize = 1024 * 1024;
 #[derive(Debug)]
 pub(crate) struct H2SendStalled;
 
+#[cfg(feature = "h3")]
+#[derive(Debug)]
+pub(crate) struct LegacyH3ApplicationHandshakeTimedOut;
+
 impl std::fmt::Display for H2SendStalled {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("h2 send stalled while waiting for receiver capacity")
@@ -34,6 +38,16 @@ impl std::fmt::Display for H2SendStalled {
 }
 
 impl std::error::Error for H2SendStalled {}
+
+#[cfg(feature = "h3")]
+impl std::fmt::Display for LegacyH3ApplicationHandshakeTimedOut {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("legacy-H3 application handshake timed out")
+    }
+}
+
+#[cfg(feature = "h3")]
+impl std::error::Error for LegacyH3ApplicationHandshakeTimedOut {}
 
 pub enum ClientTunnel {
     H2(Box<H2ClientTunnel>),
@@ -602,7 +616,15 @@ async fn open_h3(
     config: &ClientConfig,
     transport: crate::h3_transport::H3RequestSender,
 ) -> Result<ClientTunnel> {
-    open_h3_with_policy(config, transport, false).await
+    match timeout(
+        Duration::from_millis(config.advanced.connect_timeout_ms),
+        open_h3_with_policy(config, transport, false),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::Error::new(LegacyH3ApplicationHandshakeTimedOut)),
+    }
 }
 
 #[cfg(feature = "h3")]

@@ -17,142 +17,128 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T024b-3 — Normal SOCKS legacy-H3 duplex UDP integration
+### T024b-3a — Bound and cancel normal SOCKS legacy-H3 setup
 
-**User result.** The normal `start_client` SOCKS5 UDP service can receive
-fixed-target datagrams that arrive through an actually negotiated legacy-H3
-duplex flow even when the local SOCKS peer has sent no new packet. H2,
-WebSocket, actual H3 without the selected mode bit, and H2 returned by the
-existing scheduler after an H3 setup failure all remain the existing flags-zero
-serial path with one target named independently by each packet. This is narrow,
-unpublished SOCKS integration, not a general-purpose UDP, TUN, games, voice,
-or real-network result.
+**User result.** A normal `start_client` SOCKS5 UDP association no longer hangs
+indefinitely when its selected legacy-H3 peer accepts QUIC and HTTP/3 but then
+stalls while returning the authenticated Maverick `ServerHello`, or returns a
+complete valid `ServerHello` selecting flags-zero compatibility and withholds
+the ensuing `OpenUdp` acknowledgement. The configured connect deadline ends
+that exact SOCKS association, and closing the SOCKS control connection cancels
+the pending application-handshake setup promptly. Neither path sends the first
+UDP payload, falls back to H2, replays it, or places H3 in cooldown. This is
+local reliability hardening against a stalled or faulty endpoint, not general
+multi-target UDP, TUN integration, malicious-server completeness, a real-
+network result, or product readiness.
 
-**Scope.** Hard-limit the complete card to six files: `ROADMAP.md`,
-`STATUS.md`, `crates/maverick-core/src/frame.rs`,
-`crates/maverick-client/src/udp.rs`,
-`crates/maverick-client/src/socks5.rs`, and
-`crates/maverick-tests/tests/tcp_relay.rs`. Behavioral red changes only
-`ROADMAP.md` and `tcp_relay.rs`; do not touch production code or `STATUS.md`
-until the red is independently accepted and green is authorized. The sole
-`frame.rs` change is the public duplex-flag Rustdoc correction required after
-normal selected-H3 SOCKS becomes a consumer; do not change the constant, wire,
-test, or core behavior. Preserve every manifest, dependency, feature,
-`Cargo.lock`, public API, wire number and encoding, protocol/config/profile
-version, server path, normal TCP/DNS/HTTP CONNECT/TUN path, and
-direct-v3/quiche H3 path.
+**Scope.** Behavioral red is limited to `ROADMAP.md` and
+`crates/maverick-tests/tests/tcp_relay.rs`. Green may additionally change only
+`STATUS.md`, `crates/maverick-client/src/tunnel.rs`,
+`crates/maverick-client/src/udp.rs`, and
+`crates/maverick-client/src/socks5.rs`. Preserve every manifest, dependency,
+feature, `Cargo.lock`, public API, wire number and encoding,
+protocol/config/profile version, server path, H2/WebSocket setup behavior,
+successful legacy-H3 tunnel behavior, non-H3 TCP/DNS/HTTP CONNECT/TUN behavior,
+public duplex-association contract, and direct-v3/quiche H3 path. Because the
+application handshake is part of the common legacy-H3 tunnel open, its new
+failure bound is observable by every caller of that common path; this card does
+not falsely promise that a stalled legacy-H3 TCP, DNS, HTTP CONNECT, or TUN
+open retains an indefinite wait.
 
 **Behavioral red.** One final-shape real-loopback test must start the normal
-client through `MaverickHarness`, complete SOCKS5 UDP ASSOCIATE, and use an
-actual negotiated legacy-H3 carrier with no cooldown and no H2 pool activity.
-Packet A must reach one real UDP target; that target must reveal the exact
-server UDP source, return A successfully through SOCKS, and then send two
-further datagrams to the still-owned source without another local client
-packet. The old serial parent must deliver neither push. After bounded control-
-EOF cleanup, the test must rebind the exact source, reconfirm H3 without
-cooldown, shut down cleanly, and only then fail at the fixed panic
-`normal SOCKS legacy-H3 UDP target push stayed unavailable`, producing status
-101. A compile failure, mock, public library-only association, direct tunnel
-helper, H2/WebSocket path, H3 cooldown, missing A roundtrip, target that did not
-really send the pushes, leaked source, timeout returned as the test error, or
-different panic is not an accepted red. Record the exact parent, command,
-output, exit status, changed-file list, and diff hash, then stop for independent
-green authorization.
+client with `start_client`, complete SOCKS5 UDP ASSOCIATE, and send the first
+legal local UDP packet. A real Quinn/H3 peer trusted by the production TLS
+configuration must accept the production request, decode and verify its actual
+`ClientHello`, return HTTP 200 `application/octet-stream`, construct a
+MAC-valid `ServerHello`, send every byte except its final byte, and keep the
+connection available. The test runs two independent cases: a short configured
+connect deadline with the SOCKS control left open, and a long deadline followed
+by control EOF only after the peer confirms the valid prefix was sent. The
+first must end the control association and abort the exact H3 request and
+connection no earlier than a reasonable lower bound and no later than a bounded
+allowance around the configured deadline. The second must both return EOF to
+the local SOCKS control reader and abort the H3 request and connection within
+500 milliseconds of local control EOF. Both must prove zero real-UDP-target
+contact, zero TCP/H2 fallback attempts on a same-port sentinel, exactly one H3
+connection and request with no same-connection or new-connection replay, zero
+H2 pool activity, no H3 cooldown, no replay, and clean bounded shutdown. Only
+after both cases clean up may a failure use the fixed panic
+`normal SOCKS stalled H3 setup stayed alive`, producing status 101.
 
-**Green tunnel decision.** For the first accepted local UDP packet, the normal
-SOCKS handler calls `ClientTunnelPool::open` exactly once. If that already-open,
-authenticated tunnel is actually H3 and its verified selected mask contains
-the existing UDP-mode negotiation bit, construct the duplex association from
-that same tunnel and request flags-one. Otherwise, the same already-open actual
-H2, WebSocket, or H3-without-the-bit tunnel constructs the unchanged flags-zero
-serial association and preserves per-packet target selection. H2 returned by
-the existing scheduler after an H3 setup failure is simply that one already-
-open H2 tunnel; the SOCKS handler makes no second connection, scheduler, or
-fallback decision. Once an H3 tunnel authenticates and duplex setup begins,
-any acknowledgement, framing, transport, cancellation, or terminal failure
-ends that SOCKS UDP association; do not fall back, replay, or resend the first
-datagram on another carrier.
+A second final-shape test reuses the same normal-client and scripted-peer
+boundary but sends the complete MAC-valid `ServerHello` with selected mask
+zero. It must positively observe the production client send one same-request,
+nonzero-flow, exact flags-zero `OpenUdp` carrying the configured idle value,
+then withhold the acknowledgement. With the SOCKS control left open, the same
+250-millisecond setup deadline, reasonable lower bound, bounded upper allowance,
+zero target/H2/fallback/replay/cooldown checks, and strong abort cleanup apply.
+Only after cleanup may its parent behavior fail at the fixed panic
+`normal SOCKS flags-zero H3 OpenUdp setup stayed alive`, producing status 101.
 
-**Duplex-only fixed target and ownership.** Only an actual H3 tunnel with the
-verified selected bit and flags-one `OpenUdp` fixes the first legal SOCKS UDP
-packet's exact logical target and port for the lifetime of that duplex
-association. A later packet for another target or port is dropped locally
-before tunnel send; it must contact neither the fixed target A nor rejected
-target B, and a following valid packet for A must still work. Flags-zero H2,
-WebSocket, and H3 serial associations retain their existing target named by
-each packet and do not apply this local different-target drop. Keep one handler
-as the sole owner and one `tokio::select!` over control EOF, local SOCKS UDP
-input, and target push from the duplex receive half. Add no spawned task,
-channel, queue, lock, second association owner, target map, retry, or packet
-correlation. Preserve the existing single accepted local UDP peer rule and
-SOCKS packet encoding.
+A mock, direct tunnel or public library call, production test hook, unverified
+hello, invalid certificate, incomplete HTTP setup, peer that never confirms its
+partial-hello or exact flags-zero-`OpenUdp` barrier, timeout returned as the test
+error, target or fallback contact, H3 cooldown, leaked client/server task,
+compile failure, or different panic is not an accepted red. Record the exact
+parent, command, output, exit status, changed-file list, and diff hash, then
+stop for independent green authorization.
 
-**Failure and cleanup contract.** Local malformed, fragmented, and wrong-peer
-packets remain drops. A different-target packet is also a local non-poisoning
-drop only for the flags-one fixed-target duplex association; flags-zero serial
-paths retain their existing per-packet target behavior. Once the handler has
-chosen authenticated H3 duplex, any duplex open, first or later send, receive,
-terminal, or close failure ends the entire current SOCKS control association
-and terminates its handler. It never returns to local-input waiting, clears the
-association for reopening, or silently reopens the fixed target. Control EOF,
-handler cancellation, clean target idle close, transport error, and normal
-return release the duplex owner and exact server UDP source. Do not copy
-target, backend, credential, certificate-path, or raw transport values into a
-new public error or log category.
+**Green contract.** Give the actual-H3 application handshake—from request send
+through a completely received and MAC-verified `ServerHello`—one
+`connect_timeout_ms` budget in the common legacy-H3 tunnel-open path. Successful
+legacy-H3 opens retain their existing result, but every caller of that common
+path gains this bounded application-handshake failure instead of an indefinite
+wait. Dynamic evidence in this card covers only normal SOCKS UDP; it does not
+claim a new runtime cancellation test for TCP, DNS, HTTP CONNECT, or TUN. A
+timeout after the H3 request has begun is terminal for that SOCKS association:
+drop and synchronously abort its dedicated H3 request/connection, end the
+handler, do not mark scheduler cooldown, and do not try H2, replay, resend, or
+reopen. While this association open is pending, select the existing control
+stream for EOF; EOF cancels and aborts the same owner immediately. Enable this
+biased, EOF-first select from one static configured-H3-candidate predicate:
+the H3 build is present, mode is `auto`, `experimental_h3` is enabled, and
+WebSocket is not selected. This avoids making a second dynamic transport
+decision that can race cooldown expiry. The select therefore also spans H3
+cooldown and the same pool-open attempt's permitted pre-request H3-connect-to-
+H2 fallback wait. Default-H2 `auto`, `stable`, `private`, and WebSocket
+configurations retain their direct await. Preserve ordinary
+unavailable-H3 transport-connect fallback before an H3 request exists unless
+the local SOCKS control reaches EOF first.
 
-**Green acceptance.** Turn the behavioral red green without weakening its
-normal `start_client` → SOCKS UDP → authenticated H3 → real-target path. It
-must receive both unsolicited pushes in their target-send order and retain the
-same exact server source. That observed order is bounded loopback regression
-evidence only, not an API or product promise of ordering, fairness, no loss, or
-request-response correlation. Add focused real-loopback coverage that (1)
-sends a different-target packet after A on flags-one duplex, proves zero A and
-B target contact from that packet, then successfully continues with A; (2)
-proves the normal H2 SOCKS UDP path retains flags-zero per-packet target
-switching; (3) proves an unavailable H3 setup may yield the existing H2
-fallback only inside the one pool open, while a failure after H3
-authentication/duplex start never falls back or replays; and (4) proves
-control EOF while the target-push receive direction is pending cancels that
-borrow safely and releases the exact source within the existing bound.
+If a complete MAC-valid `ServerHello` selects flags-zero compatibility mode,
+the ensuing actual-H3 `OpenUdp` acknowledgement wait must use the same bounded
+setup policy and control-EOF cancellation. Its timeout is terminal for that
+actual-H3 SOCKS association and does not fall back, replay, resend, or reopen.
+Do not broaden that deadline to H2 or WebSocket serial association setup.
+Existing selected-bit duplex
+acknowledgement, send, receive, close, and unusable-state deadlines remain
+unchanged. Dropping a pending future must own enough state to abort; do not add
+a detached task, channel, queue, lock, retry, second tunnel, or test-only seam.
 
-Keep evidence layers explicit. Real normal-client carrier evidence covers
-selected legacy-H3 duplex, H2 serial behavior, one in-pool H3-setup-to-H2
-fallback, authenticated H3 duplex-open rejection ending the control
-association without fallback, and control EOF while receive is pending. Unit
-and source evidence lock the single `ClientTunnelPool::open` call, the actual-
-carrier plus verified-selected-bit decision, actual H3 without that bit
-remaining serial, WebSocket remaining serial at the client decision, exact
-flags-one versus flags-zero acknowledgement shapes, fixed-target local
-filtering before send, every established-duplex send/receive/terminal failure
-branch ending the control association, and the single-owner `select!`
-structure. Do not claim a real normal-client H3-without-the-bit dynamic test;
-adding a test-only negotiation hook or changing a seventh file is outside this
-card. Existing WebSocket TCP and handshake regressions remain its dynamic
-compatibility evidence; the current WebSocket server has no normal UDP success
-path, so this card does not invent one or claim a WebSocket UDP roundtrip.
-Existing public-association tests for clean server idle and transport failure
-remain lower-layer lifecycle evidence, not normal SOCKS end-to-end evidence.
-Preserve the public duplex API and its cancellation/failure contract, existing
-H2/H3 serial `UdpAssociation`, raw-wire duplex server tests, SOCKS local-peer
-restriction, TUN behavior, and all TCP/DNS/HTTP CONNECT behavior. Run the
-focused red/green test, affected client tests, relevant H2/H3/WebSocket
-integration matrices, formatting, all-target/all-feature strict Clippy,
-warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh` locally.
+**Compatibility, evidence, and stop conditions.** The green behavior is
+SemVer-observable through existing public `start_client` and
+`serve_udp_associate` entry points but changes no signature. Existing honest
+H3 success, pre-connect H3-to-H2 fallback, H2/WebSocket serial UDP, selected-H3
+duplex UDP, successful TCP, DNS, HTTP CONNECT and TUN paths, and public duplex
+library tests must remain green. The common tunnel-open timeout intentionally
+changes stalled legacy-H3 failure duration for those callers, while their
+successful path remains unchanged. A scripted partial `ServerHello` through
+normal SOCKS UDP proves only that client-side stall/cancellation shape; it is
+not dynamic evidence for other callers or for a malicious peer's wrong
+acknowledgement, malformed/wrong-flow/wrong-target response, partial client
+transport write, or blocked client response. Only after all green gates pass
+may `STATUS.md` record the exact behavior and residuals.
 
-**Truth, compatibility, and stop conditions.** This is a SemVer-observable
-behavior change to the existing public `start_client` and
-`serve_udp_associate` entry points, but it changes no public Rust signature.
-The unpublished source card does not change the package version; any future
-publication requires a new prerelease and must not rewrite Beta.4. It changes
-no published Beta.4 artifact, deployment authorization, release state,
-human-user result, or real-network evidence. Only after every green gate passes
-may `STATUS.md` record the exact source behavior and residual limits. Stop and re-adjudicate if
-compile-ready red or safe green needs `lib.rs`, `tunnel.rs`,
-`connection_manager.rs`, `transport.rs`, any server file, any non-documentation
-core change, a manifest, a seventh file, a second tunnel open, a
-task/channel/queue/lock, flags-one target switching, any change to flags-zero
-per-packet target selection, fallback after authenticated H3 duplex start, or
-a new public API.
+Stop and re-adjudicate if red needs `support/mod.rs`, production code, a third
+test file, a manifest, dependency, feature, or test hook; or if green needs
+`lib.rs`, `connection_manager.rs`, `transport.rs`, any server/core/frame file,
+a seventh file, a public API change, a task/channel/queue/lock, changed H2 or
+WebSocket-only setup semantic, cooldown/fallback/replay after an H3 request
+begins, or broader malicious-peer and transport-pressure claims. EOF
+cancellation while one statically configured H3 candidate is in cooldown or
+its same open attempt is still completing the permitted pre-request H2 fallback
+is intentional and must not be generalized to default-H2 `auto`, `stable`,
+`private`, or WebSocket configurations.
 
 ## Execution Order
 

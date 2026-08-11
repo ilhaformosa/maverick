@@ -7,6 +7,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use maverick_core::frame::{TargetAddr, UdpPacketPayload};
 use maverick_core::ClientConfig;
+#[cfg(feature = "h3")]
+use maverick_core::Mode;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::OwnedSemaphorePermit;
@@ -155,6 +157,11 @@ async fn wait_for_control_eof(control: &mut TcpStream) -> Result<()> {
     }
 }
 
+#[cfg(feature = "h3")]
+fn configured_h3_candidate(mode: Mode, experimental_h3: bool, cloudflare_ws_enabled: bool) -> bool {
+    mode == Mode::Auto && experimental_h3 && !cloudflare_ws_enabled
+}
+
 async fn write_reply<S>(stream: &mut S, code: u8) -> Result<()>
 where
     S: AsyncWrite + Unpin,
@@ -287,13 +294,41 @@ pub(crate) async fn serve_udp_associate_with_pool(
                     continue;
                 }
                 if association.is_none() {
-                    match SocksUdpAssociation::open_with_pool(
+                    #[cfg(feature = "h3")]
+                    let open_result = if configured_h3_candidate(
+                        tunnel_pool.config().mode,
+                        tunnel_pool.config().advanced.experimental_h3,
+                        tunnel_pool.config().advanced.cloudflare_ws_enabled(),
+                    ) {
+                        tokio::select! {
+                            biased;
+                            control_eof = wait_for_control_eof(&mut control) => {
+                                control_eof?;
+                                break;
+                            }
+                            result = SocksUdpAssociation::open_with_pool(
+                                &tunnel_pool,
+                                &packet.target,
+                                packet.port,
+                            ) => result,
+                        }
+                    } else {
+                        SocksUdpAssociation::open_with_pool(
+                            &tunnel_pool,
+                            &packet.target,
+                            packet.port,
+                        )
+                        .await
+                    };
+                    #[cfg(not(feature = "h3"))]
+                    let open_result = SocksUdpAssociation::open_with_pool(
                         &tunnel_pool,
                         &packet.target,
                         packet.port,
                     )
-                    .await
-                    {
+                    .await;
+
+                    match open_result {
                         SocksUdpAssociationOpenResult::Opened(opened) => {
                             association = Some(opened);
                         }
@@ -303,7 +338,7 @@ pub(crate) async fn serve_udp_associate_with_pool(
                         }
                         #[cfg(feature = "h3")]
                         SocksUdpAssociationOpenResult::Terminal(err) => {
-                            tracing::debug!(error = %err, "SOCKS UDP duplex open failed");
+                            tracing::debug!(error = %err, "SOCKS UDP H3 setup failed");
                             break;
                         }
                     }
@@ -473,6 +508,16 @@ mod tests {
     use super::*;
     use std::net::SocketAddr;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+
+    #[cfg(feature = "h3")]
+    #[test]
+    fn configured_h3_candidate_keeps_static_transport_boundaries() {
+        assert!(configured_h3_candidate(Mode::Auto, true, false));
+        assert!(!configured_h3_candidate(Mode::Stable, true, false));
+        assert!(!configured_h3_candidate(Mode::Private, true, false));
+        assert!(!configured_h3_candidate(Mode::Auto, true, true));
+        assert!(!configured_h3_candidate(Mode::Auto, false, false));
+    }
 
     #[tokio::test]
     async fn handshake_success_domain_connect() {

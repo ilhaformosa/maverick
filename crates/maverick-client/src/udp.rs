@@ -31,8 +31,24 @@ const LEGACY_H3_DUPLEX_UDP_SEND_FAILED: &str = "legacy-H3 duplex UDP send failed
 const LEGACY_H3_DUPLEX_UDP_RECEIVE_FAILED: &str = "legacy-H3 duplex UDP receive failed";
 #[cfg(feature = "h3")]
 const LEGACY_H3_DUPLEX_UDP_CLOSE_FAILED: &str = "legacy-H3 duplex UDP close failed";
+#[cfg(feature = "h3")]
+const LEGACY_H3_SERIAL_UDP_SETUP_TIMEOUT: &str = "legacy-H3 serial UDP setup timed out";
 const CLIENT_LEGACY_FEATURE_MASK: u64 =
     FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING;
+
+#[cfg(feature = "h3")]
+#[derive(Debug)]
+struct LegacyH3SerialUdpSetupTimedOut;
+
+#[cfg(feature = "h3")]
+impl std::fmt::Display for LegacyH3SerialUdpSetupTimedOut {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(LEGACY_H3_SERIAL_UDP_SETUP_TIMEOUT)
+    }
+}
+
+#[cfg(feature = "h3")]
+impl std::error::Error for LegacyH3SerialUdpSetupTimedOut {}
 
 pub async fn relay_udp_packet(
     config: &ClientConfig,
@@ -351,14 +367,23 @@ impl SocksUdpAssociation {
         let _ = (target, port);
         let tunnel = match pool.open().await {
             Ok(tunnel) => tunnel,
-            Err(error) => return SocksUdpAssociationOpenResult::Retryable(error),
+            Err(error) => {
+                #[cfg(feature = "h3")]
+                if error
+                    .downcast_ref::<tunnel::LegacyH3ApplicationHandshakeTimedOut>()
+                    .is_some()
+                {
+                    return SocksUdpAssociationOpenResult::Terminal(error);
+                }
+                return SocksUdpAssociationOpenResult::Retryable(error);
+            }
         };
+        #[cfg(feature = "h3")]
+        let actual_h3 = matches!(&tunnel, ClientTunnel::H3(_));
 
         #[cfg(feature = "h3")]
-        if socks_udp_open_mode(
-            matches!(&tunnel, ClientTunnel::H3(_)),
-            tunnel.feature_flags_selected(),
-        ) == SocksUdpOpenMode::Duplex
+        if socks_udp_open_mode(actual_h3, tunnel.feature_flags_selected())
+            == SocksUdpOpenMode::Duplex
         {
             return match LegacyH3DuplexUdpAssociation::open_with_authenticated_tunnel(
                 pool.config(),
@@ -374,6 +399,24 @@ impl SocksUdpAssociation {
                     port,
                 }),
                 Err(error) => SocksUdpAssociationOpenResult::Terminal(error),
+            };
+        }
+
+        #[cfg(feature = "h3")]
+        if actual_h3 {
+            return match timeout(
+                Duration::from_millis(pool.config().advanced.connect_timeout_ms),
+                UdpAssociation::open_with_tunnel(pool.config(), tunnel),
+            )
+            .await
+            {
+                Ok(Ok(association)) => {
+                    SocksUdpAssociationOpenResult::Opened(Self::Serial(association))
+                }
+                Ok(Err(error)) => SocksUdpAssociationOpenResult::Retryable(error),
+                Err(_) => SocksUdpAssociationOpenResult::Terminal(anyhow::Error::new(
+                    LegacyH3SerialUdpSetupTimedOut,
+                )),
             };
         }
 
@@ -584,30 +627,13 @@ impl UdpAssociation {
     }
 
     async fn open_with_tunnel(config: &ClientConfig, mut tunnel: ClientTunnel) -> Result<Self> {
-        let open_udp_flags = serial_open_udp_flags(tunnel.feature_flags_selected())?;
-        tunnel
-            .send_frame(
-                Frame::new(
-                    FrameType::OpenUdp,
-                    open_udp_flags,
-                    UDP_FLOW_ID,
-                    OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
-                ),
-                false,
-            )
-            .await?;
-        match tunnel.read_next_frame().await? {
-            Some(frame) if is_exact_open_udp_ack(&frame, UDP_FLOW_ID) => Ok(Self {
-                tunnel: Some(tunnel),
-                flow_id: UDP_FLOW_ID,
-                response_timeout: Duration::from_millis(config.advanced.udp_idle_timeout_ms),
-            }),
-            Some(frame) if frame.frame_type == FrameType::Error => {
-                tunnel.finish_response().await?;
-                bail!("UDP open failed")
-            }
-            _ => bail!("server closed before UDP flow opened"),
-        }
+        complete_serial_udp_open(config, &mut tunnel).await?;
+
+        Ok(Self {
+            tunnel: Some(tunnel),
+            flow_id: UDP_FLOW_ID,
+            response_timeout: Duration::from_millis(config.advanced.udp_idle_timeout_ms),
+        })
     }
 
     pub async fn relay_packet(&mut self, packet: UdpPacketPayload) -> Result<UdpPacketPayload> {
@@ -659,6 +685,29 @@ impl UdpAssociation {
             )
             .await?;
         tunnel.finish_response_after_explicit_udp_close().await
+    }
+}
+
+async fn complete_serial_udp_open(config: &ClientConfig, tunnel: &mut ClientTunnel) -> Result<()> {
+    let open_udp_flags = serial_open_udp_flags(tunnel.feature_flags_selected())?;
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::OpenUdp,
+                open_udp_flags,
+                UDP_FLOW_ID,
+                OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
+            ),
+            false,
+        )
+        .await?;
+    match tunnel.read_next_frame().await? {
+        Some(frame) if is_exact_open_udp_ack(&frame, UDP_FLOW_ID) => Ok(()),
+        Some(frame) if frame.frame_type == FrameType::Error => {
+            tunnel.finish_response().await?;
+            bail!("UDP open failed")
+        }
+        _ => bail!("server closed before UDP flow opened"),
     }
 }
 

@@ -6299,6 +6299,22 @@ mod one_shot_client_entry {
             .map_err(|_| FoundationError::PostAuthFlowRejected)
     }
 
+    async fn wait_for_terminal_peer_reset(stream: &TcpStream) {
+        let mut byte = [0_u8; 1];
+        loop {
+            let peek_result = stream.peek(&mut byte).await;
+            byte.fill(0);
+            match peek_result {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return,
+                Ok(_) => match stream.take_error() {
+                    Ok(Some(_)) | Err(_) => return,
+                    Ok(None) => std::future::pending::<()>().await,
+                },
+            }
+        }
+    }
+
     pub(super) async fn relay_one_flow(
         stream: TcpStream,
         flow: PrivateClassicConnectFlow,
@@ -6379,11 +6395,27 @@ mod one_shot_client_entry {
         target: SocketAddr,
         owner: &mut ClientRuntimePolicyOwner,
     ) -> Result<(), FoundationError> {
+        let observation_result = tokio::select! {
+            biased;
+            () = wait_for_terminal_peer_reset(&stream) => {
+                return Err(FoundationError::PostAuthFlowRejected);
+            }
+            result = timeout(HANDSHAKE_TIMEOUT, owner.receive_observation()) => {
+                result
+                    .map_err(|_| FoundationError::DriverTimeout)
+                    .and_then(|observation| {
+                        observation
+                            .ok_or(FoundationError::ObservationQueueUnavailable)
+                            .map(|_| ())
+                    })
+            }
+        };
+        if let Err(error) = observation_result {
+            write_fixed_failure(&mut stream).await?;
+            return Err(error);
+        }
+
         let open_result = async {
-            timeout(HANDSHAKE_TIMEOUT, owner.receive_observation())
-                .await
-                .map_err(|_| FoundationError::DriverTimeout)?
-                .ok_or(FoundationError::ObservationQueueUnavailable)?;
             let lease = owner.acquire_authenticated_once().await?;
             owner
                 .open_loopback_classic_connect_once(lease, target)

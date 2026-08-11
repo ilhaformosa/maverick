@@ -1300,6 +1300,7 @@ struct ActorTestGate {
     parent_stall_requested: AtomicBool,
     parent_stall_started: Notify,
     parent_join_observed: AtomicBool,
+    parent_join_notify: Notify,
     parent_join_after_dispatch_drop: AtomicBool,
     target_peer_eof_observed: AtomicBool,
     parent_join_after_target_peer_eof: AtomicBool,
@@ -1721,6 +1722,21 @@ impl ActorTestGate {
             Ordering::Release,
         );
         self.parent_join_observed.store(true, Ordering::Release);
+        self.parent_join_notify.notify_one();
+    }
+
+    async fn wait_for_parent_join(&self) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let notified = self.parent_join_notify.notified();
+                if self.parent_join_observed.load(Ordering::Acquire) {
+                    return;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("server actor joins within the local bound");
     }
 
     fn observe_target_peer_eof(&self) {
@@ -3011,6 +3027,51 @@ fallback:
         outcome
     }
 
+    async fn t027c2i_reset_peer_before_first_server_send(
+        listener_address: SocketAddr,
+        target: SocketAddr,
+        actor_gate: &ActorTestGate,
+    ) {
+        let mut stream = t027c2h_connect_external_peer(listener_address).await;
+        timeout(
+            Duration::from_secs(5),
+            stream.write_all(&[0x05, 0x01, 0x00]),
+        )
+        .await
+        .expect("reset peer SOCKS greeting write stays bounded")
+        .expect("write reset peer SOCKS greeting");
+        let mut method = [0_u8; 2];
+        timeout(Duration::from_secs(5), stream.read_exact(&mut method))
+            .await
+            .expect("reset peer SOCKS method read stays bounded")
+            .expect("read reset peer SOCKS method");
+        assert_eq!(method, [0x05, 0x00]);
+        method.fill(0);
+
+        let SocketAddr::V4(target) = target else {
+            panic!("pre-observation reset target must be IPv4");
+        };
+        let mut request = [0_u8; 10];
+        request[..4].copy_from_slice(&[0x05, 0x01, 0x00, 0x01]);
+        request[4..8].copy_from_slice(&target.ip().octets());
+        request[8..].copy_from_slice(&target.port().to_be_bytes());
+        timeout(Duration::from_secs(5), stream.write_all(&request))
+            .await
+            .expect("reset peer SOCKS request write stays bounded")
+            .expect("write reset peer SOCKS request");
+        request.fill(0);
+
+        timeout(Duration::from_secs(5), actor_gate.send_started.notified())
+            .await
+            .expect("first real server response send is reached within bound");
+
+        stream
+            .set_zero_linger()
+            .expect("configure deterministic reset for external SOCKS peer");
+        drop(stream);
+        actor_gate.release();
+    }
+
     async fn t027c2h_run_rejected_public_entry(
         role: ClientRoleConfig,
         listener_address: SocketAddr,
@@ -3057,6 +3118,42 @@ fallback:
         assert!(endpoint.actors.is_empty());
         assert!(endpoint.unregistered_actor.is_none());
         results
+    }
+
+    async fn t027c2i_run_reset_peer_then_endpoint(
+        endpoint: &mut Endpoint,
+        cancel: watch::Sender<bool>,
+        actor_gate: Arc<ActorTestGate>,
+        role: ClientRoleConfig,
+        listener_address: SocketAddr,
+        target: SocketAddr,
+    ) -> (anyhow::Result<()>, Result<(), EndpointError>) {
+        actor_gate.arm_send();
+        let peer_gate = Arc::clone(&actor_gate);
+        let join_gate = Arc::clone(&actor_gate);
+        let client = async move {
+            timeout(Duration::from_secs(4), run_direct_v3_h3_client_once(role))
+                .await
+                .expect("pre-observation reset client entry stays within caller bound")
+        };
+        let reset_peer = async move {
+            t027c2i_reset_peer_before_first_server_send(
+                listener_address,
+                target,
+                peer_gate.as_ref(),
+            )
+            .await;
+        };
+        let cancel_after_actor_join = async move {
+            join_gate.wait_for_parent_join().await;
+            let _ = cancel.send(true);
+        };
+        let (client_result, (), endpoint_result, ()) = timeout(T027C2B_TEST_WALL_TIMEOUT, async {
+            tokio::join!(client, reset_peer, endpoint.run(), cancel_after_actor_join)
+        })
+        .await
+        .expect("pre-observation reset composition stays within wall bound");
+        (client_result, endpoint_result)
     }
 
     fn assert_one_successful_target_open(metrics_owner: &ServerRuntimeMetrics) {
@@ -3758,6 +3855,106 @@ fallback:
             .await
             .expect("rejected normal entry UDP rebind stays bounded")
             .expect("rejected normal entry server UDP address is released");
+        drop(rebound_udp);
+    }
+
+    #[tokio::test]
+    async fn t027c2i_pre_observation_peer_reset_never_opens_target() {
+        let _lock = timeout(T027C2B_TEST_WALL_TIMEOUT, T027C2B_TEST_LOCK.lock())
+            .await
+            .expect("serialize pre-observation reset loopback test");
+        let credentials = TestCredentials::new();
+        let credential_not_after_unix = t027c2b_credential_not_after_unix();
+        let server_role = credentials
+            .server_role_with_loopback_target_and_expiry(5_000, credential_not_after_unix);
+        let metrics_owner = test_metrics_owner();
+        let (mut endpoint, cancel) = timeout(
+            Duration::from_secs(5),
+            Endpoint::bind_test(server_role, Arc::clone(&metrics_owner)),
+        )
+        .await
+        .expect("pre-observation reset server bind stays bounded")
+        .expect("bind pre-observation reset server endpoint");
+        let actor_gate = Arc::new(ActorTestGate::default());
+        endpoint.next_actor_test_gate = Some(Arc::clone(&actor_gate));
+        let server_address = endpoint.local_address;
+        let target_listener = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+        )
+        .await
+        .expect("pre-observation reset target bind stays bounded")
+        .expect("bind pre-observation reset target sentinel");
+        let target = target_listener
+            .local_addr()
+            .expect("read pre-observation reset target address");
+        let client_listener_address = t027c2h_reserve_client_listener_address().await;
+        assert_ne!(client_listener_address, target);
+        let client_role = credentials.client_role_with_listen(
+            server_address,
+            client_listener_address,
+            credential_not_after_unix,
+            T027C2B_SECRET,
+        );
+
+        let (client_result, endpoint_result) = t027c2i_run_reset_peer_then_endpoint(
+            &mut endpoint,
+            cancel,
+            Arc::clone(&actor_gate),
+            client_role,
+            client_listener_address,
+            target,
+        )
+        .await;
+        let error = client_result.expect_err("reset normal entry returns fixed public error");
+        assert_eq!(
+            error.to_string(),
+            "direct-v3 H3 one-shot client unavailable"
+        );
+        let public_error: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+        assert!(std::error::Error::source(public_error).is_none());
+
+        let target_listener = target_listener
+            .into_std()
+            .expect("convert reset target sentinel to nonblocking std listener");
+        match target_listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Ok((connection, _)) => {
+                drop(connection);
+                panic!("reset SOCKS peer must not queue a real target connection");
+            }
+            Err(_) => panic!("reset target sentinel remains inspectable"),
+        }
+        assert_zero_target_open_metrics(&metrics_owner);
+        assert_eq!(actor_gate.completion_snapshot(), (0, 0, false, 0));
+        assert!(actor_gate.parent_join_snapshot().0);
+        assert_eq!(endpoint.registry.actor_count(), 0);
+        assert!(endpoint.actors.is_empty());
+        assert!(endpoint.unregistered_actor.is_none());
+        match endpoint_result {
+            Ok(()) | Err(EndpointError::Shutdown) => {}
+            Err(_) => panic!("pre-observation reset endpoint has one bounded result category"),
+        }
+
+        let rebound_client = timeout(
+            Duration::from_secs(5),
+            TcpListener::bind(client_listener_address),
+        )
+        .await
+        .expect("pre-observation reset client rebind stays bounded")
+        .expect("pre-observation reset client listener is released");
+        drop(rebound_client);
+        drop(target_listener);
+        let rebound_target = timeout(Duration::from_secs(5), TcpListener::bind(target))
+            .await
+            .expect("pre-observation reset target rebind stays bounded")
+            .expect("pre-observation reset target address is released");
+        drop(rebound_target);
+        drop(endpoint);
+        let rebound_udp = timeout(Duration::from_secs(5), UdpSocket::bind(server_address))
+            .await
+            .expect("pre-observation reset UDP rebind stays bounded")
+            .expect("pre-observation reset server UDP address is released");
         drop(rebound_udp);
     }
 

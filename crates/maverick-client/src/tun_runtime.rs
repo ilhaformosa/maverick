@@ -382,6 +382,31 @@ struct MaverickDuplexDatagramFlow {
 
 #[cfg(feature = "h3")]
 impl DatagramFlow for MaverickDuplexDatagramFlow {
+    fn submit_datagram<'a>(
+        &'a mut self,
+        datagram: Datagram,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<Datagram>, FlowError>> {
+        Box::pin(async move {
+            if datagram.endpoint != self.target {
+                return Err(FlowError::new(FlowErrorKind::DatagramExchange));
+            }
+            let association = self
+                .association
+                .as_mut()
+                .ok_or_else(|| FlowError::new(FlowErrorKind::Closed))?;
+            let (send, _) = association.split();
+            tokio::select! {
+                _ = cancel.cancelled() => Err(FlowError::new(FlowErrorKind::Cancelled)),
+                result = send.send_packet(datagram.payload) => {
+                    result
+                        .map(|()| None)
+                        .map_err(|_| FlowError::new(FlowErrorKind::DatagramExchange))
+                }
+            }
+        })
+    }
+
     fn receive_unsolicited<'a>(
         &'a mut self,
         cancel: CancellationToken,

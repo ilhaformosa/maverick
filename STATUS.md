@@ -798,11 +798,12 @@ censorship resistance, production readiness, or browser identity.
   no-default client Clippy across the relevant H3/TUN combinations,
   warning-denied all-features Rustdoc, formatting, `user-smoke.sh`, and
   `local-harness.sh` all pass locally.
-  This is a public fake-connector TUN runtime foundation. The existing real
-  client and selected-H3 TUN adapter inherit the default and still perform the
-  T025c send-then-receive exchange, so this item does not yet make a normal
-  `start_client` carrier submit B before A receives a response. That real
-  selected-H3 adapter and loopback proof remain T025e work. This result is not
+  This is a public fake-connector TUN runtime foundation. At that foundation
+  slice, the existing real client and selected-H3 TUN adapter inherited the
+  default and still performed the T025c send-then-receive exchange, so that
+  item did not yet make a normal `start_client` carrier submit B before A
+  received a response. The following item now adds that selected-H3 override
+  and loopback proof. This foundation result is not
   real-client or real-carrier evidence, transport-blocked-send concurrency,
   general pipelining or duplex UDP, response correlation, ordering beyond the
   observed local submissions, fairness, no loss, multi-target reuse, IPv6,
@@ -815,6 +816,76 @@ censorship resistance, production readiness, or browser identity.
   number or encoding, protocol/frame/config/profile version, client, server,
   core, SOCKS, transport, or published Beta.4 artifact. Any future publication
   requires a new prerelease and must not rewrite Beta.4.
+- Unpublished workspace source now lets the private selected-H3 TUN adapter
+  submit a second local datagram after the first transport send completes,
+  without waiting for a target datagram. Its `submit_datagram` override rejects
+  an endpoint other than the fixed flow target before borrowing the
+  association, borrows the existing sole owner's send half, calls the existing
+  `send_packet` once, and returns `Ok(None)` only after that send succeeds. A
+  missing association, cancellation, or send failure maps to an existing fixed
+  TUN `FlowErrorKind`; the adapter adds no log or raw target, backend,
+  certificate-path, or transport value. It does not wait for receive, fabricate
+  a response, retry, replay, reopen, fall back, or create a second owner.
+  Source review establishes the exact-target precheck, one low-level send,
+  `None` only after success, and the existing send poison behavior. Failure or
+  cancellation of an in-progress lower send while its guard remains armed
+  invalidates and aborts the association. A cancellation branch that wins
+  before the lower send future is polled and its guard is armed performs no
+  transport send. The T025d
+  worker then releases the existing payload lease, refreshes its successful
+  activity deadline, and returns to the same command, independent-receive,
+  cancellation, idle, and shutdown select. No production task, channel, queue,
+  lock, map, buffer, counter, config, retry, or correlation identifier is
+  added. Existing `exchange`, `receive_unsolicited`, and `close` behavior is
+  unchanged. H2, WebSocket, flags-zero H3, and no-H3 serial flows continue to
+  inherit the exact exchange-to-`Some` default; SOCKS paths are unchanged.
+  A normal local-loopback `start_client` integration test uses the production
+  selected legacy-H3 adapter with synthetic `PacketIo` and one real OS UDP
+  target. The target receives A and deliberately sends no response. After B is
+  admitted to the same active runtime association, the target receives B from
+  the same exact source before any response to A. The runtime emits no
+  fabricated response. Controlled A and B responses, a target push without a
+  new local packet, and a later C roundtrip then succeed through the same
+  source. The same run observes H3 selected with no cooldown, zero H2 pool
+  activity, one opened and zero failed association, zero rejected, malformed,
+  or dropped packets, stopped and quiescent cleanup, exact source rebind, and
+  clean fixture shutdown. Those runtime observations do not by themselves
+  prove the source-reviewed one-send or cancellation details.
+  The exact test passes 1/1. `tun_packet_runtime` passes 2/2 without H3 and 4/4
+  with H3; the T025d TUN runtime suite remains 21/21. Client library suites pass
+  74/74 without defaults, 82/82 without defaults plus H3, 71/71 without
+  defaults plus TUN, and 79/79 without defaults plus H3 and TUN. Focused H2 and
+  H3 flags-zero tests and the selected-H3 SOCKS push test each pass 1/1.
+  The first all-features workspace run had one unrelated server timing failure
+  in the `quiche_endpoint::tests` case
+  `peer_draining_holds_actor_routes_and_source_capacity_until_closed_join`;
+  its exact rerun passed 1/1 and the complete workspace rerun then passed,
+  including client 154/154, server 304/304, relay 109/109, TUN packet runtime
+  4/4, and TUN runtime/library 21/21 and 4/4. The relay no-default matrix passes
+  69 tests and its no-default-plus-H3 matrix passes 106; each retains only the
+  same pre-existing unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo` failure
+  because private mode rejects
+  `advanced.stealth.tls_fingerprint=rustls_default`. Five strict workspace and
+  client Clippy combinations, warning-denied all-features Rustdoc, formatting,
+  `user-smoke.sh`, and `local-harness.sh` all pass locally.
+  This changes the opt-in normal public `start_client` TUN runtime behavior and
+  is SemVer-observable, but adds no public Rust signature, type, method, field,
+  or error. It changes no package version, manifest, dependency, feature,
+  `Cargo.lock`, wire number or encoding, protocol/frame/config/profile version,
+  server, core, SOCKS, DNS, TCP, connection-manager, transport, direct-v3, CLI
+  or SDK signature, published Beta.4 artifact, deployment authorization, or
+  release state. Any future publication requires a new prerelease and must not
+  rewrite Beta.4.
+  This is sequential send-ahead only after the current transport send
+  completes. It is bounded local evidence for a normal production client path,
+  synthetic packet I/O, one selected legacy-H3 association, and one fixed IPv4
+  loopback target. It does not prove transport-blocked-send concurrent receive,
+  general pipelining or duplex UDP, response correlation, arbitrary ordering,
+  fairness, no loss, multi-target reuse, IPv6, malicious-peer or
+  transport-pressure behavior, physical-H3 connection reuse, a real OS TUN
+  device, games or voice suitability, real-network or human-user results,
+  product readiness, deployment, or release authorization.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

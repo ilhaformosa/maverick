@@ -373,6 +373,198 @@ async fn h3_packet_runtime_receives_target_push_without_new_local_packet() -> Re
     Ok(())
 }
 
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_packet_runtime_submits_second_datagram_before_first_target_reply() -> Result<()> {
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        experimental_tun: true,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let client_config = fixture.client_config();
+    assert_h3_transport(&client_config);
+
+    let runtime_config = PacketRuntimeConfig {
+        connect_timeout: Duration::from_secs(2),
+        udp_idle_timeout: Duration::from_secs(5),
+        shutdown_timeout: Duration::from_secs(5),
+        ..PacketRuntimeConfig::default()
+    };
+    let queue_depth = runtime_config.packet_queue_depth;
+    let (input, reader) = mpsc::channel(queue_depth);
+    let (writer, output) = mpsc::channel(queue_depth);
+    fixture
+        .client
+        .start_tun_runtime(
+            runtime_config,
+            PacketIo::new(
+                ChannelReader { packets: reader },
+                ChannelWriter { packets: writer },
+            ),
+        )
+        .await?;
+    let mut peer = PacketPeer { input, output };
+    let app = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 41_002);
+    let first_payload = b"tun-h3-send-ahead-a";
+    let second_payload = b"tun-h3-send-ahead-b";
+
+    peer.send(udp_packet(app, target_addr, first_payload))
+        .await?;
+    let mut target_buffer = [0u8; 128];
+    let (first_len, exact_source) =
+        timeout(Duration::from_secs(2), target.recv_from(&mut target_buffer)).await??;
+    assert_eq!(&target_buffer[..first_len], first_payload);
+
+    wait_for(Duration::from_secs(2), || {
+        fixture
+            .client
+            .tun_runtime_snapshot()
+            .is_some_and(|snapshot| snapshot.active_udp_associations == 1)
+    })
+    .await?;
+    assert_h3_transport(&client_config);
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    assert_eq!(pool.active_streams, 0);
+    match UdpSocket::bind(exact_source).await {
+        Ok(socket) => {
+            drop(socket);
+            anyhow::bail!("active TUN target source was released before second send");
+        }
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    peer.send(udp_packet(app, target_addr, second_payload))
+        .await?;
+    wait_for(Duration::from_secs(2), || {
+        fixture
+            .client
+            .tun_runtime_snapshot()
+            .is_some_and(|snapshot| {
+                snapshot.packets_received == 2
+                    && snapshot.ingress_queue_depth == 0
+                    && snapshot.packets_rejected == 0
+                    && snapshot.malformed_packets == 0
+                    && snapshot.udp_datagrams_dropped == 0
+                    && snapshot.active_udp_associations == 1
+            })
+    })
+    .await?;
+    let second_before_first_reply =
+        match timeout(Duration::from_secs(1), target.recv_from(&mut target_buffer)).await {
+            Err(_) => false,
+            Ok(result) => {
+                let (second_len, second_source) = result?;
+                assert_eq!(second_source, exact_source);
+                assert_eq!(&target_buffer[..second_len], second_payload);
+                true
+            }
+        };
+    if !second_before_first_reply {
+        let snapshot = fixture.client.tun_runtime_snapshot().unwrap();
+        assert!(
+            snapshot.buffered_bytes >= first_payload.len() + second_payload.len(),
+            "reply-gated datagrams were not retained inside the bounded runtime"
+        );
+    }
+    match timeout(Duration::from_millis(200), peer.recv_udp()).await {
+        Err(_) => {}
+        Ok(Ok(_)) => anyhow::bail!("a completed TUN submission fabricated a response"),
+        Ok(Err(error)) => return Err(error),
+    }
+
+    target
+        .send_to(b"tun-h3-send-ahead-a-reply", exact_source)
+        .await?;
+    let (first_header, first_reply) = peer.recv_udp().await?;
+    assert_eq!(first_header.source_port, target_addr.port());
+    assert_eq!(first_header.destination_port, app.port());
+    assert_eq!(first_reply, b"tun-h3-send-ahead-a-reply");
+
+    if !second_before_first_reply {
+        let (second_len, second_source) =
+            timeout(Duration::from_secs(2), target.recv_from(&mut target_buffer)).await??;
+        assert_eq!(second_source, exact_source);
+        assert_eq!(&target_buffer[..second_len], second_payload);
+    }
+    target
+        .send_to(b"tun-h3-send-ahead-b-reply", exact_source)
+        .await?;
+    let (second_header, second_reply) = peer.recv_udp().await?;
+    assert_eq!(second_header.source_port, target_addr.port());
+    assert_eq!(second_header.destination_port, app.port());
+    assert_eq!(second_reply, b"tun-h3-send-ahead-b-reply");
+
+    target
+        .send_to(b"tun-h3-send-ahead-push", exact_source)
+        .await?;
+    let (push_header, push) = peer.recv_udp().await?;
+    assert_eq!(push_header.source_port, target_addr.port());
+    assert_eq!(push_header.destination_port, app.port());
+    assert_eq!(push, b"tun-h3-send-ahead-push");
+
+    peer.send(udp_packet(app, target_addr, b"tun-h3-send-ahead-c"))
+        .await?;
+    let (third_len, third_source) =
+        timeout(Duration::from_secs(2), target.recv_from(&mut target_buffer)).await??;
+    assert_eq!(third_source, exact_source);
+    assert_eq!(&target_buffer[..third_len], b"tun-h3-send-ahead-c");
+    target
+        .send_to(b"tun-h3-send-ahead-c-reply", exact_source)
+        .await?;
+    let (third_header, third_reply) = peer.recv_udp().await?;
+    assert_eq!(third_header.source_port, target_addr.port());
+    assert_eq!(third_header.destination_port, app.port());
+    assert_eq!(third_reply, b"tun-h3-send-ahead-c-reply");
+
+    assert_h3_transport(&client_config);
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    assert_eq!(pool.active_streams, 0);
+
+    drop(peer);
+    wait_for(Duration::from_secs(3), || {
+        fixture
+            .client
+            .tun_runtime_snapshot()
+            .is_some_and(|snapshot| {
+                snapshot.state == PacketRuntimeState::Stopped
+                    && snapshot.last_failure.is_none()
+                    && snapshot.active_udp_associations == 0
+                    && snapshot.active_tasks == 0
+                    && snapshot.ingress_queue_depth == 0
+                    && snapshot.egress_queue_depth == 0
+                    && snapshot.buffered_bytes == 0
+            })
+    })
+    .await?;
+    let snapshot = fixture.client.tun_runtime_snapshot().unwrap();
+    assert_eq!(snapshot.packets_received, 3);
+    assert_eq!(snapshot.packets_rejected, 0);
+    assert_eq!(snapshot.malformed_packets, 0);
+    assert_eq!(snapshot.udp_associations_opened, 1);
+    assert_eq!(snapshot.peak_udp_associations, 1);
+    assert_eq!(snapshot.udp_associations_failed, 0);
+    assert_eq!(snapshot.udp_datagrams_dropped, 0);
+    assert_h3_transport(&client_config);
+
+    let rebound = wait_for_udp_rebind(exact_source).await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    drop(rebound);
+    fixture.shutdown().await?;
+
+    if !second_before_first_reply {
+        panic!("normal TUN legacy-H3 UDP second send stayed reply-gated");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn packet_runtime_requires_explicit_runtime_gate() -> Result<()> {
     let mut fixture = MaverickHarness::start().await?;

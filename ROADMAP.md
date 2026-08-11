@@ -17,99 +17,101 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T025d — TUN response-optional datagram submission foundation
+### T025e — normal selected-H3 TUN reply-independent send-ahead
 
-**User result.** A TUN UDP worker can complete one local datagram submission and
-accept the next local datagram without requiring an immediate remote response
-to the first. Existing serial connectors still perform their exact one-request,
-one-response exchange. This card is a public contract and fake-connector packet
-runtime foundation; the normal selected-H3 consumer remains the immediately
-following T025e slice, not a result of this card.
+**User result.** After a normal opt-in TUN client finishes submitting UDP packet
+A to one selected legacy-H3 association, local packet B for the same
+`{app, target}` can be submitted without waiting for the target to reply to A.
+This is sequential send-ahead after the current transport send completes. It is
+not concurrent progress while that send is blocked, target delivery proof,
+response correlation, general pipelining, or a product result.
 
-**Confirmed source gap.** `DatagramFlow::exchange` always returns one datagram.
-The TUN worker therefore remains inside the first exchange until remote input
-arrives. A connector that can submit independently cannot tell the worker that
-submission completed without fabricating a response, so a second local packet
-waits in the existing bounded command channel.
+**Confirmed source gap.** T025d lets the worker accept `Ok(None)` and continue,
+but `MaverickDuplexDatagramFlow` inherits the default `submit_datagram`, which
+calls its existing send-then-receive `exchange`. The real selected-H3 adapter
+therefore remains reply-gated even though the generic runtime foundation is
+ready.
 
-**Scope.** Hard-limit the complete card to five files: `ROADMAP.md`,
-`STATUS.md`, `crates/maverick-tun/src/lib.rs`,
-`crates/maverick-tun/src/runtime.rs`, and
-`crates/maverick-tun/tests/runtime.rs`. Behavioral red may change only the
-roadmap, the public trait's additive default skeleton, and the runtime test;
-production runtime behavior and `STATUS.md` remain unchanged until Green.
-Preserve every client, server, core, SOCKS, DNS, TCP, direct-v3, manifest,
-dependency, feature, `Cargo.lock`, wire, protocol/frame/config/profile version,
-and published Beta.4 artifact.
+**Scope.** Hard-limit the complete card to four files: `ROADMAP.md`,
+`STATUS.md`, `crates/maverick-client/src/tun_runtime.rs`, and
+`crates/maverick-tests/tests/tun_packet_runtime.rs`. Behavioral RED may change
+only the roadmap and real integration test. Production and `STATUS.md` stay
+untouched until independent Green authorization. Preserve maverick-tun,
+generic `UdpAssociation`, every serial H2/WebSocket/flags-zero path, SOCKS,
+server, core, DNS, TCP, direct-v3, connection-manager, transport, manifest,
+dependency, feature, `Cargo.lock`, public API, wire, protocol/frame/config/
+profile version, and published Beta.4 artifact.
 
-**Public contract.** Add one object-safe provided method,
-`DatagramFlow::submit_datagram`, which returns
-`Result<Option<Datagram>, FlowError>`.
-Its default must call the existing required `exchange` exactly once and wrap
-that response in `Some`, so existing implementers inherit the default while
-repository serial runtime behavior remains unchanged.
-`Ok(None)` means only that local submission completed without an immediate
-response. It is not clean EOF, target acknowledgement, delivery proof, request
-correlation, or permission to lose the payload. Later remote input remains the
-job of `receive_unsolicited`. Keep the required `exchange` and `close` methods
-and their signatures unchanged.
+**Adapter contract.** Override `submit_datagram` only for the private
+`MaverickDuplexDatagramFlow`. Reject any endpoint different from the fixed open
+target before a send. Borrow the existing send half from the sole association
+owner, call its existing `send_packet` exactly once, and return `Ok(None)` only
+after that future succeeds. Do not wait for a target datagram, fabricate a
+response, replay, retry, resend, reopen, or add a second owner. Existing
+`exchange`, `receive_unsolicited`, and `close` behavior remain available and
+unchanged. Every serial implementation inherits T025d's default exact
+`exchange -> Some` behavior.
 
-**Runtime contract.** The UDP worker command path calls the new provided method
-once. `Some(datagram)` enters the unchanged exact-target, payload, event,
-single-pending-response, accepted-backpressure, and packet-writer path.
-`None` emits no response, refreshes the existing successful-activity idle
-deadline, and returns to the same command, independent-receive, cancellation,
-idle, and shutdown select. Reuse the existing bounded command channel and one
-flow owner. Do not add a production task, channel, queue, lock, map, buffer,
-pending response, counter, config, capability flag, retry, replay, resend, or
-correlation identifier.
+Cancellation before the existing send guard is armed performs no transport
+send. Once that guard is armed, an in-progress send failure or cancellation
+retains the existing sticky invalidation and abort behavior. A completed send
+does not prove target delivery or identify a later response. The T025d worker
+continues to own one flow and its existing bounded command channel; add no
+production task, channel, queue, lock, map, buffer, pending response, counter,
+config, correlation identifier, or capability flag.
 
-**Behavioral red.** Based on exact parent
-`49157d74c96561190c9ece65488c7c870ab8f794`, add a fake target-aware flow whose
-old `exchange` records local A and then waits for cancellation, while its new
-submission override records a payload and returns `Ok(None)`. Send A and require
-that it entered the old exchange. Send B while no remote response exists and
-capture B's current absence as data rather than propagating a timeout. The
-future Green branch must observe A and B in order with no fabricated output,
-then deliver one exact-target push without local input and submit C afterward.
+**Behavioral RED.** Based on exact parent
+`c4f0421549d2ed11921dda8ada38a3d9687fcfa5`, start the normal client with H3 and
+TUN enabled and one real loopback UDP target. Send local A, require the target
+to receive A, record its exact source, and deliberately withhold a reply. Send
+local B for the same app and target. Before observing B, prove that the packet
+runtime accepted and parsed both local packets, emptied ingress, retained one
+active association, and recorded no rejection, malformed packet, or UDP drop.
+Capture whether the target receives B from the same exact source before any
+target response; absence is data and must not propagate as the test error.
 
-Drop packet input and require non-forced shutdown, one exact target-aware open,
-zero failed associations, zero dropped datagrams, and a fully quiescent final
-snapshot before the sole fixed panic
-`TUN duplex UDP second submission stayed blocked behind a missing response`.
-The parent must compile and fail only there with exit 101. A compile failure,
-missing A, B already submitted, timeout as the test error, fake response,
-second open, forced cleanup, leaked resource, or different panic is not an
-accepted RED. Freeze the exact command, output, files, diff check, privacy scan,
-and binary diff hash, then stop for independent Green authorization.
+Then reply to A, require its packet-runtime delivery, ensure B reaches the same
+target source if it was previously absent, reply to B, and require its delivery.
+With no new local packet, send and receive one exact-target push, then send C,
+require C from the same source, and return its response. Require actual H3 with
+no cooldown, zero H2 pool activity, exactly one opened and zero failed TUN UDP
+association, no drop, bounded stopped/quiescent cleanup, exact source rebind,
+and clean fixture shutdown before the sole fixed panic
+`normal TUN legacy-H3 UDP second send stayed reply-gated`. The parent must
+compile and exit 101 only there. Any earlier timeout/error, H2 path, second
+association, source change, fabricated output, forced cleanup, leak, or
+different panic is not an accepted RED. Freeze the exact command, output,
+files, diff check, privacy scan, and binary diff hash, then stop for independent
+Green authorization.
 
-**Evidence and compatibility.** Green must make the same final-shape test prove
-ordered A/B submissions without remote input, no fabricated response, one
-later exact-target push, C after the push, one flow, and bounded cleanup. The
-existing serial fake and packet-runtime suites must prove that the default
-still maps one `exchange` response to `Some` byte-for-byte. Re-run the TUN
-runtime and library suites, all-features workspace, no-default client matrices,
-strict Clippy, warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh`
-before updating `STATUS.md`.
+**Evidence and compatibility.** Green must make that same real-loopback test
+prove A and B reach the target in order from one exact source before either
+target reply, followed by both replies, one target push without local input, C,
+and bounded cleanup. Source review must separately establish exact-target
+pre-send rejection, one existing low-level send call, `Ok(None)` only after its
+success, one owner, and no retry or correlation claim. Re-run T025d's fake
+submission test, the T025c push test, TUN runtime and client feature matrices,
+relevant H2/flags-zero/SOCKS regressions, all-features workspace, strict Clippy,
+warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh` before updating
+`STATUS.md`.
 
-This result will not prove a real Maverick client or selected-H3 carrier,
-transport-blocked send concurrent with receive, general pipelining, response
-correlation, ordering beyond the observed local submissions, fairness, no loss,
-multi-target reuse, IPv6, games or voice suitability, a real TUN device,
-real-network behavior, product readiness, or release authorization. The one
-additive provided public method is SemVer-observable and may conflict with a
-downstream same-name method even though existing implementers inherit a
-default. It changes no package version or published artifact. Any future
-publication requires a new prerelease and must not rewrite Beta.4.
+This changes normal opt-in public `start_client` TUN behavior and is
+SemVer-observable without adding or changing a public Rust signature. It does
+not change a package version or published artifact. Any future publication
+requires a new prerelease and must not rewrite Beta.4. This result will not
+prove progress during a transport-blocked send, request-response correlation,
+arbitrary response ordering, fairness, no loss, multi-target reuse, IPv6,
+malicious-peer or transport-pressure behavior, games or voice suitability, a
+real TUN device, real-network behavior, product readiness, deployment, or
+release authorization.
 
-**Stop conditions.** Stop if implementation needs a sixth file, a second public
-item or changed required signature, a public type/error/capability flag, a
-client/server/core/SOCKS/transport edit, any production task/channel/queue/lock/
-map/buffer/pending response, or any wire/config/version/manifest/dependency/
-`Cargo.lock` change. Also stop if `None` is treated as EOF or a response, if a
-serial flow no longer performs the exact existing exchange, if cleanup or idle
-bounds change, or if the result must be described as real H3, blocked-send
-concurrency, general duplex UDP, product, or release evidence.
+**Stop conditions.** Stop if implementation needs a fifth file, a public API,
+client UDP/pool/transport change, any server/core/SOCKS/maverick-tun edit, a
+second owner, or a production task/channel/queue/lock/map/buffer/pending
+response. Also stop on any wire/config/version/manifest/dependency/`Cargo.lock`
+change, serial-path drift, retry/replay/reopen, target mismatch reaching the
+tunnel, inability to preserve cancellation fail-closed behavior, or any claim
+beyond sequential submission after the existing send future completes.
 
 ## Execution Order
 

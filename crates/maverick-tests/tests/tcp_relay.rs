@@ -1856,6 +1856,22 @@ async fn h3_udp_association_keeps_one_connected_target_owner() -> Result<()> {
 
 #[cfg(feature = "h3")]
 #[tokio::test]
+async fn h3_interrupted_udp_relay_fails_closed_before_next_target() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let mut config = fixture.client_config();
+    config.advanced.udp_idle_timeout_ms = 5_000;
+    assert_h3_transport(&config);
+
+    let observation = observe_interrupted_udp_relay(&config).await?;
+
+    assert_h3_transport(&config);
+    assert_interrupted_udp_relay_failed_closed(observation);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
 async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline() -> Result<()> {
     const RESPONSE_COUNT: usize = 6;
     const RESPONSE_BYTES: usize = 8 * 1024;
@@ -2694,6 +2710,19 @@ async fn h2_udp_association_keeps_one_connected_target_owner() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn h2_interrupted_udp_relay_fails_closed_before_next_target() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let mut config = fixture.client_config();
+    config.advanced.udp_idle_timeout_ms = 5_000;
+
+    let observation = observe_interrupted_udp_relay(&config).await?;
+
+    assert_interrupted_udp_relay_failed_closed(observation);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
 async fn assert_udp_association_keeps_one_connected_target_owner(
     config: &ClientConfig,
 ) -> Result<()> {
@@ -2776,6 +2805,173 @@ async fn assert_udp_association_keeps_one_connected_target_owner(
     drop(rebound);
     drop(target);
     Ok(())
+}
+
+#[derive(Debug)]
+struct InterruptedUdpRelayObservation {
+    second_result: InterruptedUdpRelayResult,
+    target_b_payload: Option<Bytes>,
+    close_result: InterruptedUdpCloseResult,
+}
+
+#[derive(Debug)]
+enum InterruptedUdpRelayResult {
+    Response(UdpPacketPayload),
+    FixedUnusable,
+    OtherError,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum InterruptedUdpCloseResult {
+    NotAttempted,
+    FixedUnusable,
+    OtherError,
+    UnexpectedSuccess,
+}
+
+async fn observe_interrupted_udp_relay(
+    config: &ClientConfig,
+) -> Result<InterruptedUdpRelayObservation> {
+    let target_a = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_a_addr = target_a.local_addr()?;
+    let target_a_ip = TargetAddr::Ipv4(target_a_addr.ip().to_string().parse()?);
+    let target_b = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_b_addr = target_b.local_addr()?;
+    let target_b_ip = TargetAddr::Ipv4(target_b_addr.ip().to_string().parse()?);
+    let mut association = UdpAssociation::open(config).await?;
+
+    let request_a = UdpPacketPayload::new(
+        target_a_ip.clone(),
+        target_a_addr.port(),
+        Bytes::from_static(b"cancelled-request-a"),
+    );
+    let exact_source = timeout(Duration::from_secs(2), async {
+        let relay = association.relay_packet(request_a);
+        tokio::pin!(relay);
+        tokio::select! {
+            _ = &mut relay => {
+                anyhow::bail!("first UDP relay completed before its real target replied")
+            }
+            received = async {
+                let mut buf = [0u8; 64];
+                let (len, source) = target_a.recv_from(&mut buf).await?;
+                anyhow::ensure!(
+                    &buf[..len] == b"cancelled-request-a",
+                    "target A received the wrong request payload"
+                );
+                Result::<SocketAddr>::Ok(source)
+            } => received,
+        }
+    })
+    .await
+    .context("target A must receive request A before relay cancellation")??;
+
+    target_a.send_to(b"delayed-reply-a", exact_source).await?;
+
+    let request_b = UdpPacketPayload::new(
+        target_b_ip,
+        target_b_addr.port(),
+        Bytes::from_static(b"request-b"),
+    );
+    let (second_result, target_b_observation) = tokio::join!(
+        association.relay_packet(request_b),
+        timeout(Duration::from_secs(1), async {
+            let mut buf = [0u8; 64];
+            let (len, source) = target_b.recv_from(&mut buf).await?;
+            anyhow::ensure!(
+                &buf[..len] == b"request-b",
+                "target B received the wrong request payload"
+            );
+            target_b.send_to(b"reply-b", source).await?;
+            Result::<Bytes>::Ok(Bytes::copy_from_slice(&buf[..len]))
+        })
+    );
+    let target_b_payload = match target_b_observation {
+        Ok(result) => Some(result?),
+        Err(_) => None,
+    };
+    let second_result = match second_result {
+        Ok(response) => InterruptedUdpRelayResult::Response(response),
+        Err(err) if err.to_string() == "UDP association is no longer usable" => {
+            InterruptedUdpRelayResult::FixedUnusable
+        }
+        Err(_) => InterruptedUdpRelayResult::OtherError,
+    };
+    if let InterruptedUdpRelayResult::Response(response) = &second_result {
+        assert_eq!(response.target, target_a_ip);
+        assert_eq!(response.port, target_a_addr.port());
+    }
+
+    let rebound = timeout(Duration::from_secs(2), async {
+        loop {
+            match UdpSocket::bind(exact_source).await {
+                Ok(socket) => break Ok(socket),
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::task::yield_now().await;
+                }
+                Err(err) => break Err(err),
+            }
+        }
+    })
+    .await
+    .context("interrupted UDP relay must release target A's exact source")??;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    drop(rebound);
+
+    let close_result = match &second_result {
+        InterruptedUdpRelayResult::Response(_) => {
+            drop(association);
+            InterruptedUdpCloseResult::NotAttempted
+        }
+        InterruptedUdpRelayResult::FixedUnusable | InterruptedUdpRelayResult::OtherError => {
+            match association.close().await {
+                Ok(()) => InterruptedUdpCloseResult::UnexpectedSuccess,
+                Err(err) if err.to_string() == "UDP association is no longer usable" => {
+                    InterruptedUdpCloseResult::FixedUnusable
+                }
+                Err(_) => InterruptedUdpCloseResult::OtherError,
+            }
+        }
+    };
+
+    Ok(InterruptedUdpRelayObservation {
+        second_result,
+        target_b_payload,
+        close_result,
+    })
+}
+
+fn assert_interrupted_udp_relay_failed_closed(observation: InterruptedUdpRelayObservation) {
+    match observation.second_result {
+        InterruptedUdpRelayResult::Response(response) => {
+            let target_b_payload = observation
+                .target_b_payload
+                .as_ref()
+                .expect("reused UDP association did not contact target B");
+            assert_eq!(response.data.as_ref(), b"delayed-reply-a");
+            assert_eq!(target_b_payload.as_ref(), b"request-b");
+            assert_eq!(
+                observation.close_result,
+                InterruptedUdpCloseResult::NotAttempted
+            );
+            panic!(
+                "interrupted UDP association reused delayed reply A for request B and contacted target B"
+            );
+        }
+        InterruptedUdpRelayResult::FixedUnusable => {}
+        InterruptedUdpRelayResult::OtherError => {
+            panic!("interrupted UDP association returned an unexpected error category")
+        }
+    }
+    assert!(
+        observation.target_b_payload.is_none(),
+        "interrupted UDP association contacted target B before failing closed"
+    );
+    assert_eq!(
+        observation.close_result,
+        InterruptedUdpCloseResult::FixedUnusable,
+        "unusable UDP association close returned an unexpected fixed category"
+    );
 }
 
 const OPEN_UDP_FLOW_ID: u64 = 41;

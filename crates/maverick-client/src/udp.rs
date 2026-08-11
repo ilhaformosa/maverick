@@ -8,6 +8,7 @@ use crate::tunnel::{self, ClientTunnel};
 use crate::ClientTunnelPool;
 
 const UDP_FLOW_ID: u64 = 1;
+const UDP_ASSOCIATION_UNUSABLE: &str = "UDP association is no longer usable";
 
 pub async fn relay_udp_packet(
     config: &ClientConfig,
@@ -20,7 +21,7 @@ pub async fn relay_udp_packet(
 }
 
 pub struct UdpAssociation {
-    tunnel: ClientTunnel,
+    tunnel: Option<ClientTunnel>,
     flow_id: u64,
     response_timeout: Duration,
 }
@@ -51,7 +52,7 @@ impl UdpAssociation {
                 if frame.frame_type == FrameType::WindowUpdate && frame.flow_id == UDP_FLOW_ID =>
             {
                 Ok(Self {
-                    tunnel,
+                    tunnel: Some(tunnel),
                     flow_id: UDP_FLOW_ID,
                     response_timeout: Duration::from_millis(config.advanced.udp_idle_timeout_ms),
                 })
@@ -65,19 +66,27 @@ impl UdpAssociation {
     }
 
     pub async fn relay_packet(&mut self, packet: UdpPacketPayload) -> Result<UdpPacketPayload> {
-        self.tunnel
+        if self.tunnel.is_none() {
+            bail!(UDP_ASSOCIATION_UNUSABLE);
+        }
+        let payload = packet.encode()?;
+        let mut tunnel = self
+            .tunnel
+            .take()
+            .ok_or_else(|| anyhow::anyhow!(UDP_ASSOCIATION_UNUSABLE))?;
+        tunnel
             .send_frame(
-                Frame::new(FrameType::UdpPacket, 0, self.flow_id, packet.encode()?),
+                Frame::new(FrameType::UdpPacket, 0, self.flow_id, payload),
                 false,
             )
             .await?;
 
-        timeout(self.response_timeout, async {
+        let response = timeout(self.response_timeout, async {
             loop {
-                match self.tunnel.read_next_frame().await? {
+                match tunnel.read_next_frame().await? {
                     Some(frame) => {
                         if frame.frame_type == FrameType::CloseFlow {
-                            self.tunnel.finish_response().await?;
+                            tunnel.finish_response().await?;
                         }
                         if let Some(packet) = udp_response_from_frame(frame, self.flow_id)? {
                             return Ok(packet);
@@ -88,17 +97,23 @@ impl UdpAssociation {
             }
         })
         .await
-        .map_err(|_| anyhow::anyhow!("UDP relay response timed out"))?
+        .map_err(|_| anyhow::anyhow!("UDP relay response timed out"))??;
+        self.tunnel = Some(tunnel);
+        Ok(response)
     }
 
     pub async fn close(mut self) -> Result<()> {
-        self.tunnel
+        let mut tunnel = self
+            .tunnel
+            .take()
+            .ok_or_else(|| anyhow::anyhow!(UDP_ASSOCIATION_UNUSABLE))?;
+        tunnel
             .send_frame(
                 Frame::new(FrameType::CloseFlow, 0, self.flow_id, Bytes::new()),
                 true,
             )
             .await?;
-        self.tunnel.finish_response_after_explicit_udp_close().await
+        tunnel.finish_response_after_explicit_udp_close().await
     }
 }
 
@@ -165,5 +180,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("UDP flow closed"));
+    }
+
+    #[tokio::test]
+    async fn unusable_association_close_returns_fixed_error() {
+        let association = UdpAssociation {
+            tunnel: None,
+            flow_id: UDP_FLOW_ID,
+            response_timeout: Duration::from_secs(1),
+        };
+
+        let err = association.close().await.unwrap_err();
+
+        assert_eq!(err.to_string(), UDP_ASSOCIATION_UNUSABLE);
+    }
+
+    #[tokio::test]
+    async fn unusable_association_relay_precedes_packet_encode_error() {
+        let mut association = UdpAssociation {
+            tunnel: None,
+            flow_id: UDP_FLOW_ID,
+            response_timeout: Duration::from_secs(1),
+        };
+        let invalid_packet = UdpPacketPayload::new(
+            TargetAddr::Domain("x".repeat(u16::MAX as usize + 1)),
+            53,
+            Bytes::new(),
+        );
+
+        let err = association.relay_packet(invalid_packet).await.unwrap_err();
+
+        assert_eq!(err.to_string(), UDP_ASSOCIATION_UNUSABLE);
     }
 }

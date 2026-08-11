@@ -17,85 +17,68 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T024a-3 — Bound every legacy-H3 response-frame completion
+### T024a-4 — Fail closed after an interrupted client UDP relay
 
-**User result.** A legacy `feature = "h3"` client that keeps its QUIC
-connection alive but stops reading one response must not retain that request's
-server resource forever. Every actual Maverick DATA-frame completion and a
-requested response finish must have the deadline owned by the current protocol
-state. Expiry returns one fixed private transport error to the existing caller,
-which releases the request and its target resources.
+**User result.** Cancelling one in-flight client `UdpAssociation::relay_packet`
+must make that association permanently unusable. A delayed target reply from
+the cancelled exchange must never be returned as the response to a later
+packet, and that later packet must not reach any target.
 
-This closes one legacy-H3 transport-pressure lifetime boundary. It does not
-claim H2-style progress-reset parity, add a timeout field, change configured
-timeout values or defaults, or turn the sequential OpenUdp foundation into
-general-purpose UDP.
+This closes one client-side ownership boundary around the existing serial UDP
+exchange. It does not add request-response correlation, pipelining, full-duplex
+UDP, or a general-purpose SOCKS or TUN UDP contract.
 
 **Scope.** Change only `ROADMAP.md`, `STATUS.md`,
-`crates/maverick-server/src/server.rs`, and
-`crates/maverick-tests/tests/tcp_relay.rs`. Keep the implementation private to
-the existing legacy-H3 server path and preserve every public API. `STATUS.md`
-may receive one narrow current-truth update only after the green implementation
-and all required local gates pass. Keep relay, client, core, CLI, SDK,
-manifests, `Cargo.lock`, and every other file unchanged.
+`crates/maverick-client/src/udp.rs`, and
+`crates/maverick-tests/tests/tcp_relay.rs`. Preserve every public signature,
+wire frame, protocol/config/schema version, feature, dependency, and manifest.
+`STATUS.md` may receive one narrow current-truth update only after the green
+implementation and every required local gate pass. Keep server, tunnel, core,
+SOCKS, TUN, CLI, SDK, manifests, `Cargo.lock`, and every other file unchanged.
 
-**Behavioral red.** Use a real raw Quinn/H3 loopback client with a deliberately
-small stream receive window and active QUIC keepalive. Send a valid
-`ClientHello`, `OpenUdp`, and six same-flow `UdpPacket` frames, but do not call a
-response-receive operation at any point. A real loopback UDP target must return
-six fixed 8-KiB replies to the same observed server target-source address, for
-48 KiB in total. Target
-receipt proves that authentication and OpenUdp processing occurred; the raw
-client does not read or claim to verify `ServerHello` or the OpenUdp
-acknowledgement. After the configured state deadline, binding the exact UDP
-source observed by the target must succeed while the QUIC connection remains
-open. On the current bare-await implementation, the test must compile, receive
-and answer the actual target packets, positively confirm all six requests and
-replies plus one reused server source, then fail with status 101 because that exact source is still
-`AddrInUse`. A missing server, mock, source scan, or QUIC connection idle expiry
-is not a valid red cause.
+**Behavioral red.** One shared real-loopback test must cover the actual H2 and
+legacy-H3 client tunnel variants. Open one `UdpAssociation`, send request A to
+real target A, and wait until target A receives the exact payload and records
+the server's exact UDP source before cancelling the still-pending relay future.
+Target A then sends a delayed reply A. Reuse the same association for request B
+to a different real target B. On the current implementation, the test must
+positively prove that target B receives request B and that the second relay
+incorrectly returns delayed reply A, then fail with status 101 at the fixed
+fail-closed assertion. A timeout-only failure, mock, missing server, or transport
+fallback is not a valid red cause. The H3 case must record H3 selection with no
+cooldown before and after the exchange, so any H3-connect fallback to H2 is
+rejected.
 
-**Green implementation.** Give each actual legacy-H3 Maverick DATA frame its
-own completion deadline, including a runtime-padding frame, every cover-traffic
-frame, and the business frame. Give a requested stream finish its own completion
-deadline after the final DATA frame completes. The authenticated `ServerHello`
-send uses `handshake_timeout_ms`; all other non-TCP state-machine sends use
-`idle_timeout_secs`; and TCP relay sends and finish use the relay policy's
-`idle_timeout`. On expiry return one fixed, privacy-safe private error and let it
-propagate through the existing handler. Do not send a compensating Maverick
-`Error` frame on the already blocked stream, reset the whole authenticated QUIC
-connection, or copy peer, target, frame, flow, or backend details into the
-error.
+**Green implementation.** Keep the association's tunnel as optional private
+ownership. Encode the request before taking that owner. Immediately before the
+first transport await, take the tunnel out of the association; return it only
+after a complete, matching UDP response is decoded successfully. After
+ownership has been taken, cancellation, send failure, read failure, response
+timeout, decode failure, terminal frame, or any other incomplete exchange drops
+the tunnel and leaves the association permanently empty. Every later relay
+attempt and `close` returns exactly `UDP association is no longer usable`
+without transport or target I/O. A local encode failure happens before
+ownership is taken and therefore leaves the association usable.
 
-**Acceptance.** The behavioral red turns green while the test proves the raw
-client, which never consumes the response direction, and real authenticated
-legacy-H3 server remain connected beyond the server's state deadline and the
-exact UDP source becomes reusable. The smallest deterministic server-side tests
-lock the completion helper's deadline edge and fixed private error plus the
-`ServerHello` versus ordinary-state budget selector. The shared send structure
-must make runtime padding, every cover frame, the business frame, TCP relay
-DATA/FIN, and a requested finish each invoke the bounded helper separately with
-the timeout owned by that path. Existing H3 authentication, fallback, OpenUdp
-roundtrip and ownership, DNS, padding and cover accounting, H2 behavior,
-direct-v3/quiche H3, and every public API remain unchanged. TCP target, rate,
-egress, and configured idle values remain unchanged; the sole policy application
-is using the existing TCP relay idle budget for legacy-H3 response completion.
-Run focused tests first, then the
-relevant server and integration suites under no-default, `h3`, and all-features
-matrices, formatting, strict Clippy, Rustdoc, `user-smoke.sh`, and
-`local-harness.sh` locally.
+**Acceptance.** The shared behavioral test turns green for real H2 and
+legacy-H3: after cancelling A, the second relay returns the fixed error before
+sending B, target B remains uncontacted for a bounded observation window, and
+the exact server source observed by target A becomes reusable. Existing healthy
+same-association A-then-B roundtrips and explicit close remain green. The
+smallest deterministic client tests lock successful owner restoration plus
+fail-closed cancellation/error ownership where useful without exposing new
+APIs. Run focused tests first, then the relevant client and integration suites
+under no-default, `h3`, and all-features matrices, formatting, strict Clippy,
+Rustdoc, `user-smoke.sh`, and `local-harness.sh` locally.
 
-**Out of scope and stop conditions.** Do not change H2 behavior or claim H2
-progress-reset equivalence; frame, error, protocol, config, or schema versions;
-dependencies, features, manifests, lockfile, authentication, admission,
-fallback, limits, metrics, logging, UDP target ownership, DNS behavior, TCP
-target, rate, egress, or configured idle values, client behavior, CLI, SDK, TUN,
-direct-v3/quiche H3, or any machine network setting. The only TCP relay policy
-application allowed is using its existing idle budget as the legacy-H3 response-
-completion budget. Do not add a public type,
-task, lock, queue, map, registry, retry, manager, actor, or coordination layer.
-Stop and re-adjudicate if one private legacy-H3 deadline helper plus local call-
-site plumbing cannot enforce the contract or if a fifth file is required.
+**Out of scope and stop conditions.** Do not change server, tunnel, core, TUN,
+SOCKS, wire, config, limits, authentication, admission, fallback, metrics,
+logging, task, lock, queue, map, retry, feature, dependency, manifest, lockfile,
+or machine network settings. Do not claim correlation, full-duplex UDP, TUN or
+SOCKS end-to-end readiness, physical-connection reuse, real-network evidence,
+published-artifact change, or product readiness. Stop and re-adjudicate if
+private optional ownership inside `UdpAssociation` cannot enforce the contract,
+if healthy close must keep a different contract, or if a fifth file is needed.
 
 ## Execution Order
 

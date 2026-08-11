@@ -218,6 +218,30 @@ censorship resistance, production readiness, or browser identity.
   connection can serve another request, or coverage of raw fallback responses,
   client sends, direct-v3/quiche H3, non-loopback traffic, general-purpose UDP,
   a real-network result, a published-artifact change, or product readiness.
+- Unpublished workspace source now also makes a client `UdpAssociation` fail
+  closed after an in-flight relay has taken its tunnel owner but does not
+  complete with one matching, decoded `UdpPacket`. The association temporarily
+  removes that private owner before its first transport await and restores it
+  only after complete success. Cancellation, send or read failure, response
+  timeout, decode failure, a terminal frame, or response EOF therefore drops
+  the ambiguous tunnel and leaves the association permanently unusable. Every
+  later relay attempt and `close` returns exactly `UDP association is no longer
+  usable` before transport I/O; a healthy local encode failure still occurs
+  before ownership is taken and does not poison the association. Real loopback
+  H2 and opt-in legacy-H3 tests cancel only after target A receives the exact
+  request and reveals the server UDP source, then send a delayed reply A. The
+  next relay is rejected before a different target B receives anything, the
+  exact target-A source becomes reusable, and closing the unusable association
+  returns the same fixed error. H3 selection with no cooldown before and after
+  the exchange rejects H3-connect fallback evidence. Existing healthy
+  same-association roundtrips and explicit close remain covered. Public
+  signatures are unchanged, but this intentionally tightens one public failure
+  behavior. It changes no published Beta.4 artifact, server behavior, frame or
+  wire format, protocol, config or schema version, feature, dependency, CLI,
+  SDK, direct-v3/quiche H3 path, or deployment authorization. It does not add
+  per-packet correlation, pipelining, full-duplex UDP, TUN or SOCKS end-to-end
+  evidence, physical-connection reuse evidence, a real-network result, or
+  product readiness.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

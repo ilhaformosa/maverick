@@ -17,108 +17,118 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T025a — Normal SOCKS IPv6-loopback UDP relay parity
+### T025b — TUN target-aware independent-receive contract
 
-**User result.** A normal `start_client` whose configured SOCKS5 listener is
-the valid IPv6 loopback address `[::1]` can complete UDP ASSOCIATE and relay a
-packet instead of advertising an IPv4 UDP socket whose packet is then rejected
-by the existing control-peer identity gate. The local SOCKS control and relay
-use the same IP family, while the target carried inside the SOCKS UDP packet
-remains independent and may still be IPv4. This is local bind-family parity,
-not an IPv6-target, dual-stack, IPv4-mapped-address, non-loopback, remote-network,
-general-purpose UDP, product-readiness, or release result.
+**Foundation result.** A connector-declared duplex `DatagramFlow` can receive
+one same-target UDP datagram after a normal local request/response, even when
+the packet runtime has no new local packet to exchange. The runtime still owns
+one association per existing `{app, target}` key and uses its existing bounded
+response path. This is a public TUN runtime contract and fake-connector
+foundation, not a real Maverick H3 consumer, general UDP duplex guarantee,
+product TUN result, real-network result, or release result.
 
-**Confirmed source defect.** Version-1 `ClientConfig` accepts any loopback
-`SocketAddr`, including `[::1]`, and normal `start_client` binds that configured
-SOCKS listener. The UDP ASSOCIATE handler nevertheless binds its relay
-unconditionally to `127.0.0.1:0`, returns that IPv4 address, and later requires
-the UDP peer IP to equal the TCP control peer IP exactly. Therefore a control
-peer at `::1` cannot use the advertised IPv4 relay: an IPv4 UDP packet is
-dropped before tunnel open or target I/O. The existing reply encoder already
-supports an IPv6 BND address, so this card needs no SOCKS encoding change.
+**Confirmed source gap.** `DatagramFlow` currently exposes only request/response
+`exchange`, and `FlowConnector::open_udp` receives no target. The UDP worker
+therefore waits only for a local command and cannot ask an already-open flow for
+a remote datagram. The worker key already fixes both app and target, the event
+path already rejects a response whose endpoint differs from that target, and
+the existing event channel, single pending response, accepted backpressure,
+idle bound, flow permit, and shutdown path are sufficient. No new production
+worker, queue, map, lock, or buffer is needed.
 
-**Scope.** Hard-limit the complete card to four files: `ROADMAP.md`,
-`STATUS.md`, `crates/maverick-client/src/socks5.rs`, and
-`crates/maverick-tests/tests/tcp_relay.rs`. Behavioral red changes only
-`ROADMAP.md` and `tcp_relay.rs`; do not touch production code or `STATUS.md`
-until the compile-ready red is independently accepted. Preserve the exact
-control-IP and first-UDP-peer pin, every manifest, dependency, feature,
-`Cargo.lock`, public API, Maverick protocol and frame encoding, protocol/config/
-profile version, server/core/target path, tunnel and connection-manager path,
-H2/H3/WebSocket scheduling, TCP/DNS/HTTP CONNECT/TUN behavior, and direct-v3/
-quiche H3 path.
+**Scope.** Hard-limit the complete card to five files: `ROADMAP.md`,
+`STATUS.md`, `crates/maverick-tun/src/lib.rs`,
+`crates/maverick-tun/src/runtime.rs`, and
+`crates/maverick-tun/tests/runtime.rs`. Behavioral red may change only the
+roadmap, the two additive default method skeletons in `lib.rs`, and the runtime
+test; it must not change runtime behavior or `STATUS.md`. Preserve every client,
+server, core, SOCKS, DNS, TCP, direct-v3, manifest, dependency, feature,
+`Cargo.lock`, protocol/frame/config/profile version, and published Beta.4
+artifact. The bounded fake-fixture channel and mutexes remain test-only and do
+not count as product/runtime resources.
 
-**Behavioral red.** Add one final-shape real-loopback test based on parent
-`26f78c28a5a6a399dab4ba8b4d86b2197192ca24`. Start `MaverickHarness`, clone its
-real client configuration, change only `local.socks5.listen` to `[::1]:0`, and
-start that second normal client through public `start_client`. The test must
-connect its real TCP control over `::1`, complete method negotiation and UDP
-ASSOCIATE, and parse the entire IPv4 or IPv6 BND reply rather than assuming a
-fixed ten-byte shape.
+**Public contract skeleton.** Keep existing required `DatagramFlow::exchange`,
+`DatagramFlow::close`, and `FlowConnector::open_udp` signatures and semantics.
+Add object-safe `DatagramFlow::receive_unsolicited` with a default that waits
+for cancellation and returns `Cancelled`, so existing serial implementations
+remain source-compatible and cannot busy-loop or masquerade as clean EOF. An
+override returns the next independently received datagram, or `Ok(None)` only
+for clean remote close; the result makes no request-correlation claim, its
+future must be safe to cancel, and the capability is fixed for the flow
+lifetime. Add object-safe `FlowConnector::open_udp_for_target` whose
+default ignores the target and delegates to `open_udp`. These are additive but
+SemVer-observable public Rust API changes and can cause downstream same-name
+method conflicts; do not call them private or absolutely non-breaking.
 
-The parent branch must observe the advertised IPv4 loopback relay, send one
-valid IPv4-target SOCKS UDP packet to it from an IPv4 loopback UDP peer, and
-prove boundedly that the real IPv4 target receives nothing. It must also prove
-the second client's H2 pool has zero connections, opened streams, and active
-streams, which fixes the drop before tunnel work. Capture this expected parent
-failure as data, close the control, shut down the second client and harness
-cleanly, and only then fail at the fixed panic
-`normal SOCKS IPv6 UDP relay stayed unavailable`, producing status 101.
+**Behavioral red.** Add one final-shape fake-connector packet-runtime test
+based on parent `0553f2509719de07a62d0a072b00492801982f80`. Its target-aware
+open override records the exact runtime target and returns one fake duplex
+flow. First send local packet A and require its normal echo. Wait boundedly for
+the runtime to
+poll independent receive, then send local packet B; B must still echo, proving
+that dropping the pending cancellation-safe receive future does not damage the
+flow. Without sending another local packet, inject one wrong-target datagram
+followed by one exact-target push. Only the exact-target payload may reach the
+original TUN app.
 
-The same test must already contain the green branch. If the reply advertises
-`[::1]` with a nonzero port, bind the local UDP peer to `[::1]:0` but keep the
-encoded tunnel target IPv4. The real target must receive the exact payload and
-reveal its server-side UDP source; its reply must return from the exact
-advertised IPv6 relay with the exact IPv4 SOCKS target metadata and payload.
-After control EOF, the exact server-side target source must become reusable and
-both clients plus the harness must shut down cleanly. A compile failure,
-loopback-family skip, IPv6 target substitution, direct public UDP association,
-mock, test hook, target contact on the parent branch, parent H2 activity,
-incomplete BND parsing, leaked source, unclean shutdown, timeout propagated as
-the test error, or different panic is not an accepted red. Record the exact
-command, output, exit status, changed-file list, and binary diff hash, then stop
-for independent green authorization.
+The parent runtime must complete A and B but never call target-aware open or
+independent receive. Capture those missing observations as data rather than
+propagating a timeout. Close the input, require one open, no failed association,
+non-forced shutdown, and a fully quiescent snapshot, then fail only at fixed
+panic `TUN duplex UDP unsolicited receive stayed unavailable`, producing exit
+101. A compile failure, immediate unsupported error, busy loop, wrong-target
+delivery, second open, leaked task/association/buffer, forced shutdown, timeout
+as the test error, or different panic is not an accepted red. Freeze the exact
+command, output, changed files, diff check, privacy scan, and binary diff hash,
+then stop for independent green authorization.
 
-**Green contract.** Add one crate-private bind-family helper in `socks5.rs`.
-It chooses the family of the accepted TCP control peer when available and the
-control stream's local family only as the existing direct-call fallback. IPv4
-selects the existing `127.0.0.1:0`; IPv6 selects `[::1]:0`. Bind exactly one
-loopback UDP socket and feed its actual local address to the existing SOCKS
-reply encoder. Do not bind the peer's exact source address, create a dual-stack
-socket, or treat `127.0.0.1` and `::1` as the same identity.
+**Green runtime.** Open the worker with
+`open_udp_for_target(key.target, cancel)` under the existing connect bound. In
+the existing UDP worker, select among cancellation, the existing command
+receiver, independent receive, and one idle deadline. A local command must win
+without poisoning the receive side: end the select scope and drop that pending
+future before calling the unchanged bounded `exchange`. A remote datagram must
+reuse the same `EngineEvent::UdpResponse`, endpoint-equality gate, event
+channel, single `pending_response`, accepted oneshot, packet writer, and payload
+limit.
+Successful activity in either direction refreshes the idle bound. Clean remote
+close ends the association; receive/exchange/oversize/close failure preserves
+the existing failed-association accounting; runtime cancellation is not a
+failure.
 
-The relay socket family describes only the local SOCKS peer. Decoded IPv4,
-IPv6, and domain targets retain their existing tunnel representation and
-behavior; the green test proves only an IPv4 target carried through an IPv6
-local relay. Keep exact control-IP equality, exact first-peer address and port
-pinning, malformed-packet rejection, retry/fallback behavior, target switching,
-association lifecycle, and response encoding unchanged. The helper adds no
-task, channel, queue, lock, map, second socket, retry, log, or new error value.
+Keep exactly one worker and one flow owner. Do not add a production task,
+channel, queue, lock, map, second pending response, retry, replay, correlation
+identifier, configuration field, counter, or new public error variant. The
+serial default receive remains pending until cancellation and existing DNS
+port-53 interception, TCP, serial exchange, admission, buffering, and shutdown
+behavior remain unchanged.
 
-**Green evidence and compatibility.** Re-run the new exact IPv6-control test,
-the existing normal H2 and selected-H3 SOCKS UDP roundtrips, H2 serial target
-switching, H3 single-active-target handoff, peer-IP/first-peer unit gates, and
-the affected client and relay matrices. Only after formatting, strict Clippy,
-warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh` pass may
-`STATUS.md` record the new behavior and exact evidence boundary.
+**Evidence and compatibility.** The exact RED/Green test must prove initial
+exchange health, cancellation and reuse of a pending independent receive,
+same-target push delivery without a new local packet, wrong-target rejection,
+one target-aware open, existing bounds, clean shutdown, and quiescence. Re-run
+the full `maverick-tun` library/runtime suite and workspace matrices. Only after
+formatting, strict Clippy, warning-denied Rustdoc, `user-smoke.sh`, and
+`local-harness.sh` pass may `STATUS.md` record this foundation and its exact
+limits.
 
-This changes existing public `start_client` and `serve_udp_associate`, plus
-crate-private `serve_udp_associate_with_pool`, runtime behavior without changing
-a Rust signature. It changes no package version or published Beta.4 artifact; any
-later publication requires a new prerelease and must not rewrite Beta.4. Do not
-claim dual-stack-listener compatibility, IPv4-mapped IPv6 support, non-loopback
-access, IPv6 target reachability, real-network evidence, or product readiness.
+No fake flow proves legacy H3, the Maverick client connector, transport
+pressure, blocked-send concurrent receive, packet ordering, fairness, no loss,
+request/response correlation, games or voice suitability, general TUN product
+behavior, or release readiness. Package versions and Beta.4 remain unchanged;
+any later publication of the public trait additions requires a new prerelease
+and must not rewrite Beta.4.
 
-**Stop conditions.** Stop and re-adjudicate if red needs production code,
-`STATUS.md`, `support/mod.rs`, a third changed file, a second test file, a test
-hook, non-loopback I/O, or cannot bind `::1` on the current host. Stop green if
-it needs `accept_udp_peer`, `session.rs`, `lib.rs`, `udp.rs`, any server/core/
-frame file, a fifth file, public API or wire change, a manifest, dependency,
-feature or `Cargo.lock` change, two UDP sockets, a task/channel/queue/lock/map,
-IPv4-mapped-address equivalence, non-loopback acceptance or binding, relaxed
-control-IP/first-peer pinning, or an IPv6 target to make the test pass. Also
-stop if the result would need to be described as dual-stack, general-purpose
-UDP, a remote-network result, product readiness, or a release result.
+**Stop conditions.** Stop if implementation needs any client, server, core,
+SOCKS, manifest, dependency, feature, `Cargo.lock`, or sixth file; changes an
+existing required trait signature; cannot keep both new methods object-safe
+with source-compatible defaults; cannot safely cancel independent receive; or
+needs a new production task/channel/queue/lock/map/buffer/counter/config/error
+variant.
+Also stop if a wrong-target datagram can reach the app, serial or DNS behavior
+changes, existing bounded response/backpressure or shutdown cannot be reused,
+or the result would need to be described as real H3, end-to-end Maverick TUN,
+general UDP duplex, product readiness, a real-network result, or a release.
 
 ## Execution Order
 

@@ -124,6 +124,24 @@ impl Datagram {
 }
 
 pub trait DatagramFlow: Send {
+    /// Receives the next datagram without starting a local exchange.
+    ///
+    /// Implementations that override this method must keep the future safe to
+    /// cancel and must return `Ok(None)` only after a clean remote close. The
+    /// returned value does not prove whether the remote peer correlated it with
+    /// an earlier request. The capability is fixed for the lifetime of the
+    /// flow. The default keeps serial implementations source-compatible and
+    /// waits for cancellation.
+    fn receive_unsolicited<'a>(
+        &'a mut self,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<Datagram>, FlowError>> {
+        Box::pin(async move {
+            cancel.cancelled().await;
+            Err(FlowError::new(FlowErrorKind::Cancelled))
+        })
+    }
+
     fn exchange<'a>(
         &'a mut self,
         datagram: Datagram,
@@ -152,6 +170,19 @@ pub trait FlowConnector: Send + Sync + 'static {
         &'a self,
         cancel: CancellationToken,
     ) -> BoxFuture<'a, Result<Box<dyn DatagramFlow>, FlowError>>;
+
+    /// Opens a UDP flow for one runtime-selected target.
+    ///
+    /// The default preserves existing connectors by delegating to
+    /// [`FlowConnector::open_udp`]. Implementations may use `target` to select
+    /// a flow whose independent receive capability is fixed at open time.
+    fn open_udp_for_target<'a>(
+        &'a self,
+        _target: SocketAddr,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Box<dyn DatagramFlow>, FlowError>> {
+        self.open_udp(cancel)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

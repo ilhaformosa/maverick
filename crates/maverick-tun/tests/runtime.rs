@@ -1,7 +1,7 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -306,6 +306,139 @@ impl DatagramFlow for FakeDatagramFlow {
     }
 }
 
+struct DuplexUdpProbe {
+    pushes: Mutex<Option<mpsc::Receiver<Datagram>>>,
+    opened_target: Mutex<Option<SocketAddr>>,
+    opens: AtomicU64,
+    receive_polls: AtomicU64,
+    receive_cancellations: AtomicU64,
+}
+
+struct DuplexUdpConnector {
+    probe: Arc<DuplexUdpProbe>,
+}
+
+impl DuplexUdpConnector {
+    fn open_flow(&self, target: Option<SocketAddr>) -> Result<Box<dyn DatagramFlow>, FlowError> {
+        self.probe.opens.fetch_add(1, Ordering::Relaxed);
+        if let Some(target) = target {
+            *self.probe.opened_target.lock().unwrap() = Some(target);
+        }
+        let pushes = self
+            .probe
+            .pushes
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| FlowError::new(FlowErrorKind::Closed))?;
+        Ok(Box::new(DuplexUdpFlow {
+            pushes,
+            probe: Arc::clone(&self.probe),
+        }))
+    }
+}
+
+impl FlowConnector for DuplexUdpConnector {
+    fn snapshot(&self) -> FlowConnectorSnapshot {
+        FlowConnectorSnapshot::default()
+    }
+
+    fn open_tcp<'a>(
+        &'a self,
+        _target: SocketAddr,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<BoxTcpFlow, FlowError>> {
+        Box::pin(async { Err(FlowError::new(FlowErrorKind::RemoteConnection)) })
+    }
+
+    fn exchange_dns<'a>(
+        &'a self,
+        _query: Bytes,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Bytes, FlowError>> {
+        Box::pin(async { Err(FlowError::new(FlowErrorKind::DnsExchange)) })
+    }
+
+    fn open_udp<'a>(
+        &'a self,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Box<dyn DatagramFlow>, FlowError>> {
+        Box::pin(async move { self.open_flow(None) })
+    }
+
+    fn open_udp_for_target<'a>(
+        &'a self,
+        target: SocketAddr,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Box<dyn DatagramFlow>, FlowError>> {
+        Box::pin(async move { self.open_flow(Some(target)) })
+    }
+}
+
+struct DuplexUdpFlow {
+    pushes: mpsc::Receiver<Datagram>,
+    probe: Arc<DuplexUdpProbe>,
+}
+
+impl DatagramFlow for DuplexUdpFlow {
+    fn receive_unsolicited<'a>(
+        &'a mut self,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<Datagram>, FlowError>> {
+        Box::pin(async move {
+            self.probe.receive_polls.fetch_add(1, Ordering::Relaxed);
+            let mut guard = ReceiveCancellationGuard::new(Arc::clone(&self.probe));
+            let result = tokio::select! {
+                _ = cancel.cancelled() => Err(FlowError::new(FlowErrorKind::Cancelled)),
+                push = self.pushes.recv() => Ok(push),
+            };
+            guard.completed = true;
+            result
+        })
+    }
+
+    fn exchange<'a>(
+        &'a mut self,
+        datagram: Datagram,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Datagram, FlowError>> {
+        Box::pin(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => Err(FlowError::new(FlowErrorKind::Cancelled)),
+                _ = tokio::task::yield_now() => Ok(datagram),
+            }
+        })
+    }
+
+    fn close<'a>(&'a mut self) -> BoxFuture<'a, Result<(), FlowError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+struct ReceiveCancellationGuard {
+    probe: Arc<DuplexUdpProbe>,
+    completed: bool,
+}
+
+impl ReceiveCancellationGuard {
+    fn new(probe: Arc<DuplexUdpProbe>) -> Self {
+        Self {
+            probe,
+            completed: false,
+        }
+    }
+}
+
+impl Drop for ReceiveCancellationGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.probe
+                .receive_cancellations
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 struct Harness {
     input: mpsc::Sender<Vec<u8>>,
     output: mpsc::Receiver<Vec<u8>>,
@@ -423,6 +556,34 @@ fn test_config() -> PacketRuntimeConfig {
         poll_interval: Duration::from_millis(1),
         ..PacketRuntimeConfig::default()
     }
+}
+
+async fn recv_udp_within(
+    output: &mut mpsc::Receiver<Vec<u8>>,
+    duration: Duration,
+) -> Option<(UdpHeader, Vec<u8>)> {
+    timeout(duration, async {
+        loop {
+            let packet = output.recv().await?;
+            if let Some(parsed) = parsed_udp(&packet) {
+                return Some(parsed);
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn becomes_true_within(duration: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+    timeout(duration, async {
+        while !predicate() {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .is_ok()
 }
 
 async fn establish_and_echo(harness: &mut Harness, family: Family, payload: &[u8]) {
@@ -550,6 +711,127 @@ async fn dns_and_generic_udp_round_trip_without_cross_flow_mix() {
     assert_eq!(harness.connector.udp_opens.load(Ordering::Relaxed), 1);
     let report = harness.runtime.shutdown().await.unwrap();
     assert_quiescent(&report.final_snapshot);
+}
+
+#[tokio::test]
+async fn duplex_udp_delivers_unsolicited_same_target_datagram_without_local_request() {
+    let mut config = test_config();
+    config.udp_idle_timeout = Duration::from_secs(5);
+    let (input, packets) = mpsc::channel(config.packet_queue_depth);
+    let (writer, mut output) = mpsc::channel(config.packet_queue_depth);
+    let (pushes, push_rx) = mpsc::channel(4);
+    let probe = Arc::new(DuplexUdpProbe {
+        pushes: Mutex::new(Some(push_rx)),
+        opened_target: Mutex::new(None),
+        opens: AtomicU64::new(0),
+        receive_polls: AtomicU64::new(0),
+        receive_cancellations: AtomicU64::new(0),
+    });
+    let connector: Arc<dyn FlowConnector> = Arc::new(DuplexUdpConnector {
+        probe: Arc::clone(&probe),
+    });
+    let io = PacketIo::new(ChannelReader { packets }, ChannelWriter { packets: writer });
+    let runtime = start_packet_runtime(config, io, connector).unwrap();
+    let app = Family::V4.app();
+    let target = Family::V4.target(5353);
+
+    input
+        .send(udp_packet(app, target, b"duplex-local-a"))
+        .await
+        .unwrap();
+    let (header, payload) = recv_udp_within(&mut output, Duration::from_secs(1))
+        .await
+        .expect("initial UDP exchange did not complete");
+    assert_eq!(header.source_port, target.port());
+    assert_eq!(header.destination_port, app.port());
+    assert_eq!(payload, b"duplex-local-a");
+
+    let first_receive_started = becomes_true_within(Duration::from_secs(1), || {
+        probe.receive_polls.load(Ordering::Relaxed) >= 1
+    })
+    .await;
+    input
+        .send(udp_packet(app, target, b"duplex-local-b"))
+        .await
+        .unwrap();
+    let (header, payload) = recv_udp_within(&mut output, Duration::from_secs(1))
+        .await
+        .expect("UDP exchange after receive cancellation did not complete");
+    assert_eq!(header.source_port, target.port());
+    assert_eq!(header.destination_port, app.port());
+    assert_eq!(payload, b"duplex-local-b");
+    let receive_was_cancelled = becomes_true_within(Duration::from_secs(1), || {
+        probe.receive_cancellations.load(Ordering::Relaxed) >= 1
+    })
+    .await;
+    let receive_resumed = becomes_true_within(Duration::from_secs(1), || {
+        probe.receive_polls.load(Ordering::Relaxed) >= 2
+    })
+    .await;
+
+    pushes
+        .send(Datagram::new(
+            SocketAddr::new(target.ip(), target.port() + 1),
+            Bytes::from_static(b"wrong-target-push"),
+        ))
+        .await
+        .unwrap();
+    pushes
+        .send(Datagram::new(
+            target,
+            Bytes::from_static(b"same-target-push"),
+        ))
+        .await
+        .unwrap();
+    let pushed = recv_udp_within(&mut output, Duration::from_secs(1)).await;
+    let push_delivered = if let Some((header, payload)) = pushed {
+        assert_eq!(header.source_port, target.port());
+        assert_eq!(header.destination_port, app.port());
+        assert_eq!(payload, b"same-target-push");
+        true
+    } else {
+        false
+    };
+
+    let exchange_after_push = if push_delivered {
+        input
+            .send(udp_packet(app, target, b"duplex-local-c"))
+            .await
+            .unwrap();
+        let (header, payload) = recv_udp_within(&mut output, Duration::from_secs(1))
+            .await
+            .expect("UDP exchange after unsolicited push did not complete");
+        assert_eq!(header.source_port, target.port());
+        assert_eq!(header.destination_port, app.port());
+        assert_eq!(payload, b"duplex-local-c");
+        true
+    } else {
+        false
+    };
+
+    drop(input);
+    let report = runtime.shutdown().await.unwrap();
+    assert!(!report.forced);
+    assert_eq!(probe.opens.load(Ordering::Relaxed), 1);
+    assert_eq!(report.final_snapshot.udp_associations_opened, 1);
+    assert_eq!(report.final_snapshot.udp_associations_failed, 0);
+    assert_quiescent(&report.final_snapshot);
+
+    if !push_delivered {
+        assert_eq!(report.final_snapshot.udp_datagrams_dropped, 0);
+        assert!(!first_receive_started);
+        assert!(!receive_was_cancelled);
+        assert!(!receive_resumed);
+        assert_eq!(*probe.opened_target.lock().unwrap(), None);
+        panic!("TUN duplex UDP unsolicited receive stayed unavailable");
+    }
+
+    assert!(first_receive_started);
+    assert!(receive_was_cancelled);
+    assert!(receive_resumed);
+    assert!(exchange_after_push);
+    assert_eq!(report.final_snapshot.udp_datagrams_dropped, 1);
+    assert_eq!(*probe.opened_target.lock().unwrap(), Some(target));
 }
 
 #[tokio::test]

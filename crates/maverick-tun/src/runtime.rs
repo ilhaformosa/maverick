@@ -2031,7 +2031,10 @@ async fn udp_worker(context: UdpWorkerContext) {
     } = context;
     let result = tokio::select! {
         _ = cancel.cancelled() => return,
-        result = timeout(connect_timeout, connector.open_udp(cancel.clone())) => result,
+        result = timeout(
+            connect_timeout,
+            connector.open_udp_for_target(key.target, cancel.clone()),
+        ) => result,
     };
     let mut flow = match result {
         Ok(Ok(flow)) => flow,
@@ -2047,32 +2050,61 @@ async fn udp_worker(context: UdpWorkerContext) {
     };
 
     let mut failed = false;
+    let idle = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle);
     loop {
-        let command = tokio::select! {
-            _ = cancel.cancelled() => break,
-            result = timeout(idle_timeout, commands.recv()) => match result {
-                Ok(command) => command,
-                Err(_) => break,
+        enum Action {
+            Cancelled,
+            Command(Option<UdpCommand>),
+            Received(Result<Option<Datagram>, crate::FlowError>),
+            Idle,
+        }
+
+        let action = {
+            tokio::select! {
+                _ = cancel.cancelled() => Action::Cancelled,
+                command = commands.recv() => Action::Command(command),
+                result = flow.receive_unsolicited(cancel.clone()) => Action::Received(result),
+                _ = &mut idle => Action::Idle,
             }
         };
-        let Some(command) = command else {
-            break;
-        };
-        let (payload, _payload_lease) = command.payload.into_parts();
-        let datagram = Datagram::new(command.endpoint, payload);
-        let result = tokio::select! {
-            _ = cancel.cancelled() => break,
-            result = timeout(
-                idle_timeout,
-                flow.exchange(datagram, cancel.clone()),
-            ) => result,
-        };
-        let datagram = match result {
-            Ok(Ok(datagram)) => datagram,
-            Ok(Err(error)) if error.kind == FlowErrorKind::Cancelled && cancel.is_cancelled() => {
+
+        let (datagram, refresh_idle) = match action {
+            Action::Cancelled | Action::Idle | Action::Command(None) => break,
+            Action::Command(Some(command)) => {
+                let (payload, _payload_lease) = command.payload.into_parts();
+                let datagram = Datagram::new(command.endpoint, payload);
+                let result = tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = timeout(
+                        idle_timeout,
+                        flow.exchange(datagram, cancel.clone()),
+                    ) => result,
+                };
+                match result {
+                    Ok(Ok(datagram)) => (datagram, true),
+                    Ok(Err(error))
+                        if error.kind == FlowErrorKind::Cancelled && cancel.is_cancelled() =>
+                    {
+                        break;
+                    }
+                    _ => {
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            Action::Received(Ok(Some(datagram))) => {
+                let refresh_idle = datagram.endpoint == key.target;
+                (datagram, refresh_idle)
+            }
+            Action::Received(Ok(None)) => break,
+            Action::Received(Err(error))
+                if error.kind == FlowErrorKind::Cancelled && cancel.is_cancelled() =>
+            {
                 break;
             }
-            _ => {
+            Action::Received(Err(_)) => {
                 failed = true;
                 break;
             }
@@ -2099,6 +2131,9 @@ async fn udp_worker(context: UdpWorkerContext) {
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = wait => {}
+        }
+        if refresh_idle {
+            idle.as_mut().reset(TokioInstant::now() + idle_timeout);
         }
     }
     let close = timeout(Duration::from_secs(1), flow.close()).await;

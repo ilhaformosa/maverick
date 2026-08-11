@@ -631,6 +631,57 @@ censorship resistance, production readiness, or browser identity.
   protocol/config/profile version, CLI syntax, SDK signature, server/core/frame
   path, published Beta.4 artifact, deployment authorization, or release state.
   Any future publication requires a new prerelease and must not rewrite Beta.4.
+- Unpublished workspace source now gives the public TUN `DatagramFlow` contract
+  an optional independent receive operation and gives `FlowConnector` an
+  optional target-aware UDP open operation. Both additions are object-safe
+  default methods: an unchanged serial flow waits until cancellation and then
+  returns `Cancelled`, while an unchanged connector delegates target-aware
+  open to its existing `open_udp`. Existing required `open_udp`, `exchange`,
+  and `close` signatures and behavior are unchanged. `Ok(None)` from an
+  independent receive is reserved for clean remote close; a received datagram
+  carries no request-correlation guarantee, and support is fixed for the flow
+  lifetime.
+  The TUN UDP worker now opens with its existing `{app, target}` key and selects
+  one cancellation-safe independent receive alongside the existing local
+  command, idle, and shutdown paths. A local command first drops the pending
+  receive future and then uses the unchanged bounded `exchange`. A remote
+  datagram reuses the existing single `EngineEvent::UdpResponse`, exact-target
+  gate, single pending response, accepted backpressure, payload limit, and
+  packet writer. The existing successful local-exchange idle refresh is
+  unchanged. On independent receive, only an accepted same-target datagram
+  refreshes idle; a wrong-target independent datagram is dropped by the
+  existing gate and cannot keep the flow alive by itself. The worker still owns
+  exactly one flow and adds no production task, channel, queue, lock, map,
+  buffer, counter, or config.
+  A fake-connector packet-runtime test proves A and B exchanges, cancellation
+  and reuse of a known-pending receive, rejection of one wrong-target push,
+  delivery of one exact-target push without a new local packet, a subsequent C
+  exchange, one exact target-aware open, and non-forced quiescent cleanup. The
+  exact test passes 1/1 and also passed 50 consecutive focused reruns; the TUN
+  runtime and library suites pass 20/20 and 4/4. The all-features workspace
+  suite passes after one unchanged server timing test failed transiently in
+  the first run, then passed both its exact rerun and the complete rerun. The
+  relay target passes 72/72 with defaults and 109/109 with all features. Its
+  canonical serial no-default run passes 69 tests and its serial
+  no-default-plus-H3 run passes 106; each retains only the same pre-existing
+  unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo` failure
+  because private mode rejects
+  `advanced.stealth.tls_fingerprint=rustls_default`. Client library tests pass
+  74/74 without defaults and 82/82 without defaults plus H3. Strict workspace
+  and no-default client Clippy, warning-denied all-features Rustdoc,
+  formatting, `user-smoke.sh`, and `local-harness.sh` pass locally.
+  This is a public fake-connector TUN runtime foundation, not a real Maverick
+  client or legacy-H3 consumer, a general duplex UDP result, blocked-send
+  concurrency evidence, ordering, fairness, no loss, correlation, games or
+  voice suitability, real-network evidence, product readiness, or release
+  authorization. A later real-H3 TUN consumer must preserve the existing TUN
+  flags-zero setup behavior and must not inherit the SOCKS-only setup deadline.
+  The two additive public trait methods are SemVer-observable and may conflict
+  with downstream same-name methods. They change no existing required
+  signature, package version, manifest, dependency, `Cargo.lock`, wire number
+  or encoding, protocol/config/profile version, or published Beta.4 artifact.
+  Any future publication requires a new prerelease and must not rewrite Beta.4.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

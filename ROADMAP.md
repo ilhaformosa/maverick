@@ -17,68 +17,125 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T024a-4 — Fail closed after an interrupted client UDP relay
+### T024b-0 — Negotiate and reject unsupported UDP modes
 
-**User result.** Cancelling one in-flight client `UdpAssociation::relay_packet`
-must make that association permanently unusable. A delayed target reply from
-the cancelled exchange must never be returned as the response to a later
-packet, and that later packet must not reach any target.
+**User result.** An authenticated legacy H2 or opt-in legacy-H3 peer must never
+silently turn a requested UDP mode into the existing serial exchange. Feature
+bit `1 << 0` means only that both peers understand the `OpenUdp` mode gate.
+`OpenUdp` flags `0` keeps the existing serial request/reply behavior. Bit
+`1 << 0` names a known but unsupported duplex request; every nonzero flag value,
+including unknown bits, must fail closed with the opened flow's exact
+`ProtocolError`. This card does not implement duplex UDP.
 
-This closes one client-side ownership boundary around the existing serial UDP
-exchange. It does not add request-response correlation, pipelining, full-duplex
-UDP, or a general-purpose SOCKS or TUN UDP contract.
+**Scope.** Change at most these eight files: `ROADMAP.md`, `STATUS.md`,
+`crates/maverick-core/src/auth.rs`, `crates/maverick-core/src/frame.rs`,
+`crates/maverick-client/src/tunnel.rs`, `crates/maverick-client/src/udp.rs`,
+`crates/maverick-server/src/server.rs`, and
+`crates/maverick-tests/tests/tcp_relay.rs`. `STATUS.md` may receive one narrow
+current-truth update only after the green implementation and every required
+local gate pass. Preserve the protocol, config, and stored-profile version,
+every existing frame encoding, public API signature, feature, dependency,
+manifest, and `Cargo.lock`. Keep relay internals, SOCKS, TUN, direct-v3/quiche
+H3, normal WebSocket TCP behavior, WebSocket mode-bit offer/selection,
+configuration, CLI, SDK, and every other file unchanged.
 
-**Scope.** Change only `ROADMAP.md`, `STATUS.md`,
-`crates/maverick-client/src/udp.rs`, and
-`crates/maverick-tests/tests/tcp_relay.rs`. Preserve every public signature,
-wire frame, protocol/config/schema version, feature, dependency, and manifest.
-`STATUS.md` may receive one narrow current-truth update only after the green
-implementation and every required local gate pass. Keep server, tunnel, core,
-SOCKS, TUN, CLI, SDK, manifests, `Cargo.lock`, and every other file unchanged.
+**Behavioral red.** Raw public-tunnel tests must cover actual H2 and actual
+legacy-H3 without using a production client helper to pre-filter the request.
+Send a valid `ClientHello` with feature flags `0` or the requested mode-gate
+bit, then pipeline `OpenUdp(flags = 1)` and a same-flow valid `UdpPacket` toward
+a real loopback UDP target. On the current implementation, each test must
+positively observe the target's exact request and reply, the server's
+`WindowUpdate`, and the returned UDP response before failing at one fixed
+assertion with status 101. A compile error, fallback response, mock, missing
+server, timeout-only failure, or wrong transport is not a valid red cause. The
+H3 case must establish a real Quinn/H3 carrier rather than H2 fallback.
 
-**Behavioral red.** One shared real-loopback test must cover the actual H2 and
-legacy-H3 client tunnel variants. Open one `UdpAssociation`, send request A to
-real target A, and wait until target A receives the exact payload and records
-the server's exact UDP source before cancelling the still-pending relay future.
-Target A then sends a delayed reply A. Reuse the same association for request B
-to a different real target B. On the current implementation, the test must
-positively prove that target B receives request B and that the second relay
-incorrectly returns delayed reply A, then fail with status 101 at the fixed
-fail-closed assertion. A timeout-only failure, mock, missing server, or transport
-fallback is not a valid red cause. The H3 case must record H3 selection with no
-cooldown before and after the exchange, so any H3-connect fallback to H2 is
-rejected.
+**Green implementation.** Add `FEATURE_OPEN_UDP_MODE_NEGOTIATION = 1 << 0` as
+the sole meaning of negotiated mode-gate understanding. New legacy clients
+request it only on legacy H2 or legacy-H3, servers select it there only when
+requested, and old feature-zero peers remain authenticated. Add the new bit to
+the existing supported-feature mask without clearing, replacing, synthesizing,
+or weakening the existing TLS channel-binding selection. A selected handshake
+mask is an authenticated supported subset of the requested mask, not a promise
+to echo every requested bit. Therefore a new client must accept an old server's
+valid selected subset when the mode-gate bit is absent and continue to send only
+flags-zero serial UDP. The WebSocket carrier continues to request and select
+zero for this bit and keeps its existing normal TCP behavior.
 
-**Green implementation.** Keep the association's tunnel as optional private
-ownership. Encode the request before taking that owner. Immediately before the
-first transport await, take the tunnel out of the association; return it only
-after a complete, matching UDP response is decoded successfully. After
-ownership has been taken, cancellation, send failure, read failure, response
-timeout, decode failure, terminal frame, or any other incomplete exchange drops
-the tunnel and leaves the association permanently empty. Every later relay
-attempt and `close` returns exactly `UDP association is no longer usable`
-without transport or target I/O. A local encode failure happens before
-ownership is taken and therefore leaves the association usable.
+Each concrete H2, H3, or WebSocket client request/tunnel stores the complete
+`feature_flags_selected` value only after the corresponding `ServerHello` MAC,
+protocol fields, and requested-subset check all pass. It must not reconstruct
+that value from the client's offer, carrier choice, or configuration. In
+particular, a valid old server that does not select the new bit leaves the
+stored value exactly `0` when it selected no other feature; the client must not
+promote its own offer into a negotiated fact.
 
-**Acceptance.** The shared behavioral test turns green for real H2 and
-legacy-H3: after cancelling A, the second relay returns the fixed error before
-sending B, target B remains uncontacted for a bounded observation window, and
-the exact server source observed by target A becomes reusable. Existing healthy
-same-association A-then-B roundtrips and explicit close remain green. The
-smallest deterministic client tests lock successful owner restoration plus
-fail-closed cancellation/error ownership where useful without exposing new
-APIs. Run focused tests first, then the relevant client and integration suites
-under no-default, `h3`, and all-features matrices, formatting, strict Clippy,
-Rustdoc, `user-smoke.sh`, and `local-harness.sh` locally.
+Keep every production `OpenUdp` request at flags `0`. Its existing successful
+acknowledgement remains an exact same-flow `WindowUpdate` with flags `0` and an
+empty payload. Recognize the duplex bit as named but unsupported; do not add a
+duplex state, task, queue, lock, retry, or packet-correlation layer. On both
+legacy H2 and legacy-H3 server paths, reject every nonzero `OpenUdp` flag with
+an exact same-flow `Error`: flags `0` and only the encoded `ProtocolError`
+payload. That per-flow error is an exact flow-id response, unlike the handshake
+mask's subset semantics. Reject before acquiring a flow permit, decoding the
+`OpenUdp` payload, applying rate policy, opening a target slot or socket, or
+performing target I/O. H2 completes that terminal application response with
+`grpc-status: 0`; H3 completes it with FIN.
 
-**Out of scope and stop conditions.** Do not change server, tunnel, core, TUN,
-SOCKS, wire, config, limits, authentication, admission, fallback, metrics,
-logging, task, lock, queue, map, retry, feature, dependency, manifest, lockfile,
-or machine network settings. Do not claim correlation, full-duplex UDP, TUN or
-SOCKS end-to-end readiness, physical-connection reuse, real-network evidence,
-published-artifact change, or product readiness. Stop and re-adjudicate if
-private optional ownership inside `UdpAssociation` cannot enforce the contract,
-if healthy close must keep a different contract, or if a fifth file is needed.
+Before the production client sends its first `UdpPacket`, it accepts the open
+acknowledgement only when the frame is exactly `WindowUpdate`, has the requested
+flow identifier, flags `0`, and an empty payload. A wrong type or flow, any
+nonzero acknowledgement flag, or any nonempty acknowledgement payload fails
+closed before UDP application data is sent. This shared client check applies to
+any production UDP tunnel attempt, including a WebSocket-backed attempt; normal
+WebSocket TCP behavior and mode-bit offer/selection remain unchanged.
+
+**Acceptance.** The raw H2 and H3 tests turn green: the authenticated selected
+subset contains the requested mode-gate feature, the only post-hello response
+is the opened flow's exact `ProtocolError`, no `WindowUpdate` is sent, and the
+real UDP target stays uncontacted for a bounded observation window despite the
+pipelined same-flow packet. Add the smallest core and client tests that lock
+feature encoding and supported-mask selection without regressing the existing
+TLS channel-binding bit, plus production flags `0` and exact flags-zero
+`WindowUpdate` shape.
+
+Unit tests must cover auth v1 and auth v2 feature encoding and selected-subset
+handling, TLS channel-binding preservation, and old-server subset
+compatibility, including a new client accepting an old server's valid selected
+subset and retaining flags-zero serial UDP. Both handshakes then feed the same
+selected-mask helper and the same H2/H3 dispatch gate. The real-carrier H2/H3
+raw behavior matrix uses auth v1 and must cover: feature-zero plus flags-zero
+keeps the existing serial flow with a new server; feature-zero plus the duplex
+bit or a reserved nonzero bit fails closed; mode-gate-requested plus the duplex
+bit or a reserved nonzero bit fails closed; and mode-gate-requested plus
+flags-zero keeps serial behavior while a new/new legacy H2 or legacy-H3
+handshake selects the bit. WebSocket continues to request/select zero for the
+bit. Existing normal serial UDP roundtrips, wrong-flow rejection,
+interrupted-association fail-closed behavior, H2 gRPC completion, and H3 FIN
+behavior must remain green. Run focused tests first, then the relevant core,
+client, server, and integration suites under no-default, `h3`, and all-features
+matrices, formatting, strict Clippy, Rustdoc, `user-smoke.sh`, and
+`local-harness.sh` locally.
+
+**Out of scope and stop conditions.** Do not implement full-duplex UDP,
+pipelining, packet correlation, CONNECT-UDP, QUIC Datagram, a general-purpose
+SOCKS or TUN UDP contract, physical-connection reuse, or any new runtime owner.
+Do not change direct-v3/quiche H3, normal WebSocket TCP behavior, WebSocket
+mode-bit offer/selection, config, limits, fallback, metrics, logging,
+dependencies, manifests, lockfiles, or machine network settings. Do not claim
+real-network evidence, published-artifact change, games or voice suitability,
+product readiness, or release authorization. Stop and re-adjudicate if exact
+pre-admission rejection cannot be shared safely by H2 and H3, if feature-zero
+peers would break, if existing flags-zero serial behavior changes, or if a
+ninth file is needed.
+
+The handshake authentication covers requested and selected feature masks, but
+this card adds no separate per-flow MAC over `OpenUdp` flags. Direct legacy H2
+or H3 therefore continues to rely on its end-to-end transport integrity. The
+provider-fronted H2 path retains its already documented terminating
+intermediary trust: that intermediary can observe or alter per-flow tunnel
+frames. This residual is not closed, renamed, or promoted into an end-to-end
+cryptographic guarantee by mode negotiation.
 
 ## Execution Order
 

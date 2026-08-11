@@ -19,6 +19,8 @@ pub const CLIENT_HELLO_V2_AUTH_LABEL: &[u8] = b"Maverick v2 client hello";
 pub const SERVER_HELLO_V2_AUTH_LABEL: &[u8] = b"Maverick v2 server hello";
 pub const AUTH_V1_MAX_CREDENTIAL_ID_LEN: usize = 512;
 pub const AUTH_V2_MAX_CREDENTIAL_HINT_LEN: usize = 512;
+/// Advertises understanding of the `OpenUdp` mode gate, not duplex support.
+pub const FEATURE_OPEN_UDP_MODE_NEGOTIATION: u64 = 1 << 0;
 pub const FEATURE_TLS_CHANNEL_BINDING: u64 = 1 << 63;
 pub const TLS_CHANNEL_BINDING_EXPORTER_LABEL: &[u8] = b"maverick tls channel binding v1";
 
@@ -1040,9 +1042,17 @@ mod tests {
     #[test]
     fn client_hello_roundtrip() {
         let secret = SecretString::generate();
-        let hello = ClientHello::new("u_abc", &secret, "/assets/upload", Mode::Private, 7).unwrap();
+        let hello = ClientHello::new(
+            "u_abc",
+            &secret,
+            "/assets/upload",
+            Mode::Private,
+            FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+        )
+        .unwrap();
         let decoded = ClientHello::decode(&hello.encode()).unwrap();
         assert_eq!(hello, decoded);
+        assert_eq!(decoded.feature_flags, FEATURE_OPEN_UDP_MODE_NEGOTIATION);
     }
 
     #[test]
@@ -1103,13 +1113,14 @@ mod tests {
             202607,
             "/assets/upload",
             Mode::Private,
-            7,
+            FEATURE_OPEN_UDP_MODE_NEGOTIATION,
             3,
         )
         .unwrap();
         let encoded = hello.encode().unwrap();
         let decoded = ClientHelloV2::decode(&encoded).unwrap();
         assert_eq!(hello, decoded);
+        assert_eq!(decoded.feature_flags, FEATURE_OPEN_UDP_MODE_NEGOTIATION);
         assert!(decoded.verify(&secret, "/assets/upload"));
         assert!(!decoded.verify(&secret, "/wrong"));
     }

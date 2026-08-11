@@ -6,13 +6,15 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+#[cfg(feature = "h3")]
+use bytes::Buf;
 use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use http::{HeaderMap, Method, Request, StatusCode};
 use maverick_client::{
     connection_manager::H2ConnectionPoolSnapshot, transport, udp::UdpAssociation,
 };
-use maverick_core::auth::{ClientHello, ClientHelloV2};
+use maverick_core::auth::{ClientHello, ClientHelloV2, ServerHello};
 #[cfg(feature = "browser-tls")]
 use maverick_core::config::TlsFingerprintMode;
 use maverick_core::config::{
@@ -2976,6 +2978,463 @@ fn assert_interrupted_udp_relay_failed_closed(observation: InterruptedUdpRelayOb
 
 const OPEN_UDP_FLOW_ID: u64 = 41;
 const MISMATCHED_UDP_FLOW_ID: u64 = 42;
+const TEST_OPEN_UDP_MODE_FEATURE: u64 = 1 << 0;
+const TEST_OPEN_UDP_DUPLEX_FLAG: u8 = 1 << 0;
+const TEST_OPEN_UDP_RESERVED_FLAG: u8 = 1 << 7;
+
+#[derive(Debug, Eq, PartialEq)]
+enum UnsupportedOpenUdpModeTargetObservation {
+    Reached(Bytes),
+    NoTarget,
+}
+
+#[derive(Debug)]
+struct RawOpenUdpModeObservation {
+    feature_flags_selected: u64,
+    target_port: u16,
+    frames: Vec<Frame>,
+    target: UnsupportedOpenUdpModeTargetObservation,
+}
+
+fn assert_raw_open_udp_serial_shape(observation: &RawOpenUdpModeObservation) -> Result<()> {
+    let payload = match &observation.target {
+        UnsupportedOpenUdpModeTargetObservation::Reached(payload) => payload,
+        UnsupportedOpenUdpModeTargetObservation::NoTarget => {
+            anyhow::bail!("flags-zero OpenUdp did not reach the real UDP target")
+        }
+    };
+    assert_eq!(payload.as_ref(), b"open-udp-mode-request");
+    assert_eq!(observation.frames.len(), 3);
+    assert_eq!(observation.frames[1].frame_type, FrameType::WindowUpdate);
+    assert_eq!(observation.frames[1].flags, 0);
+    assert_eq!(observation.frames[1].flow_id, OPEN_UDP_FLOW_ID);
+    assert!(observation.frames[1].payload.is_empty());
+    assert_eq!(observation.frames[2].frame_type, FrameType::UdpPacket);
+    assert_eq!(observation.frames[2].flags, 0);
+    assert_eq!(observation.frames[2].flow_id, OPEN_UDP_FLOW_ID);
+    let response_packet = UdpPacketPayload::decode(&observation.frames[2].payload)?;
+    assert_eq!(
+        response_packet.target,
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    assert_eq!(response_packet.port, observation.target_port);
+    assert_eq!(response_packet.data.as_ref(), b"open-udp-mode-reply");
+    Ok(())
+}
+
+fn assert_raw_open_udp_rejected(
+    observation: RawOpenUdpModeObservation,
+    expected_selected: u64,
+) -> Result<()> {
+    assert_eq!(observation.feature_flags_selected, expected_selected);
+    if matches!(
+        &observation.target,
+        UnsupportedOpenUdpModeTargetObservation::Reached(_)
+    ) {
+        assert_raw_open_udp_serial_shape(&observation)?;
+        panic!("server acknowledged an unsupported OpenUdp mode and reached the real UDP target");
+    }
+    assert_eq!(observation.frames.len(), 2);
+    assert_eq!(
+        observation.frames[1],
+        Frame::new(
+            FrameType::Error,
+            0,
+            OPEN_UDP_FLOW_ID,
+            ErrorCode::ProtocolError.encode()
+        )
+    );
+    Ok(())
+}
+
+fn assert_raw_open_udp_serial(
+    observation: RawOpenUdpModeObservation,
+    expected_selected: u64,
+) -> Result<()> {
+    assert_eq!(observation.feature_flags_selected, expected_selected);
+    assert_raw_open_udp_serial_shape(&observation)
+}
+
+async fn observe_h2_raw_open_udp_mode(
+    requested_features: u64,
+    open_udp_flags: u8,
+) -> Result<RawOpenUdpModeObservation> {
+    let fixture = MaverickHarness::start().await?;
+    let config = fixture.client_config();
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+
+    let sender = transport::connect(&config).await?;
+    let mut h2 = match sender {
+        transport::TunnelRequestSender::H2(h2) => h2,
+        _ => anyhow::bail!("nonzero OpenUdp mode test requires the H2 transport"),
+    };
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(config.server.tunnel_path.as_str())
+        .header("content-type", "application/grpc")
+        .header("te", "trailers")
+        .body(())?;
+    let (response_fut, mut send_stream) = h2.sender.send_request(request, false)?;
+    let hello = ClientHello::new(
+        config.server.credential_id.clone(),
+        &config.server.secret,
+        &config.server.tunnel_path,
+        config.mode,
+        requested_features,
+    )?;
+    send_stream.send_data(
+        encode_grpc_frame(
+            Frame::new(FrameType::ClientHello, 0, 0, hello.encode()),
+            65_536,
+        )?,
+        false,
+    )?;
+    send_stream.send_data(
+        encode_grpc_frame(
+            Frame::new(
+                FrameType::OpenUdp,
+                open_udp_flags,
+                OPEN_UDP_FLOW_ID,
+                OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
+            ),
+            65_536,
+        )?,
+        false,
+    )?;
+    let request_packet = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+        Bytes::from_static(b"open-udp-mode-request"),
+    );
+    send_stream.send_data(
+        encode_grpc_frame(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                OPEN_UDP_FLOW_ID,
+                request_packet.encode()?,
+            ),
+            65_536,
+        )?,
+        false,
+    )?;
+    send_stream.send_data(
+        encode_grpc_frame(
+            Frame::new(FrameType::CloseFlow, 0, OPEN_UDP_FLOW_ID, Bytes::new()),
+            65_536,
+        )?,
+        true,
+    )?;
+
+    let response = response_fut.await?;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "authenticated H2 path fell back"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/grpc"),
+        "authenticated H2 path returned a fallback content type"
+    );
+    let mut body = response.into_body();
+    let response_frames = async {
+        let (mut response_bytes, trailers) =
+            timeout(Duration::from_secs(2), collect_h2_response(&mut body))
+                .await
+                .context("nonzero OpenUdp mode response must remain bounded")??;
+        assert_grpc_status_ok(&trailers);
+        let mut frames = Vec::new();
+        while let Some(frame) = decode_grpc_frame_from(&mut response_bytes, 65_536)? {
+            frames.push(frame);
+        }
+        anyhow::ensure!(
+            response_bytes.is_empty(),
+            "nonzero OpenUdp mode left an incomplete response frame"
+        );
+        Result::<Vec<Frame>>::Ok(frames)
+    };
+    let target_observation = async {
+        let mut buf = [0u8; 64];
+        match timeout(Duration::from_secs(1), target.recv_from(&mut buf)).await {
+            Ok(received) => {
+                let (len, source) = received?;
+                anyhow::ensure!(
+                    &buf[..len] == b"open-udp-mode-request",
+                    "OpenUdp mode reached the target with the wrong payload"
+                );
+                let reply = b"open-udp-mode-reply";
+                let sent = target.send_to(reply, source).await?;
+                anyhow::ensure!(
+                    sent == reply.len(),
+                    "OpenUdp mode target reply was truncated"
+                );
+                Result::<UnsupportedOpenUdpModeTargetObservation>::Ok(
+                    UnsupportedOpenUdpModeTargetObservation::Reached(Bytes::copy_from_slice(
+                        &buf[..len],
+                    )),
+                )
+            }
+            Err(_) => Ok(UnsupportedOpenUdpModeTargetObservation::NoTarget),
+        }
+    };
+    let (frames, target_observation) = tokio::join!(response_frames, target_observation);
+    let frames = frames?;
+    let target_observation = target_observation?;
+
+    let server_hello_frame = frames.first().context("missing ServerHello")?;
+    assert_eq!(server_hello_frame.frame_type, FrameType::ServerHello);
+    let server_hello = ServerHello::decode(&server_hello_frame.payload)?;
+    assert!(
+        server_hello.verify(&config.server.secret, &hello.client_nonce),
+        "raw H2 ServerHello authentication failed"
+    );
+
+    fixture.shutdown().await?;
+    Ok(RawOpenUdpModeObservation {
+        feature_flags_selected: server_hello.feature_flags_selected,
+        target_port: target_addr.port(),
+        frames,
+        target: target_observation,
+    })
+}
+
+#[cfg(feature = "h3")]
+async fn observe_h3_raw_open_udp_mode(
+    requested_features: u64,
+    open_udp_flags: u8,
+) -> Result<RawOpenUdpModeObservation> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+
+    let sender = transport::connect(&config).await?;
+    let mut h3 = match sender {
+        transport::TunnelRequestSender::H3(h3) => h3,
+        _ => anyhow::bail!("nonzero OpenUdp mode test requires the Quinn/H3 transport"),
+    };
+    let uri = format!(
+        "https://{}{}",
+        config.server.server_name, config.server.tunnel_path
+    );
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("content-type", "application/octet-stream")
+        .body(())?;
+    let mut stream = h3.send_request(request).await?;
+    let hello = ClientHello::new(
+        config.server.credential_id.clone(),
+        &config.server.secret,
+        &config.server.tunnel_path,
+        config.mode,
+        requested_features,
+    )?;
+    stream
+        .send_data(Frame::new(FrameType::ClientHello, 0, 0, hello.encode()).encode(65_536)?)
+        .await?;
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::OpenUdp,
+                open_udp_flags,
+                OPEN_UDP_FLOW_ID,
+                OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
+            )
+            .encode(65_536)?,
+        )
+        .await?;
+    let request_packet = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+        Bytes::from_static(b"open-udp-mode-request"),
+    );
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                OPEN_UDP_FLOW_ID,
+                request_packet.encode()?,
+            )
+            .encode(65_536)?,
+        )
+        .await?;
+    stream
+        .send_data(
+            Frame::new(FrameType::CloseFlow, 0, OPEN_UDP_FLOW_ID, Bytes::new()).encode(65_536)?,
+        )
+        .await?;
+    stream.finish().await?;
+
+    let response = timeout(Duration::from_secs(2), stream.recv_response())
+        .await
+        .context("nonzero OpenUdp mode H3 response headers must remain bounded")??;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "authenticated H3 path fell back"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/octet-stream"),
+        "authenticated H3 path returned a fallback content type"
+    );
+    let response_frames = async {
+        let mut response_bytes = BytesMut::new();
+        timeout(Duration::from_secs(2), async {
+            while let Some(mut chunk) = stream.recv_data().await? {
+                let bytes = chunk.copy_to_bytes(chunk.remaining());
+                response_bytes.extend_from_slice(&bytes);
+            }
+            Result::<()>::Ok(())
+        })
+        .await
+        .context("nonzero OpenUdp mode H3 response body must remain bounded")??;
+        let mut frames = Vec::new();
+        while let Some(frame) = Frame::decode_from(&mut response_bytes, 65_536)? {
+            frames.push(frame);
+        }
+        anyhow::ensure!(
+            response_bytes.is_empty(),
+            "nonzero OpenUdp mode left an incomplete H3 response frame"
+        );
+        Result::<Vec<Frame>>::Ok(frames)
+    };
+    let target_observation = async {
+        let mut buf = [0u8; 64];
+        match timeout(Duration::from_secs(1), target.recv_from(&mut buf)).await {
+            Ok(received) => {
+                let (len, source) = received?;
+                anyhow::ensure!(
+                    &buf[..len] == b"open-udp-mode-request",
+                    "OpenUdp mode reached the H3 target with the wrong payload"
+                );
+                let reply = b"open-udp-mode-reply";
+                let sent = target.send_to(reply, source).await?;
+                anyhow::ensure!(
+                    sent == reply.len(),
+                    "OpenUdp mode H3 target reply was truncated"
+                );
+                Result::<UnsupportedOpenUdpModeTargetObservation>::Ok(
+                    UnsupportedOpenUdpModeTargetObservation::Reached(Bytes::copy_from_slice(
+                        &buf[..len],
+                    )),
+                )
+            }
+            Err(_) => Ok(UnsupportedOpenUdpModeTargetObservation::NoTarget),
+        }
+    };
+    let (frames, target_observation) = tokio::join!(response_frames, target_observation);
+    let frames = frames?;
+    let target_observation = target_observation?;
+
+    let server_hello_frame = frames.first().context("missing H3 ServerHello")?;
+    assert_eq!(server_hello_frame.frame_type, FrameType::ServerHello);
+    let server_hello = ServerHello::decode(&server_hello_frame.payload)?;
+    assert!(
+        server_hello.verify(&config.server.secret, &hello.client_nonce),
+        "raw H3 ServerHello authentication failed"
+    );
+
+    assert_h3_transport(&config);
+    drop(stream);
+    drop(h3);
+    fixture.shutdown().await?;
+    Ok(RawOpenUdpModeObservation {
+        feature_flags_selected: server_hello.feature_flags_selected,
+        target_port: target_addr.port(),
+        frames,
+        target: target_observation,
+    })
+}
+
+#[tokio::test]
+async fn h2_open_udp_nonzero_mode_fails_before_target_io() -> Result<()> {
+    for (requested_features, open_udp_flags, expected_selected) in [
+        (0, TEST_OPEN_UDP_DUPLEX_FLAG, 0),
+        (0, TEST_OPEN_UDP_RESERVED_FLAG, 0),
+        (
+            TEST_OPEN_UDP_MODE_FEATURE,
+            TEST_OPEN_UDP_DUPLEX_FLAG,
+            TEST_OPEN_UDP_MODE_FEATURE,
+        ),
+        (
+            TEST_OPEN_UDP_MODE_FEATURE,
+            TEST_OPEN_UDP_RESERVED_FLAG,
+            TEST_OPEN_UDP_MODE_FEATURE,
+        ),
+    ] {
+        assert_raw_open_udp_rejected(
+            observe_h2_raw_open_udp_mode(requested_features, open_udp_flags).await?,
+            expected_selected,
+        )?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn h2_open_udp_flags_zero_keeps_serial_flow() -> Result<()> {
+    for (requested_features, expected_selected) in [
+        (0, 0),
+        (TEST_OPEN_UDP_MODE_FEATURE, TEST_OPEN_UDP_MODE_FEATURE),
+    ] {
+        assert_raw_open_udp_serial(
+            observe_h2_raw_open_udp_mode(requested_features, 0).await?,
+            expected_selected,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_open_udp_nonzero_mode_fails_before_target_io() -> Result<()> {
+    for (requested_features, open_udp_flags, expected_selected) in [
+        (0, TEST_OPEN_UDP_DUPLEX_FLAG, 0),
+        (0, TEST_OPEN_UDP_RESERVED_FLAG, 0),
+        (
+            TEST_OPEN_UDP_MODE_FEATURE,
+            TEST_OPEN_UDP_DUPLEX_FLAG,
+            TEST_OPEN_UDP_MODE_FEATURE,
+        ),
+        (
+            TEST_OPEN_UDP_MODE_FEATURE,
+            TEST_OPEN_UDP_RESERVED_FLAG,
+            TEST_OPEN_UDP_MODE_FEATURE,
+        ),
+    ] {
+        assert_raw_open_udp_rejected(
+            observe_h3_raw_open_udp_mode(requested_features, open_udp_flags).await?,
+            expected_selected,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_open_udp_flags_zero_keeps_serial_flow() -> Result<()> {
+    for (requested_features, expected_selected) in [
+        (0, 0),
+        (TEST_OPEN_UDP_MODE_FEATURE, TEST_OPEN_UDP_MODE_FEATURE),
+    ] {
+        assert_raw_open_udp_serial(
+            observe_h3_raw_open_udp_mode(requested_features, 0).await?,
+            expected_selected,
+        )?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Eq, PartialEq)]
 enum MismatchedUdpTargetObservation {

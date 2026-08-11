@@ -1,6 +1,9 @@
 use anyhow::{bail, Result};
 use bytes::Bytes;
-use maverick_core::frame::{Frame, FrameType, OpenUdpPayload, UdpPacketPayload};
+use maverick_core::auth::{FEATURE_OPEN_UDP_MODE_NEGOTIATION, FEATURE_TLS_CHANNEL_BINDING};
+use maverick_core::frame::{
+    Frame, FrameType, OpenUdpPayload, UdpPacketPayload, OPEN_UDP_FLAGS_SERIAL,
+};
 use maverick_core::ClientConfig;
 use tokio::time::{timeout, Duration};
 
@@ -9,6 +12,8 @@ use crate::ClientTunnelPool;
 
 const UDP_FLOW_ID: u64 = 1;
 const UDP_ASSOCIATION_UNUSABLE: &str = "UDP association is no longer usable";
+const CLIENT_LEGACY_FEATURE_MASK: u64 =
+    FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING;
 
 pub async fn relay_udp_packet(
     config: &ClientConfig,
@@ -36,11 +41,12 @@ impl UdpAssociation {
     }
 
     async fn open_with_tunnel(config: &ClientConfig, mut tunnel: ClientTunnel) -> Result<Self> {
+        let open_udp_flags = serial_open_udp_flags(tunnel.feature_flags_selected())?;
         tunnel
             .send_frame(
                 Frame::new(
                     FrameType::OpenUdp,
-                    0,
+                    open_udp_flags,
                     UDP_FLOW_ID,
                     OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
                 ),
@@ -48,15 +54,11 @@ impl UdpAssociation {
             )
             .await?;
         match tunnel.read_next_frame().await? {
-            Some(frame)
-                if frame.frame_type == FrameType::WindowUpdate && frame.flow_id == UDP_FLOW_ID =>
-            {
-                Ok(Self {
-                    tunnel: Some(tunnel),
-                    flow_id: UDP_FLOW_ID,
-                    response_timeout: Duration::from_millis(config.advanced.udp_idle_timeout_ms),
-                })
-            }
+            Some(frame) if is_exact_open_udp_ack(&frame, UDP_FLOW_ID) => Ok(Self {
+                tunnel: Some(tunnel),
+                flow_id: UDP_FLOW_ID,
+                response_timeout: Duration::from_millis(config.advanced.udp_idle_timeout_ms),
+            }),
             Some(frame) if frame.frame_type == FrameType::Error => {
                 tunnel.finish_response().await?;
                 bail!("UDP open failed")
@@ -115,6 +117,22 @@ impl UdpAssociation {
             .await?;
         tunnel.finish_response_after_explicit_udp_close().await
     }
+}
+
+fn serial_open_udp_flags(feature_flags_selected: u64) -> Result<u8> {
+    if feature_flags_selected & !CLIENT_LEGACY_FEATURE_MASK != 0 {
+        bail!("invalid selected feature mask");
+    }
+    // Selecting the mode gate only proves both peers understand the gate.
+    // No nonzero production mode is supported by this client.
+    Ok(OPEN_UDP_FLAGS_SERIAL)
+}
+
+fn is_exact_open_udp_ack(frame: &Frame, flow_id: u64) -> bool {
+    frame.frame_type == FrameType::WindowUpdate
+        && frame.flags == 0
+        && frame.flow_id == flow_id
+        && frame.payload.is_empty()
 }
 
 fn udp_response_from_frame(frame: Frame, flow_id: u64) -> Result<Option<UdpPacketPayload>> {
@@ -180,6 +198,45 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("UDP flow closed"));
+    }
+
+    #[test]
+    fn open_udp_ack_must_match_exact_shape_before_first_packet() {
+        let exact = Frame::new(FrameType::WindowUpdate, 0, UDP_FLOW_ID, Bytes::new());
+        assert!(is_exact_open_udp_ack(&exact, UDP_FLOW_ID));
+
+        for wrong in [
+            Frame::new(FrameType::Pong, 0, UDP_FLOW_ID, Bytes::new()),
+            Frame::new(FrameType::WindowUpdate, 0, UDP_FLOW_ID + 1, Bytes::new()),
+            Frame::new(FrameType::WindowUpdate, 1, UDP_FLOW_ID, Bytes::new()),
+            Frame::new(
+                FrameType::WindowUpdate,
+                0,
+                UDP_FLOW_ID,
+                Bytes::from_static(b"unexpected"),
+            ),
+        ] {
+            assert!(!is_exact_open_udp_ack(&wrong, UDP_FLOW_ID));
+        }
+    }
+
+    #[test]
+    fn selected_mask_decision_keeps_production_open_udp_serial() {
+        for selected in [
+            0,
+            FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+            FEATURE_TLS_CHANNEL_BINDING,
+            FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING,
+        ] {
+            assert_eq!(
+                serial_open_udp_flags(selected).unwrap(),
+                OPEN_UDP_FLAGS_SERIAL
+            );
+        }
+        assert_eq!(
+            serial_open_udp_flags(1 << 1).unwrap_err().to_string(),
+            "invalid selected feature mask"
+        );
     }
 
     #[tokio::test]

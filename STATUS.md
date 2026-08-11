@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-08-09
+Date: 2026-08-11
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -242,6 +242,40 @@ censorship resistance, production readiness, or browser identity.
   per-packet correlation, pipelining, full-duplex UDP, TUN or SOCKS end-to-end
   evidence, physical-connection reuse evidence, a real-network result, or
   product readiness.
+- Unpublished workspace source now also adds three public constants that name
+  the authenticated legacy-H2/legacy-H3 `OpenUdp` mode-negotiation gate, the
+  existing flags-zero serial mode, and a known but unsupported duplex request
+  bit. The handshake bit means only that both peers understand the gate. New
+  clients request it on H2 and opt-in legacy-H3, and new servers select it there
+  only as an authenticated supported subset. WebSocket continues to request and
+  select zero for that bit, the existing TLS channel-binding selection is
+  preserved, and clients retain only the complete selected mask that passed the
+  `ServerHello` MAC, protocol, and subset checks.
+  Production clients still send only flags-zero `OpenUdp` and require an exact
+  same-flow, flags-zero, empty `WindowUpdate` before sending the first UDP
+  packet. That shared check applies to any production UDP tunnel attempt,
+  including a WebSocket-backed attempt; normal WebSocket TCP behavior and
+  mode-bit request/selection remain unchanged. The legacy H2 and legacy-H3
+  server paths reject every nonzero `OpenUdp` flag with the opened flow's exact
+  `ProtocolError` before a flow permit, `OpenUdp` payload decode, rate policy,
+  target slot, socket, or target I/O. Raw real-loopback H2 and Quinn/H3 tests
+  cover feature-zero and selected-bit serial success plus duplex and
+  reserved-bit rejection; unit tests cover auth v1/v2 selection, old-server
+  subsets, TLS channel binding, WebSocket mode-bit isolation, and strict client
+  acknowledgement shape. The focused matrices, all-features integration,
+  formatting, strict Clippy, Rustdoc, `user-smoke.sh`, and `local-harness.sh`
+  pass. The broader `--no-default-features` and
+  `--no-default-features --features h3` integration runs each retain the same
+  pre-existing unrelated private-mode/rustls-default configuration-test
+  mismatch; all their other tests pass. This adds source-level public constants
+  but changes no existing public signature, published Beta.4 artifact,
+  protocol/config/schema version, existing frame encoding, dependency,
+  manifest, CLI, SDK, SOCKS, TUN, relay owner, normal WebSocket TCP or mode-bit
+  request/selection behavior, or direct-v3/quiche H3 path. It adds no duplex,
+  pipelining, correlation, CONNECT-UDP, QUIC Datagram, real-network result,
+  product-readiness result, or release authorization. Per-flow flags have no
+  separate MAC, so the existing provider-fronted H2 terminating-intermediary
+  trust residual remains.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

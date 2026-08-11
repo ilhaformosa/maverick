@@ -8,7 +8,8 @@ use futures::{future::poll_fn, SinkExt, StreamExt};
 use http::Request;
 use maverick_core::auth::{
     ClientHello, ClientHelloV2, ClientHelloV2Params, ServerHello, ServerHelloV2, TlsChannelBinding,
-    AUTH_V2_PROTOCOL_VERSION, FEATURE_TLS_CHANNEL_BINDING, PROTOCOL_VERSION,
+    AUTH_V2_PROTOCOL_VERSION, FEATURE_OPEN_UDP_MODE_NEGOTIATION, FEATURE_TLS_CHANNEL_BINDING,
+    PROTOCOL_VERSION,
 };
 use maverick_core::config::{parse_auth_epoch, select_client_credential_at_unix};
 use maverick_core::frame::{Frame, FrameType};
@@ -46,6 +47,7 @@ pub struct H2ClientTunnel {
     pub recv_stream: h2::RecvStream,
     pub recv_buf: BytesMut,
     pub max_frame_size: usize,
+    feature_flags_selected: Option<u64>,
     padding: RuntimePadding,
     cover_traffic: RuntimeCoverTraffic,
     batcher: RuntimeBatcher,
@@ -57,6 +59,7 @@ pub struct WsClientTunnel {
     pub stream: crate::ws_transport::WsClientStream,
     pub recv_buf: BytesMut,
     pub max_frame_size: usize,
+    feature_flags_selected: Option<u64>,
     padding: RuntimePadding,
     cover_traffic: RuntimeCoverTraffic,
     batcher: RuntimeBatcher,
@@ -67,6 +70,7 @@ pub struct H3ClientTunnel {
     stream: crate::h3_transport::H3ClientRequestStream,
     recv_buf: BytesMut,
     max_frame_size: usize,
+    feature_flags_selected: Option<u64>,
     padding: RuntimePadding,
     cover_traffic: RuntimeCoverTraffic,
     batcher: RuntimeBatcher,
@@ -81,6 +85,16 @@ impl ClientTunnel {
             #[cfg(feature = "h3")]
             Self::H3(tunnel) => tunnel.max_frame_size,
         }
+    }
+
+    pub(crate) fn feature_flags_selected(&self) -> u64 {
+        let selected = match self {
+            Self::H2(tunnel) => tunnel.feature_flags_selected,
+            Self::CloudflareWs(tunnel) => tunnel.feature_flags_selected,
+            #[cfg(feature = "h3")]
+            Self::H3(tunnel) => tunnel.feature_flags_selected,
+        };
+        selected.expect("returned client tunnel has a verified ServerHello")
     }
 
     pub async fn send_frame(&mut self, frame: Frame, end_stream: bool) -> Result<()> {
@@ -313,7 +327,11 @@ async fn open_h2(
     let req = build_h2_tunnel_request(config)?;
     let channel_binding = transport.channel_binding;
     let (response_fut, mut send_stream) = transport.sender.send_request(req, false)?;
-    let hello = ClientHandshake::new(config, channel_binding)?;
+    let hello = ClientHandshake::new(
+        config,
+        channel_binding,
+        ClientHandshakeCarrier::LegacyH2OrH3,
+    )?;
     // ClientAdvancedConfig has no separate handshake timeout. Its connect timeout
     // is already the client's tunnel-handshake budget.
     let handshake_stall_timeout = Duration::from_millis(config.advanced.connect_timeout_ms);
@@ -335,6 +353,7 @@ async fn open_h2(
         recv_stream: response.into_body(),
         recv_buf: BytesMut::new(),
         max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+        feature_flags_selected: None,
         padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
         cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
         batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
@@ -356,8 +375,9 @@ async fn open_h2(
     if server_frame.frame_type != FrameType::ServerHello {
         bail!("missing ServerHello");
     }
-    tunnel.max_frame_size =
-        validate_negotiated_max_frame_size(hello.verify_server_hello(&server_frame.payload)?)?;
+    let negotiated = hello.verify_server_hello(&server_frame.payload)?;
+    tunnel.max_frame_size = validate_negotiated_max_frame_size(negotiated.max_frame_size)?;
+    tunnel.feature_flags_selected = Some(negotiated.feature_flags_selected);
     Ok(ClientTunnel::H2(Box::new(tunnel)))
 }
 
@@ -382,11 +402,16 @@ async fn open_cloudflare_ws(
     config: &ClientConfig,
     connection: transport::CloudflareWsTunnel,
 ) -> Result<ClientTunnel> {
-    let hello = ClientHandshake::new(config, connection.channel_binding)?;
+    let hello = ClientHandshake::new(
+        config,
+        connection.channel_binding,
+        ClientHandshakeCarrier::WebSocket,
+    )?;
     let mut tunnel = WsClientTunnel {
         stream: connection.stream,
         recv_buf: BytesMut::new(),
         max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+        feature_flags_selected: None,
         padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
         cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
         batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
@@ -405,8 +430,9 @@ async fn open_cloudflare_ws(
     if server_frame.frame_type != FrameType::ServerHello {
         bail!("missing ServerHello");
     }
-    tunnel.max_frame_size =
-        validate_negotiated_max_frame_size(hello.verify_server_hello(&server_frame.payload)?)?;
+    let negotiated = hello.verify_server_hello(&server_frame.payload)?;
+    tunnel.max_frame_size = validate_negotiated_max_frame_size(negotiated.max_frame_size)?;
+    tunnel.feature_flags_selected = Some(negotiated.feature_flags_selected);
     Ok(ClientTunnel::CloudflareWs(Box::new(tunnel)))
 }
 
@@ -425,7 +451,7 @@ async fn open_h3(
         .header("content-type", "application/octet-stream")
         .body(())?;
     let mut stream = transport.send_request(req).await?;
-    let hello = ClientHandshake::new(config, None)?;
+    let hello = ClientHandshake::new(config, None, ClientHandshakeCarrier::LegacyH2OrH3)?;
     stream
         .send_data(
             Frame::new(FrameType::ClientHello, 0, 0, hello.encode()?)
@@ -444,6 +470,7 @@ async fn open_h3(
         stream,
         recv_buf: BytesMut::new(),
         max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+        feature_flags_selected: None,
         padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
         cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
         batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
@@ -455,8 +482,9 @@ async fn open_h3(
     if server_frame.frame_type != FrameType::ServerHello {
         bail!("missing ServerHello");
     }
-    tunnel.max_frame_size =
-        validate_negotiated_max_frame_size(hello.verify_server_hello(&server_frame.payload)?)?;
+    let negotiated = hello.verify_server_hello(&server_frame.payload)?;
+    tunnel.max_frame_size = validate_negotiated_max_frame_size(negotiated.max_frame_size)?;
+    tunnel.feature_flags_selected = Some(negotiated.feature_flags_selected);
     Ok(ClientTunnel::H3(Box::new(tunnel)))
 }
 
@@ -471,14 +499,30 @@ struct ClientHandshake {
     channel_binding: Option<TlsChannelBinding>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClientHandshakeCarrier {
+    LegacyH2OrH3,
+    WebSocket,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NegotiatedServerHello {
+    max_frame_size: u32,
+    feature_flags_selected: u64,
+}
+
 impl ClientHandshake {
-    fn new(config: &ClientConfig, channel_binding: Option<TlsChannelBinding>) -> Result<Self> {
+    fn new(
+        config: &ClientConfig,
+        channel_binding: Option<TlsChannelBinding>,
+        carrier: ClientHandshakeCarrier,
+    ) -> Result<Self> {
         let credential = select_client_credential_at_unix(
             &config.server,
             &config.auth.rotation,
             current_unix_timestamp()?,
         )?;
-        let feature_flags = client_feature_flags(config, channel_binding)?;
+        let feature_flags = client_feature_flags(config, channel_binding, carrier)?;
         if config.auth.v2.enabled {
             let active_epoch =
                 config.auth.rotation.active_epoch.as_deref().context(
@@ -524,7 +568,7 @@ impl ClientHandshake {
         }
     }
 
-    fn verify_server_hello(&self, payload: &[u8]) -> Result<u32> {
+    fn verify_server_hello(&self, payload: &[u8]) -> Result<NegotiatedServerHello> {
         match &self.message {
             ClientHandshakeMessage::V1(hello) => {
                 let server_hello = ServerHello::decode(payload)?;
@@ -545,7 +589,10 @@ impl ClientHandshake {
                 {
                     bail!("invalid ServerHello");
                 }
-                Ok(server_hello.max_frame_size)
+                Ok(NegotiatedServerHello {
+                    max_frame_size: server_hello.max_frame_size,
+                    feature_flags_selected: server_hello.feature_flags_selected,
+                })
             }
             ClientHandshakeMessage::V2(hello) => {
                 let server_hello = ServerHelloV2::decode(payload)?;
@@ -568,7 +615,10 @@ impl ClientHandshake {
                 {
                     bail!("invalid ServerHello v2");
                 }
-                Ok(server_hello.max_frame_size)
+                Ok(NegotiatedServerHello {
+                    max_frame_size: server_hello.max_frame_size,
+                    feature_flags_selected: server_hello.feature_flags_selected,
+                })
             }
         }
     }
@@ -577,17 +627,23 @@ impl ClientHandshake {
 fn client_feature_flags(
     config: &ClientConfig,
     channel_binding: Option<TlsChannelBinding>,
+    carrier: ClientHandshakeCarrier,
 ) -> Result<u64> {
+    let mut selected = match carrier {
+        ClientHandshakeCarrier::LegacyH2OrH3 => FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+        ClientHandshakeCarrier::WebSocket => 0,
+    };
     if !config.auth.channel_binding.enabled {
-        return Ok(0);
+        return Ok(selected);
     }
     if channel_binding.is_some() {
-        return Ok(FEATURE_TLS_CHANNEL_BINDING);
+        selected |= FEATURE_TLS_CHANNEL_BINDING;
+        return Ok(selected);
     }
     if config.auth.channel_binding.require {
         bail!("auth.channel_binding.require needs a transport with TLS channel binding support");
     }
-    Ok(0)
+    Ok(selected)
 }
 
 fn selected_channel_binding(
@@ -941,6 +997,7 @@ mod tests {
             recv_stream,
             recv_buf: BytesMut::new(),
             max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+            feature_flags_selected: Some(0),
             padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
             cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
             batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
@@ -1029,6 +1086,7 @@ mod tests {
             recv_stream: response.into_body(),
             recv_buf: BytesMut::new(),
             max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+            feature_flags_selected: Some(0),
             padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
             cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
             batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
@@ -1270,6 +1328,7 @@ mod tests {
             recv_stream: response.into_body(),
             recv_buf: BytesMut::new(),
             max_frame_size: DEFAULT_MAX_FRAME_SIZE,
+            feature_flags_selected: Some(0),
             padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
             cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
             batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
@@ -1392,27 +1451,111 @@ mod tests {
     }
 
     #[test]
+    fn client_feature_offer_is_carrier_scoped_and_preserves_tls_binding() -> Result<()> {
+        let secret = SecretString::generate();
+        let mut config = client_config(secret);
+        assert_eq!(
+            client_feature_flags(&config, None, ClientHandshakeCarrier::LegacyH2OrH3)?,
+            FEATURE_OPEN_UDP_MODE_NEGOTIATION
+        );
+        assert_eq!(
+            client_feature_flags(&config, None, ClientHandshakeCarrier::WebSocket)?,
+            0
+        );
+
+        config.auth.channel_binding.enabled = true;
+        let binding = TlsChannelBinding::new([17u8; 32]);
+        assert_eq!(
+            client_feature_flags(&config, Some(binding), ClientHandshakeCarrier::LegacyH2OrH3,)?,
+            FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING
+        );
+        assert_eq!(
+            client_feature_flags(&config, Some(binding), ClientHandshakeCarrier::WebSocket,)?,
+            FEATURE_TLS_CHANNEL_BINDING
+        );
+        Ok(())
+    }
+
+    #[test]
     fn client_handshake_rejects_unrequested_server_feature_flags() -> Result<()> {
         let secret = SecretString::generate();
         let config = client_config(secret.clone());
-        let hello = ClientHandshake::new(&config, None)?;
+        let hello = ClientHandshake::new(&config, None, ClientHandshakeCarrier::LegacyH2OrH3)?;
         let client_nonce = match &hello.message {
-            ClientHandshakeMessage::V1(hello) => hello.client_nonce,
+            ClientHandshakeMessage::V1(hello) => {
+                assert_eq!(hello.feature_flags, FEATURE_OPEN_UDP_MODE_NEGOTIATION);
+                hello.client_nonce
+            }
             ClientHandshakeMessage::V2(_) => unreachable!("auth v2 is disabled"),
         };
-        let accepted =
+        let old_server =
             ServerHello::new(&secret, &client_nonce, DEFAULT_MAX_FRAME_SIZE as u32, 1, 0)?;
         assert_eq!(
-            hello.verify_server_hello(&accepted.encode())?,
-            DEFAULT_MAX_FRAME_SIZE as u32
+            hello.verify_server_hello(&old_server.encode())?,
+            NegotiatedServerHello {
+                max_frame_size: DEFAULT_MAX_FRAME_SIZE as u32,
+                feature_flags_selected: 0,
+            }
         );
 
-        let unrequested_feature =
-            ServerHello::new(&secret, &client_nonce, DEFAULT_MAX_FRAME_SIZE as u32, 1, 1)?;
+        let new_server = ServerHello::new(
+            &secret,
+            &client_nonce,
+            DEFAULT_MAX_FRAME_SIZE as u32,
+            1,
+            FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+        )?;
+        assert_eq!(
+            hello.verify_server_hello(&new_server.encode())?,
+            NegotiatedServerHello {
+                max_frame_size: DEFAULT_MAX_FRAME_SIZE as u32,
+                feature_flags_selected: FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+            }
+        );
+
+        let unrequested_feature = ServerHello::new(
+            &secret,
+            &client_nonce,
+            DEFAULT_MAX_FRAME_SIZE as u32,
+            1,
+            1 << 1,
+        )?;
 
         assert!(hello
             .verify_server_hello(&unrequested_feature.encode())
             .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn client_handshake_retains_mode_gate_and_tls_binding_selected_mask() -> Result<()> {
+        let secret = SecretString::generate();
+        let mut config = client_config(secret.clone());
+        config.auth.channel_binding.enabled = true;
+        let binding = TlsChannelBinding::new([19u8; 32]);
+        let hello =
+            ClientHandshake::new(&config, Some(binding), ClientHandshakeCarrier::LegacyH2OrH3)?;
+        let client_nonce = match &hello.message {
+            ClientHandshakeMessage::V1(hello) => hello.client_nonce,
+            ClientHandshakeMessage::V2(_) => unreachable!("auth v2 is disabled"),
+        };
+        let selected = FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING;
+        let server_hello = ServerHello::try_new_with_channel_binding(
+            &secret,
+            &client_nonce,
+            DEFAULT_MAX_FRAME_SIZE as u32,
+            1,
+            selected,
+            Some(binding),
+        )?;
+
+        assert_eq!(
+            hello.verify_server_hello(&server_hello.encode())?,
+            NegotiatedServerHello {
+                max_frame_size: DEFAULT_MAX_FRAME_SIZE as u32,
+                feature_flags_selected: selected,
+            }
+        );
         Ok(())
     }
 
@@ -1432,7 +1575,7 @@ mod tests {
                 ..ClientCredentialRotationConfig::default()
             },
         };
-        let hello = ClientHandshake::new(&config, None)?;
+        let hello = ClientHandshake::new(&config, None, ClientHandshakeCarrier::LegacyH2OrH3)?;
         let client_nonce = match &hello.message {
             ClientHandshakeMessage::V2(hello) => hello.client_nonce,
             ClientHandshakeMessage::V1(_) => unreachable!("auth v2 is enabled"),
@@ -1448,6 +1591,25 @@ mod tests {
         )?;
 
         assert!(hello.verify_server_hello(&wrong_epoch.encode()?).is_err());
+
+        for selected in [0, FEATURE_OPEN_UDP_MODE_NEGOTIATION] {
+            let accepted = ServerHelloV2::new(
+                &secret,
+                202607,
+                &client_nonce,
+                DEFAULT_MAX_FRAME_SIZE as u32,
+                1,
+                selected,
+                120,
+            )?;
+            assert_eq!(
+                hello.verify_server_hello(&accepted.encode()?)?,
+                NegotiatedServerHello {
+                    max_frame_size: DEFAULT_MAX_FRAME_SIZE as u32,
+                    feature_flags_selected: selected,
+                }
+            );
+        }
         Ok(())
     }
 }

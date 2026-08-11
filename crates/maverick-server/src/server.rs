@@ -17,12 +17,13 @@ use h2::server::SendResponse;
 use http::{HeaderMap, Method, Request, Response, StatusCode};
 use maverick_core::auth::{
     current_unix, ClientHello, ClientHelloV2, ServerHello, ServerHelloV2, ServerHelloV2Params,
-    TlsChannelBinding, AUTH_V2_PROTOCOL_VERSION, FEATURE_TLS_CHANNEL_BINDING, PROTOCOL_VERSION,
-    TLS_CHANNEL_BINDING_EXPORTER_LABEL,
+    TlsChannelBinding, AUTH_V2_PROTOCOL_VERSION, FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+    FEATURE_TLS_CHANNEL_BINDING, PROTOCOL_VERSION, TLS_CHANNEL_BINDING_EXPORTER_LABEL,
 };
 use maverick_core::config::{DirectV3TransportStrategy, ServerRoleConfig};
 use maverick_core::frame::{
-    ErrorCode, Frame, FrameType, OpenTcpPayload, OpenUdpPayload, UdpPacketPayload, FRAME_HEADER_LEN,
+    ErrorCode, Frame, FrameType, OpenTcpPayload, OpenUdpPayload, UdpPacketPayload,
+    FRAME_HEADER_LEN, OPEN_UDP_FLAGS_SERIAL, OPEN_UDP_FLAG_DUPLEX,
 };
 use maverick_core::padding::{RuntimeCoverTraffic, RuntimePadding};
 use maverick_core::replay::ReplayCache;
@@ -967,6 +968,20 @@ enum AuthenticatedClientAuth {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LegacyHandshakeCarrier {
+    H2OrH3,
+    WebSocket,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenUdpModeGate {
+    Serial,
+    Unnegotiated,
+    UnsupportedDuplex,
+    Reserved,
+}
+
 impl AuthenticatedClientHello<'_> {
     fn client_nonce(&self) -> [u8; 32] {
         match self.auth {
@@ -1023,14 +1038,15 @@ fn authenticate_client_hello<'a>(
     state: &'a ServerState,
     now_unix: i64,
     channel_binding: Option<TlsChannelBinding>,
+    carrier: LegacyHandshakeCarrier,
 ) -> Option<AuthenticatedClientHello<'a>> {
     let version = payload_version(payload)?;
     match version {
         PROTOCOL_VERSION if !state.config.auth.v2.require => {
-            authenticate_client_hello_v1(payload, state, now_unix, channel_binding)
+            authenticate_client_hello_v1(payload, state, now_unix, channel_binding, carrier)
         }
         AUTH_V2_PROTOCOL_VERSION if state.config.auth.v2.enabled => {
-            authenticate_client_hello_v2(payload, state, now_unix, channel_binding)
+            authenticate_client_hello_v2(payload, state, now_unix, channel_binding, carrier)
         }
         _ => None,
     }
@@ -1041,6 +1057,7 @@ fn authenticate_client_hello_v1<'a>(
     state: &'a ServerState,
     now_unix: i64,
     channel_binding: Option<TlsChannelBinding>,
+    carrier: LegacyHandshakeCarrier,
 ) -> Option<AuthenticatedClientHello<'a>> {
     let hello = ClientHello::decode(payload).ok()?;
     if hello.protocol_version != PROTOCOL_VERSION {
@@ -1052,7 +1069,7 @@ fn authenticate_client_hello_v1<'a>(
         .map(|credential| credential.secret)
         .unwrap_or(&state.dummy_auth_secret);
     let feature_flags_selected =
-        selected_client_feature_flags(hello.feature_flags, state, channel_binding)?;
+        selected_client_feature_flags(hello.feature_flags, state, channel_binding, carrier)?;
     if !hello.verify_with_channel_binding(
         verify_secret,
         &state.config.maverick.tunnel_path,
@@ -1079,6 +1096,7 @@ fn authenticate_client_hello_v2<'a>(
     state: &'a ServerState,
     now_unix: i64,
     channel_binding: Option<TlsChannelBinding>,
+    carrier: LegacyHandshakeCarrier,
 ) -> Option<AuthenticatedClientHello<'a>> {
     let hello = ClientHelloV2::decode(payload).ok()?;
     if hello.protocol_version != AUTH_V2_PROTOCOL_VERSION
@@ -1098,7 +1116,7 @@ fn authenticate_client_hello_v2<'a>(
         .map(|credential| credential.secret)
         .unwrap_or(&state.dummy_auth_secret);
     let feature_flags_selected =
-        selected_client_feature_flags(hello.feature_flags, state, channel_binding)?;
+        selected_client_feature_flags(hello.feature_flags, state, channel_binding, carrier)?;
     if !hello.verify_with_channel_binding(
         verify_secret,
         &state.config.maverick.tunnel_path,
@@ -1123,18 +1141,55 @@ fn selected_client_feature_flags(
     requested: u64,
     state: &ServerState,
     channel_binding: Option<TlsChannelBinding>,
+    carrier: LegacyHandshakeCarrier,
 ) -> Option<u64> {
+    select_client_feature_mask(
+        requested,
+        carrier,
+        state.config.auth.channel_binding.enabled,
+        state.config.auth.channel_binding.require,
+        channel_binding.is_some(),
+    )
+}
+
+fn select_client_feature_mask(
+    requested: u64,
+    carrier: LegacyHandshakeCarrier,
+    channel_binding_enabled: bool,
+    channel_binding_required: bool,
+    channel_binding_available: bool,
+) -> Option<u64> {
+    let mut selected = 0;
+    if carrier == LegacyHandshakeCarrier::H2OrH3
+        && requested & FEATURE_OPEN_UDP_MODE_NEGOTIATION != 0
+    {
+        selected |= FEATURE_OPEN_UDP_MODE_NEGOTIATION;
+    }
     let requested_channel_binding = requested & FEATURE_TLS_CHANNEL_BINDING != 0;
-    if state.config.auth.channel_binding.require && !requested_channel_binding {
+    if channel_binding_required && !requested_channel_binding {
         return None;
     }
     if !requested_channel_binding {
-        return Some(0);
+        return Some(selected);
     }
-    if !state.config.auth.channel_binding.enabled || channel_binding.is_none() {
+    if !channel_binding_enabled || !channel_binding_available {
         return None;
     }
-    Some(FEATURE_TLS_CHANNEL_BINDING)
+    selected |= FEATURE_TLS_CHANNEL_BINDING;
+    Some(selected)
+}
+
+fn open_udp_mode_gate(flags: u8, feature_flags_selected: u64) -> OpenUdpModeGate {
+    if flags == OPEN_UDP_FLAGS_SERIAL {
+        return OpenUdpModeGate::Serial;
+    }
+    if feature_flags_selected & FEATURE_OPEN_UDP_MODE_NEGOTIATION == 0 {
+        return OpenUdpModeGate::Unnegotiated;
+    }
+    if flags & !OPEN_UDP_FLAG_DUPLEX != 0 {
+        return OpenUdpModeGate::Reserved;
+    }
+    OpenUdpModeGate::UnsupportedDuplex
 }
 
 fn selected_channel_binding_for_flags(
@@ -1210,7 +1265,13 @@ async fn handle_tunnel(
     let now_unix = current_unix();
     let authenticated = match first_frame {
         Ok(Some(frame)) if frame.frame_type == FrameType::ClientHello => {
-            match authenticate_client_hello(&frame.payload, &state, now_unix, channel_binding) {
+            match authenticate_client_hello(
+                &frame.payload,
+                &state,
+                now_unix,
+                channel_binding,
+                LegacyHandshakeCarrier::H2OrH3,
+            ) {
                 Some(authenticated) => authenticated,
                 None => {
                     info!("unauthenticated tunnel-like request rejected");
@@ -1349,6 +1410,19 @@ async fn handle_tunnel(
         .await;
     }
     if open_frame.frame_type == FrameType::OpenUdp {
+        if open_udp_mode_gate(open_frame.flags, authenticated.feature_flags_selected)
+            != OpenUdpModeGate::Serial
+        {
+            send_h2_server_frame(
+                &mut send_stream,
+                relay::error_frame(open_frame.flow_id, ErrorCode::ProtocolError),
+                max_frame_size,
+                true,
+                &state,
+            )
+            .await?;
+            return Ok(());
+        }
         let _flow_permit = match try_user_flow_permit(&state, &user_policy) {
             Some(permit) => permit,
             None => {
@@ -1531,7 +1605,13 @@ where
     let now_unix = current_unix();
     let authenticated = match first_frame {
         Ok(Some(frame)) if frame.frame_type == FrameType::ClientHello => {
-            match authenticate_client_hello(&frame.payload, &state, now_unix, channel_binding) {
+            match authenticate_client_hello(
+                &frame.payload,
+                &state,
+                now_unix,
+                channel_binding,
+                LegacyHandshakeCarrier::WebSocket,
+            ) {
                 Some(authenticated) => authenticated,
                 None => {
                     info!("unauthenticated websocket tunnel request rejected");
@@ -1967,7 +2047,13 @@ async fn handle_h3_tunnel(
     let now_unix = current_unix();
     let authenticated = match first_frame {
         Ok(Some(frame)) if frame.frame_type == FrameType::ClientHello => {
-            match authenticate_client_hello(&frame.payload, &state, now_unix, None) {
+            match authenticate_client_hello(
+                &frame.payload,
+                &state,
+                now_unix,
+                None,
+                LegacyHandshakeCarrier::H2OrH3,
+            ) {
                 Some(authenticated) => authenticated,
                 None => {
                     info!("unauthenticated h3 tunnel-like request rejected");
@@ -2098,6 +2184,19 @@ async fn handle_h3_tunnel(
         return handle_h3_dns_query(open_frame, stream, &state, &user_policy, max_frame_size).await;
     }
     if open_frame.frame_type == FrameType::OpenUdp {
+        if open_udp_mode_gate(open_frame.flags, authenticated.feature_flags_selected)
+            != OpenUdpModeGate::Serial
+        {
+            h3_send_server_frame(
+                &mut stream,
+                relay::error_frame(open_frame.flow_id, ErrorCode::ProtocolError),
+                max_frame_size,
+                true,
+                &state,
+            )
+            .await?;
+            return Ok(());
+        }
         let _flow_permit = match try_user_flow_permit(&state, &user_policy) {
             Some(permit) => permit,
             None => {
@@ -3417,6 +3516,101 @@ async fn handle_metrics_connection(
             .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod legacy_feature_selection_tests {
+    use super::*;
+
+    #[test]
+    fn h2_h3_selection_preserves_mode_gate_and_tls_binding_bits() {
+        let requested = FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING;
+        assert_eq!(
+            select_client_feature_mask(requested, LegacyHandshakeCarrier::H2OrH3, true, true, true,),
+            Some(requested)
+        );
+        assert_eq!(
+            select_client_feature_mask(
+                FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+                LegacyHandshakeCarrier::H2OrH3,
+                false,
+                false,
+                false,
+            ),
+            Some(FEATURE_OPEN_UDP_MODE_NEGOTIATION)
+        );
+    }
+
+    #[test]
+    fn websocket_does_not_select_open_udp_mode_gate() {
+        assert_eq!(
+            select_client_feature_mask(
+                FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+                LegacyHandshakeCarrier::WebSocket,
+                false,
+                false,
+                false,
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            select_client_feature_mask(
+                FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING,
+                LegacyHandshakeCarrier::WebSocket,
+                true,
+                false,
+                true,
+            ),
+            Some(FEATURE_TLS_CHANNEL_BINDING)
+        );
+    }
+
+    #[test]
+    fn channel_binding_requirements_remain_fail_closed() {
+        assert_eq!(
+            select_client_feature_mask(
+                FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+                LegacyHandshakeCarrier::H2OrH3,
+                true,
+                true,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            select_client_feature_mask(
+                FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING,
+                LegacyHandshakeCarrier::H2OrH3,
+                true,
+                true,
+                false,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn open_udp_mode_gate_consumes_selected_mask_without_enabling_duplex() {
+        for selected in [0, FEATURE_OPEN_UDP_MODE_NEGOTIATION] {
+            assert_eq!(
+                open_udp_mode_gate(OPEN_UDP_FLAGS_SERIAL, selected),
+                OpenUdpModeGate::Serial
+            );
+        }
+        assert_eq!(
+            open_udp_mode_gate(OPEN_UDP_FLAG_DUPLEX, 0),
+            OpenUdpModeGate::Unnegotiated
+        );
+        assert_eq!(open_udp_mode_gate(1 << 7, 0), OpenUdpModeGate::Unnegotiated);
+        assert_eq!(
+            open_udp_mode_gate(OPEN_UDP_FLAG_DUPLEX, FEATURE_OPEN_UDP_MODE_NEGOTIATION,),
+            OpenUdpModeGate::UnsupportedDuplex
+        );
+        assert_eq!(
+            open_udp_mode_gate(1 << 7, FEATURE_OPEN_UDP_MODE_NEGOTIATION),
+            OpenUdpModeGate::Reserved
+        );
+    }
 }
 
 #[cfg(all(test, feature = "h3"))]

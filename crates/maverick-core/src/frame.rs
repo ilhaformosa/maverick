@@ -6,6 +6,10 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::error::{Error, Result};
 
 pub const FRAME_HEADER_LEN: usize = 14;
+/// Selects the existing legacy serial `OpenUdp` behavior.
+pub const OPEN_UDP_FLAGS_SERIAL: u8 = 0;
+/// Names the currently unsupported duplex request bit; receivers must reject it.
+pub const OPEN_UDP_FLAG_DUPLEX: u8 = 1 << 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -417,6 +421,8 @@ mod tests {
         let decoded = OpenUdpPayload::decode(&payload.encode()).unwrap();
         assert_eq!(payload, decoded);
         assert!(OpenUdpPayload::decode(&[]).is_err());
+        assert_eq!(OPEN_UDP_FLAGS_SERIAL, 0);
+        assert_eq!(OPEN_UDP_FLAG_DUPLEX, 1);
     }
 
     #[test]

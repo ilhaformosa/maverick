@@ -1,3 +1,5 @@
+#[cfg(feature = "h3")]
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -1848,6 +1850,185 @@ async fn h3_udp_association_keeps_one_connected_target_owner() -> Result<()> {
     assert_eq!(after.active_transport, GuiTransportCarrier::H3);
     assert!(after.h3_candidate_enabled);
     assert!(!after.h3_in_cooldown);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline() -> Result<()> {
+    const RESPONSE_COUNT: usize = 6;
+    const RESPONSE_BYTES: usize = 8 * 1024;
+    const STREAM_RECEIVE_WINDOW: u32 = 44 * 1024;
+    const SERVER_IDLE_TIMEOUT_SECS: u64 = 1;
+
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        server_idle_timeout_secs: Some(SERVER_IDLE_TIMEOUT_SECS),
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let config = fixture.client_config();
+    let ca_path = config.server.ca_cert.as_ref().context("missing CA cert")?;
+    let certs: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_file_iter(ca_path)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut roots = RootCertStore::empty();
+    let (added, _) = roots.add_parsable_certificates(certs);
+    assert!(added > 0, "raw H3 client did not load the test CA");
+
+    let mut tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls_config.alpn_protocols = vec![b"h3".to_vec()];
+    tls_config.enable_early_data = false;
+
+    let mut client_config = quinn::ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)?,
+    ));
+    let mut transport_config = quinn::TransportConfig::default();
+    transport_config
+        .max_idle_timeout(Some(Duration::from_secs(10).try_into()?))
+        .stream_receive_window(STREAM_RECEIVE_WINDOW.into())
+        .keep_alive_interval(Some(Duration::from_millis(100)));
+    client_config.transport_config(Arc::new(transport_config));
+
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    endpoint.set_default_client_config(client_config);
+    let connection = endpoint
+        .connect(fixture.server.local_addr, "localhost")?
+        .await
+        .context("complete raw QUIC handshake")?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection.clone())).await?;
+    let driver_task = tokio::spawn(async move {
+        let _ = poll_fn(|cx| driver.poll_close(cx)).await;
+    });
+
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let target_task = tokio::spawn(async move {
+        let mut exact_source = None;
+        for sequence in 0..RESPONSE_COUNT {
+            let mut request = [0u8; 64];
+            let (len, source) = timeout(Duration::from_secs(2), target.recv_from(&mut request))
+                .await
+                .context("real UDP target did not receive every OpenUdp request")??;
+            anyhow::ensure!(
+                request.get(..len) == Some([sequence as u8].as_slice()),
+                "real UDP target received the wrong request payload"
+            );
+            anyhow::ensure!(
+                exact_source.is_none_or(|expected| expected == source),
+                "OpenUdp target owner did not reuse one exact source"
+            );
+            exact_source = Some(source);
+            let response = vec![0x5a; RESPONSE_BYTES];
+            let sent = target.send_to(&response, source).await?;
+            anyhow::ensure!(
+                sent == response.len(),
+                "real UDP target reply was truncated"
+            );
+        }
+        Ok::<(SocketAddr, usize), anyhow::Error>((
+            exact_source.context("real UDP target observed no request")?,
+            RESPONSE_COUNT * RESPONSE_BYTES,
+        ))
+    });
+
+    let uri = format!(
+        "https://{}{}",
+        config.server.server_name, config.server.tunnel_path
+    );
+    let mut stream = send_request
+        .send_request(
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header("content-type", "application/octet-stream")
+                .body(())?,
+        )
+        .await?;
+    let max_frame_size = 65_536;
+    let hello = ClientHello::new(
+        config.server.credential_id.clone(),
+        &config.server.secret,
+        &config.server.tunnel_path,
+        config.mode,
+        0,
+    )?;
+    stream
+        .send_data(Frame::new(FrameType::ClientHello, 0, 0, hello.encode()).encode(max_frame_size)?)
+        .await?;
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::OpenUdp,
+                0,
+                OPEN_UDP_FLOW_ID,
+                OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
+            )
+            .encode(max_frame_size)?,
+        )
+        .await?;
+    for sequence in 0..RESPONSE_COUNT {
+        let packet = UdpPacketPayload::new(
+            TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+            target_addr.port(),
+            Bytes::from(vec![sequence as u8]),
+        );
+        stream
+            .send_data(
+                Frame::new(FrameType::UdpPacket, 0, OPEN_UDP_FLOW_ID, packet.encode()?)
+                    .encode(max_frame_size)?,
+            )
+            .await?;
+    }
+
+    let (exact_source, total_response_bytes) = timeout(Duration::from_secs(3), target_task)
+        .await
+        .context("real UDP target task did not complete")?
+        .context("real UDP target task failed")??;
+    assert_eq!(total_response_bytes, 48 * 1024);
+    match UdpSocket::bind(exact_source).await {
+        Ok(_) => panic!("active OpenUdp owner did not initially hold its exact UDP source"),
+        Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse),
+    }
+    let release_deadline =
+        Instant::now() + Duration::from_secs(SERVER_IDLE_TIMEOUT_SECS) + Duration::from_secs(2);
+    let rebound = loop {
+        match UdpSocket::bind(exact_source).await {
+            Ok(socket) => break socket,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AddrInUse
+                    && Instant::now() < release_deadline =>
+            {
+                tokio::task::yield_now().await;
+            }
+            Err(err) => {
+                assert!(
+                    connection.close_reason().is_none(),
+                    "raw QUIC connection closed instead of remaining alive under keepalive"
+                );
+                panic!(
+                    "legacy-H3 response deadline did not release exact UDP source {exact_source}: {err}"
+                );
+            }
+        }
+    };
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert!(
+        connection.close_reason().is_none(),
+        "raw QUIC connection closed instead of remaining alive under keepalive"
+    );
+
+    drop(rebound);
+    drop(stream);
+    connection.close(0u32.into(), b"blocked-response-test-complete");
+    endpoint.close(0u32.into(), b"blocked-response-test-complete");
+    driver_task.abort();
     fixture.shutdown().await?;
     Ok(())
 }

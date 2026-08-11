@@ -2812,6 +2812,7 @@ async fn relay_h3_target_and_tunnel(
                             Frame::new(FrameType::TcpFin, 0, flow_id, Bytes::new()),
                             max_frame_size,
                             true,
+                            policy.idle_timeout,
                             &policy.padding,
                             &policy.cover_traffic,
                         )
@@ -2832,6 +2833,7 @@ async fn relay_h3_target_and_tunnel(
                         ),
                         max_frame_size,
                         false,
+                        policy.idle_timeout,
                         &policy.padding,
                         &policy.cover_traffic,
                     )
@@ -2854,6 +2856,7 @@ async fn relay_h3_target_and_tunnel(
                         Frame::new(FrameType::TcpFin, 0, flow_id, Bytes::new()),
                         max_frame_size,
                         true,
+                        policy.idle_timeout,
                         &policy.padding,
                         &policy.cover_traffic,
                     )
@@ -2869,6 +2872,7 @@ async fn relay_h3_target_and_tunnel(
                     Frame::new(FrameType::TcpData, 0, flow_id, Bytes::copy_from_slice(&target_buf[..n])),
                     max_frame_size,
                     false,
+                    policy.idle_timeout,
                     &policy.padding,
                     &policy.cover_traffic,
                 )
@@ -2910,12 +2914,33 @@ async fn h3_send_frame(
     frame: Frame,
     max_frame_size: usize,
     end_stream: bool,
+    completion_timeout: Duration,
 ) -> Result<()> {
-    stream.send_data(frame.encode(max_frame_size)?).await?;
+    h3_complete_with_deadline(
+        completion_timeout,
+        stream.send_data(frame.encode(max_frame_size)?),
+    )
+    .await?;
     if end_stream {
-        stream.finish().await?;
+        h3_complete_with_deadline(completion_timeout, stream.finish()).await?;
     }
     Ok(())
+}
+
+#[cfg(feature = "h3")]
+async fn h3_complete_with_deadline<T, E>(
+    completion_timeout: Duration,
+    completion: impl std::future::Future<Output = std::result::Result<T, E>>,
+) -> Result<T>
+where
+    E: Into<anyhow::Error>,
+{
+    match timeout(completion_timeout, completion).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(_) => Err(anyhow::anyhow!(
+            "h3 application-frame send exceeded its completion deadline"
+        )),
+    }
 }
 
 #[cfg(feature = "h3")]
@@ -2924,6 +2949,7 @@ async fn h3_send_frame_with_padding(
     frame: Frame,
     max_frame_size: usize,
     end_stream: bool,
+    completion_timeout: Duration,
     padding: &RuntimePadding,
     cover_traffic: &RuntimeCoverTraffic,
 ) -> Result<relay::PaddingEmission> {
@@ -2933,16 +2959,37 @@ async fn h3_send_frame_with_padding(
     {
         emission.padding_frames += 1;
         emission.padding_bytes += padding_frame.payload.len();
-        h3_send_frame(stream, padding_frame, max_frame_size, false).await?;
+        h3_send_frame(
+            stream,
+            padding_frame,
+            max_frame_size,
+            false,
+            completion_timeout,
+        )
+        .await?;
     }
     for cover_frame in
         cover_traffic.padding_frames(frame.frame_type, frame.payload.len(), max_frame_size)
     {
         emission.cover_traffic_padding_frames += 1;
         emission.cover_traffic_padding_bytes += cover_frame.payload.len();
-        h3_send_frame(stream, cover_frame, max_frame_size, false).await?;
+        h3_send_frame(
+            stream,
+            cover_frame,
+            max_frame_size,
+            false,
+            completion_timeout,
+        )
+        .await?;
     }
-    h3_send_frame(stream, frame, max_frame_size, end_stream).await?;
+    h3_send_frame(
+        stream,
+        frame,
+        max_frame_size,
+        end_stream,
+        completion_timeout,
+    )
+    .await?;
     Ok(emission)
 }
 
@@ -2954,17 +3001,36 @@ async fn h3_send_server_frame(
     end_stream: bool,
     state: &ServerState,
 ) -> Result<()> {
+    let completion_timeout = h3_server_frame_completion_timeout(
+        frame.frame_type,
+        state.config.advanced.handshake_timeout_ms,
+        state.config.advanced.idle_timeout_secs,
+    );
     let padding_bytes = h3_send_frame_with_padding(
         stream,
         frame,
         max_frame_size,
         end_stream,
+        completion_timeout,
         &server_padding(state),
         &server_cover_traffic(state),
     )
     .await?;
     state.metrics.record_shaping_padding(padding_bytes);
     Ok(())
+}
+
+#[cfg(feature = "h3")]
+fn h3_server_frame_completion_timeout(
+    frame_type: FrameType,
+    handshake_timeout_ms: u64,
+    idle_timeout_secs: u64,
+) -> Duration {
+    if frame_type == FrameType::ServerHello {
+        Duration::from_millis(handshake_timeout_ms)
+    } else {
+        Duration::from_secs(idle_timeout_secs)
+    }
 }
 
 #[cfg(feature = "h3")]
@@ -3351,6 +3417,93 @@ async fn handle_metrics_connection(
             .await?;
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "h3"))]
+mod legacy_h3_completion_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn t024a3_completion_helper_returns_ready_result() {
+        let value = h3_complete_with_deadline(Duration::from_secs(1), async {
+            Ok::<u8, std::io::Error>(7)
+        })
+        .await
+        .expect("ready H3 completion must succeed");
+
+        assert_eq!(value, 7);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn t024a3_completion_helper_returns_fixed_private_timeout() {
+        let deadline = Duration::from_secs(3);
+        let completion = tokio::spawn(async move {
+            h3_complete_with_deadline(
+                deadline,
+                std::future::pending::<std::result::Result<(), std::io::Error>>(),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!completion.is_finished());
+
+        tokio::time::advance(deadline - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!completion.is_finished());
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let error = completion
+            .await
+            .expect("completion task must not panic")
+            .expect_err("pending H3 completion must expire");
+        assert_eq!(
+            error.to_string(),
+            "h3 application-frame send exceeded its completion deadline"
+        );
+        assert_eq!(error.chain().count(), 1, "timeout error must stay private");
+    }
+
+    #[test]
+    fn t024a3_server_hello_uses_handshake_and_other_frames_use_idle_budget() {
+        let handshake_timeout_ms = 137;
+        let idle_timeout_secs = 29;
+        assert_eq!(
+            h3_server_frame_completion_timeout(
+                FrameType::ServerHello,
+                handshake_timeout_ms,
+                idle_timeout_secs,
+            ),
+            Duration::from_millis(handshake_timeout_ms)
+        );
+
+        for frame_type in [
+            FrameType::ClientHello,
+            FrameType::OpenTcp,
+            FrameType::TcpData,
+            FrameType::TcpFin,
+            FrameType::TcpReset,
+            FrameType::OpenUdp,
+            FrameType::UdpPacket,
+            FrameType::CloseFlow,
+            FrameType::Ping,
+            FrameType::Pong,
+            FrameType::WindowUpdate,
+            FrameType::Error,
+            FrameType::DnsQuery,
+            FrameType::DnsResponse,
+            FrameType::Padding,
+        ] {
+            assert_eq!(
+                h3_server_frame_completion_timeout(
+                    frame_type,
+                    handshake_timeout_ms,
+                    idle_timeout_secs,
+                ),
+                Duration::from_secs(idle_timeout_secs),
+                "ordinary H3 frame used the wrong completion budget: {frame_type:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

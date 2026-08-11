@@ -198,6 +198,26 @@ censorship resistance, production readiness, or browser identity.
   config or schema version, public API, client behavior, direct-v3/quiche H3
   path, deployment authorization, human-user result, real-network result, or
   product-readiness claim.
+- Unpublished workspace source now also gives each `send_data` operation that
+  carries one encoded Maverick response frame on the opt-in legacy-H3 server
+  path a whole-operation completion deadline. Runtime padding, each emitted
+  cover frame, and the business frame each start a full independent budget; a
+  requested stream finish starts another full budget only after its final DATA
+  completes. `ServerHello` uses the configured handshake timeout, other
+  state-machine responses use the configured server idle timeout, and TCP relay
+  DATA or FIN uses that relay's idle timeout. Expiry propagates one fixed private
+  error through the existing handler, without trying to send another Maverick
+  `Error` on the blocked stream, and ordinary scope drop releases request and
+  target owners. A raw Quinn/H3 loopback test sends valid authentication,
+  `OpenUdp`, and six same-flow requests without ever consuming the response
+  direction; the real target receives six ordered requests from one reused
+  server source and returns 48 KiB across six replies to that source. With QUIC
+  keepalive preserving the physical connection, the exact UDP source becomes
+  reusable after the state deadline. This is bounded
+  whole-operation behavior, not H2-style progress-reset parity, proof that the
+  connection can serve another request, or coverage of raw fallback responses,
+  client sends, direct-v3/quiche H3, non-loopback traffic, general-purpose UDP,
+  a real-network result, a published-artifact change, or product readiness.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

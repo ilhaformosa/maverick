@@ -534,6 +534,37 @@ censorship resistance, production readiness, or browser identity.
   number or encoding, protocol/config/profile version, deployment
   authorization, real-network result, product-readiness result, or release
   state.
+- Unpublished workspace source now lets one normal `start_client` SOCKS5 UDP
+  ASSOCIATE accepted over an IPv6-loopback control connection advertise and
+  bind one `[::1]` loopback UDP relay. The local relay family follows the
+  accepted control peer when it is available and, only when it is absent,
+  falls back to the control connection's local-address family. IPv4 controls
+  still advertise and bind one `127.0.0.1` relay. The existing exact control-IP
+  check and first accepted UDP peer's full-`SocketAddr` pin are unchanged.
+  The real-loopback test uses an IPv6 local listener, control connection, and
+  UDP peer while carrying an independent IPv4 tunnel target to an IPv4 UDP
+  target. It proves that local IPv6 relay roundtrip, exact SOCKS target metadata,
+  H2 pool use, and source cleanup; it does not prove IPv6 target reachability,
+  dual-stack listener compatibility, IPv4-mapped IPv6 support, non-loopback
+  access, real-network behavior, product readiness, or release authorization.
+  The exact IPv6-control test passes 1/1. The relay matrices pass 72/72 with
+  defaults and 109/109 with all features. The no-default relay matrix passes
+  69 tests and the no-default-plus-H3 matrix passes 106 tests; each retains only
+  the same pre-existing unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo` failure
+  because private mode rejects
+  `advanced.stealth.tls_fingerprint=rustls_default`. Client library tests pass
+  74/74 without default features and 82/82 without defaults plus H3. The
+  all-features workspace suite, strict workspace and no-default client Clippy
+  matrices, warning-denied all-features workspace Rustdoc, formatting,
+  `user-smoke.sh`, and `local-harness.sh` pass locally.
+  The SOCKS BND address-family change is a SemVer-observable runtime and SOCKS-
+  wire result through public `start_client` and `serve_udp_associate`;
+  `serve_udp_associate_with_pool` remains crate-private. It adds no wire number
+  or encoding and changes no Maverick tunnel wire behavior, public signature,
+  protocol/config/profile version, package version, or published Beta.4
+  artifact. Any future publication requires a new prerelease and must not
+  rewrite Beta.4.
 - Unpublished workspace source now also lets one normal `start_client` SOCKS5
   UDP ASSOCIATE using actually selected legacy-H3 duplex mode move
   sequentially from target A to B and back to A. When one accepted local packet

@@ -193,7 +193,7 @@ pub(crate) async fn serve_udp_associate_with_pool(
     _flow_permit: OwnedSemaphorePermit,
     control_peer: Option<SocketAddr>,
 ) -> Result<()> {
-    let socket = UdpSocket::bind("127.0.0.1:0").await?;
+    let socket = UdpSocket::bind(udp_associate_bind_addr(&control, control_peer)?).await?;
     let bind_addr = socket.local_addr()?;
     write_udp_associate_success(&mut control, bind_addr).await?;
     let mut association: Option<SocksUdpAssociation> = None;
@@ -505,6 +505,20 @@ pub(crate) async fn serve_udp_associate_with_pool(
         let _ = association.close().await;
     }
     Ok(())
+}
+
+fn udp_associate_bind_addr(
+    control: &TcpStream,
+    control_peer: Option<SocketAddr>,
+) -> Result<SocketAddr> {
+    let control_addr = match control_peer {
+        Some(peer) => peer,
+        None => control.local_addr()?,
+    };
+    Ok(match control_addr {
+        SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::LOCALHOST, 0)),
+    })
 }
 
 fn accept_udp_peer(

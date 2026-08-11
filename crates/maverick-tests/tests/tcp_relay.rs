@@ -3785,6 +3785,154 @@ async fn socks5_udp_associate_roundtrip() -> Result<()> {
     Ok(())
 }
 
+async fn read_socks_udp_associate_bind(control: &mut TcpStream) -> Result<SocketAddr> {
+    let mut header = [0u8; 4];
+    control.read_exact(&mut header).await?;
+    anyhow::ensure!(
+        header[..3] == [0x05, 0x00, 0x00],
+        "SOCKS UDP association failed"
+    );
+    match header[3] {
+        0x01 => {
+            let mut tail = [0u8; 6];
+            control.read_exact(&mut tail).await?;
+            Ok(SocketAddr::from((
+                [tail[0], tail[1], tail[2], tail[3]],
+                u16::from_be_bytes([tail[4], tail[5]]),
+            )))
+        }
+        0x04 => {
+            let mut tail = [0u8; 18];
+            control.read_exact(&mut tail).await?;
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&tail[..16]);
+            Ok(SocketAddr::from((
+                std::net::Ipv6Addr::from(octets),
+                u16::from_be_bytes([tail[16], tail[17]]),
+            )))
+        }
+        _ => anyhow::bail!("SOCKS UDP association returned an unsupported bind address"),
+    }
+}
+
+#[tokio::test]
+async fn socks5_udp_associate_ipv6_loopback_control_roundtrip() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let mut config = fixture.client_config();
+    config.local.socks5.listen = "[::1]:0".parse()?;
+    let ipv6_client = maverick_client::start_client(config).await?;
+    anyhow::ensure!(
+        ipv6_client.local_addr.ip() == std::net::Ipv6Addr::LOCALHOST,
+        "normal client did not bind the configured IPv6 loopback"
+    );
+
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut control = TcpStream::connect(ipv6_client.local_addr).await?;
+    control.write_all(&[0x05, 1, 0x00]).await?;
+    let mut method_reply = [0u8; 2];
+    control.read_exact(&mut method_reply).await?;
+    anyhow::ensure!(method_reply == [0x05, 0x00], "SOCKS UDP method failed");
+    control
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    let udp_bind = read_socks_udp_associate_bind(&mut control).await?;
+    anyhow::ensure!(udp_bind.port() != 0, "SOCKS UDP bind port stayed zero");
+
+    let ipv6_relay_available = match udp_bind {
+        SocketAddr::V4(bind) => {
+            anyhow::ensure!(
+                bind.ip().is_loopback(),
+                "SOCKS UDP relay escaped IPv4 loopback"
+            );
+            false
+        }
+        SocketAddr::V6(bind) => {
+            anyhow::ensure!(
+                *bind.ip() == std::net::Ipv6Addr::LOCALHOST,
+                "SOCKS UDP relay escaped IPv6 loopback"
+            );
+            true
+        }
+    };
+    let request = socks_udp_ipv4_request(target_addr, b"ipv6-control-ipv4-target");
+    let mut exact_target_source = None;
+
+    if ipv6_relay_available {
+        let udp = UdpSocket::bind("[::1]:0").await?;
+        udp.send_to(&request, udp_bind).await?;
+        let mut target_buf = [0u8; 128];
+        let (len, source) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+            .await
+            .context("IPv6 SOCKS UDP relay did not reach the IPv4 target")??;
+        anyhow::ensure!(
+            &target_buf[..len] == b"ipv6-control-ipv4-target",
+            "IPv6 SOCKS UDP relay changed the target payload"
+        );
+        exact_target_source = Some(source);
+        target.send_to(b"ipv6-control-ipv4-reply", source).await?;
+        receive_socks_udp_ipv4_payload(&udp, udp_bind, target_addr, b"ipv6-control-ipv4-reply")
+            .await?;
+        let pool = wait_for_pool_snapshot(&ipv6_client, |snapshot| {
+            snapshot.connections_created == 1
+                && snapshot.streams_opened == 1
+                && snapshot.active_streams == 1
+        })
+        .await?;
+        assert_eq!(pool.connections_created, 1);
+        assert_eq!(pool.streams_opened, 1);
+        assert_eq!(pool.active_streams, 1);
+    } else {
+        let udp = UdpSocket::bind("127.0.0.1:0").await?;
+        udp.send_to(&request, udp_bind).await?;
+        let mut target_buf = [0u8; 128];
+        match timeout(
+            Duration::from_millis(250),
+            target.recv_from(&mut target_buf),
+        )
+        .await
+        {
+            Err(_) => {}
+            Ok(Ok((len, _))) => {
+                anyhow::bail!("IPv4 relay reached the target with {len} unexpected bytes")
+            }
+            Ok(Err(err)) => return Err(err).context("observe IPv4-target relay rejection"),
+        }
+        let pool = ipv6_client.h2_connection_pool_snapshot();
+        assert_eq!(pool.connections_created, 0);
+        assert_eq!(pool.streams_opened, 0);
+        assert_eq!(pool.active_streams, 0);
+    }
+
+    control.shutdown().await?;
+    drop(control);
+    if let Some(source) = exact_target_source {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let rebound = loop {
+            match UdpSocket::bind(source).await {
+                Ok(socket) => break socket,
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline =>
+                {
+                    tokio::task::yield_now().await;
+                }
+                Err(err) => {
+                    return Err(err).context("IPv6 SOCKS control EOF did not release target source")
+                }
+            }
+        };
+        assert_eq!(rebound.local_addr()?, source);
+        drop(rebound);
+    }
+    ipv6_client.shutdown().await?;
+    fixture.shutdown().await?;
+
+    if !ipv6_relay_available {
+        panic!("normal SOCKS IPv6 UDP relay stayed unavailable");
+    }
+    Ok(())
+}
+
 async fn open_normal_socks_udp_associate(
     socks_addr: SocketAddr,
 ) -> Result<(TcpStream, UdpSocket, SocketAddr)> {

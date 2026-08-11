@@ -644,8 +644,9 @@ censorship resistance, production readiness, or browser identity.
   lifetime.
   The TUN UDP worker now opens with its existing `{app, target}` key and selects
   one cancellation-safe independent receive alongside the existing local
-  command, idle, and shutdown paths. A local command first drops the pending
-  receive future and then uses the unchanged bounded `exchange`. A remote
+  command, idle, and shutdown paths. At that slice, a local command first
+  dropped the pending receive future and then used the unchanged bounded
+  `exchange`. A remote
   datagram reuses the existing single `EngineEvent::UdpResponse`, exact-target
   gate, single pending response, accepted backpressure, payload limit, and
   packet writer. The existing successful local-exchange idle refresh is
@@ -658,8 +659,9 @@ censorship resistance, production readiness, or browser identity.
   and reuse of a known-pending receive, rejection of one wrong-target push,
   delivery of one exact-target push without a new local packet, a subsequent C
   exchange, one exact target-aware open, and non-forced quiescent cleanup. The
-  exact test passes 1/1 and also passed 50 consecutive focused reruns; the TUN
-  runtime and library suites pass 20/20 and 4/4. The all-features workspace
+  exact test passes 1/1 and also passed 50 consecutive focused reruns; at that
+  slice, the TUN runtime and library suites passed 20/20 and 4/4. The
+  all-features workspace
   suite passes after one unchanged server timing test failed transiently in
   the first run, then passed both its exact rerun and the complete rerun. The
   relay target passes 72/72 with defaults and 109/109 with all features. Its
@@ -679,8 +681,9 @@ censorship resistance, production readiness, or browser identity.
   authorization. The bounded selected-H3 TUN consumer recorded next preserves
   the existing flags-zero TUN setup behavior and does not inherit the
   SOCKS-only setup deadline.
-  The two additive public trait methods are SemVer-observable and may conflict
-  with downstream same-name methods. They change no existing required
+  Those two additive public trait methods from this earlier item are
+  SemVer-observable and may conflict with downstream same-name methods. They
+  change no existing required
   signature, package version, manifest, dependency, `Cargo.lock`, wire number
   or encoding, protocol/config/profile version, or published Beta.4 artifact.
   Any future publication requires a new prerelease and must not rewrite Beta.4.
@@ -732,9 +735,10 @@ censorship resistance, production readiness, or browser identity.
   without defaults plus H3 and TUN; the ordinary no-default and no-default-H3
   suites remain 74/74 and 82/82. Focused H2/H3 flags-zero regressions pass 2/2,
   and the existing selected-H3 SOCKS push regression passes 1/1.
-  The all-features workspace passes, including client 154/154, server 304/304,
-  relay 109/109, TUN packet integration 3/3, and TUN runtime/library 20/20 and
-  4/4. The relay no-default matrix passes 69 tests and its no-default-plus-H3
+  At that slice, the all-features workspace passed, including client 154/154,
+  server 304/304, relay 109/109, TUN packet integration 3/3, and TUN
+  runtime/library 20/20 and 4/4. The relay no-default matrix passes 69 tests
+  and its no-default-plus-H3
   matrix passes 106; each retains only the same pre-existing unrelated
   `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo` failure
   because private mode rejects
@@ -756,6 +760,61 @@ censorship resistance, production readiness, or browser identity.
   evidence, request correlation, ordering, fairness, no loss, physical-H3
   connection reuse, IPv6-target, real-TUN-device, games or voice, real-network,
   human-user, product-readiness, deployment, or release evidence.
+- Unpublished workspace source now adds the object-safe provided public
+  `DatagramFlow::submit_datagram` method. Its default calls the existing
+  required `exchange` exactly once and wraps that response in `Some`, so
+  existing implementations inherit the method and repository serial behavior
+  remains unchanged. An override may return `Ok(None)` only after local
+  submission completes without an immediate response. That value is not clean
+  EOF, a target acknowledgement, delivery proof, request correlation, or
+  permission to discard the payload; later remote input still arrives through
+  `receive_unsolicited`.
+  The TUN UDP worker now calls `submit_datagram` once for each local command.
+  `Some(datagram)` enters the existing exact-target, payload-size,
+  `EngineEvent::UdpResponse`, single-pending-response, accepted-backpressure,
+  and packet-writer path. `None` creates no event or fabricated response,
+  refreshes the existing successful-activity idle deadline, releases the
+  command's existing payload lease, and returns to the same command,
+  independent-receive, cancellation, idle, and shutdown select. Source review,
+  rather than a separate idle-expiry timing test, establishes that refresh.
+  The worker still has one flow owner and the existing bounded command channel;
+  this item adds no production task, channel, queue, lock, map, buffer, pending
+  response, counter, config, retry, replay, resend, or correlation identifier.
+  A fake target-aware connector test dynamically proves ordered A and B
+  submissions without remote input, no fabricated response, one later
+  exact-target push, a C submission after that push, one target-aware open, one
+  opened and zero failed associations, zero dropped datagrams, and non-forced
+  quiescent cleanup. Before checking B, the test proves both local packets
+  reached the same active UDP worker and that the ingress queue is empty. The
+  exact test passes 1/1; the TUN runtime and library suites pass 21/21 and 4/4.
+  The all-features workspace suite passes. Client library suites pass 74/74
+  without defaults, 82/82 without defaults plus H3, 71/71 without defaults
+  plus TUN, and 79/79 without defaults plus H3 and TUN. The relay no-default
+  matrix passes 69 tests and its no-default-plus-H3 matrix passes 106; each
+  retains only the same pre-existing unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo` failure
+  because private mode rejects
+  `advanced.stealth.tls_fingerprint=rustls_default`. Strict workspace and
+  no-default client Clippy across the relevant H3/TUN combinations,
+  warning-denied all-features Rustdoc, formatting, `user-smoke.sh`, and
+  `local-harness.sh` all pass locally.
+  This is a public fake-connector TUN runtime foundation. The existing real
+  client and selected-H3 TUN adapter inherit the default and still perform the
+  T025c send-then-receive exchange, so this item does not yet make a normal
+  `start_client` carrier submit B before A receives a response. That real
+  selected-H3 adapter and loopback proof remain T025e work. This result is not
+  real-client or real-carrier evidence, transport-blocked-send concurrency,
+  general pipelining or duplex UDP, response correlation, ordering beyond the
+  observed local submissions, fairness, no loss, multi-target reuse, IPv6,
+  games or voice suitability, a real TUN device, real-network behavior, product
+  readiness, deployment, or release authorization.
+  The additive public method is SemVer-observable and may conflict with a
+  downstream same-name method even though existing implementers inherit a
+  default. This item changes no existing required signature, public type or
+  error, package version, manifest, dependency, feature, `Cargo.lock`, wire
+  number or encoding, protocol/frame/config/profile version, client, server,
+  core, SOCKS, transport, or published Beta.4 artifact. Any future publication
+  requires a new prerelease and must not rewrite Beta.4.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

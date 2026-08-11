@@ -439,6 +439,126 @@ impl Drop for ReceiveCancellationGuard {
     }
 }
 
+struct SendAheadUdpProbe {
+    submissions: mpsc::Sender<Datagram>,
+    pushes: Mutex<Option<mpsc::Receiver<Datagram>>>,
+    opened_target: Mutex<Option<SocketAddr>>,
+    opens: AtomicU64,
+}
+
+struct SendAheadUdpConnector {
+    probe: Arc<SendAheadUdpProbe>,
+}
+
+impl SendAheadUdpConnector {
+    fn open_flow(&self, target: Option<SocketAddr>) -> Result<Box<dyn DatagramFlow>, FlowError> {
+        self.probe.opens.fetch_add(1, Ordering::Relaxed);
+        if let Some(target) = target {
+            *self.probe.opened_target.lock().unwrap() = Some(target);
+        }
+        let pushes = self
+            .probe
+            .pushes
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| FlowError::new(FlowErrorKind::Closed))?;
+        Ok(Box::new(SendAheadUdpFlow {
+            submissions: self.probe.submissions.clone(),
+            pushes,
+        }))
+    }
+}
+
+impl FlowConnector for SendAheadUdpConnector {
+    fn snapshot(&self) -> FlowConnectorSnapshot {
+        FlowConnectorSnapshot::default()
+    }
+
+    fn open_tcp<'a>(
+        &'a self,
+        _target: SocketAddr,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<BoxTcpFlow, FlowError>> {
+        Box::pin(async { Err(FlowError::new(FlowErrorKind::RemoteConnection)) })
+    }
+
+    fn exchange_dns<'a>(
+        &'a self,
+        _query: Bytes,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Bytes, FlowError>> {
+        Box::pin(async { Err(FlowError::new(FlowErrorKind::DnsExchange)) })
+    }
+
+    fn open_udp<'a>(
+        &'a self,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Box<dyn DatagramFlow>, FlowError>> {
+        Box::pin(async move { self.open_flow(None) })
+    }
+
+    fn open_udp_for_target<'a>(
+        &'a self,
+        target: SocketAddr,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Box<dyn DatagramFlow>, FlowError>> {
+        Box::pin(async move { self.open_flow(Some(target)) })
+    }
+}
+
+struct SendAheadUdpFlow {
+    submissions: mpsc::Sender<Datagram>,
+    pushes: mpsc::Receiver<Datagram>,
+}
+
+impl DatagramFlow for SendAheadUdpFlow {
+    fn submit_datagram<'a>(
+        &'a mut self,
+        datagram: Datagram,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<Datagram>, FlowError>> {
+        Box::pin(async move {
+            self.submissions
+                .send(datagram)
+                .await
+                .map_err(|_| FlowError::new(FlowErrorKind::Closed))?;
+            Ok(None)
+        })
+    }
+
+    fn receive_unsolicited<'a>(
+        &'a mut self,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<Datagram>, FlowError>> {
+        Box::pin(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => Err(FlowError::new(FlowErrorKind::Cancelled)),
+                push = self.pushes.recv() => Ok(push),
+            }
+        })
+    }
+
+    fn exchange<'a>(
+        &'a mut self,
+        datagram: Datagram,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Datagram, FlowError>> {
+        Box::pin(async move {
+            self.submissions
+                .send(datagram)
+                .await
+                .map_err(|_| FlowError::new(FlowErrorKind::Closed))?;
+            cancel.cancelled().await;
+            Err(FlowError::new(FlowErrorKind::Cancelled))
+        })
+    }
+
+    fn close<'a>(&'a mut self) -> BoxFuture<'a, Result<(), FlowError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 struct Harness {
     input: mpsc::Sender<Vec<u8>>,
     output: mpsc::Receiver<Vec<u8>>,
@@ -832,6 +952,129 @@ async fn duplex_udp_delivers_unsolicited_same_target_datagram_without_local_requ
     assert!(exchange_after_push);
     assert_eq!(report.final_snapshot.udp_datagrams_dropped, 1);
     assert_eq!(*probe.opened_target.lock().unwrap(), Some(target));
+}
+
+#[tokio::test]
+async fn duplex_udp_submits_second_local_datagram_without_first_response() {
+    let mut config = test_config();
+    config.udp_idle_timeout = Duration::from_secs(5);
+    let (input, packets) = mpsc::channel(config.packet_queue_depth);
+    let (writer, mut output) = mpsc::channel(config.packet_queue_depth);
+    let (submissions, mut submitted) = mpsc::channel(4);
+    let (pushes, push_rx) = mpsc::channel(4);
+    let probe = Arc::new(SendAheadUdpProbe {
+        submissions,
+        pushes: Mutex::new(Some(push_rx)),
+        opened_target: Mutex::new(None),
+        opens: AtomicU64::new(0),
+    });
+    let connector: Arc<dyn FlowConnector> = Arc::new(SendAheadUdpConnector {
+        probe: Arc::clone(&probe),
+    });
+    let io = PacketIo::new(ChannelReader { packets }, ChannelWriter { packets: writer });
+    let runtime = start_packet_runtime(config, io, connector).unwrap();
+    let app = Family::V4.app();
+    let target = Family::V4.target(5353);
+
+    input
+        .send(udp_packet(app, target, b"send-ahead-local-a"))
+        .await
+        .unwrap();
+    let first = timeout(Duration::from_secs(1), submitted.recv())
+        .await
+        .expect("first local datagram was not submitted")
+        .expect("submission observer closed");
+    assert_eq!(first.endpoint, target);
+    assert_eq!(first.payload, b"send-ahead-local-a".as_slice());
+
+    input
+        .send(udp_packet(app, target, b"send-ahead-local-b"))
+        .await
+        .unwrap();
+    assert!(
+        becomes_true_within(Duration::from_secs(1), || {
+            let snapshot = runtime.snapshot();
+            snapshot.packets_received == 2
+                && snapshot.ingress_queue_depth == 0
+                && snapshot.packets_rejected == 0
+                && snapshot.malformed_packets == 0
+                && snapshot.udp_datagrams_dropped == 0
+                && snapshot.active_udp_associations == 1
+        })
+        .await,
+        "second local datagram did not reach the existing UDP worker"
+    );
+    let second = timeout(Duration::from_secs(1), submitted.recv())
+        .await
+        .ok()
+        .flatten();
+    let second_submitted = if let Some(second) = second {
+        assert_eq!(second.endpoint, target);
+        assert_eq!(second.payload, b"send-ahead-local-b".as_slice());
+        true
+    } else {
+        false
+    };
+    if !second_submitted {
+        let snapshot = runtime.snapshot();
+        assert!(
+            snapshot.buffered_bytes >= b"send-ahead-local-a".len() + b"send-ahead-local-b".len(),
+            "blocked submissions were not retained inside the bounded runtime"
+        );
+    }
+    assert!(
+        recv_udp_within(&mut output, Duration::from_secs(1))
+            .await
+            .is_none(),
+        "a completed submission fabricated a UDP response"
+    );
+
+    let mut push_delivered = false;
+    let mut third_submitted = false;
+    if second_submitted {
+        pushes
+            .send(Datagram::new(
+                target,
+                Bytes::from_static(b"send-ahead-target-push"),
+            ))
+            .await
+            .unwrap();
+        let (header, payload) = recv_udp_within(&mut output, Duration::from_secs(1))
+            .await
+            .expect("target push was not delivered after two submissions");
+        assert_eq!(header.source_port, target.port());
+        assert_eq!(header.destination_port, app.port());
+        assert_eq!(payload, b"send-ahead-target-push");
+        push_delivered = true;
+
+        input
+            .send(udp_packet(app, target, b"send-ahead-local-c"))
+            .await
+            .unwrap();
+        let third = timeout(Duration::from_secs(1), submitted.recv())
+            .await
+            .expect("submission after target push did not complete")
+            .expect("submission observer closed");
+        assert_eq!(third.endpoint, target);
+        assert_eq!(third.payload, b"send-ahead-local-c".as_slice());
+        third_submitted = true;
+    }
+
+    drop(input);
+    let report = runtime.shutdown().await.unwrap();
+    assert!(!report.forced);
+    assert_eq!(probe.opens.load(Ordering::Relaxed), 1);
+    assert_eq!(*probe.opened_target.lock().unwrap(), Some(target));
+    assert_eq!(report.final_snapshot.udp_associations_opened, 1);
+    assert_eq!(report.final_snapshot.udp_associations_failed, 0);
+    assert_eq!(report.final_snapshot.udp_datagrams_dropped, 0);
+    assert_quiescent(&report.final_snapshot);
+
+    if !second_submitted {
+        panic!("TUN duplex UDP second submission stayed blocked behind a missing response");
+    }
+    assert!(push_delivered);
+    assert!(third_submitted);
 }
 
 #[tokio::test]

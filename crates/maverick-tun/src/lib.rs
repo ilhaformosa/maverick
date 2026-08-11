@@ -124,6 +124,22 @@ impl Datagram {
 }
 
 pub trait DatagramFlow: Send {
+    /// Submits one local datagram and optionally returns an immediate response.
+    ///
+    /// The default preserves serial implementations by delegating to
+    /// [`DatagramFlow::exchange`] and returning its response as `Some`. An
+    /// override may return `Ok(None)` only after the local submission is
+    /// complete; that value is not a clean close, target acknowledgement, or
+    /// delivery/correlation proof. Any later remote datagram is obtained with
+    /// [`DatagramFlow::receive_unsolicited`].
+    fn submit_datagram<'a>(
+        &'a mut self,
+        datagram: Datagram,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<Datagram>, FlowError>> {
+        Box::pin(async move { self.exchange(datagram, cancel).await.map(Some) })
+    }
+
     /// Receives the next datagram without starting a local exchange.
     ///
     /// Implementations that override this method must keep the future safe to

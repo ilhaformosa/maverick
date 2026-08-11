@@ -17,111 +17,99 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T025c — normal TUN legacy-H3 duplex consumer
+### T025d — TUN response-optional datagram submission foundation
 
-**User result.** One normal `start_client` packet runtime using the existing H3
-opt-in can send a UDP packet to one fixed target, receive a target datagram when
-there is no new local TUN packet, and then continue sending on that association.
-The carrier must be the scheduler-selected, authenticated legacy-H3 path with
-the MAC-verified selected mode-negotiation bit and an exact flags-one duplex
-acknowledgement. This is a bounded local TUN consumer result, not a general UDP,
-real-network, product, game, voice, or release result.
+**User result.** A TUN UDP worker can complete one local datagram submission and
+accept the next local datagram without requiring an immediate remote response
+to the first. Existing serial connectors still perform their exact one-request,
+one-response exchange. This card is a public contract and fake-connector packet
+runtime foundation; the normal selected-H3 consumer remains the immediately
+following T025e slice, not a result of this card.
 
-**Confirmed source gap.** T025b made the TUN runtime target-aware and able to
-poll an independent receive, but `MaverickTunConnector` still implements only
-the old serial `open_udp`. Reusing `SocksUdpAssociation::open_with_pool` would
-incorrectly import the SOCKS-only actual-H3 flags-zero setup deadline into TUN.
-The new TUN path therefore needs its own crate-private pooled association
-selection while preserving the existing generic and TUN flags-zero wait.
+**Confirmed source gap.** `DatagramFlow::exchange` always returns one datagram.
+The TUN worker therefore remains inside the first exchange until remote input
+arrives. A connector that can submit independently cannot tell the worker that
+submission completed without fabricating a response, so a second local packet
+waits in the existing bounded command channel.
 
 **Scope.** Hard-limit the complete card to five files: `ROADMAP.md`,
-`STATUS.md`, `crates/maverick-client/src/udp.rs`,
-`crates/maverick-client/src/tun_runtime.rs`, and
-`crates/maverick-tests/tests/tun_packet_runtime.rs`. Behavioral red may change
-only the roadmap and the TUN integration test; it must not change production or
-`STATUS.md`. Preserve the TUN public traits established by T025b, every server,
-core, SOCKS, DNS, TCP, direct-v3, manifest, dependency, feature, `Cargo.lock`,
-protocol/frame/config/profile version, and published Beta.4 artifact.
+`STATUS.md`, `crates/maverick-tun/src/lib.rs`,
+`crates/maverick-tun/src/runtime.rs`, and
+`crates/maverick-tun/tests/runtime.rs`. Behavioral red may change only the
+roadmap, the public trait's additive default skeleton, and the runtime test;
+production runtime behavior and `STATUS.md` remain unchanged until Green.
+Preserve every client, server, core, SOCKS, DNS, TCP, direct-v3, manifest,
+dependency, feature, `Cargo.lock`, wire, protocol/frame/config/profile version,
+and published Beta.4 artifact.
 
-**Pooled open contract.** The existing `FlowConnector::open_udp` path remains
-unchanged. Only `open_udp_for_target` may acquire one existing client flow
-permit and call `ClientTunnelPool::open` once. An actual legacy-H3 tunnel whose
-MAC-verified selected mask contains the mode-negotiation bit opens flags-one
-duplex for the exact target. An actual H2, WebSocket, or legacy-H3 tunnel
-without that bit opens the existing flags-zero serial association on the same
-already-open tunnel, without the SOCKS-only fresh acknowledgement deadline. A
-pre-request H3 connection failure may still produce the existing same-open H2
-fallback. Once an authenticated H3 duplex request starts, failure is terminal
-for that TUN association: no second pool open, fallback, replay, resend, or
-automatic reopen.
+**Public contract.** Add one object-safe provided method,
+`DatagramFlow::submit_datagram`, which returns
+`Result<Option<Datagram>, FlowError>`.
+Its default must call the existing required `exchange` exactly once and wrap
+that response in `Some`, so existing implementers inherit the default while
+repository serial runtime behavior remains unchanged.
+`Ok(None)` means only that local submission completed without an immediate
+response. It is not clean EOF, target acknowledgement, delivery proof, request
+correlation, or permission to lose the payload. Later remote input remains the
+job of `receive_unsolicited`. Keep the required `exchange` and `close` methods
+and their signatures unchanged.
 
-**Adapter lifecycle.** Keep one connector flow object, one association owner,
-and the existing TUN flow permit. The duplex `exchange` submits one fixed-target
-payload and then receives the next same-target datagram; this ordering does not
-promise request correlation. `receive_unsolicited` polls the same receive half
-without a send. The T025b runtime must drop a pending cancellation-safe receive
-before it borrows the association for `exchange`. Cancellation during a send
-or close remains fail-closed through the existing duplex poison/abort owner;
-pending receive cancellation remains reusable. Clean remote close returns
-`Ok(None)`. Any malformed, wrong-flow, wrong-target, transport, send, receive,
-or close failure that leaves the adapter maps to an existing fixed TUN error
-category and releases the sole owner. The adapter adds no log category or raw
-value. A pre-request H3 connection failure may retain the transport scheduler's
-existing diagnostic before its existing H2 fallback.
+**Runtime contract.** The UDP worker command path calls the new provided method
+once. `Some(datagram)` enters the unchanged exact-target, payload, event,
+single-pending-response, accepted-backpressure, and packet-writer path.
+`None` emits no response, refreshes the existing successful-activity idle
+deadline, and returns to the same command, independent-receive, cancellation,
+idle, and shutdown select. Reuse the existing bounded command channel and one
+flow owner. Do not add a production task, channel, queue, lock, map, buffer,
+pending response, counter, config, capability flag, retry, replay, resend, or
+correlation identifier.
 
-Do not add a production task, channel, queue, lock, map, buffer, pending
-response, retry, replay, correlation identifier, config, counter, public type,
-public method, or public error. H2, WebSocket, flags-zero H3, the old generic
-`UdpAssociation`, SOCKS, DNS port 53, TCP, and direct-v3 retain their existing
-paths and behavior.
+**Behavioral red.** Based on exact parent
+`49157d74c96561190c9ece65488c7c870ab8f794`, add a fake target-aware flow whose
+old `exchange` records local A and then waits for cancellation, while its new
+submission override records a payload and returns `Ok(None)`. Send A and require
+that it entered the old exchange. Send B while no remote response exists and
+capture B's current absence as data rather than propagating a timeout. The
+future Green branch must observe A and B in order with no fabricated output,
+then deliver one exact-target push without local input and submit C afterward.
 
-**Behavioral red.** Add one final-shape real-loopback test based on parent
-`f28dd39fd5d7b6d016b234946bac6ce4a23787e2`. Start the normal client with both
-H3 and TUN runtime opt-ins and a real loopback UDP target. Send local packet A;
-the target must receive it and return A on one observed server UDP source. With
-no new local packet, send one push from the target to that exact source and
-capture the current absence as data rather than propagating a timeout. On the
-future green branch, require the push through the packet runtime, then send C,
-require the target to receive C from the same source, and return C.
+Drop packet input and require non-forced shutdown, one exact target-aware open,
+zero failed associations, zero dropped datagrams, and a fully quiescent final
+snapshot before the sole fixed panic
+`TUN duplex UDP second submission stayed blocked behind a missing response`.
+The parent must compile and fail only there with exit 101. A compile failure,
+missing A, B already submitted, timeout as the test error, fake response,
+second open, forced cleanup, leaked resource, or different panic is not an
+accepted RED. Freeze the exact command, output, files, diff check, privacy scan,
+and binary diff hash, then stop for independent Green authorization.
 
-Before one fixed RED panic, require an H3 candidate with no cooldown, zero H2
-pool activity, one opened and no failed TUN UDP association, bounded quiescent
-shutdown, exact source reclamation, and clean fixture shutdown. The parent must
-complete A but miss the push, then fail only at fixed panic
-`normal TUN legacy-H3 UDP target push stayed unavailable`, producing exit 101.
-A compile error, H2 or direct public-API path, timeout as the test error, target
-contact failure, different panic, leaked owner/task/buffer, forced shutdown, or
-second association is not an accepted red. Freeze the exact command, output,
-changed files, diff check, privacy scan, and binary diff hash, then stop for
-independent green authorization.
+**Evidence and compatibility.** Green must make the same final-shape test prove
+ordered A/B submissions without remote input, no fabricated response, one
+later exact-target push, C after the push, one flow, and bounded cleanup. The
+existing serial fake and packet-runtime suites must prove that the default
+still maps one `exchange` response to `Some` byte-for-byte. Re-run the TUN
+runtime and library suites, all-features workspace, no-default client matrices,
+strict Clippy, warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh`
+before updating `STATUS.md`.
 
-**Evidence and compatibility.** Green must use the same real test to prove A,
-one target push without local input, C after the push, one exact target/source,
-actual H3 selection, zero H2 pool use, no cooldown, and bounded cleanup. Source
-review must separately prove one pool-open call, selected-bit branching,
-unchanged flags-zero TUN setup, and no replay or second owner. Re-run the TUN
-runtime and client matrices, the relevant H2/WS/flags-zero regressions, the
-all-features workspace suite, strict Clippy, warning-denied Rustdoc,
-`user-smoke.sh`, and `local-harness.sh` before updating `STATUS.md`.
+This result will not prove a real Maverick client or selected-H3 carrier,
+transport-blocked send concurrent with receive, general pipelining, response
+correlation, ordering beyond the observed local submissions, fairness, no loss,
+multi-target reuse, IPv6, games or voice suitability, a real TUN device,
+real-network behavior, product readiness, or release authorization. The one
+additive provided public method is SemVer-observable and may conflict with a
+downstream same-name method even though existing implementers inherit a
+default. It changes no package version or published artifact. Any future
+publication requires a new prerelease and must not rewrite Beta.4.
 
-This loopback result does not prove blocked-send concurrent receive, malicious
-peer behavior, packet ordering, fairness, no loss, request correlation,
-multi-target reuse, physical H3 connection reuse, IPv6 target support, games or
-voice suitability, a real TUN device, real-network behavior, product readiness,
-or release authorization. Changing the normal public `start_client` TUN
-runtime behavior is SemVer-observable, although this card changes no public
-Rust signature, package version, wire number or encoding, manifest, dependency,
-or Beta.4 artifact. Any future publication requires a new prerelease and must
-not rewrite Beta.4.
-
-**Stop conditions.** Stop if implementation needs a sixth file, a public API or
-wire/config/version change, any server/core/SOCKS/connection-manager/transport
-edit, a second live owner, a production task/channel/queue/lock/map/buffer,
-another pending response, a retry or replay, or a SOCKS-only timeout in TUN.
-Also stop if selected-H3 failure can fall back after the UDP request starts, if
-flags-zero H2/WS/H3 behavior changes, if pending receive cannot be cancelled and
-reused safely, or if the result must be described beyond the bounded local TUN
-consumer claim above.
+**Stop conditions.** Stop if implementation needs a sixth file, a second public
+item or changed required signature, a public type/error/capability flag, a
+client/server/core/SOCKS/transport edit, any production task/channel/queue/lock/
+map/buffer/pending response, or any wire/config/version/manifest/dependency/
+`Cargo.lock` change. Also stop if `None` is treated as EOF or a response, if a
+serial flow no longer performs the exact existing exchange, if cleanup or idle
+bounds change, or if the result must be described as real H3, blocked-send
+concurrency, general duplex UDP, product, or release evidence.
 
 ## Execution Order
 

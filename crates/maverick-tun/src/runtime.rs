@@ -2078,11 +2078,15 @@ async fn udp_worker(context: UdpWorkerContext) {
                     _ = cancel.cancelled() => break,
                     result = timeout(
                         idle_timeout,
-                        flow.exchange(datagram, cancel.clone()),
+                        flow.submit_datagram(datagram, cancel.clone()),
                     ) => result,
                 };
                 match result {
-                    Ok(Ok(datagram)) => (datagram, true),
+                    Ok(Ok(Some(datagram))) => (datagram, true),
+                    Ok(Ok(None)) => {
+                        idle.as_mut().reset(TokioInstant::now() + idle_timeout);
+                        continue;
+                    }
                     Ok(Err(error))
                         if error.kind == FlowErrorKind::Cancelled && cancel.is_cancelled() =>
                     {

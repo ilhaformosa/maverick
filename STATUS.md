@@ -182,6 +182,22 @@ censorship resistance, production readiness, or browser identity.
   not pipelining, CONNECT-UDP, QUIC Datagram, a general-purpose SOCKS UDP
   contract, evidence of suitability for games or voice, a new human user,
   real-network evidence, or product-readiness evidence.
+- Unpublished workspace source now also binds every later non-padding,
+  actionable frame in one authenticated legacy H2 or opt-in legacy-H3
+  `OpenUdp` request to the flow identifier that opened it. A mismatched
+  `UdpPacket` or `CloseFlow` returns exactly the opened flow's `ProtocolError`
+  and terminates that request stream before application-payload decoding,
+  rate-policy work, target-slot access, socket creation, or target I/O. H2
+  completes that application error with `grpc-status: 0`; legacy H3 ends with
+  FIN. Public-tunnel loopback tests assert the actual H2 or H3 variant, prove
+  that a real UDP target receives no mismatched packet, and cover mismatched
+  close plus terminal response shape. The handler does not explicitly close
+  the authenticated physical connection, but these tests do not prove its
+  reuse. Existing same-flow behavior remains covered by the full local suites.
+  This changes no published Beta.4 artifact, frame or wire format, protocol,
+  config or schema version, public API, client behavior, direct-v3/quiche H3
+  path, deployment authorization, human-user result, real-network result, or
+  product-readiness claim.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

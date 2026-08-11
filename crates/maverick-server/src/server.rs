@@ -2296,6 +2296,7 @@ async fn handle_udp_flow(
     user_policy: &UserPolicy,
     max_frame_size: usize,
 ) -> Result<()> {
+    let flow_id = frame.flow_id;
     let idle_timeout_ms = match udp_idle_timeout_ms(&frame, state) {
         Ok(timeout) => timeout,
         Err(_) => {
@@ -2342,6 +2343,17 @@ async fn handle_udp_flow(
                 break;
             }
         };
+        if frame.flow_id != flow_id {
+            send_h2_server_frame(
+                &mut send_stream,
+                relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                max_frame_size,
+                true,
+                state,
+            )
+            .await?;
+            return Ok(());
+        }
         if frame.frame_type == FrameType::CloseFlow {
             // This is an explicit, complete application close. Bare request
             // EOF and receive errors leave the response open so h2 resets it.
@@ -2568,6 +2580,7 @@ async fn handle_h3_udp_flow(
     user_policy: &UserPolicy,
     max_frame_size: usize,
 ) -> Result<()> {
+    let flow_id = frame.flow_id;
     let idle_timeout_ms = match udp_idle_timeout_ms(&frame, state) {
         Ok(timeout) => timeout,
         Err(_) => {
@@ -2614,6 +2627,17 @@ async fn handle_h3_udp_flow(
                 break;
             }
         };
+        if frame.flow_id != flow_id {
+            h3_send_server_frame(
+                &mut stream,
+                relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                max_frame_size,
+                true,
+                state,
+            )
+            .await?;
+            return Ok(());
+        }
         if frame.frame_type == FrameType::CloseFlow {
             break;
         }

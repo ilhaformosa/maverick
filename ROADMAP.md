@@ -17,82 +17,78 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T024a-1 — Give each OpenUdp flow one active target slot
+### T024a-2 — Bind every OpenUdp request frame to its opened flow
 
-**User result.** Consecutive packets in one authenticated `OpenUdp` flow that
-name the same `TargetAddr` and port must reuse one connected operating-system
-UDP socket and therefore one source address. A packet naming a different target
-must first drop the old socket and then open a new one. The slot holds at most
-one target and belongs only to that flow.
+**User result.** After an authenticated request opens one `OpenUdp` flow, every
+later non-`Padding`, actionable application frame on that request must carry
+the same `flow_id`. A frame with a different identifier is a request-stream
+protocol violation: the server must return exactly one `Error` for the opened
+flow with `ProtocolError`, then terminate that request stream without decoding
+its application payload or causing a frame-specific side effect. The handler
+must not explicitly close the underlying authenticated transport connection;
+only the invalid request stream ends. The tests prove request-stream
+termination, not physical-connection reuse.
 
-This connects the private `ConnectedUdpTarget` foundation to the existing H2
-and legacy `feature = "h3"` `OpenUdp` flow handlers. It does not add
-CONNECT-UDP, QUIC Datagram, pipelined requests, concurrent receives, multiple
-active targets, or a product-readiness result.
-
-The preserved exchange is serial: send one packet, then receive at most one
-packet. Its positive reuse tests require the target to return exactly one timely
-reply for each sent packet. The wire carries no request-response correlation,
-so a delayed, duplicate, or unsolicited target datagram may be observed by
-a later exchange; that traffic is neither supported nor verified in this
-slice. This is not a general-purpose SOCKS UDP contract or evidence of
-suitability for games or voice.
+This closes one fail-closed association boundary in the existing H2 and legacy
+`feature = "h3"` handlers. It does not change the frame format, create a flow
+registry, add multiplexing inside one request, or claim general-purpose UDP or
+product readiness.
 
 **Scope.** Change only `ROADMAP.md`, `STATUS.md`,
-`crates/maverick-server/src/relay.rs`,
 `crates/maverick-server/src/server.rs`, and
-`crates/maverick-tests/tests/tcp_relay.rs`. Keep the target owner crate-private,
-preserve the public `relay_udp_packet` signature as the unchanged one-shot
-compatibility path for a bare initial `UdpPacket`, and preserve all existing
-frame, config, timeout, egress-policy, rate-limit, and error-code contracts.
-`STATUS.md` may receive one narrow current-truth update only after the green
-implementation and all required local gates pass. Keep core, client, CLI, SDK,
-manifests, `Cargo.lock`, and every other file unchanged.
+`crates/maverick-tests/tests/tcp_relay.rs`. Keep the check inside each existing
+`OpenUdp` request handler and preserve every public API. `STATUS.md` may receive
+one narrow current-truth update only after the green implementation and all
+required local gates pass. Keep relay, client, core, CLI, SDK, manifests,
+`Cargo.lock`, and every other file unchanged.
 
-**Behavioral red.** Add one real-loopback H2 integration test using the public
-`UdpAssociation`. Open one association, send fixed packet A to one real UDP
-target, receive its fixed reply, and record the target-observed source. Before
-sending fixed packet B through that same association to that same target, try
-to bind the exact first source: if the old one-shot server path has already
-released it, retain that bound socket so the kernel cannot accidentally reuse
-the port. The target must receive and reply to packet B. One fixed assertion
-must require both live ownership of the first source and equality of the two
-observed sources. The current implementation must fail that assertion with
-exit status 101, not by compilation failure or timeout. Use bounded positive
-operations, not a mock, source scan, fixed sleep, or timeout-only silence.
+**Behavioral red.** Use public `maverick_client::tunnel::open` calls to open
+real authenticated H2 and legacy-H3 request streams, send a valid `OpenUdp`,
+and then send a validly encoded `UdpPacket` whose `flow_id` differs. A real
+loopback UDP target observer must reply if touched so the current implementation
+completes dynamically rather than timing out. One fixed assertion must prove
+that the mismatched packet reached that target on the current implementation;
+the test must fail with status 101 after successful compilation and actual
+target receipt. The green expectation is the opposite: an exact opened-flow
+`ProtocolError` and no target receipt. Add the smallest corresponding evidence
+for a mismatched `CloseFlow`; do not use a mock, source scan, fixed sleep, or
+timeout-only silence as the red cause.
 
-**Green implementation.** Give each H2 and legacy-H3 `OpenUdp` handler one
-lexically scoped optional connected-target owner. Reuse it only when both the
-`TargetAddr` and port equal the active target. On a target change, drop the old
-owner before resolving or opening the replacement. If target opening, send,
-receive, or its bounded receive timeout fails, drop the slot before returning
-the existing per-packet error. `CloseFlow`, request EOF, idle timeout, handler
-error, task cancellation, and normal handler return must release the slot by
-ordinary Rust ownership. Do not add a manual `Drop` implementation.
+**Green implementation.** Capture the `OpenUdp` frame's `flow_id` before
+entering each H2 or legacy-H3 receive loop. Immediately after reading every
+later non-`Padding`, actionable frame, compare its identifier with that expected
+value.
+On mismatch, send exactly
+`Error(expected_flow_id, ProtocolError)` as the terminal response and return.
+Perform this check before frame-type dispatch, payload decoding, rate limiting,
+DNS or egress-policy work, target-slot access, socket creation, or target I/O.
+H2 completes the application error with `grpc-status: 0`; legacy H3 finishes
+the request stream normally. Do not explicitly close the authenticated
+physical connection, continue after the error, or report the untrusted
+identifier.
 
-**Acceptance.** The red H2 test must turn green and prove both replies, stable
-same-target source ownership while the association is open, and exact-source
-rebind after explicit association close. Legacy H3 reports local request
-completion before the peer handler's return, so its reclamation check must
-obtain the exact rebind within one fixed total bound, treat only `AddrInUse` as
-pending, fail every other bind error immediately, and require a successful bind
-as positive evidence. Add the smallest server-local tests needed to prove
-target switching without broadening the API. One receive-timeout test must
-prove that the request reached the real target, the timeout cleared the slot,
-and the exact old source can rebind. Preserve bare `UdpPacket` one-shot behavior
-and existing H2 UDP close/EOF, flow-limit, SOCKS UDP, and legacy-H3 UDP tests.
-Run focused tests first, then the relevant server and integration suites under
-no-default, `h3`, and all-features matrices, formatting, strict Clippy,
-Rustdoc, `user-smoke.sh`, and `local-harness.sh` locally.
+**Acceptance.** The behavioral red must turn green for both H2 and confirmed
+legacy-H3 transport; immediately after public tunnel creation, each test must
+assert the actual H2 or H3 tunnel variant before sending any application frame.
+Each mismatched-`UdpPacket` test must observe the exact
+opened-flow error, prove the real UDP target was not touched, and prove terminal
+H2 trailers or H3 FIN. The smallest mismatched-`CloseFlow` cases must receive
+the same exact error and termination instead of being accepted as a valid
+close. Existing same-identifier UDP roundtrips, explicit close, request EOF,
+idle timeout, target ownership, flow limits, SOCKS UDP, bare `UdpPacket`, and
+legacy-H3 behavior must remain unchanged. Run focused tests first, then the
+relevant server and integration suites under no-default, `h3`, and all-features
+matrices, formatting, strict Clippy, Rustdoc, `user-smoke.sh`, and
+`local-harness.sh` locally.
 
-**Out of scope and stop conditions.** Do not change the client, core, frame or
-wire formats, protocol/config/schema versions, manifests, lockfile, feature
-graph, DNS relay, metrics, logging, limits, CLI, SDK, TUN, direct-v3/quiche H3,
-or any machine network setting. Do not add a background task, lock, queue, map,
-manager, actor, watchdog, retry, pipeline, target pool, or more than one active
-target per flow. Stop and re-adjudicate if correct ownership needs a sixth file,
-a public type, concurrent request/response handling, or changed bare-packet
-semantics.
+**Out of scope and stop conditions.** Do not change frame, error, protocol,
+config, or schema versions; dependencies, features, manifests, lockfile,
+authentication, admission, fallback, limits, rate policy, egress policy,
+metrics, logging, UDP target ownership, DNS relay, TCP relay, client behavior,
+CLI, SDK, TUN, direct-v3/quiche H3, or any machine network setting. Do not add a
+new public type, task, lock, queue, map, registry, retry, manager, actor, or
+coordination layer. Stop and re-adjudicate if the invariant cannot be enforced
+by one local guard in each existing handler or needs a fifth file.
 
 ## Execution Order
 

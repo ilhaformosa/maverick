@@ -17,7 +17,9 @@ use maverick_core::config::{
     AuthV2Config, ClientAuthConfig, ClientConfig, ClientCredentialRotationConfig,
     ClientNextCredentialConfig, FallbackConfig, PreviousCredentialConfig, ShapingConfig,
 };
-use maverick_core::frame::{Frame, FrameType, OpenUdpPayload, TargetAddr, UdpPacketPayload};
+use maverick_core::frame::{
+    ErrorCode, Frame, FrameType, OpenUdpPayload, TargetAddr, UdpPacketPayload,
+};
 use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
 #[cfg(feature = "h3")]
 use maverick_core::GuiTransportCarrier;
@@ -2592,6 +2594,239 @@ async fn assert_udp_association_keeps_one_connected_target_owner(
     assert_eq!(rebound.local_addr()?, first_source);
     drop(rebound);
     drop(target);
+    Ok(())
+}
+
+const OPEN_UDP_FLOW_ID: u64 = 41;
+const MISMATCHED_UDP_FLOW_ID: u64 = 42;
+
+#[derive(Debug, Eq, PartialEq)]
+enum MismatchedUdpTargetObservation {
+    Received(Bytes),
+    NoTarget,
+}
+
+async fn open_udp_test_tunnel(
+    config: &ClientConfig,
+) -> Result<maverick_client::tunnel::ClientTunnel> {
+    let mut tunnel = maverick_client::tunnel::open(config).await?;
+    if config.advanced.experimental_h3 {
+        #[cfg(feature = "h3")]
+        assert!(
+            matches!(&tunnel, maverick_client::tunnel::ClientTunnel::H3(_)),
+            "experimental H3 test must use an actual H3 tunnel"
+        );
+        #[cfg(not(feature = "h3"))]
+        anyhow::bail!("experimental H3 config requires the H3 test feature");
+    } else {
+        assert!(
+            matches!(&tunnel, maverick_client::tunnel::ClientTunnel::H2(_)),
+            "default OpenUdp test must use an actual H2 tunnel"
+        );
+    }
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::OpenUdp,
+                0,
+                OPEN_UDP_FLOW_ID,
+                OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
+            ),
+            false,
+        )
+        .await?;
+    let opened = timeout(Duration::from_secs(2), tunnel.read_next_frame())
+        .await
+        .context("OpenUdp acknowledgement must remain bounded")??
+        .context("server closed before acknowledging OpenUdp")?;
+    assert_eq!(
+        opened,
+        Frame::new(FrameType::WindowUpdate, 0, OPEN_UDP_FLOW_ID, Bytes::new())
+    );
+    Ok(tunnel)
+}
+
+fn assert_open_udp_protocol_error(frame: Frame) {
+    assert_eq!(
+        frame,
+        Frame::new(
+            FrameType::Error,
+            0,
+            OPEN_UDP_FLOW_ID,
+            ErrorCode::ProtocolError.encode()
+        )
+    );
+}
+
+async fn send_mismatched_udp_packet(
+    config: &ClientConfig,
+) -> Result<maverick_client::tunnel::ClientTunnel> {
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let target_ip = TargetAddr::Ipv4(target_addr.ip().to_string().parse()?);
+    let mut tunnel = open_udp_test_tunnel(config).await?;
+    let (cancel_tx, cancel_rx) = oneshot::channel();
+    let target_observer = tokio::spawn(async move {
+        let mut buf = [0u8; 64];
+        tokio::select! {
+            biased;
+            received = target.recv_from(&mut buf) => {
+                let (len, source) = received?;
+                target.send_to(b"mismatch-reply", source).await?;
+                Result::<MismatchedUdpTargetObservation>::Ok(
+                    MismatchedUdpTargetObservation::Received(Bytes::copy_from_slice(&buf[..len])),
+                )
+            }
+            _ = cancel_rx => {
+                Result::<MismatchedUdpTargetObservation>::Ok(
+                    MismatchedUdpTargetObservation::NoTarget,
+                )
+            }
+        }
+    });
+
+    let packet = UdpPacketPayload::new(
+        target_ip,
+        target_addr.port(),
+        Bytes::from_static(b"mismatched-flow-packet"),
+    );
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                MISMATCHED_UDP_FLOW_ID,
+                packet.encode()?,
+            ),
+            false,
+        )
+        .await?;
+    let response = timeout(Duration::from_secs(2), tunnel.read_next_frame())
+        .await
+        .context("mismatched UdpPacket response must remain bounded")??
+        .context("server closed without rejecting mismatched UdpPacket")?;
+    let _ = cancel_tx.send(());
+    let target_observation = timeout(Duration::from_secs(2), target_observer)
+        .await
+        .context("UDP target observer must remain bounded")?
+        .context("UDP target observer task failed")??;
+    assert_eq!(
+        target_observation,
+        MismatchedUdpTargetObservation::NoTarget,
+        "mismatched UdpPacket reached the real UDP target before rejection"
+    );
+    assert_open_udp_protocol_error(response);
+    Ok(tunnel)
+}
+
+async fn send_mismatched_close_flow(
+    config: &ClientConfig,
+) -> Result<maverick_client::tunnel::ClientTunnel> {
+    let mut tunnel = open_udp_test_tunnel(config).await?;
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::CloseFlow,
+                0,
+                MISMATCHED_UDP_FLOW_ID,
+                Bytes::new(),
+            ),
+            true,
+        )
+        .await?;
+    let response = timeout(Duration::from_secs(2), tunnel.read_next_frame())
+        .await
+        .context("mismatched CloseFlow response must remain bounded")??
+        .context("server accepted mismatched CloseFlow without a protocol error")?;
+    assert_open_udp_protocol_error(response);
+    Ok(tunnel)
+}
+
+async fn assert_h2_grpc_ok_after_terminal_error(
+    mut tunnel: maverick_client::tunnel::ClientTunnel,
+) -> Result<()> {
+    let h2 = match &mut tunnel {
+        maverick_client::tunnel::ClientTunnel::H2(h2) => h2,
+        _ => anyhow::bail!("expected H2 tunnel"),
+    };
+    assert!(
+        h2.recv_buf.is_empty(),
+        "terminal Error must leave no buffered response frame"
+    );
+    let (remaining, trailers) = timeout(
+        Duration::from_secs(2),
+        collect_h2_response(&mut h2.recv_stream),
+    )
+    .await
+    .context("terminal H2 response must remain bounded")??;
+    assert!(
+        remaining.is_empty(),
+        "terminal Error must be the final H2 response frame"
+    );
+    assert_grpc_status_ok(&trailers);
+    Ok(())
+}
+
+#[tokio::test]
+async fn h2_open_udp_mismatched_packet_fails_before_target_io() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let tunnel = send_mismatched_udp_packet(&fixture.client_config()).await?;
+    assert_h2_grpc_ok_after_terminal_error(tunnel).await?;
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn h2_open_udp_mismatched_close_returns_protocol_error() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let tunnel = send_mismatched_close_flow(&fixture.client_config()).await?;
+    assert_h2_grpc_ok_after_terminal_error(tunnel).await?;
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+fn assert_h3_transport(config: &ClientConfig) {
+    let snapshot = transport::transport_debug_snapshot(config);
+    assert_eq!(snapshot.active_transport, GuiTransportCarrier::H3);
+    assert!(snapshot.h3_candidate_enabled);
+    assert!(!snapshot.h3_in_cooldown);
+}
+
+#[cfg(feature = "h3")]
+async fn assert_h3_fin_after_terminal_error(
+    tunnel: &mut maverick_client::tunnel::ClientTunnel,
+) -> Result<()> {
+    let next = timeout(Duration::from_secs(2), tunnel.read_next_frame())
+        .await
+        .context("terminal H3 response must remain bounded")??;
+    assert!(next.is_none(), "terminal Error must be followed by H3 FIN");
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_open_udp_mismatched_packet_fails_before_target_io() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let mut tunnel = send_mismatched_udp_packet(&config).await?;
+    assert_h3_fin_after_terminal_error(&mut tunnel).await?;
+    assert_h3_transport(&config);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_open_udp_mismatched_close_returns_protocol_error() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let mut tunnel = send_mismatched_close_flow(&config).await?;
+    assert_h3_fin_after_terminal_error(&mut tunnel).await?;
+    assert_h3_transport(&config);
+    fixture.shutdown().await?;
     Ok(())
 }
 

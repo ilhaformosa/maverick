@@ -895,13 +895,10 @@ pub async fn relay_udp_packet(
     timeout_ms: u64,
     egress: &ServerEgressPolicyConfig,
 ) -> Result<UdpPacketPayload> {
-    let authority = packet.target.to_authority(packet.port);
-    let target = first_allowed_addr(&authority, timeout_ms, egress).await?;
-    let socket = bind_udp_for_target(target).await?;
-    socket.connect(target).await?;
-    socket.send(&packet.data).await?;
+    let target = ConnectedUdpTarget::open(&packet.target, packet.port, timeout_ms, egress).await?;
+    target.send(&packet.data).await?;
     let mut buf = vec![0u8; 65_535];
-    let len = timeout(Duration::from_millis(timeout_ms), socket.recv(&mut buf))
+    let len = timeout(Duration::from_millis(timeout_ms), target.recv(&mut buf))
         .await
         .context("UDP target timed out")??;
     buf.truncate(len);
@@ -910,6 +907,37 @@ pub async fn relay_udp_packet(
         packet.port,
         Bytes::from(buf),
     ))
+}
+
+struct ConnectedUdpTarget {
+    socket: UdpSocket,
+}
+
+impl ConnectedUdpTarget {
+    async fn open(
+        target: &TargetAddr,
+        port: u16,
+        timeout_ms: u64,
+        egress: &ServerEgressPolicyConfig,
+    ) -> Result<Self> {
+        let authority = target.to_authority(port);
+        let target = first_allowed_addr(&authority, timeout_ms, egress).await?;
+        let socket = bind_udp_for_target(target).await?;
+        socket.connect(target).await?;
+        Ok(Self { socket })
+    }
+
+    async fn send(&self, data: &[u8]) -> Result<()> {
+        let sent = self.socket.send(data).await?;
+        if sent != data.len() {
+            bail!("UDP target send was incomplete");
+        }
+        Ok(())
+    }
+
+    async fn recv(&self, buf: &mut [u8]) -> Result<usize> {
+        Ok(self.socket.recv(buf).await?)
+    }
 }
 
 async fn bind_udp_for_target(target: SocketAddr) -> Result<UdpSocket> {
@@ -1129,7 +1157,7 @@ mod tests {
         open_target_addr_before_deadline_with_metrics,
         open_target_addr_before_deadline_with_metrics_using, open_target_addr_with_metrics,
         open_target_with_metrics, relay_dns_query, relay_target_and_tunnel, relay_udp_packet,
-        resolve_allowed_addresses, send_frame, write_all_with_idle_timeout,
+        resolve_allowed_addresses, send_frame, write_all_with_idle_timeout, ConnectedUdpTarget,
         CumulativeLatencyMetric, DirectV3TargetOpenError, DirectV3TargetOpenFailureKind,
         H2SendStall, RateLimiter, TargetOpenFailure, TargetOpenFailureKind, TargetOpenMetricSinks,
         TunnelRelayPolicy, TARGET_CONNECT_RACE_DELAY,
@@ -2362,6 +2390,106 @@ mod tests {
         .await??;
 
         assert_eq!(response.data, Bytes::from_static(b"ipv6-udp"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn t025a1_connected_udp_owner_reuses_source_and_receives_arrival_order() -> Result<()> {
+        const PACKET_A: &[u8] = b"owner-packet-a";
+        const PACKET_B: &[u8] = b"owner-packet-b";
+        const FORGED_REPLY: &[u8] = b"foreign-forged-reply";
+        const TARGET_REPLY_B: &[u8] = b"target-reply-b";
+        const TARGET_REPLY_A: &[u8] = b"target-reply-a";
+
+        timeout(Duration::from_secs(4), async {
+            let target_socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+            let target_addr = target_socket.local_addr()?;
+            let policy = ServerEgressPolicyConfig {
+                allow_loopback: true,
+                ..ServerEgressPolicyConfig::default()
+            };
+            let owner = ConnectedUdpTarget::open(
+                &TargetAddr::Ipv4(Ipv4Addr::LOCALHOST),
+                target_addr.port(),
+                1_000,
+                &policy,
+            )
+            .await?;
+
+            owner.send(PACKET_A).await?;
+            owner.send(PACKET_B).await?;
+
+            let mut first_packet = [0u8; 64];
+            let (first_len, first_source) = timeout(
+                Duration::from_secs(1),
+                target_socket.recv_from(&mut first_packet),
+            )
+            .await
+            .expect("target must receive owner packet A within the bound")?;
+            assert_eq!(&first_packet[..first_len], PACKET_A);
+
+            let mut second_packet = [0u8; 64];
+            let (second_len, second_source) = timeout(
+                Duration::from_secs(1),
+                target_socket.recv_from(&mut second_packet),
+            )
+            .await
+            .expect("target must receive owner packet B within the bound")?;
+            assert_eq!(&second_packet[..second_len], PACKET_B);
+            assert_eq!(
+                first_source, second_source,
+                "one connected UDP target owner must reuse its source address"
+            );
+
+            let foreign_socket =
+                UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+            assert_eq!(
+                foreign_socket.send_to(FORGED_REPLY, first_source).await?,
+                FORGED_REPLY.len()
+            );
+            assert_eq!(
+                target_socket.send_to(TARGET_REPLY_B, first_source).await?,
+                TARGET_REPLY_B.len()
+            );
+            assert_eq!(
+                target_socket.send_to(TARGET_REPLY_A, first_source).await?,
+                TARGET_REPLY_A.len()
+            );
+
+            let mut first_reply = [0u8; 64];
+            let first_reply_len = timeout(Duration::from_secs(1), owner.recv(&mut first_reply))
+                .await
+                .expect("owner must receive target reply B within the bound")?;
+            assert_eq!(&first_reply[..first_reply_len], TARGET_REPLY_B);
+
+            let mut second_reply = [0u8; 64];
+            let second_reply_len = timeout(Duration::from_secs(1), owner.recv(&mut second_reply))
+                .await
+                .expect("owner must receive target reply A within the bound")?;
+            assert_eq!(&second_reply[..second_reply_len], TARGET_REPLY_A);
+
+            let source_bind_error = match UdpSocket::bind(first_source).await {
+                Ok(socket) => {
+                    drop(socket);
+                    panic!("the live UDP target owner must retain its source address");
+                }
+                Err(error) => error,
+            };
+            assert_eq!(source_bind_error.kind(), io::ErrorKind::AddrInUse);
+
+            drop(owner);
+            let rebound_source = UdpSocket::bind(first_source).await?;
+            assert_eq!(rebound_source.local_addr()?, first_source);
+            drop(rebound_source);
+
+            drop(target_socket);
+            let rebound_target = UdpSocket::bind(target_addr).await?;
+            assert_eq!(rebound_target.local_addr()?, target_addr);
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .expect("connected UDP owner loopback I/O must remain bounded")?;
+
         Ok(())
     }
 

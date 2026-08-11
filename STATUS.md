@@ -244,25 +244,30 @@ censorship resistance, production readiness, or browser identity.
   product readiness.
 - Unpublished workspace source now also adds three public constants that name
   the authenticated legacy-H2/legacy-H3 `OpenUdp` mode-negotiation gate, the
-  existing flags-zero serial mode, and a known but unsupported duplex request
-  bit. The handshake bit means only that both peers understand the gate. New
-  clients request it on H2 and opt-in legacy-H3, and new servers select it there
-  only as an authenticated supported subset. WebSocket continues to request and
-  select zero for that bit, the existing TLS channel-binding selection is
-  preserved, and clients retain only the complete selected mask that passed the
-  `ServerHello` MAC, protocol, and subset checks.
+  existing flags-zero serial mode, and the duplex request bit. Production
+  clients, H2, and WebSocket do not use or accept that duplex mode; the following
+  source-only selected legacy-H3 server foundation is its sole acceptance path.
+  The handshake gate bit means only that both peers understand the gate. New
+  clients request that gate bit on H2 and opt-in legacy-H3, and new servers
+  select it there only as an authenticated supported subset. WebSocket continues
+  to request and select zero for that bit, the existing TLS channel-binding
+  selection is preserved, and clients retain only the complete selected mask
+  that passed the `ServerHello` MAC, protocol, and subset checks.
   Production clients still send only flags-zero `OpenUdp` and require an exact
   same-flow, flags-zero, empty `WindowUpdate` before sending the first UDP
   packet. That shared check applies to any production UDP tunnel attempt,
   including a WebSocket-backed attempt; normal WebSocket TCP behavior and
-  mode-bit request/selection remain unchanged. The legacy H2 and legacy-H3
-  server paths reject every nonzero `OpenUdp` flag with the opened flow's exact
+  mode-bit request/selection remain unchanged. The legacy H2 server rejects
+  every nonzero `OpenUdp` flag, while legacy H3 rejects feature-zero nonzero
+  flags and every reserved or mixed mode, with the opened flow's exact
   `ProtocolError` before a flow permit, `OpenUdp` payload decode, rate policy,
   target slot, socket, or target I/O. Raw real-loopback H2 and Quinn/H3 tests
-  cover feature-zero and selected-bit serial success plus duplex and
-  reserved-bit rejection; unit tests cover auth v1/v2 selection, old-server
-  subsets, TLS channel binding, WebSocket mode-bit isolation, and strict client
-  acknowledgement shape. The focused matrices, all-features integration,
+  cover feature-zero and selected-bit serial success, H2 duplex rejection,
+  selected legacy-H3 exact-duplex acceptance, legacy-H3 feature-zero duplex
+  rejection, and reserved-mode rejection; unit tests cover auth v1/v2
+  selection, old-server subsets, TLS channel binding, WebSocket mode-bit
+  isolation, and strict client acknowledgement shape. The focused matrices,
+  all-features integration,
   formatting, strict Clippy, Rustdoc, `user-smoke.sh`, and `local-harness.sh`
   pass. The broader `--no-default-features` and
   `--no-default-features --features h3` integration runs each retain the same
@@ -271,11 +276,61 @@ censorship resistance, production readiness, or browser identity.
   but changes no existing public signature, published Beta.4 artifact,
   protocol/config/schema version, existing frame encoding, dependency,
   manifest, CLI, SDK, SOCKS, TUN, relay owner, normal WebSocket TCP or mode-bit
-  request/selection behavior, or direct-v3/quiche H3 path. It adds no duplex,
-  pipelining, correlation, CONNECT-UDP, QUIC Datagram, real-network result,
-  product-readiness result, or release authorization. Per-flow flags have no
-  separate MAC, so the existing provider-fronted H2 terminating-intermediary
-  trust residual remains.
+  request/selection behavior, or direct-v3/quiche H3 path. That negotiation-gate
+  slice alone added no duplex, pipelining, correlation, CONNECT-UDP, QUIC
+  Datagram, real-network result, product-readiness result, or release
+  authorization; the next item records the later exact legacy-H3 server
+  acceptance. Per-flow flags have no separate MAC, so the existing provider-
+  fronted H2 terminating-intermediary trust residual remains.
+- Unpublished workspace source now also accepts the already named duplex
+  `OpenUdp` flag only on an authenticated legacy-H3 request whose selected,
+  MAC-authenticated `ServerHello` mask contains the existing mode-negotiation
+  bit. The server first returns the same-flow, flags-one, empty
+  `WindowUpdate`. The first decodable same-flow `UdpPacket` then fixes its
+  exact logical target and port before rate policy, resolution, socket
+  creation, or target I/O. One handler owns one connected UDP socket, splits
+  the H3 request stream, and selects among peer frames, fixed-target datagrams,
+  and the idle deadline. The target can therefore send more datagrams than the
+  peer has sent requests, and the peer can continue sending afterward, without
+  adding a task, channel, queue, second owner, retry, packet correlation, or
+  automatic fallback.
+  A later target or port change, malformed input, or actionable wrong-flow
+  frame returns the opened flow's exact `ProtocolError` and bounded FIN. The
+  wrong-flow gate runs before payload decode, target locking, rate policy, or
+  target I/O; after any such bad frame is decoded, no further target operation
+  begins. This is not an absolute cross-direction ordering guarantee: a valid
+  target datagram that already won selection may be forwarded before a
+  concurrently arriving bad peer frame is decoded. Target open, send, or
+  receive failure instead returns the opened flow's `TargetConnectFailed` and
+  bounded FIN, drops the owner, and never reopens it. Explicit close, active-
+  owner idle expiry, request unwind, and blocked-response expiry release the
+  exact source; response DATA and FIN retain the existing whole-operation
+  completion deadlines.
+  Both directions borrow the same `UserPolicy` and its same optional shared
+  `RateLimiter`, throttling the corresponding payload byte count before target
+  or H3 send I/O. The existing limiter unit gate remains green, but this slice
+  adds no nonzero-rate real-H3 duplex timing evidence and does not establish
+  end-to-end rate-policy timing. Raw Quinn/H3 loopback coverage verifies the
+  authenticated selection, exact acknowledgement, fixed source, two peer
+  packets followed without another peer frame by three target datagrams,
+  including one excess unsolicited push, continued peer send, exact terminal
+  errors, active-owner idle cleanup, blocked-response cleanup, FIN, and source
+  rebinding. The 93-test H3 integration target, all-feature
+  workspace suite, no-default server and focused H3 gates, formatting, strict
+  Clippy, warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh` pass
+  locally.
+  This is a legacy-H3 server/wire foundation only. Production
+  `UdpAssociation`, SOCKS, TUN, and client paths remain flags-zero serial
+  users; H2 nonzero flags, feature-zero nonzero flags, and reserved or mixed
+  modes remain rejected. WebSocket and direct-v3/quiche H3 are unchanged. The
+  slice reuses one existing feature bit, flag, frame set, payload set, and
+  encoding; it adds no number, wire field, protocol/config/profile version,
+  public API signature, feature, dependency, manifest, or `Cargo.lock` change.
+  Biased selection may starve target receive under continuously ready peer
+  input, so there is no fairness or no-loss claim. This is not production
+  client duplex support, general-purpose SOCKS/TUN UDP, games or voice
+  suitability, real-network evidence, a published-artifact change, product
+  readiness, or release authorization.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

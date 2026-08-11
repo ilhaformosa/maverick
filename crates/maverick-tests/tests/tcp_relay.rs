@@ -14,6 +14,8 @@ use http::{HeaderMap, Method, Request, StatusCode};
 use maverick_client::{
     connection_manager::H2ConnectionPoolSnapshot, transport, udp::UdpAssociation,
 };
+#[cfg(feature = "h3")]
+use maverick_core::auth::FEATURE_OPEN_UDP_MODE_NEGOTIATION;
 use maverick_core::auth::{ClientHello, ClientHelloV2, ServerHello};
 #[cfg(feature = "browser-tls")]
 use maverick_core::config::TlsFingerprintMode;
@@ -21,6 +23,8 @@ use maverick_core::config::{
     AuthV2Config, ClientAuthConfig, ClientConfig, ClientCredentialRotationConfig,
     ClientNextCredentialConfig, FallbackConfig, PreviousCredentialConfig, ShapingConfig,
 };
+#[cfg(feature = "h3")]
+use maverick_core::frame::OPEN_UDP_FLAG_DUPLEX;
 use maverick_core::frame::{
     ErrorCode, Frame, FrameType, OpenUdpPayload, TargetAddr, UdpPacketPayload,
 };
@@ -1873,20 +1877,19 @@ async fn h3_interrupted_udp_relay_fails_closed_before_next_target() -> Result<()
 }
 
 #[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline() -> Result<()> {
-    const RESPONSE_COUNT: usize = 6;
-    const RESPONSE_BYTES: usize = 8 * 1024;
-    const STREAM_RECEIVE_WINDOW: u32 = 44 * 1024;
-    const SERVER_IDLE_TIMEOUT_SECS: u64 = 1;
+struct RawH3LimitedClient {
+    endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+    driver_task: tokio::task::JoinHandle<()>,
+    send_request: h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
+}
 
-    let fixture = MaverickHarness::start_with_options(HarnessOptions {
-        experimental_h3: true,
-        server_idle_timeout_secs: Some(SERVER_IDLE_TIMEOUT_SECS),
-        ..HarnessOptions::default()
-    })
-    .await?;
-    let config = fixture.client_config();
+#[cfg(feature = "h3")]
+async fn connect_raw_h3_limited_client(
+    fixture: &MaverickHarness,
+    config: &ClientConfig,
+    stream_receive_window: u32,
+) -> Result<RawH3LimitedClient> {
     let ca_path = config.server.ca_cert.as_ref().context("missing CA cert")?;
     let certs: Vec<CertificateDer<'static>> =
         CertificateDer::pem_file_iter(ca_path)?.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1909,7 +1912,7 @@ async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline(
     let mut transport_config = quinn::TransportConfig::default();
     transport_config
         .max_idle_timeout(Some(Duration::from_secs(10).try_into()?))
-        .stream_receive_window(STREAM_RECEIVE_WINDOW.into())
+        .stream_receive_window(stream_receive_window.into())
         .keep_alive_interval(Some(Duration::from_millis(100)));
     client_config.transport_config(Arc::new(transport_config));
 
@@ -1919,11 +1922,35 @@ async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline(
         .connect(fixture.server.local_addr, "localhost")?
         .await
         .context("complete raw QUIC handshake")?;
-    let (mut driver, mut send_request) =
+    let (mut driver, send_request) =
         h3::client::new(h3_quinn::Connection::new(connection.clone())).await?;
     let driver_task = tokio::spawn(async move {
         let _ = poll_fn(|cx| driver.poll_close(cx)).await;
     });
+    Ok(RawH3LimitedClient {
+        endpoint,
+        connection,
+        driver_task,
+        send_request,
+    })
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline() -> Result<()> {
+    const RESPONSE_COUNT: usize = 6;
+    const RESPONSE_BYTES: usize = 8 * 1024;
+    const STREAM_RECEIVE_WINDOW: u32 = 44 * 1024;
+    const SERVER_IDLE_TIMEOUT_SECS: u64 = 1;
+
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        server_idle_timeout_secs: Some(SERVER_IDLE_TIMEOUT_SECS),
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let config = fixture.client_config();
+    let mut raw = connect_raw_h3_limited_client(&fixture, &config, STREAM_RECEIVE_WINDOW).await?;
 
     let target = UdpSocket::bind("127.0.0.1:0").await?;
     let target_addr = target.local_addr()?;
@@ -1960,7 +1987,8 @@ async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline(
         "https://{}{}",
         config.server.server_name, config.server.tunnel_path
     );
-    let mut stream = send_request
+    let mut stream = raw
+        .send_request
         .send_request(
             Request::builder()
                 .method(Method::POST)
@@ -2027,7 +2055,7 @@ async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline(
             }
             Err(err) => {
                 assert!(
-                    connection.close_reason().is_none(),
+                    raw.connection.close_reason().is_none(),
                     "raw QUIC connection closed instead of remaining alive under keepalive"
                 );
                 panic!(
@@ -2038,15 +2066,151 @@ async fn h3_blocked_udp_response_releases_exact_target_source_at_state_deadline(
     };
     assert_eq!(rebound.local_addr()?, exact_source);
     assert!(
-        connection.close_reason().is_none(),
+        raw.connection.close_reason().is_none(),
         "raw QUIC connection closed instead of remaining alive under keepalive"
     );
 
     drop(rebound);
     drop(stream);
-    connection.close(0u32.into(), b"blocked-response-test-complete");
-    endpoint.close(0u32.into(), b"blocked-response-test-complete");
-    driver_task.abort();
+    raw.connection
+        .close(0u32.into(), b"blocked-response-test-complete");
+    raw.endpoint
+        .close(0u32.into(), b"blocked-response-test-complete");
+    raw.driver_task.abort();
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_duplex_blocked_push_releases_exact_target_source_at_send_deadline() -> Result<()> {
+    const RESPONSE_COUNT: usize = 6;
+    const RESPONSE_BYTES: usize = 8 * 1024;
+    const STREAM_RECEIVE_WINDOW: u32 = 44 * 1024;
+    const SERVER_IDLE_TIMEOUT_SECS: u64 = 1;
+
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        server_idle_timeout_secs: Some(SERVER_IDLE_TIMEOUT_SECS),
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let config = fixture.client_config();
+    let mut raw = connect_raw_h3_limited_client(&fixture, &config, STREAM_RECEIVE_WINDOW).await?;
+
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let target_task = tokio::spawn(async move {
+        let mut request = [0u8; 64];
+        let (len, exact_source) = timeout(Duration::from_secs(2), target.recv_from(&mut request))
+            .await
+            .context("real UDP target did not receive the duplex setup packet")??;
+        anyhow::ensure!(
+            request.get(..len) == Some(b"duplex-blocked-response".as_slice()),
+            "real UDP target received the wrong duplex setup payload"
+        );
+        for sequence in 0..RESPONSE_COUNT {
+            let mut response = vec![0x5a; RESPONSE_BYTES];
+            response[0] = sequence as u8;
+            let sent = target.send_to(&response, exact_source).await?;
+            anyhow::ensure!(sent == response.len(), "real UDP target push was truncated");
+        }
+        Ok::<(SocketAddr, usize), anyhow::Error>((exact_source, RESPONSE_COUNT * RESPONSE_BYTES))
+    });
+
+    let uri = format!(
+        "https://{}{}",
+        config.server.server_name, config.server.tunnel_path
+    );
+    let mut stream = raw
+        .send_request
+        .send_request(
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header("content-type", "application/octet-stream")
+                .body(())?,
+        )
+        .await?;
+    let max_frame_size = 65_536;
+    let hello = ClientHello::new(
+        config.server.credential_id.clone(),
+        &config.server.secret,
+        &config.server.tunnel_path,
+        config.mode,
+        FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+    )?;
+    stream
+        .send_data(Frame::new(FrameType::ClientHello, 0, 0, hello.encode()).encode(max_frame_size)?)
+        .await?;
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::OpenUdp,
+                OPEN_UDP_FLAG_DUPLEX,
+                OPEN_UDP_FLOW_ID,
+                OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
+            )
+            .encode(max_frame_size)?,
+        )
+        .await?;
+    let packet = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+        Bytes::from_static(b"duplex-blocked-response"),
+    );
+    stream
+        .send_data(
+            Frame::new(FrameType::UdpPacket, 0, OPEN_UDP_FLOW_ID, packet.encode()?)
+                .encode(max_frame_size)?,
+        )
+        .await?;
+
+    let (exact_source, total_response_bytes) = timeout(Duration::from_secs(3), target_task)
+        .await
+        .context("duplex target-push task did not complete")?
+        .context("duplex target-push task failed")??;
+    assert_eq!(total_response_bytes, 48 * 1024);
+    match UdpSocket::bind(exact_source).await {
+        Ok(_) => panic!("active duplex target owner did not retain its exact UDP source"),
+        Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse),
+    }
+
+    let release_deadline =
+        Instant::now() + Duration::from_secs(SERVER_IDLE_TIMEOUT_SECS) + Duration::from_secs(2);
+    let rebound = loop {
+        match UdpSocket::bind(exact_source).await {
+            Ok(socket) => break socket,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AddrInUse
+                    && Instant::now() < release_deadline =>
+            {
+                tokio::task::yield_now().await;
+            }
+            Err(err) => {
+                assert!(
+                    raw.connection.close_reason().is_none(),
+                    "raw QUIC connection closed instead of keeping the physical owner alive"
+                );
+                panic!(
+                    "duplex H3 response deadline did not release exact UDP source {exact_source}: {err}"
+                );
+            }
+        }
+    };
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert!(
+        raw.connection.close_reason().is_none(),
+        "raw QUIC connection closed instead of keeping the physical owner alive"
+    );
+
+    drop(rebound);
+    drop(stream);
+    raw.connection
+        .close(0u32.into(), b"duplex-blocked-response-test-complete");
+    raw.endpoint
+        .close(0u32.into(), b"duplex-blocked-response-test-complete");
+    raw.driver_task.abort();
     fixture.shutdown().await?;
     Ok(())
 }
@@ -3358,6 +3522,581 @@ async fn observe_h3_raw_open_udp_mode(
     })
 }
 
+#[cfg(feature = "h3")]
+async fn read_next_raw_h3_frame(
+    stream: &mut maverick_client::h3_transport::H3ClientRequestStream,
+    response_bytes: &mut BytesMut,
+) -> Result<Option<Frame>> {
+    loop {
+        if let Some(frame) = Frame::decode_from(response_bytes, 65_536)? {
+            return Ok(Some(frame));
+        }
+        let Some(mut chunk) = stream.recv_data().await? else {
+            anyhow::ensure!(
+                response_bytes.is_empty(),
+                "raw H3 response ended with an incomplete Maverick frame"
+            );
+            return Ok(None);
+        };
+        let bytes = chunk.copy_to_bytes(chunk.remaining());
+        response_bytes.extend_from_slice(&bytes);
+    }
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_negotiated_duplex_open_udp_allows_server_push() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let sender = transport::connect(&config).await?;
+    let mut h3 = match sender {
+        transport::TunnelRequestSender::H3(h3) => h3,
+        _ => anyhow::bail!("negotiated duplex test requires the Quinn/H3 transport"),
+    };
+    let uri = format!(
+        "https://{}{}",
+        config.server.server_name, config.server.tunnel_path
+    );
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("content-type", "application/octet-stream")
+        .body(())?;
+    let mut stream = h3.send_request(request).await?;
+    let hello = ClientHello::new(
+        config.server.credential_id.clone(),
+        &config.server.secret,
+        &config.server.tunnel_path,
+        config.mode,
+        FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+    )?;
+    stream
+        .send_data(Frame::new(FrameType::ClientHello, 0, 0, hello.encode()).encode(65_536)?)
+        .await?;
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::OpenUdp,
+                OPEN_UDP_FLAG_DUPLEX,
+                OPEN_UDP_FLOW_ID,
+                OpenUdpPayload::new(config.advanced.udp_idle_timeout_ms).encode(),
+            )
+            .encode(65_536)?,
+        )
+        .await?;
+    let packet_a = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+        Bytes::from_static(b"peer-a"),
+    );
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                OPEN_UDP_FLOW_ID,
+                packet_a.encode()?,
+            )
+            .encode(65_536)?,
+        )
+        .await?;
+
+    let response = timeout(Duration::from_secs(2), stream.recv_response())
+        .await
+        .context("negotiated duplex H3 response headers must remain bounded")??;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "authenticated negotiated-duplex H3 path fell back"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/octet-stream"),
+        "authenticated negotiated-duplex H3 path returned a fallback content type"
+    );
+
+    let mut response_bytes = BytesMut::new();
+    let server_hello_frame = timeout(
+        Duration::from_secs(2),
+        read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+    )
+    .await
+    .context("negotiated duplex ServerHello must remain bounded")??
+    .context("missing negotiated duplex ServerHello")?;
+    assert_eq!(server_hello_frame.frame_type, FrameType::ServerHello);
+    let server_hello = ServerHello::decode(&server_hello_frame.payload)?;
+    assert!(
+        server_hello.verify(&config.server.secret, &hello.client_nonce),
+        "negotiated duplex ServerHello authentication failed"
+    );
+    assert_eq!(
+        server_hello.feature_flags_selected, FEATURE_OPEN_UDP_MODE_NEGOTIATION,
+        "negotiated duplex H3 handshake selected the wrong feature mask"
+    );
+
+    let open_response = timeout(
+        Duration::from_secs(2),
+        read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+    )
+    .await
+    .context("negotiated duplex OpenUdp response must remain bounded")??
+    .context("server closed before answering negotiated duplex OpenUdp")?;
+    let old_rejection = Frame::new(
+        FrameType::Error,
+        0,
+        OPEN_UDP_FLOW_ID,
+        ErrorCode::ProtocolError.encode(),
+    );
+    if open_response == old_rejection {
+        let response_fin = timeout(
+            Duration::from_secs(2),
+            read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+        )
+        .await
+        .context("legacy-H3 rejection FIN must remain bounded")??;
+        assert!(
+            response_fin.is_none(),
+            "legacy-H3 rejection Error must be followed by response FIN"
+        );
+        let trailers = timeout(Duration::from_secs(2), stream.recv_trailers())
+            .await
+            .context("legacy-H3 rejection trailers must remain bounded")??;
+        assert!(
+            trailers.is_none(),
+            "legacy-H3 rejection unexpectedly appended response trailers"
+        );
+        let mut target_buf = [0u8; 64];
+        match timeout(Duration::from_secs(1), target.recv_from(&mut target_buf)).await {
+            Err(_) => {}
+            Ok(Ok((len, _))) => panic!(
+                "rejected negotiated duplex OpenUdp reached the real target with {len} bytes"
+            ),
+            Ok(Err(err)) => return Err(err).context("observe rejected duplex UDP target"),
+        }
+        assert_h3_transport(&config);
+        drop(stream);
+        drop(h3);
+        fixture.shutdown().await?;
+        panic!("negotiated legacy-H3 duplex OpenUdp stayed rejected");
+    }
+    assert_eq!(
+        open_response,
+        Frame::new(
+            FrameType::WindowUpdate,
+            OPEN_UDP_FLAG_DUPLEX,
+            OPEN_UDP_FLOW_ID,
+            Bytes::new(),
+        ),
+        "negotiated duplex OpenUdp acknowledgement had the wrong exact shape"
+    );
+
+    let mut target_buf = [0u8; 64];
+    let (len, exact_source) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+        .await
+        .context("real target did not receive peer packet A")??;
+    assert_eq!(&target_buf[..len], b"peer-a");
+
+    let packet_b = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+        Bytes::from_static(b"peer-b"),
+    );
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                OPEN_UDP_FLOW_ID,
+                packet_b.encode()?,
+            )
+            .encode(65_536)?,
+        )
+        .await?;
+    let (len, source_b) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+        .await
+        .context("real target did not receive peer packet B before replying")??;
+    assert_eq!(&target_buf[..len], b"peer-b");
+    assert_eq!(source_b, exact_source);
+
+    for expected in [
+        b"reply-b".as_slice(),
+        b"reply-a".as_slice(),
+        b"unsolicited-push".as_slice(),
+    ] {
+        let sent = target.send_to(expected, exact_source).await?;
+        assert_eq!(sent, expected.len());
+        let response = timeout(
+            Duration::from_secs(2),
+            read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+        )
+        .await
+        .context("target push response must remain bounded")??
+        .context("server closed before forwarding target push")?;
+        assert_eq!(response.frame_type, FrameType::UdpPacket);
+        assert_eq!(response.flags, 0);
+        assert_eq!(response.flow_id, OPEN_UDP_FLOW_ID);
+        let packet = UdpPacketPayload::decode(&response.payload)?;
+        assert_eq!(
+            packet.target,
+            TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST)
+        );
+        assert_eq!(packet.port, target_addr.port());
+        assert_eq!(packet.data.as_ref(), expected);
+    }
+
+    let packet_c = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+        Bytes::from_static(b"peer-c"),
+    );
+    stream
+        .send_data(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                OPEN_UDP_FLOW_ID,
+                packet_c.encode()?,
+            )
+            .encode(65_536)?,
+        )
+        .await?;
+    let (len, source_c) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+        .await
+        .context("real target did not receive peer packet C after server push")??;
+    assert_eq!(&target_buf[..len], b"peer-c");
+    assert_eq!(source_c, exact_source);
+
+    stream
+        .send_data(
+            Frame::new(FrameType::CloseFlow, 0, OPEN_UDP_FLOW_ID, Bytes::new()).encode(65_536)?,
+        )
+        .await?;
+    stream.finish().await?;
+    let response_fin = timeout(
+        Duration::from_secs(2),
+        read_next_raw_h3_frame(&mut stream, &mut response_bytes),
+    )
+    .await
+    .context("explicit duplex CloseFlow FIN must remain bounded")??;
+    assert!(
+        response_fin.is_none(),
+        "explicit duplex CloseFlow must be followed by response FIN"
+    );
+    let trailers = timeout(Duration::from_secs(2), stream.recv_trailers())
+        .await
+        .context("explicit duplex CloseFlow trailers must remain bounded")??;
+    assert!(
+        trailers.is_none(),
+        "explicit duplex CloseFlow unexpectedly appended response trailers"
+    );
+
+    let release_deadline = Instant::now() + Duration::from_secs(2);
+    let rebound = loop {
+        match UdpSocket::bind(exact_source).await {
+            Ok(socket) => break socket,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AddrInUse
+                    && Instant::now() < release_deadline =>
+            {
+                tokio::task::yield_now().await;
+            }
+            Err(err) => {
+                return Err(err).context("duplex CloseFlow did not release exact UDP source")
+            }
+        }
+    };
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+
+    drop(rebound);
+    drop(stream);
+    drop(h3);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+async fn open_h3_duplex_test_tunnel(
+    config: &ClientConfig,
+    idle_timeout_ms: u64,
+) -> Result<maverick_client::tunnel::ClientTunnel> {
+    assert_h3_transport(config);
+    let mut tunnel = maverick_client::tunnel::open(config).await?;
+    assert!(
+        matches!(&tunnel, maverick_client::tunnel::ClientTunnel::H3(_)),
+        "duplex OpenUdp test must use an actual H3 tunnel"
+    );
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::OpenUdp,
+                OPEN_UDP_FLAG_DUPLEX,
+                OPEN_UDP_FLOW_ID,
+                OpenUdpPayload::new(idle_timeout_ms).encode(),
+            ),
+            false,
+        )
+        .await?;
+    let acknowledgement = timeout(Duration::from_secs(2), tunnel.read_next_frame())
+        .await
+        .context("duplex OpenUdp acknowledgement must remain bounded")??
+        .context("server closed before acknowledging duplex OpenUdp")?;
+    assert_eq!(
+        acknowledgement,
+        Frame::new(
+            FrameType::WindowUpdate,
+            OPEN_UDP_FLAG_DUPLEX,
+            OPEN_UDP_FLOW_ID,
+            Bytes::new(),
+        )
+    );
+    Ok(tunnel)
+}
+
+#[cfg(feature = "h3")]
+async fn assert_h3_duplex_terminal_error(
+    tunnel: &mut maverick_client::tunnel::ClientTunnel,
+    code: ErrorCode,
+) -> Result<()> {
+    let response = timeout(Duration::from_secs(2), tunnel.read_next_frame())
+        .await
+        .context("duplex terminal Error must remain bounded")??
+        .context("server closed before returning duplex terminal Error")?;
+    assert_eq!(
+        response,
+        Frame::new(FrameType::Error, 0, OPEN_UDP_FLOW_ID, code.encode())
+    );
+    assert_h3_fin_after_terminal_error(tunnel).await
+}
+
+#[cfg(feature = "h3")]
+async fn assert_udp_target_uncontacted(target: &UdpSocket, label: &str) -> Result<()> {
+    let mut buf = [0u8; 64];
+    match timeout(Duration::from_secs(1), target.recv_from(&mut buf)).await {
+        Err(_) => Ok(()),
+        Ok(Ok((len, _))) => anyhow::bail!("{label} received {len} unexpected bytes"),
+        Ok(Err(err)) => Err(err).with_context(|| format!("observe {label}")),
+    }
+}
+
+#[cfg(feature = "h3")]
+async fn rebind_released_udp_source(source: SocketAddr, label: &str) -> Result<UdpSocket> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match UdpSocket::bind(source).await {
+            Ok(socket) => return Ok(socket),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline =>
+            {
+                tokio::task::yield_now().await;
+            }
+            Err(err) => return Err(err).with_context(|| format!("{label} did not release source")),
+        }
+    }
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_duplex_open_udp_rejects_target_change_before_new_target_io() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    let target_a = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_b = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_a_addr = target_a.local_addr()?;
+    let target_b_addr = target_b.local_addr()?;
+    let mut tunnel =
+        open_h3_duplex_test_tunnel(&config, config.advanced.udp_idle_timeout_ms).await?;
+
+    let packet_a = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_a_addr.port(),
+        Bytes::from_static(b"fixed-target-a"),
+    );
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                OPEN_UDP_FLOW_ID,
+                packet_a.encode()?,
+            ),
+            false,
+        )
+        .await?;
+    let mut target_buf = [0u8; 64];
+    let (len, exact_source) = timeout(Duration::from_secs(2), target_a.recv_from(&mut target_buf))
+        .await
+        .context("fixed target A did not receive its first packet")??;
+    assert_eq!(&target_buf[..len], b"fixed-target-a");
+
+    let packet_b = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_b_addr.port(),
+        Bytes::from_static(b"forbidden-target-b"),
+    );
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                OPEN_UDP_FLOW_ID,
+                packet_b.encode()?,
+            ),
+            false,
+        )
+        .await?;
+    assert_h3_duplex_terminal_error(&mut tunnel, ErrorCode::ProtocolError).await?;
+    assert_udp_target_uncontacted(&target_b, "changed duplex target").await?;
+    assert_udp_target_uncontacted(&target_a, "original duplex target after target change").await?;
+    let rebound = rebind_released_udp_source(exact_source, "target-change rejection").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+
+    drop(rebound);
+    drop(tunnel);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_duplex_open_udp_rejects_wrong_flow_before_target_io() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut tunnel =
+        open_h3_duplex_test_tunnel(&config, config.advanced.udp_idle_timeout_ms).await?;
+
+    let packet = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+        Bytes::from_static(b"wrong-flow-duplex-packet"),
+    );
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                MISMATCHED_UDP_FLOW_ID,
+                packet.encode()?,
+            ),
+            false,
+        )
+        .await?;
+    assert_h3_duplex_terminal_error(&mut tunnel, ErrorCode::ProtocolError).await?;
+    assert_udp_target_uncontacted(&target, "wrong-flow duplex target").await?;
+    assert_h3_transport(&config);
+
+    drop(tunnel);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_duplex_open_udp_rejects_malformed_packet_terminally() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    let mut tunnel =
+        open_h3_duplex_test_tunnel(&config, config.advanced.udp_idle_timeout_ms).await?;
+
+    tunnel
+        .send_frame(
+            Frame::new(
+                FrameType::UdpPacket,
+                0,
+                OPEN_UDP_FLOW_ID,
+                Bytes::from_static(b"malformed"),
+            ),
+            false,
+        )
+        .await?;
+    assert_h3_duplex_terminal_error(&mut tunnel, ErrorCode::ProtocolError).await?;
+    assert_h3_transport(&config);
+
+    drop(tunnel);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_duplex_open_udp_target_open_failure_is_terminal() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    let mut tunnel =
+        open_h3_duplex_test_tunnel(&config, config.advanced.udp_idle_timeout_ms).await?;
+    let packet = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        0,
+        Bytes::from_static(b"invalid-port"),
+    );
+    tunnel
+        .send_frame(
+            Frame::new(FrameType::UdpPacket, 0, OPEN_UDP_FLOW_ID, packet.encode()?),
+            false,
+        )
+        .await?;
+    assert_h3_duplex_terminal_error(&mut tunnel, ErrorCode::TargetConnectFailed).await?;
+    assert_h3_transport(&config);
+
+    drop(tunnel);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_duplex_open_udp_idle_sends_close_flow_and_fin() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut tunnel = open_h3_duplex_test_tunnel(&config, 300).await?;
+    let packet = UdpPacketPayload::new(
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+        Bytes::from_static(b"idle-owner-setup"),
+    );
+    tunnel
+        .send_frame(
+            Frame::new(FrameType::UdpPacket, 0, OPEN_UDP_FLOW_ID, packet.encode()?),
+            false,
+        )
+        .await?;
+    let mut target_buf = [0u8; 64];
+    let (len, exact_source) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+        .await
+        .context("duplex idle test did not establish a real target owner")??;
+    assert_eq!(&target_buf[..len], b"idle-owner-setup");
+
+    let close = timeout(Duration::from_secs(2), tunnel.read_next_frame())
+        .await
+        .context("duplex idle CloseFlow must remain bounded")??
+        .context("server closed before sending duplex idle CloseFlow")?;
+    assert_eq!(
+        close,
+        Frame::new(FrameType::CloseFlow, 0, OPEN_UDP_FLOW_ID, Bytes::new())
+    );
+    assert_h3_fin_after_terminal_error(&mut tunnel).await?;
+    let rebound = rebind_released_udp_source(exact_source, "duplex idle expiry").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+
+    drop(rebound);
+    drop(tunnel);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn h2_open_udp_nonzero_mode_fails_before_target_io() -> Result<()> {
     for (requested_features, open_udp_flags, expected_selected) in [
@@ -3402,11 +4141,6 @@ async fn h3_open_udp_nonzero_mode_fails_before_target_io() -> Result<()> {
     for (requested_features, open_udp_flags, expected_selected) in [
         (0, TEST_OPEN_UDP_DUPLEX_FLAG, 0),
         (0, TEST_OPEN_UDP_RESERVED_FLAG, 0),
-        (
-            TEST_OPEN_UDP_MODE_FEATURE,
-            TEST_OPEN_UDP_DUPLEX_FLAG,
-            TEST_OPEN_UDP_MODE_FEATURE,
-        ),
         (
             TEST_OPEN_UDP_MODE_FEATURE,
             TEST_OPEN_UDP_RESERVED_FLAG,

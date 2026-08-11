@@ -21,6 +21,8 @@ use maverick_core::auth::{
     FEATURE_TLS_CHANNEL_BINDING, PROTOCOL_VERSION, TLS_CHANNEL_BINDING_EXPORTER_LABEL,
 };
 use maverick_core::config::{DirectV3TransportStrategy, ServerRoleConfig};
+#[cfg(feature = "h3")]
+use maverick_core::frame::TargetAddr;
 use maverick_core::frame::{
     ErrorCode, Frame, FrameType, OpenTcpPayload, OpenUdpPayload, UdpPacketPayload,
     FRAME_HEADER_LEN, OPEN_UDP_FLAGS_SERIAL, OPEN_UDP_FLAG_DUPLEX,
@@ -978,7 +980,7 @@ enum LegacyHandshakeCarrier {
 enum OpenUdpModeGate {
     Serial,
     Unnegotiated,
-    UnsupportedDuplex,
+    Duplex,
     Reserved,
 }
 
@@ -1189,7 +1191,7 @@ fn open_udp_mode_gate(flags: u8, feature_flags_selected: u64) -> OpenUdpModeGate
     if flags & !OPEN_UDP_FLAG_DUPLEX != 0 {
         return OpenUdpModeGate::Reserved;
     }
-    OpenUdpModeGate::UnsupportedDuplex
+    OpenUdpModeGate::Duplex
 }
 
 fn selected_channel_binding_for_flags(
@@ -2184,9 +2186,11 @@ async fn handle_h3_tunnel(
         return handle_h3_dns_query(open_frame, stream, &state, &user_policy, max_frame_size).await;
     }
     if open_frame.frame_type == FrameType::OpenUdp {
-        if open_udp_mode_gate(open_frame.flags, authenticated.feature_flags_selected)
-            != OpenUdpModeGate::Serial
-        {
+        let udp_mode = open_udp_mode_gate(open_frame.flags, authenticated.feature_flags_selected);
+        if matches!(
+            udp_mode,
+            OpenUdpModeGate::Unnegotiated | OpenUdpModeGate::Reserved
+        ) {
             h3_send_server_frame(
                 &mut stream,
                 relay::error_frame(open_frame.flow_id, ErrorCode::ProtocolError),
@@ -2211,15 +2215,33 @@ async fn handle_h3_tunnel(
                 return Ok(());
             }
         };
-        return handle_h3_udp_flow(
-            open_frame,
-            stream,
-            recv_buf,
-            &state,
-            &user_policy,
-            max_frame_size,
-        )
-        .await;
+        return match udp_mode {
+            OpenUdpModeGate::Serial => {
+                handle_h3_udp_flow(
+                    open_frame,
+                    stream,
+                    recv_buf,
+                    &state,
+                    &user_policy,
+                    max_frame_size,
+                )
+                .await
+            }
+            OpenUdpModeGate::Duplex => {
+                handle_h3_duplex_udp_flow(
+                    open_frame,
+                    stream,
+                    recv_buf,
+                    &state,
+                    &user_policy,
+                    max_frame_size,
+                )
+                .await
+            }
+            OpenUdpModeGate::Unnegotiated | OpenUdpModeGate::Reserved => {
+                unreachable!("unsupported H3 OpenUdp mode returned after rejection")
+            }
+        };
     }
     if open_frame.frame_type == FrameType::UdpPacket {
         let _flow_permit = match try_user_flow_permit(&state, &user_policy) {
@@ -2765,6 +2787,235 @@ async fn handle_h3_udp_flow(
 }
 
 #[cfg(feature = "h3")]
+enum H3DuplexUdpEvent {
+    Peer(Result<Option<Frame>>),
+    Target(Result<UdpPacketPayload>),
+    Idle,
+}
+
+#[cfg(feature = "h3")]
+async fn handle_h3_duplex_udp_flow(
+    frame: Frame,
+    mut stream: H3ServerStream,
+    mut recv_buf: BytesMut,
+    state: &ServerState,
+    user_policy: &UserPolicy,
+    max_frame_size: usize,
+) -> Result<()> {
+    let flow_id = frame.flow_id;
+    let idle_timeout_ms = match udp_idle_timeout_ms(&frame, state) {
+        Ok(timeout) => timeout,
+        Err(_) => {
+            h3_send_server_frame(
+                &mut stream,
+                relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                max_frame_size,
+                true,
+                state,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    h3_send_server_frame(
+        &mut stream,
+        Frame::new(
+            FrameType::WindowUpdate,
+            OPEN_UDP_FLAG_DUPLEX,
+            flow_id,
+            Bytes::new(),
+        ),
+        max_frame_size,
+        false,
+        state,
+    )
+    .await?;
+
+    let (mut send_stream, mut recv_stream) = stream.split();
+    let mut target_slot = relay::UdpFlowRelay::new();
+    let mut fixed_target: Option<(TargetAddr, u16)> = None;
+    let mut target_buf = vec![0u8; 65_535];
+
+    loop {
+        let event = if target_slot.has_active_target() {
+            tokio::select! {
+                biased;
+                peer = h3_read_next_frame(&mut recv_stream, &mut recv_buf, max_frame_size) => {
+                    H3DuplexUdpEvent::Peer(peer)
+                }
+                target = target_slot.recv_packet(&mut target_buf) => {
+                    H3DuplexUdpEvent::Target(target)
+                }
+                _ = sleep(Duration::from_millis(idle_timeout_ms)) => H3DuplexUdpEvent::Idle,
+            }
+        } else {
+            tokio::select! {
+                biased;
+                peer = h3_read_next_frame(&mut recv_stream, &mut recv_buf, max_frame_size) => {
+                    H3DuplexUdpEvent::Peer(peer)
+                }
+                _ = sleep(Duration::from_millis(idle_timeout_ms)) => H3DuplexUdpEvent::Idle,
+            }
+        };
+
+        match event {
+            H3DuplexUdpEvent::Peer(Ok(Some(frame))) => {
+                if frame.flow_id != flow_id {
+                    h3_send_server_frame(
+                        &mut send_stream,
+                        relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                        max_frame_size,
+                        true,
+                        state,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                if frame.frame_type == FrameType::CloseFlow {
+                    if frame.flags != 0 || !frame.payload.is_empty() {
+                        h3_send_server_frame(
+                            &mut send_stream,
+                            relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                            max_frame_size,
+                            true,
+                            state,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                    h3_finish_server_response(&mut send_stream, state).await?;
+                    return Ok(());
+                }
+                if frame.frame_type != FrameType::UdpPacket || frame.flags != 0 {
+                    h3_send_server_frame(
+                        &mut send_stream,
+                        relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                        max_frame_size,
+                        true,
+                        state,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                let packet = match UdpPacketPayload::decode(&frame.payload) {
+                    Ok(packet) => packet,
+                    Err(_) => {
+                        h3_send_server_frame(
+                            &mut send_stream,
+                            relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                            max_frame_size,
+                            true,
+                            state,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                };
+                if let Some((target, port)) = &fixed_target {
+                    if target != &packet.target || *port != packet.port {
+                        h3_send_server_frame(
+                            &mut send_stream,
+                            relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                            max_frame_size,
+                            true,
+                            state,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                } else {
+                    // Lock the logical target before rate policy, resolution,
+                    // socket creation, or target I/O. This remains locked even
+                    // if the first owner-open attempt fails terminally.
+                    fixed_target = Some((packet.target.clone(), packet.port));
+                }
+                if let Some(limiter) = &user_policy.rate_limiter {
+                    limiter.throttle(packet.data.len()).await;
+                }
+                if target_slot
+                    .send_packet(
+                        &packet,
+                        state.config.advanced.tcp_connect_timeout_ms,
+                        &state.config.advanced.egress,
+                    )
+                    .await
+                    .is_err()
+                {
+                    h3_send_server_frame(
+                        &mut send_stream,
+                        relay::error_frame(flow_id, ErrorCode::TargetConnectFailed),
+                        max_frame_size,
+                        true,
+                        state,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+            H3DuplexUdpEvent::Peer(Ok(None)) => {
+                if !recv_buf.is_empty() {
+                    h3_send_server_frame(
+                        &mut send_stream,
+                        relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                        max_frame_size,
+                        true,
+                        state,
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
+            H3DuplexUdpEvent::Peer(Err(_)) => {
+                h3_send_server_frame(
+                    &mut send_stream,
+                    relay::error_frame(flow_id, ErrorCode::ProtocolError),
+                    max_frame_size,
+                    true,
+                    state,
+                )
+                .await?;
+                return Ok(());
+            }
+            H3DuplexUdpEvent::Target(Ok(packet)) => {
+                if let Some(limiter) = &user_policy.rate_limiter {
+                    limiter.throttle(packet.data.len()).await;
+                }
+                h3_send_server_frame(
+                    &mut send_stream,
+                    Frame::new(FrameType::UdpPacket, 0, flow_id, packet.encode()?),
+                    max_frame_size,
+                    false,
+                    state,
+                )
+                .await?;
+            }
+            H3DuplexUdpEvent::Target(Err(_)) => {
+                h3_send_server_frame(
+                    &mut send_stream,
+                    relay::error_frame(flow_id, ErrorCode::TargetConnectFailed),
+                    max_frame_size,
+                    true,
+                    state,
+                )
+                .await?;
+                return Ok(());
+            }
+            H3DuplexUdpEvent::Idle => {
+                h3_send_server_frame(
+                    &mut send_stream,
+                    Frame::new(FrameType::CloseFlow, 0, flow_id, Bytes::new()),
+                    max_frame_size,
+                    true,
+                    state,
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+#[cfg(feature = "h3")]
 async fn send_h3_udp_packet_response(
     frame: Frame,
     stream: &mut H3ServerStream,
@@ -3008,13 +3259,16 @@ async fn relay_h3_target_and_tunnel(
 }
 
 #[cfg(feature = "h3")]
-async fn h3_send_frame(
-    stream: &mut H3ServerStream,
+async fn h3_send_frame<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
     frame: Frame,
     max_frame_size: usize,
     end_stream: bool,
     completion_timeout: Duration,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: h3::quic::SendStream<Bytes>,
+{
     h3_complete_with_deadline(
         completion_timeout,
         stream.send_data(frame.encode(max_frame_size)?),
@@ -3043,15 +3297,18 @@ where
 }
 
 #[cfg(feature = "h3")]
-async fn h3_send_frame_with_padding(
-    stream: &mut H3ServerStream,
+async fn h3_send_frame_with_padding<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
     frame: Frame,
     max_frame_size: usize,
     end_stream: bool,
     completion_timeout: Duration,
     padding: &RuntimePadding,
     cover_traffic: &RuntimeCoverTraffic,
-) -> Result<relay::PaddingEmission> {
+) -> Result<relay::PaddingEmission>
+where
+    S: h3::quic::SendStream<Bytes>,
+{
     let mut emission = relay::PaddingEmission::default();
     if let Some(padding_frame) =
         padding.padding_frame(frame.frame_type, frame.payload.len(), max_frame_size)
@@ -3093,13 +3350,16 @@ async fn h3_send_frame_with_padding(
 }
 
 #[cfg(feature = "h3")]
-async fn h3_send_server_frame(
-    stream: &mut H3ServerStream,
+async fn h3_send_server_frame<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
     frame: Frame,
     max_frame_size: usize,
     end_stream: bool,
     state: &ServerState,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: h3::quic::SendStream<Bytes>,
+{
     let completion_timeout = h3_server_frame_completion_timeout(
         frame.frame_type,
         state.config.advanced.handshake_timeout_ms,
@@ -3120,6 +3380,22 @@ async fn h3_send_server_frame(
 }
 
 #[cfg(feature = "h3")]
+async fn h3_finish_server_response<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    state: &ServerState,
+) -> Result<()>
+where
+    S: h3::quic::SendStream<Bytes>,
+{
+    let completion_timeout = h3_server_frame_completion_timeout(
+        FrameType::CloseFlow,
+        state.config.advanced.handshake_timeout_ms,
+        state.config.advanced.idle_timeout_secs,
+    );
+    h3_complete_with_deadline(completion_timeout, stream.finish()).await
+}
+
+#[cfg(feature = "h3")]
 fn h3_server_frame_completion_timeout(
     frame_type: FrameType,
     handshake_timeout_ms: u64,
@@ -3133,33 +3409,42 @@ fn h3_server_frame_completion_timeout(
 }
 
 #[cfg(feature = "h3")]
-async fn h3_read_next_frame(
-    stream: &mut H3ServerStream,
+async fn h3_read_next_frame<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
     buf: &mut BytesMut,
     max_frame_size: usize,
-) -> Result<Option<Frame>> {
+) -> Result<Option<Frame>>
+where
+    S: h3::quic::RecvStream,
+{
     h3_read_next_frame_impl(stream, buf, max_frame_size, None, usize::MAX).await
 }
 
 #[cfg(feature = "h3")]
-async fn h3_read_next_frame_capturing(
-    stream: &mut H3ServerStream,
+async fn h3_read_next_frame_capturing<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
     buf: &mut BytesMut,
     max_frame_size: usize,
     capture: &mut BytesMut,
     max_capture_size: usize,
-) -> Result<Option<Frame>> {
+) -> Result<Option<Frame>>
+where
+    S: h3::quic::RecvStream,
+{
     h3_read_next_frame_impl(stream, buf, max_frame_size, Some(capture), max_capture_size).await
 }
 
 #[cfg(feature = "h3")]
-async fn h3_read_next_frame_impl(
-    stream: &mut H3ServerStream,
+async fn h3_read_next_frame_impl<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
     buf: &mut BytesMut,
     max_frame_size: usize,
     mut capture: Option<&mut BytesMut>,
     max_capture_size: usize,
-) -> Result<Option<Frame>> {
+) -> Result<Option<Frame>>
+where
+    S: h3::quic::RecvStream,
+{
     loop {
         if let Some(frame) = Frame::decode_from(buf, max_frame_size)? {
             if frame.frame_type == FrameType::Padding {
@@ -3590,7 +3875,7 @@ mod legacy_feature_selection_tests {
     }
 
     #[test]
-    fn open_udp_mode_gate_consumes_selected_mask_without_enabling_duplex() {
+    fn open_udp_mode_gate_requires_selected_mask_for_duplex() {
         for selected in [0, FEATURE_OPEN_UDP_MODE_NEGOTIATION] {
             assert_eq!(
                 open_udp_mode_gate(OPEN_UDP_FLAGS_SERIAL, selected),
@@ -3604,7 +3889,7 @@ mod legacy_feature_selection_tests {
         assert_eq!(open_udp_mode_gate(1 << 7, 0), OpenUdpModeGate::Unnegotiated);
         assert_eq!(
             open_udp_mode_gate(OPEN_UDP_FLAG_DUPLEX, FEATURE_OPEN_UDP_MODE_NEGOTIATION,),
-            OpenUdpModeGate::UnsupportedDuplex
+            OpenUdpModeGate::Duplex
         );
         assert_eq!(
             open_udp_mode_gate(1 << 7, FEATURE_OPEN_UDP_MODE_NEGOTIATION),

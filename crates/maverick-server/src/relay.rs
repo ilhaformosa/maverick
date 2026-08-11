@@ -914,12 +914,17 @@ impl UdpFlowRelay {
         Self { active: None }
     }
 
-    pub(super) async fn relay_packet(
+    #[cfg(feature = "h3")]
+    pub(super) fn has_active_target(&self) -> bool {
+        self.active.is_some()
+    }
+
+    pub(super) async fn send_packet(
         &mut self,
         packet: &UdpPacketPayload,
         timeout_ms: u64,
         egress: &ServerEgressPolicyConfig,
-    ) -> Result<UdpPacketPayload> {
+    ) -> Result<()> {
         let reuses_active = self
             .active
             .as_ref()
@@ -935,20 +940,61 @@ impl UdpFlowRelay {
             });
         }
 
-        let result = relay_connected_udp_packet(
-            &self
+        let result = self
+            .active
+            .as_ref()
+            .context("UDP flow target missing after open")?
+            .owner
+            .send(&packet.data)
+            .await;
+        if result.is_err() {
+            self.active.take();
+        }
+        result
+    }
+
+    pub(super) async fn recv_packet(&mut self, buf: &mut [u8]) -> Result<UdpPacketPayload> {
+        let result = async {
+            let active = self
                 .active
                 .as_ref()
-                .context("UDP flow target missing after open")?
-                .owner,
-            packet,
-            timeout_ms,
-        )
+                .context("UDP flow target missing before receive")?;
+            let len = active.owner.recv(buf).await?;
+            Ok(UdpPacketPayload::new(
+                active.target.clone(),
+                active.port,
+                Bytes::copy_from_slice(&buf[..len]),
+            ))
+        }
         .await;
         if result.is_err() {
             self.active.take();
         }
         result
+    }
+
+    pub(super) async fn relay_packet(
+        &mut self,
+        packet: &UdpPacketPayload,
+        timeout_ms: u64,
+        egress: &ServerEgressPolicyConfig,
+    ) -> Result<UdpPacketPayload> {
+        self.send_packet(packet, timeout_ms, egress).await?;
+        let mut buf = vec![0u8; 65_535];
+        match timeout(
+            Duration::from_millis(timeout_ms),
+            self.recv_packet(&mut buf),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                // Cancelling recv_packet at its deadline cannot run its error
+                // cleanup, so the serial composition clears the owner here.
+                self.active.take();
+                Err(err).context("UDP target timed out")
+            }
+        }
     }
 }
 

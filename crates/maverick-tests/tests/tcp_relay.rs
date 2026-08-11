@@ -2576,80 +2576,156 @@ async fn h3_socks5_udp_associate_receives_target_push_without_client_packet() ->
 
 #[cfg(feature = "h3")]
 #[tokio::test]
-async fn h3_socks5_duplex_udp_drops_different_target_and_continues() -> Result<()> {
-    let fixture = MaverickHarness::start_with_h3().await?;
+async fn h3_socks5_duplex_udp_handoffs_single_active_target() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        metrics: true,
+        ..HarnessOptions::default()
+    })
+    .await?;
     let config = fixture.client_config();
     assert_h3_transport(&config);
+    let metrics_addr = fixture
+        .server
+        .metrics_addr
+        .context("missing target-handoff metrics listener")?;
     let target_a = UdpSocket::bind("127.0.0.1:0").await?;
     let target_a_addr = target_a.local_addr()?;
     let target_b = UdpSocket::bind("127.0.0.1:0").await?;
     let target_b_addr = target_b.local_addr()?;
     let (control, udp, udp_bind) =
         open_normal_socks_udp_associate(fixture.client.local_addr).await?;
+    let mut exact_sources = Vec::new();
 
     udp.send_to(
-        &socks_udp_ipv4_request(target_a_addr, b"fixed-target-a-one"),
+        &socks_udp_ipv4_request(target_a_addr, b"handoff-target-a-one"),
         udp_bind,
     )
     .await?;
-    let mut target_buf = [0u8; 128];
-    let (len, exact_source) = timeout(Duration::from_secs(2), target_a.recv_from(&mut target_buf))
-        .await
-        .context("fixed target A did not receive its first packet")??;
-    assert_eq!(&target_buf[..len], b"fixed-target-a-one");
-    target_a.send_to(b"fixed-reply-a-one", exact_source).await?;
-    receive_socks_udp_ipv4_payload(&udp, udp_bind, target_a_addr, b"fixed-reply-a-one").await?;
-
-    udp.send_to(
-        &socks_udp_ipv4_request(target_b_addr, b"rejected-target-b"),
-        udp_bind,
+    let mut target_a_buf = [0u8; 128];
+    let (len, source_a_one) = timeout(
+        Duration::from_secs(2),
+        target_a.recv_from(&mut target_a_buf),
     )
-    .await?;
-    let (target_a_contact, target_b_contact) = tokio::join!(
-        timeout(Duration::from_secs(1), target_a.recv_from(&mut target_buf)),
-        async {
-            let mut target_b_buf = [0u8; 128];
-            timeout(
-                Duration::from_secs(1),
-                target_b.recv_from(&mut target_b_buf),
-            )
-            .await
-        }
-    );
-    assert!(
-        target_a_contact.is_err(),
-        "different-target packet touched fixed target A"
-    );
-    assert!(
-        target_b_contact.is_err(),
-        "different-target packet touched rejected target B"
-    );
-
-    udp.send_to(
-        &socks_udp_ipv4_request(target_a_addr, b"fixed-target-a-two"),
-        udp_bind,
-    )
-    .await?;
-    let (len, continued_source) =
-        timeout(Duration::from_secs(2), target_a.recv_from(&mut target_buf))
-            .await
-            .context("fixed target A did not continue after local target rejection")??;
-    assert_eq!(&target_buf[..len], b"fixed-target-a-two");
-    assert_eq!(continued_source, exact_source);
+    .await
+    .context("target A did not receive the first handoff packet")??;
+    assert_eq!(&target_a_buf[..len], b"handoff-target-a-one");
+    exact_sources.push(source_a_one);
     target_a
-        .send_to(b"fixed-reply-a-two", continued_source)
+        .send_to(b"handoff-reply-a-one", source_a_one)
         .await?;
-    receive_socks_udp_ipv4_payload(&udp, udp_bind, target_a_addr, b"fixed-reply-a-two").await?;
+    receive_socks_udp_ipv4_payload(&udp, udp_bind, target_a_addr, b"handoff-reply-a-one").await?;
 
+    wait_for_metric_value(metrics_addr, "authenticated_sessions", 1).await?;
+
+    udp.send_to(
+        &socks_udp_ipv4_request(target_b_addr, b"handoff-target-b"),
+        udp_bind,
+    )
+    .await?;
+    let mut target_a_probe = [0u8; 128];
+    let mut target_b_buf = [0u8; 128];
+    let (target_a_contact, target_b_contact) = tokio::join!(
+        timeout(
+            Duration::from_millis(500),
+            target_a.recv_from(&mut target_a_probe),
+        ),
+        timeout(
+            Duration::from_secs(2),
+            target_b.recv_from(&mut target_b_buf),
+        ),
+    );
+    match target_a_contact {
+        Err(_) => {}
+        Ok(Ok((len, _))) => {
+            anyhow::bail!("target-B handoff packet touched target A with {len} bytes")
+        }
+        Ok(Err(err)) => return Err(err).context("observe target A during target-B handoff"),
+    }
+    let handoff_completed = match target_b_contact {
+        Err(_) => false,
+        Ok(Err(err)) => return Err(err).context("observe target B during target handoff"),
+        Ok(Ok((len, source_b))) => {
+            assert_eq!(&target_b_buf[..len], b"handoff-target-b");
+            if !exact_sources.contains(&source_b) {
+                exact_sources.push(source_b);
+            }
+            target_b.send_to(b"handoff-reply-b", source_b).await?;
+            receive_socks_udp_ipv4_payload(&udp, udp_bind, target_b_addr, b"handoff-reply-b")
+                .await?;
+            target_b.send_to(b"handoff-push-b", source_b).await?;
+            receive_socks_udp_ipv4_payload(&udp, udp_bind, target_b_addr, b"handoff-push-b")
+                .await?;
+            true
+        }
+    };
+
+    udp.send_to(
+        &socks_udp_ipv4_request(target_a_addr, b"handoff-target-a-two"),
+        udp_bind,
+    )
+    .await?;
+    let mut target_b_probe = [0u8; 128];
+    let (target_b_contact, target_a_contact) = tokio::join!(
+        timeout(
+            Duration::from_millis(500),
+            target_b.recv_from(&mut target_b_probe),
+        ),
+        timeout(
+            Duration::from_secs(2),
+            target_a.recv_from(&mut target_a_buf),
+        ),
+    );
+    match target_b_contact {
+        Err(_) => {}
+        Ok(Ok((len, _))) => {
+            anyhow::bail!("target-A handoff packet touched target B with {len} bytes")
+        }
+        Ok(Err(err)) => return Err(err).context("observe target B during target-A handoff"),
+    }
+    let (len, source_a_two) =
+        target_a_contact.context("target A stayed unavailable after target handoff")??;
+    assert_eq!(&target_a_buf[..len], b"handoff-target-a-two");
+    if !handoff_completed {
+        assert_eq!(
+            source_a_two, source_a_one,
+            "parent fixed-target association changed source during A recovery"
+        );
+    }
+    if !exact_sources.contains(&source_a_two) {
+        exact_sources.push(source_a_two);
+    }
+    target_a
+        .send_to(b"handoff-reply-a-two", source_a_two)
+        .await?;
+    receive_socks_udp_ipv4_payload(&udp, udp_bind, target_a_addr, b"handoff-reply-a-two").await?;
+
+    let expected_authenticated_sessions = if handoff_completed { 3 } else { 1 };
+    wait_for_metric_value(
+        metrics_addr,
+        "authenticated_sessions",
+        expected_authenticated_sessions,
+    )
+    .await?;
     let pool = fixture.client.h2_connection_pool_snapshot();
     assert_eq!(pool.connections_created, 0);
     assert_eq!(pool.streams_opened, 0);
+    assert_eq!(pool.active_streams, 0);
+    assert_h3_transport(&config);
+
     drop(control);
-    let rebound = rebind_released_udp_source(exact_source, "SOCKS duplex fixed target").await?;
-    assert_eq!(rebound.local_addr()?, exact_source);
-    drop(rebound);
+    for source in exact_sources {
+        let rebound =
+            rebind_released_udp_source(source, "SOCKS target handoff control EOF").await?;
+        assert_eq!(rebound.local_addr()?, source);
+        drop(rebound);
+    }
     assert_h3_transport(&config);
     fixture.shutdown().await?;
+
+    if !handoff_completed {
+        panic!("normal SOCKS legacy-H3 UDP target handoff stayed unavailable");
+    }
     Ok(())
 }
 

@@ -421,28 +421,31 @@ censorship resistance, production readiness, or browser identity.
   send and receive halves. Actual H2, WebSocket, H3 without the selected bit,
   and H2 returned by the existing scheduler after an H3 setup failure use the
   same already-open tunnel in the existing flags-zero serial association. The
-  handler makes no second connection or fallback decision.
-  The flags-one path fixes the first legal target and port. A later different-
-  target packet is dropped locally before tunnel send, touches neither the
-  fixed target nor the rejected target, and does not prevent a following packet
-  for the fixed target. Duplex open, send, receive, terminal, or close failure
-  ends the current SOCKS control association; it never clears the state to
-  reopen, replay, or fall back after authenticated H3 duplex setup. Flags-zero
-  associations retain their prior per-packet target and abnormal control-byte
-  behavior. The existing one-local-peer rule and SOCKS UDP encoding remain
-  unchanged. No task, channel, queue, lock, target map, second association
-  owner, retry, or packet correlation was added.
+  handler makes no second connection or fallback decision for that initial
+  packet.
+  At that earlier selected-H3 consumer slice, the flags-one path fixed the first
+  legal target and port. A later different-target packet was dropped locally
+  before tunnel send, touched neither the fixed target nor the rejected target,
+  and did not prevent a following packet for the fixed target. At that slice,
+  duplex open, send, receive, terminal, or close failure ended the current
+  SOCKS control association; it did not clear the state to reopen, replay, or
+  fall back after authenticated H3 duplex setup. Flags-zero associations retain
+  their prior per-packet target and abnormal control-byte behavior. The existing
+  one-local-peer rule and SOCKS UDP encoding remain unchanged. No task, channel,
+  queue, lock, target map, second association owner, retry, or packet correlation
+  was added.
   Real loopback tests through normal `MaverickHarness`/`start_client` verify an
   actual selected H3 carrier with no cooldown or H2 pool activity, one complete
   packet-A roundtrip, then two target pushes delivered without a new local UDP
   packet, control-EOF cleanup, and exact server-source rebinding. Separate
-  normal-client tests verify a different-target packet contacts neither A nor
-  B before A continues on the same source; an authenticated H3 flow-limit
-  rejection ends the control association with zero target I/O and no fallback;
-  an unavailable H3 setup falls back to one H2 serial association inside the
-  existing scheduler and successfully switches from target A to B; and the
-  ordinary H2 serial path retains one tunnel flow and per-packet target
-  switching. The observed target-push order is bounded loopback regression
+  normal-client test at that earlier slice verified a different-target packet
+  contacted neither A nor B before A continued on the same source. A separate
+  authenticated H3 flow-limit rejection ends the control association with zero
+  target I/O and no fallback; an unavailable H3 setup falls back to one H2
+  serial association inside the existing scheduler and successfully switches
+  from target A to B; and the ordinary H2 serial path retains one tunnel flow
+  and per-packet target switching. The observed target-push order is bounded
+  loopback regression
   evidence only, not an ordering, fairness, no-loss, or request-response
   correlation promise. H3-without-the-bit and WebSocket mode selection are
   source/unit or existing handshake evidence, not claimed as new successful
@@ -464,9 +467,9 @@ censorship resistance, production readiness, or browser identity.
   dependency, `Cargo.lock`, wire number or encoding, protocol/config/profile
   version, deployment authorization, real-network result, product-readiness
   result, or release state changes. Any future publication requires a new
-  prerelease and must not rewrite Beta.4. This is one fixed-target legacy-H3
-  SOCKS slice, not general multi-target duplex SOCKS, TUN integration, games or
-  voice suitability, or a fairness/no-loss guarantee.
+  prerelease and must not rewrite Beta.4. That earlier result was one
+  fixed-target legacy-H3 SOCKS slice, not general multi-target duplex SOCKS,
+  TUN integration, games or voice suitability, or a fairness/no-loss guarantee.
 - Unpublished workspace source now also bounds and cancels pending normal-SOCKS
   legacy-H3 setup. After legacy-H3 transport connection succeeds, the common
   tunnel-open path gives the request through complete, MAC-verified
@@ -531,6 +534,72 @@ censorship resistance, production readiness, or browser identity.
   number or encoding, protocol/config/profile version, deployment
   authorization, real-network result, product-readiness result, or release
   state.
+- Unpublished workspace source now also lets one normal `start_client` SOCKS5
+  UDP ASSOCIATE using actually selected legacy-H3 duplex mode move
+  sequentially from target A to B and back to A. When one accepted local packet
+  names a different target or port, the handler carries exactly that one packet
+  out of the borrowed split operation, takes sole ownership of the old client
+  association, and selects control EOF before its bounded close. Source review
+  confirms that only a successful old `close` return permits exactly one fresh
+  `SocksUdpAssociation::open_with_pool` call and at most one send of the
+  retained packet. Control EOF or a close failure ends the handler before the
+  new target is opened or contacted.
+  A fresh retryable pool or serial-open failure drops the retained packet,
+  leaves association state empty, and keeps the control association available;
+  a later new local packet may make its own independent open attempt. A fresh
+  pre-request H3 transport-setup failure may still return one H2 serial
+  association before the retained packet has been sent, so that is neither
+  fallback nor replay of a sent packet. An opened duplex association sends the
+  retained packet once under the same EOF-first selection and becomes current
+  only after complete send success. An opened serial association performs the
+  existing one-packet relay behavior and becomes current only on the existing
+  successful or non-EOF-control result. Authenticated H3 duplex setup, first-
+  send, or terminal failure remains terminal with no H2 fallback, replay,
+  resend, or automatic reopen. Same-target sends, target pushes, flags-zero H3,
+  H2, WebSocket, and ordinary serial behavior remain on their existing paths.
+  A real-loopback normal-client test proves A1, B1, and A2 roundtrips through
+  three actually selected H3 associations with zero H2 pool activity and no H3
+  cooldown. The B association also delivers one fixed unsolicited push, with
+  B's exact SOCKS target metadata, after B's roundtrip and without another local
+  UDP packet. The test observes exactly three successful authenticated
+  sessions and rebinds every unique server UDP source after control EOF. That
+  metric corroborates three successful authentications; it does not
+  independently count or bound all outer connection attempts. Source review,
+  not that metric, establishes successful client close before the one fresh
+  pool open and authentication.
+  A client close response FIN is not a server flow-permit-drop barrier. The
+  remote handler may retain its permit briefly until its scope drops, so this
+  card neither proves nor guarantees a remote permit barrier or zero remote
+  permit-lifetime overlap. During handoff, valid old-target pushes may be
+  drained and discarded, and the handler does not read another local UDP
+  packet; additional packets may remain in the operating-system socket buffer
+  or be dropped. This is sequential client-side single-active-target behavior,
+  not concurrent multi-target UDP, fairness, ordering, no loss, physical H3
+  connection reuse, TUN integration, games or voice suitability, real-network
+  evidence, a human-user result, product readiness, or release authorization.
+  The exact handoff test passes 1/1. Ten focused relay regressions covering the
+  existing H3 push, authenticated duplex-open failure, initial H3-to-H2 serial
+  fallback, H2 serial target switching, H3/H2 SOCKS roundtrips, public receive/
+  send/close cancellation, and flags-zero setup deadline each pass; focused
+  client UDP unit coverage passes 13/13. The all-features workspace suite and
+  the 108/108 all-features relay target pass. Client library tests pass 74/74
+  without default features and 82/82 without defaults plus H3. The no-default
+  relay run retains one pre-existing unrelated failure with 68 other tests
+  passing, and the no-default-plus-H3 run retains the same failure with 105
+  other tests passing:
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo` rejects
+  `advanced.stealth.tls_fingerprint=rustls_default` in private mode. Default,
+  H3, and no-default-plus-H3 client checks; strict workspace all-target/all-
+  feature Clippy; strict no-default client Clippy with and without H3; warning-
+  denied all-feature workspace Rustdoc; formatting; `user-smoke.sh`; and
+  `local-harness.sh` all pass.
+  This changes existing public `start_client` and `serve_udp_associate` runtime
+  behavior and is therefore SemVer-observable without adding or changing a
+  Rust signature. It changes no package version, public fixed-target duplex
+  API, manifest, dependency, `Cargo.lock`, wire number or encoding,
+  protocol/config/profile version, CLI syntax, SDK signature, server/core/frame
+  path, published Beta.4 artifact, deployment authorization, or release state.
+  Any future publication requires a new prerelease and must not rewrite Beta.4.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

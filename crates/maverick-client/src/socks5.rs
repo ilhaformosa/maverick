@@ -203,7 +203,7 @@ pub(crate) async fn serve_udp_associate_with_pool(
 
     loop {
         #[cfg(feature = "h3")]
-        if let Some(SocksUdpAssociation::Duplex {
+        let handoff_packet = if let Some(SocksUdpAssociation::Duplex {
             association: duplex,
             target,
             port,
@@ -234,19 +234,20 @@ pub(crate) async fn serve_udp_associate_with_pool(
                         continue;
                     }
                     if packet.target != *target || packet.port != *port {
-                        tracing::debug!("dropping SOCKS UDP packet for different duplex target");
-                        continue;
-                    }
-                    let send_result = tokio::select! {
-                        control_eof = wait_for_control_eof(&mut control) => {
-                            control_eof?;
+                        Some((packet, peer))
+                    } else {
+                        let send_result = tokio::select! {
+                            control_eof = wait_for_control_eof(&mut control) => {
+                                control_eof?;
+                                break;
+                            }
+                            send_result = send_half.send_packet(packet.data) => send_result,
+                        };
+                        if let Err(err) = send_result {
+                            tracing::debug!(error = %err, "SOCKS UDP duplex send failed");
                             break;
                         }
-                        send_result = send_half.send_packet(packet.data) => send_result,
-                    };
-                    if let Err(err) = send_result {
-                        tracing::debug!(error = %err, "SOCKS UDP duplex send failed");
-                        break;
+                        continue;
                     }
                 }
                 received = receive_half.receive_packet() => {
@@ -264,6 +265,106 @@ pub(crate) async fn serve_udp_associate_with_pool(
                     let response = UdpPacketPayload::new(target.clone(), *port, payload);
                     let encoded = encode_udp_response(&response)?;
                     let _ = socket.send_to(&encoded, peer).await;
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
+        #[cfg(feature = "h3")]
+        if let Some((packet, peer)) = handoff_packet {
+            let old_association = association
+                .take()
+                .expect("duplex SOCKS UDP handoff must own its old association");
+            let close_result = tokio::select! {
+                biased;
+                control_eof = wait_for_control_eof(&mut control) => {
+                    control_eof?;
+                    break;
+                }
+                close_result = old_association.close() => close_result,
+            };
+            if close_result.is_err() {
+                tracing::debug!("SOCKS UDP duplex handoff close failed");
+                break;
+            }
+
+            let open_result = tokio::select! {
+                biased;
+                control_eof = wait_for_control_eof(&mut control) => {
+                    control_eof?;
+                    break;
+                }
+                open_result = SocksUdpAssociation::open_with_pool(
+                    &tunnel_pool,
+                    &packet.target,
+                    packet.port,
+                ) => open_result,
+            };
+            match open_result {
+                SocksUdpAssociationOpenResult::Opened(opened) => match opened {
+                    SocksUdpAssociation::Duplex {
+                        association: mut duplex,
+                        target,
+                        port,
+                    } => {
+                        let (send_half, _) = duplex.split();
+                        let send_result = tokio::select! {
+                            biased;
+                            control_eof = wait_for_control_eof(&mut control) => {
+                                control_eof?;
+                                break;
+                            }
+                            send_result = send_half.send_packet(packet.data) => send_result,
+                        };
+                        if send_result.is_err() {
+                            tracing::debug!("SOCKS UDP duplex handoff send failed");
+                            break;
+                        }
+                        association = Some(SocksUdpAssociation::Duplex {
+                            association: duplex,
+                            target,
+                            port,
+                        });
+                    }
+                    SocksUdpAssociation::Serial(mut serial) => {
+                        let response = {
+                            let relay = serial.relay_packet(packet);
+                            tokio::select! {
+                                biased;
+                                control_read = control.read(&mut control_buf) => {
+                                    if control_read? == 0 {
+                                        break;
+                                    }
+                                    None
+                                }
+                                response = relay => Some(response),
+                            }
+                        };
+                        let Some(response) = response else {
+                            association = Some(SocksUdpAssociation::Serial(serial));
+                            continue;
+                        };
+                        match response {
+                            Ok(response) => {
+                                if let Ok(encoded) = encode_udp_response(&response) {
+                                    let _ = socket.send_to(&encoded, peer).await;
+                                }
+                                association = Some(SocksUdpAssociation::Serial(serial));
+                            }
+                            Err(_) => {
+                                tracing::debug!("SOCKS UDP handoff serial relay failed");
+                            }
+                        }
+                    }
+                },
+                SocksUdpAssociationOpenResult::Retryable(_) => {
+                    tracing::debug!("SOCKS UDP handoff association open failed");
+                }
+                SocksUdpAssociationOpenResult::Terminal(_) => {
+                    tracing::debug!("SOCKS UDP H3 handoff setup failed");
+                    break;
                 }
             }
             continue;

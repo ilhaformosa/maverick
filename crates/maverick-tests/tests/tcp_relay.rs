@@ -2442,6 +2442,336 @@ async fn h3_public_duplex_udp_unavailable_h3_never_falls_back_to_h2() -> Result<
 
 #[cfg(feature = "h3")]
 #[tokio::test]
+async fn h3_socks5_udp_associate_receives_target_push_without_client_packet() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        metrics: true,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let metrics_addr = fixture
+        .server
+        .metrics_addr
+        .context("missing metrics listener")?;
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+
+    let mut control = TcpStream::connect(fixture.client.local_addr).await?;
+    control.write_all(&[0x05, 1, 0x00]).await?;
+    let mut method_reply = [0u8; 2];
+    control.read_exact(&mut method_reply).await?;
+    assert_eq!(method_reply, [0x05, 0x00]);
+
+    control
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    let mut associate_reply = [0u8; 10];
+    control.read_exact(&mut associate_reply).await?;
+    assert_eq!(associate_reply[1], 0x00);
+    let udp_port = u16::from_be_bytes([associate_reply[8], associate_reply[9]]);
+    let udp_bind = SocketAddr::from(([127, 0, 0, 1], udp_port));
+    let udp = UdpSocket::bind("127.0.0.1:0").await?;
+
+    let mut request_a = vec![0x00, 0x00, 0x00, 0x01, 127, 0, 0, 1];
+    request_a.extend_from_slice(&target_addr.port().to_be_bytes());
+    request_a.extend_from_slice(b"socks-duplex-a");
+    udp.send_to(&request_a, udp_bind).await?;
+
+    let mut target_buf = [0u8; 256];
+    let (len, exact_source) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+        .await
+        .context("normal SOCKS H3 packet A did not reach the real target")??;
+    assert_eq!(&target_buf[..len], b"socks-duplex-a");
+    target.send_to(b"socks-reply-a", exact_source).await?;
+
+    let mut response = [0u8; 256];
+    let (len, response_source) = timeout(Duration::from_secs(2), udp.recv_from(&mut response))
+        .await
+        .context("normal SOCKS H3 packet A reply stayed unavailable")??;
+    assert_eq!(response_source, udp_bind);
+    assert!(len >= 10);
+    assert_eq!(&response[..8], &[0x00, 0x00, 0x00, 0x01, 127, 0, 0, 1]);
+    assert_eq!(
+        u16::from_be_bytes([response[8], response[9]]),
+        target_addr.port()
+    );
+    assert_eq!(&response[10..len], b"socks-reply-a");
+
+    let metrics = wait_for_metric(metrics_addr, "authenticated_sessions", 1).await?;
+    assert_eq!(metric_value(&metrics, "authenticated_sessions")?, 1);
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    assert_eq!(pool.active_streams, 0);
+    match UdpSocket::bind(exact_source).await {
+        Ok(socket) => {
+            drop(socket);
+            anyhow::bail!("normal SOCKS H3 target source was not retained before push")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+        Err(error) => return Err(error).context("probe active normal SOCKS H3 target source"),
+    }
+
+    for push in [b"socks-push-one".as_slice(), b"socks-push-two".as_slice()] {
+        let sent = target.send_to(push, exact_source).await?;
+        assert_eq!(sent, push.len());
+    }
+
+    let pushes_delivered = match timeout(Duration::from_secs(1), async {
+        for expected in [b"socks-push-one".as_slice(), b"socks-push-two".as_slice()] {
+            let (len, response_source) = udp.recv_from(&mut response).await?;
+            anyhow::ensure!(
+                response_source == udp_bind,
+                "SOCKS push used the wrong relay source"
+            );
+            anyhow::ensure!(len >= 10, "SOCKS push response was truncated");
+            anyhow::ensure!(
+                response[..8] == [0x00, 0x00, 0x00, 0x01, 127, 0, 0, 1],
+                "SOCKS push carried the wrong target"
+            );
+            anyhow::ensure!(
+                u16::from_be_bytes([response[8], response[9]]) == target_addr.port(),
+                "SOCKS push carried the wrong target port"
+            );
+            anyhow::ensure!(
+                &response[10..len] == expected,
+                "SOCKS target pushes arrived out of order"
+            );
+        }
+        Result::<()>::Ok(())
+    })
+    .await
+    {
+        Ok(result) => {
+            result?;
+            true
+        }
+        Err(_) => false,
+    };
+
+    assert_h3_transport(&config);
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    drop(control);
+    let rebound = rebind_released_udp_source(exact_source, "normal SOCKS H3 control EOF").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    drop(rebound);
+    assert_h3_transport(&config);
+    fixture.shutdown().await?;
+
+    if !pushes_delivered {
+        panic!("normal SOCKS legacy-H3 UDP target push stayed unavailable");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_socks5_duplex_udp_drops_different_target_and_continues() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let target_a = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_a_addr = target_a.local_addr()?;
+    let target_b = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_b_addr = target_b.local_addr()?;
+    let (control, udp, udp_bind) =
+        open_normal_socks_udp_associate(fixture.client.local_addr).await?;
+
+    udp.send_to(
+        &socks_udp_ipv4_request(target_a_addr, b"fixed-target-a-one"),
+        udp_bind,
+    )
+    .await?;
+    let mut target_buf = [0u8; 128];
+    let (len, exact_source) = timeout(Duration::from_secs(2), target_a.recv_from(&mut target_buf))
+        .await
+        .context("fixed target A did not receive its first packet")??;
+    assert_eq!(&target_buf[..len], b"fixed-target-a-one");
+    target_a.send_to(b"fixed-reply-a-one", exact_source).await?;
+    receive_socks_udp_ipv4_payload(&udp, udp_bind, target_a_addr, b"fixed-reply-a-one").await?;
+
+    udp.send_to(
+        &socks_udp_ipv4_request(target_b_addr, b"rejected-target-b"),
+        udp_bind,
+    )
+    .await?;
+    let (target_a_contact, target_b_contact) = tokio::join!(
+        timeout(Duration::from_secs(1), target_a.recv_from(&mut target_buf)),
+        async {
+            let mut target_b_buf = [0u8; 128];
+            timeout(
+                Duration::from_secs(1),
+                target_b.recv_from(&mut target_b_buf),
+            )
+            .await
+        }
+    );
+    assert!(
+        target_a_contact.is_err(),
+        "different-target packet touched fixed target A"
+    );
+    assert!(
+        target_b_contact.is_err(),
+        "different-target packet touched rejected target B"
+    );
+
+    udp.send_to(
+        &socks_udp_ipv4_request(target_a_addr, b"fixed-target-a-two"),
+        udp_bind,
+    )
+    .await?;
+    let (len, continued_source) =
+        timeout(Duration::from_secs(2), target_a.recv_from(&mut target_buf))
+            .await
+            .context("fixed target A did not continue after local target rejection")??;
+    assert_eq!(&target_buf[..len], b"fixed-target-a-two");
+    assert_eq!(continued_source, exact_source);
+    target_a
+        .send_to(b"fixed-reply-a-two", continued_source)
+        .await?;
+    receive_socks_udp_ipv4_payload(&udp, udp_bind, target_a_addr, b"fixed-reply-a-two").await?;
+
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    drop(control);
+    let rebound = rebind_released_udp_source(exact_source, "SOCKS duplex fixed target").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    drop(rebound);
+    assert_h3_transport(&config);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_socks5_duplex_open_failure_ends_control_without_fallback() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        metrics: true,
+        user_max_concurrent_flows: Some(1),
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let hold_target = start_hold_open_server().await?;
+    let mut held_flow = socks_connect(fixture.client.local_addr, hold_target).await?;
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let (mut control, udp, udp_bind) =
+        open_normal_socks_udp_associate(fixture.client.local_addr).await?;
+
+    udp.send_to(
+        &socks_udp_ipv4_request(target_addr, b"must-not-replay"),
+        udp_bind,
+    )
+    .await?;
+    let mut control_buf = [0u8; 1];
+    let control_read = timeout(Duration::from_secs(2), control.read(&mut control_buf))
+        .await
+        .context("failed H3 duplex open did not end the SOCKS control association")??;
+    assert_eq!(control_read, 0);
+    assert_udp_target_uncontacted(&target, "failed normal SOCKS duplex open target").await?;
+
+    let metrics_addr = fixture
+        .server
+        .metrics_addr
+        .context("missing metrics listener")?;
+    let metrics = wait_for_metric(metrics_addr, "authenticated_sessions", 2).await?;
+    assert_eq!(metric_value(&metrics, "authenticated_sessions")?, 2);
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    assert_h3_transport(&config);
+
+    held_flow.shutdown().await?;
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_setup_fallback_keeps_one_normal_socks_serial_association() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        metrics: true,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let mut fallback_config = fixture.client_config();
+    fallback_config.local.socks5.listen = "127.0.0.1:0".parse()?;
+    fallback_config.advanced.experimental_h3 = true;
+    fallback_config.advanced.connect_timeout_ms = 250;
+    let before = transport::transport_debug_snapshot(&fallback_config);
+    assert_eq!(before.active_transport, GuiTransportCarrier::H3);
+    assert!(before.h3_candidate_enabled);
+    assert!(!before.h3_in_cooldown);
+    let fallback_client = maverick_client::start_client(fallback_config.clone()).await?;
+    let target_a = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_a_addr = target_a.local_addr()?;
+    let target_b = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_b_addr = target_b.local_addr()?;
+    let (control, udp, udp_bind) =
+        open_normal_socks_udp_associate(fallback_client.local_addr).await?;
+    let mut target_buf = [0u8; 128];
+    let mut last_source = None;
+
+    for (target, target_addr, request, response) in [
+        (
+            &target_a,
+            target_a_addr,
+            b"fallback-target-a".as_slice(),
+            b"fallback-reply-a".as_slice(),
+        ),
+        (
+            &target_b,
+            target_b_addr,
+            b"fallback-target-b".as_slice(),
+            b"fallback-reply-b".as_slice(),
+        ),
+    ] {
+        udp.send_to(&socks_udp_ipv4_request(target_addr, request), udp_bind)
+            .await?;
+        let (len, source) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+            .await
+            .context("H3 setup fallback serial target did not receive its packet")??;
+        assert_eq!(&target_buf[..len], request);
+        target.send_to(response, source).await?;
+        receive_socks_udp_ipv4_payload(&udp, udp_bind, target_addr, response).await?;
+        last_source = Some(source);
+    }
+
+    let after = transport::transport_debug_snapshot(&fallback_config);
+    assert_eq!(after.active_transport, GuiTransportCarrier::H2);
+    assert!(after.h3_candidate_enabled);
+    assert!(after.h3_in_cooldown);
+    let metrics_addr = fixture
+        .server
+        .metrics_addr
+        .context("missing metrics listener")?;
+    let metrics = wait_for_metric(metrics_addr, "authenticated_sessions", 1).await?;
+    assert_eq!(metric_value(&metrics, "authenticated_sessions")?, 1);
+    let pool = fallback_client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+
+    drop(control);
+    let source = last_source.context("fallback serial target source was not observed")?;
+    let rebound =
+        rebind_released_udp_source(source, "H3 setup fallback serial control EOF").await?;
+    assert_eq!(rebound.local_addr()?, source);
+    drop(rebound);
+    fallback_client.shutdown().await?;
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
 async fn h3_udp_association_keeps_one_connected_target_owner() -> Result<()> {
     let fixture = MaverickHarness::start_with_h3().await?;
     let config = fixture.client_config();
@@ -3371,6 +3701,142 @@ async fn socks5_udp_associate_roundtrip() -> Result<()> {
 
     fixture.shutdown().await?;
     Ok(())
+}
+
+async fn open_normal_socks_udp_associate(
+    socks_addr: SocketAddr,
+) -> Result<(TcpStream, UdpSocket, SocketAddr)> {
+    let mut control = TcpStream::connect(socks_addr).await?;
+    control.write_all(&[0x05, 1, 0x00]).await?;
+    let mut method_reply = [0u8; 2];
+    control.read_exact(&mut method_reply).await?;
+    anyhow::ensure!(method_reply == [0x05, 0x00], "SOCKS UDP method failed");
+
+    control
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    let mut associate_reply = [0u8; 10];
+    control.read_exact(&mut associate_reply).await?;
+    anyhow::ensure!(associate_reply[1] == 0x00, "SOCKS UDP association failed");
+    let udp_port = u16::from_be_bytes([associate_reply[8], associate_reply[9]]);
+    let udp_bind = SocketAddr::from(([127, 0, 0, 1], udp_port));
+    Ok((control, UdpSocket::bind("127.0.0.1:0").await?, udp_bind))
+}
+
+fn socks_udp_ipv4_request(target: SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let mut request = vec![0x00, 0x00, 0x00, 0x01];
+    let SocketAddr::V4(target) = target else {
+        panic!("SOCKS UDP loopback test target must be IPv4");
+    };
+    request.extend_from_slice(&target.ip().octets());
+    request.extend_from_slice(&target.port().to_be_bytes());
+    request.extend_from_slice(payload);
+    request
+}
+
+async fn receive_socks_udp_ipv4_payload(
+    socket: &UdpSocket,
+    udp_bind: SocketAddr,
+    target: SocketAddr,
+    expected: &[u8],
+) -> Result<()> {
+    let mut response = [0u8; 256];
+    let (len, source) = timeout(Duration::from_secs(2), socket.recv_from(&mut response))
+        .await
+        .context("SOCKS UDP response stayed unavailable")??;
+    anyhow::ensure!(source == udp_bind, "SOCKS UDP response source changed");
+    anyhow::ensure!(len >= 10, "SOCKS UDP response was truncated");
+    let SocketAddr::V4(target) = target else {
+        anyhow::bail!("SOCKS UDP loopback test target must be IPv4");
+    };
+    anyhow::ensure!(
+        response[..8]
+            == [
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                target.ip().octets()[0],
+                target.ip().octets()[1],
+                target.ip().octets()[2],
+                target.ip().octets()[3],
+            ],
+        "SOCKS UDP response target changed"
+    );
+    anyhow::ensure!(
+        u16::from_be_bytes([response[8], response[9]]) == target.port(),
+        "SOCKS UDP response target port changed"
+    );
+    anyhow::ensure!(
+        &response[10..len] == expected,
+        "SOCKS UDP response payload changed"
+    );
+    Ok(())
+}
+
+async fn assert_normal_h2_socks_udp_serial_switches_targets() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let target_a = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_a_addr = target_a.local_addr()?;
+    let target_b = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_b_addr = target_b.local_addr()?;
+    let (control, udp, udp_bind) =
+        open_normal_socks_udp_associate(fixture.client.local_addr).await?;
+    let mut target_buf = [0u8; 128];
+    let mut last_source = None;
+
+    for (target, target_addr, request, response) in [
+        (
+            &target_a,
+            target_a_addr,
+            b"serial-target-a".as_slice(),
+            b"serial-reply-a".as_slice(),
+        ),
+        (
+            &target_b,
+            target_b_addr,
+            b"serial-target-b".as_slice(),
+            b"serial-reply-b".as_slice(),
+        ),
+    ] {
+        udp.send_to(&socks_udp_ipv4_request(target_addr, request), udp_bind)
+            .await?;
+        let (len, source) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+            .await
+            .context("serial SOCKS UDP target did not receive its packet")??;
+        assert_eq!(&target_buf[..len], request);
+        target.send_to(response, source).await?;
+        receive_socks_udp_ipv4_payload(&udp, udp_bind, target_addr, response).await?;
+        last_source = Some(source);
+    }
+
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 1);
+    assert_eq!(pool.streams_opened, 1);
+    drop(control);
+    let source = last_source.context("serial SOCKS UDP target source was not observed")?;
+    let rebound = timeout(Duration::from_secs(2), async {
+        loop {
+            match UdpSocket::bind(source).await {
+                Ok(socket) => break Ok(socket),
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => break Err(error),
+            }
+        }
+    })
+    .await
+    .context("serial SOCKS UDP control EOF did not release target source")??;
+    assert_eq!(rebound.local_addr()?, source);
+    drop(rebound);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn h2_socks5_udp_associate_keeps_serial_target_switching() -> Result<()> {
+    assert_normal_h2_socks_udp_serial_switches_targets().await
 }
 
 #[tokio::test]

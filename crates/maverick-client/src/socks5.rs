@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::OwnedSemaphorePermit;
 
+use crate::udp::{SocksUdpAssociation, SocksUdpAssociationOpenResult};
 use crate::ClientTunnelPool;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,6 +145,16 @@ where
     write_reply(stream, 0x05).await
 }
 
+#[cfg(feature = "h3")]
+async fn wait_for_control_eof(control: &mut TcpStream) -> Result<()> {
+    let mut control_buf = [0u8; 64];
+    loop {
+        if control.read(&mut control_buf).await? == 0 {
+            return Ok(());
+        }
+    }
+}
+
 async fn write_reply<S>(stream: &mut S, code: u8) -> Result<()>
 where
     S: AsyncWrite + Unpin,
@@ -178,12 +189,79 @@ pub(crate) async fn serve_udp_associate_with_pool(
     let socket = UdpSocket::bind("127.0.0.1:0").await?;
     let bind_addr = socket.local_addr()?;
     write_udp_associate_success(&mut control, bind_addr).await?;
-    let mut association = None;
+    let mut association: Option<SocksUdpAssociation> = None;
     let mut control_buf = [0u8; 1];
     let mut udp_buf = vec![0u8; 65_535];
     let mut associated_udp_peer = None;
 
     loop {
+        #[cfg(feature = "h3")]
+        if let Some(SocksUdpAssociation::Duplex {
+            association: duplex,
+            target,
+            port,
+        }) = association.as_mut()
+        {
+            let (send_half, receive_half) = duplex.split();
+            tokio::select! {
+                control_eof = wait_for_control_eof(&mut control) => {
+                    control_eof?;
+                    break;
+                }
+                datagram = socket.recv_from(&mut udp_buf) => {
+                    let (len, peer) = datagram?;
+                    let packet = match decode_udp_request(&udp_buf[..len]) {
+                        Ok(packet) => packet,
+                        Err(err) => {
+                            tracing::debug!(error = %err, "dropping malformed SOCKS UDP packet");
+                            continue;
+                        }
+                    };
+                    if !accept_udp_peer(&mut associated_udp_peer, peer, control_peer) {
+                        let allowed = associated_udp_peer.unwrap_or(peer);
+                        tracing::debug!(
+                            %peer,
+                            %allowed,
+                            "dropping SOCKS UDP packet from unassociated peer"
+                        );
+                        continue;
+                    }
+                    if packet.target != *target || packet.port != *port {
+                        tracing::debug!("dropping SOCKS UDP packet for different duplex target");
+                        continue;
+                    }
+                    let send_result = tokio::select! {
+                        control_eof = wait_for_control_eof(&mut control) => {
+                            control_eof?;
+                            break;
+                        }
+                        send_result = send_half.send_packet(packet.data) => send_result,
+                    };
+                    if let Err(err) = send_result {
+                        tracing::debug!(error = %err, "SOCKS UDP duplex send failed");
+                        break;
+                    }
+                }
+                received = receive_half.receive_packet() => {
+                    let payload = match received {
+                        Ok(Some(payload)) => payload,
+                        Ok(None) => break,
+                        Err(err) => {
+                            tracing::debug!(error = %err, "SOCKS UDP duplex receive failed");
+                            break;
+                        }
+                    };
+                    let Some(peer) = associated_udp_peer else {
+                        break;
+                    };
+                    let response = UdpPacketPayload::new(target.clone(), *port, payload);
+                    let encoded = encode_udp_response(&response)?;
+                    let _ = socket.send_to(&encoded, peer).await;
+                }
+            }
+            continue;
+        }
+
         tokio::select! {
             control_read = control.read(&mut control_buf) => {
                 if control_read? == 0 {
@@ -209,33 +287,80 @@ pub(crate) async fn serve_udp_associate_with_pool(
                     continue;
                 }
                 if association.is_none() {
-                    match crate::udp::UdpAssociation::open_with_pool(&tunnel_pool).await {
-                        Ok(opened) => association = Some(opened),
-                        Err(err) => {
+                    match SocksUdpAssociation::open_with_pool(
+                        &tunnel_pool,
+                        &packet.target,
+                        packet.port,
+                    )
+                    .await
+                    {
+                        SocksUdpAssociationOpenResult::Opened(opened) => {
+                            association = Some(opened);
+                        }
+                        SocksUdpAssociationOpenResult::Retryable(err) => {
                             tracing::debug!(error = %err, "SOCKS UDP association open failed");
                             continue;
                         }
-                    }
-                }
-                let relay = association.as_mut().unwrap().relay_packet(packet);
-                let response = tokio::select! {
-                    control_read = control.read(&mut control_buf) => {
-                        if control_read? == 0 {
+                        #[cfg(feature = "h3")]
+                        SocksUdpAssociationOpenResult::Terminal(err) => {
+                            tracing::debug!(error = %err, "SOCKS UDP duplex open failed");
                             break;
                         }
-                        continue;
                     }
-                    response = relay => match response {
-                        Ok(response) => response,
-                        Err(err) => {
-                            tracing::debug!(error = %err, "SOCKS UDP relay failed");
-                            association = None;
-                            continue;
+                }
+
+                #[cfg(feature = "h3")]
+                if let Some(SocksUdpAssociation::Duplex { association: duplex, .. }) =
+                    association.as_mut()
+                {
+                    let (send_half, _) = duplex.split();
+                    let send_result = tokio::select! {
+                        control_eof = wait_for_control_eof(&mut control) => {
+                            control_eof?;
+                            break;
                         }
-                    },
+                        send_result = send_half.send_packet(packet.data) => send_result,
+                    };
+                    if let Err(err) = send_result {
+                        tracing::debug!(error = %err, "SOCKS UDP duplex send failed");
+                        break;
+                    }
+                    continue;
+                }
+
+                let response = {
+                    let serial = match association.as_mut() {
+                        Some(SocksUdpAssociation::Serial(serial)) => serial,
+                        #[cfg(feature = "h3")]
+                        Some(SocksUdpAssociation::Duplex { .. }) => {
+                            unreachable!("duplex SOCKS UDP association handled above")
+                        }
+                        None => unreachable!("SOCKS UDP association must be open"),
+                    };
+                    let relay = serial.relay_packet(packet);
+                    tokio::select! {
+                        control_read = control.read(&mut control_buf) => {
+                            if control_read? == 0 {
+                                break;
+                            }
+                            None
+                        }
+                        response = relay => Some(response),
+                    }
                 };
-                if let Ok(encoded) = encode_udp_response(&response) {
-                    let _ = socket.send_to(&encoded, peer).await;
+                let Some(response) = response else {
+                    continue;
+                };
+                match response {
+                    Ok(response) => {
+                        if let Ok(encoded) = encode_udp_response(&response) {
+                            let _ = socket.send_to(&encoded, peer).await;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "SOCKS UDP relay failed");
+                        association = None;
+                    }
                 }
             }
         }

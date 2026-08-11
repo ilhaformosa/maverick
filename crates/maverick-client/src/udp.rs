@@ -8,11 +8,11 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use bytes::Bytes;
 use maverick_core::auth::{FEATURE_OPEN_UDP_MODE_NEGOTIATION, FEATURE_TLS_CHANNEL_BINDING};
-use maverick_core::frame::{
-    Frame, FrameType, OpenUdpPayload, UdpPacketPayload, OPEN_UDP_FLAGS_SERIAL,
-};
 #[cfg(feature = "h3")]
-use maverick_core::frame::{TargetAddr, OPEN_UDP_FLAG_DUPLEX};
+use maverick_core::frame::OPEN_UDP_FLAG_DUPLEX;
+use maverick_core::frame::{
+    Frame, FrameType, OpenUdpPayload, TargetAddr, UdpPacketPayload, OPEN_UDP_FLAGS_SERIAL,
+};
 use maverick_core::ClientConfig;
 use tokio::time::{timeout, Duration};
 
@@ -48,6 +48,30 @@ pub struct UdpAssociation {
     tunnel: Option<ClientTunnel>,
     flow_id: u64,
     response_timeout: Duration,
+}
+
+pub(crate) enum SocksUdpAssociation {
+    Serial(UdpAssociation),
+    #[cfg(feature = "h3")]
+    Duplex {
+        association: Box<LegacyH3DuplexUdpAssociation>,
+        target: TargetAddr,
+        port: u16,
+    },
+}
+
+pub(crate) enum SocksUdpAssociationOpenResult {
+    Opened(SocksUdpAssociation),
+    Retryable(anyhow::Error),
+    #[cfg(feature = "h3")]
+    Terminal(anyhow::Error),
+}
+
+#[cfg(feature = "h3")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SocksUdpOpenMode {
+    Serial,
+    Duplex,
 }
 
 /// One opt-in, legacy-H3-only duplex UDP association with one fixed target.
@@ -188,7 +212,7 @@ impl LegacyH3DuplexUdpAssociation {
         {
             return legacy_h3_duplex_udp_open_failed();
         }
-        let mut tunnel = match timeout(
+        let tunnel = match timeout(
             Duration::from_millis(config.advanced.connect_timeout_ms),
             tunnel::open_legacy_h3_direct(config),
         )
@@ -197,7 +221,22 @@ impl LegacyH3DuplexUdpAssociation {
             Ok(Ok(tunnel @ ClientTunnel::H3(_))) => tunnel,
             Ok(Ok(_)) | Ok(Err(_)) | Err(_) => return legacy_h3_duplex_udp_open_failed(),
         };
-        if tunnel.feature_flags_selected() & FEATURE_OPEN_UDP_MODE_NEGOTIATION == 0 {
+        Self::open_with_authenticated_tunnel(config, target, port, tunnel).await
+    }
+
+    async fn open_with_authenticated_tunnel(
+        config: &ClientConfig,
+        target: TargetAddr,
+        port: u16,
+        mut tunnel: ClientTunnel,
+    ) -> Result<Self> {
+        if !matches!(&tunnel, ClientTunnel::H3(_))
+            || tunnel.feature_flags_selected() & FEATURE_OPEN_UDP_MODE_NEGOTIATION == 0
+            || port == 0
+            || UdpPacketPayload::new(target.clone(), port, Bytes::new())
+                .encode()
+                .is_err()
+        {
             return legacy_h3_duplex_udp_open_failed();
         }
 
@@ -299,6 +338,66 @@ impl LegacyH3DuplexUdpAssociation {
         self.receive_half.cleanly_closed = true;
         guard.disarm();
         Ok(())
+    }
+}
+
+impl SocksUdpAssociation {
+    pub(crate) async fn open_with_pool(
+        pool: &ClientTunnelPool,
+        target: &TargetAddr,
+        port: u16,
+    ) -> SocksUdpAssociationOpenResult {
+        #[cfg(not(feature = "h3"))]
+        let _ = (target, port);
+        let tunnel = match pool.open().await {
+            Ok(tunnel) => tunnel,
+            Err(error) => return SocksUdpAssociationOpenResult::Retryable(error),
+        };
+
+        #[cfg(feature = "h3")]
+        if socks_udp_open_mode(
+            matches!(&tunnel, ClientTunnel::H3(_)),
+            tunnel.feature_flags_selected(),
+        ) == SocksUdpOpenMode::Duplex
+        {
+            return match LegacyH3DuplexUdpAssociation::open_with_authenticated_tunnel(
+                pool.config(),
+                target.clone(),
+                port,
+                tunnel,
+            )
+            .await
+            {
+                Ok(association) => SocksUdpAssociationOpenResult::Opened(Self::Duplex {
+                    association: Box::new(association),
+                    target: target.clone(),
+                    port,
+                }),
+                Err(error) => SocksUdpAssociationOpenResult::Terminal(error),
+            };
+        }
+
+        match UdpAssociation::open_with_tunnel(pool.config(), tunnel).await {
+            Ok(association) => SocksUdpAssociationOpenResult::Opened(Self::Serial(association)),
+            Err(error) => SocksUdpAssociationOpenResult::Retryable(error),
+        }
+    }
+
+    pub(crate) async fn close(self) -> Result<()> {
+        match self {
+            Self::Serial(association) => association.close().await,
+            #[cfg(feature = "h3")]
+            Self::Duplex { association, .. } => association.close().await,
+        }
+    }
+}
+
+#[cfg(feature = "h3")]
+fn socks_udp_open_mode(is_h3: bool, feature_flags_selected: u64) -> SocksUdpOpenMode {
+    if is_h3 && feature_flags_selected & FEATURE_OPEN_UDP_MODE_NEGOTIATION != 0 {
+        SocksUdpOpenMode::Duplex
+    } else {
+        SocksUdpOpenMode::Serial
     }
 }
 
@@ -479,6 +578,7 @@ impl UdpAssociation {
         Self::open_with_tunnel(config, tunnel::open(config).await?).await
     }
 
+    #[cfg(feature = "tun-runtime")]
     pub(crate) async fn open_with_pool(pool: &ClientTunnelPool) -> Result<Self> {
         Self::open_with_tunnel(pool.config(), pool.open().await?).await
     }
@@ -567,7 +667,8 @@ fn serial_open_udp_flags(feature_flags_selected: u64) -> Result<u8> {
         bail!("invalid selected feature mask");
     }
     // Selecting the mode gate only proves both peers understand the gate.
-    // No nonzero production mode is supported by this client.
+    // This serial association always uses flags zero; negotiated duplex
+    // selection is handled separately.
     Ok(OPEN_UDP_FLAGS_SERIAL)
 }
 
@@ -841,6 +942,32 @@ mod tests {
         assert_eq!(
             serial_open_udp_flags(1 << 1).unwrap_err().to_string(),
             "invalid selected feature mask"
+        );
+    }
+
+    #[cfg(feature = "h3")]
+    #[test]
+    fn socks_udp_duplex_requires_actual_h3_and_selected_mode_bit() {
+        assert_eq!(socks_udp_open_mode(false, 0), SocksUdpOpenMode::Serial);
+        assert_eq!(
+            socks_udp_open_mode(false, FEATURE_OPEN_UDP_MODE_NEGOTIATION),
+            SocksUdpOpenMode::Serial
+        );
+        assert_eq!(socks_udp_open_mode(true, 0), SocksUdpOpenMode::Serial);
+        assert_eq!(
+            socks_udp_open_mode(true, FEATURE_TLS_CHANNEL_BINDING),
+            SocksUdpOpenMode::Serial
+        );
+        assert_eq!(
+            socks_udp_open_mode(true, FEATURE_OPEN_UDP_MODE_NEGOTIATION),
+            SocksUdpOpenMode::Duplex
+        );
+        assert_eq!(
+            socks_udp_open_mode(
+                true,
+                FEATURE_OPEN_UDP_MODE_NEGOTIATION | FEATURE_TLS_CHANNEL_BINDING,
+            ),
+            SocksUdpOpenMode::Duplex
         );
     }
 

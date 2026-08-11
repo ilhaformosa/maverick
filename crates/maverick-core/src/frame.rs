@@ -9,9 +9,10 @@ pub const FRAME_HEADER_LEN: usize = 14;
 /// Selects the existing legacy serial `OpenUdp` behavior.
 pub const OPEN_UDP_FLAGS_SERIAL: u8 = 0;
 /// Requests carrier-scoped legacy-H3 duplex mode after the mode gate is
-/// selected. Legacy H2 and other receivers still reject it. Only the opt-in,
-/// feature-gated legacy-H3 library association requests it; ordinary
-/// `UdpAssociation`, SOCKS, and TUN paths remain flags-zero serial users.
+/// selected. Legacy H2 and other receivers still reject it. The opt-in,
+/// feature-gated legacy-H3 library association and a normal SOCKS association
+/// on an actually selected legacy-H3 tunnel can request it; ordinary
+/// `UdpAssociation`, TUN, and every flags-zero SOCKS path remain serial.
 pub const OPEN_UDP_FLAG_DUPLEX: u8 = 1 << 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

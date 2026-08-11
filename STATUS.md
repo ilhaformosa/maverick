@@ -244,20 +244,27 @@ censorship resistance, production readiness, or browser identity.
   product readiness.
 - Unpublished workspace source now also adds three public constants that name
   the authenticated legacy-H2/legacy-H3 `OpenUdp` mode-negotiation gate, the
-  existing flags-zero serial mode, and the duplex request bit. Production
-  clients, H2, and WebSocket do not use or accept that duplex mode; the following
-  source-only selected legacy-H3 server foundation is its sole acceptance path.
+  existing flags-zero serial mode, and the duplex request bit.
+  At that negotiation-gate slice, production clients did not send that duplex
+  mode, H2 and WebSocket did not accept it, and the following source-only
+  selected legacy-H3 server foundation was its sole acceptance path. The later
+  library and selected-H3 SOCKS items below add the current client consumers;
+  ordinary `UdpAssociation`, H2, WebSocket, TUN, and flags-zero SOCKS paths
+  remain serial or reject duplex as described below.
   The handshake gate bit means only that both peers understand the gate. New
   clients request that gate bit on H2 and opt-in legacy-H3, and new servers
   select it there only as an authenticated supported subset. WebSocket continues
   to request and select zero for that bit, the existing TLS channel-binding
   selection is preserved, and clients retain only the complete selected mask
   that passed the `ServerHello` MAC, protocol, and subset checks.
-  Production clients still send only flags-zero `OpenUdp` and require an exact
-  same-flow, flags-zero, empty `WindowUpdate` before sending the first UDP
-  packet. That shared check applies to any production UDP tunnel attempt,
-  including a WebSocket-backed attempt; normal WebSocket TCP behavior and
-  mode-bit request/selection remain unchanged. The legacy H2 server rejects
+  At that gate-only slice, production clients sent only flags-zero `OpenUdp`
+  and required an exact same-flow, flags-zero, empty `WindowUpdate` before the
+  first UDP packet. That strict check remains the rule for ordinary
+  `UdpAssociation` and every flags-zero production UDP tunnel attempt,
+  including a WebSocket-backed attempt; the later selected-H3 consumers
+  instead require the exact flags-one acknowledgement described below. Normal
+  WebSocket TCP behavior and mode-bit request/selection remain unchanged. The
+  legacy H2 server rejects
   every nonzero `OpenUdp` flag, while legacy H3 rejects feature-zero nonzero
   flags and every reserved or mixed mode, with the opened flow's exact
   `ProtocolError` before a flow permit, `OpenUdp` payload decode, rate policy,
@@ -319,18 +326,19 @@ censorship resistance, production readiness, or browser identity.
   workspace suite, no-default server and focused H3 gates, formatting, strict
   Clippy, warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh` pass
   locally.
-  This is a legacy-H3 server/wire foundation only. Production
-  `UdpAssociation`, SOCKS, TUN, and client paths remain flags-zero serial
-  users; H2 nonzero flags, feature-zero nonzero flags, and reserved or mixed
-  modes remain rejected. WebSocket and direct-v3/quiche H3 are unchanged. The
-  slice reuses one existing feature bit, flag, frame set, payload set, and
-  encoding; it adds no number, wire field, protocol/config/profile version,
-  public API signature, feature, dependency, manifest, or `Cargo.lock` change.
-  Biased selection may starve target receive under continuously ready peer
-  input, so there is no fairness or no-loss claim. This is not production
-  client duplex support, general-purpose SOCKS/TUN UDP, games or voice
-  suitability, real-network evidence, a published-artifact change, product
-  readiness, or release authorization.
+  This began as a legacy-H3 server/wire foundation. At that slice,
+  `UdpAssociation`, SOCKS, TUN, and client paths remained flags-zero serial;
+  the next two items record the later library and selected-H3 SOCKS consumers.
+  H2 nonzero flags, feature-zero nonzero flags, and reserved or mixed modes
+  remain rejected. WebSocket and direct-v3/quiche H3 are unchanged. The slice
+  reuses one existing feature bit, flag, frame set, payload set, and encoding;
+  it adds no number, wire field, protocol/config/profile version, public API
+  signature, feature, dependency, manifest, or `Cargo.lock` change. Biased
+  selection may starve target receive under continuously ready peer input, so
+  there is no fairness or no-loss claim. By itself it did not establish a
+  client consumer, general-purpose SOCKS/TUN UDP, games or voice suitability,
+  real-network evidence, a published-artifact change, product readiness, or
+  release authorization.
 - Unpublished workspace source now also exposes an additive, public,
   `feature = "h3"` library API for one opt-in legacy-H3 duplex UDP
   association. `LegacyH3DuplexUdpAssociation::open` fixes one target and port,
@@ -339,9 +347,11 @@ censorship resistance, production readiness, or browser identity.
   `send_packet(Bytes)` means only complete tunnel submission;
   `receive_packet()` returns the next fixed-target datagram without request
   correlation and returns `None` only after the server's clean idle close and
-  response FIN. `close(self)` performs the bounded terminal exchange. Normal
-  `UdpAssociation`, H2, WebSocket, SOCKS, TUN, CLI, SDK, and direct-v3/quiche
-  H3 paths remain unchanged and flags-zero serial.
+  response FIN. `close(self)` performs the bounded terminal exchange. At this
+  library-only slice, normal `UdpAssociation`, H2, WebSocket, SOCKS, TUN, CLI,
+  SDK, and direct-v3/quiche H3 paths remained unchanged and flags-zero serial;
+  the selected legacy-H3 SOCKS integration in the next item later reuses the
+  same implementation without changing those public signatures.
   Opening first validates the complete client config, requires explicit
   legacy H3, rejects TLS-terminating fronting and required channel binding,
   and validates the fixed target and nonzero port before network I/O. It then
@@ -401,6 +411,62 @@ censorship resistance, production readiness, or browser identity.
   number or encoding, protocol/config/profile version, deployment
   authorization, human-user result, or release state. Any publication requires
   a new prerelease.
+- Unpublished workspace source now also lets the normal `start_client` SOCKS5
+  UDP ASSOCIATE path consume the already authenticated legacy-H3 duplex mode.
+  The first accepted local UDP packet makes exactly one
+  `ClientTunnelPool::open` call. If the returned tunnel is actually legacy H3
+  and its MAC-verified selected mask contains the existing mode-negotiation
+  bit, that same tunnel requests flags one and the one SOCKS handler selects
+  among control EOF, local UDP input, and target pushes through the borrowed
+  send and receive halves. Actual H2, WebSocket, H3 without the selected bit,
+  and H2 returned by the existing scheduler after an H3 setup failure use the
+  same already-open tunnel in the existing flags-zero serial association. The
+  handler makes no second connection or fallback decision.
+  The flags-one path fixes the first legal target and port. A later different-
+  target packet is dropped locally before tunnel send, touches neither the
+  fixed target nor the rejected target, and does not prevent a following packet
+  for the fixed target. Duplex open, send, receive, terminal, or close failure
+  ends the current SOCKS control association; it never clears the state to
+  reopen, replay, or fall back after authenticated H3 duplex setup. Flags-zero
+  associations retain their prior per-packet target and abnormal control-byte
+  behavior. The existing one-local-peer rule and SOCKS UDP encoding remain
+  unchanged. No task, channel, queue, lock, target map, second association
+  owner, retry, or packet correlation was added.
+  Real loopback tests through normal `MaverickHarness`/`start_client` verify an
+  actual selected H3 carrier with no cooldown or H2 pool activity, one complete
+  packet-A roundtrip, then two target pushes delivered without a new local UDP
+  packet, control-EOF cleanup, and exact server-source rebinding. Separate
+  normal-client tests verify a different-target packet contacts neither A nor
+  B before A continues on the same source; an authenticated H3 flow-limit
+  rejection ends the control association with zero target I/O and no fallback;
+  an unavailable H3 setup falls back to one H2 serial association inside the
+  existing scheduler and successfully switches from target A to B; and the
+  ordinary H2 serial path retains one tunnel flow and per-packet target
+  switching. The observed target-push order is bounded loopback regression
+  evidence only, not an ordering, fairness, no-loss, or request-response
+  correlation promise. H3-without-the-bit and WebSocket mode selection are
+  source/unit or existing handshake evidence, not claimed as new successful
+  SOCKS UDP runtime tests. Clean idle and transport-failure cleanup remain
+  lower-layer public-association evidence rather than new SOCKS end-to-end
+  evidence.
+  The focused SOCKS matrix passes 8/8; client libraries pass 74/74 without
+  default features and 81/81 with H3. The all-features workspace suite,
+  formatting, strict all-target/all-feature and relevant no-default Clippy,
+  warning-denied Rustdoc, `user-smoke.sh`, and `local-harness.sh` pass locally.
+  The broader no-default relay runs retain only the already recorded unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo`
+  private-mode/rustls-default mismatch: 68 other tests pass without H3 and 103
+  other tests pass with H3. This changes the runtime behavior of the existing
+  public `start_client` and `serve_udp_associate` entry points and is therefore
+  SemVer-observable even though it adds no public signature. CLI command syntax
+  and SDK signatures are unchanged, but opt-in callers inherit the selected-H3
+  SOCKS behavior. No package version, published Beta.4 artifact, manifest,
+  dependency, `Cargo.lock`, wire number or encoding, protocol/config/profile
+  version, deployment authorization, real-network result, product-readiness
+  result, or release state changes. Any future publication requires a new
+  prerelease and must not rewrite Beta.4. This is one fixed-target legacy-H3
+  SOCKS slice, not general multi-target duplex SOCKS, TUN integration, games or
+  voice suitability, or a fairness/no-loss guarantee.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

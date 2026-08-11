@@ -17,69 +17,82 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T025a-1 — Keep one connected UDP target owner
+### T024a-1 — Give each OpenUdp flow one active target slot
 
-**User result.** Consecutive packets sent by one logical server-side UDP relay
-owner to one resolved target must reuse one connected operating-system UDP
-socket and therefore one source address. Replies must be received in arrival
-order from that target only, and the source address must remain owned until the
-owner is dropped and then become reusable.
+**User result.** Consecutive packets in one authenticated `OpenUdp` flow that
+name the same `TargetAddr` and port must reuse one connected operating-system
+UDP socket and therefore one source address. A packet naming a different target
+must first drop the old socket and then open a new one. The slot holds at most
+one target and belongs only to that flow.
 
-This closes the smallest server-local lifetime gap in the existing UDP packet
-relay. It is foundation work only: it does not add H3 Datagram, CONNECT-UDP, a
-client-visible UDP session, or a product-readiness result.
+This connects the private `ConnectedUdpTarget` foundation to the existing H2
+and legacy `feature = "h3"` `OpenUdp` flow handlers. It does not add
+CONNECT-UDP, QUIC Datagram, pipelined requests, concurrent receives, multiple
+active targets, or a product-readiness result.
 
-**Scope.** Change only `ROADMAP.md` and
-`crates/maverick-server/src/relay.rs`. Add one module-private
-`ConnectedUdpTarget` owner while preserving the existing public
-`relay_udp_packet` signature and its one-packet send/receive behavior. The
-wrapper remains responsible for the 65,535-byte receive allocation and the
-existing timeout/error context; the private owner receives into a
-caller-supplied buffer. Keep `STATUS.md`, `server.rs`, core, client, manifests,
-and `Cargo.lock` unchanged.
+The preserved exchange is serial: send one packet, then receive at most one
+packet. Its positive reuse tests require the target to return exactly one timely
+reply for each sent packet. The wire carries no request-response correlation,
+so a delayed, duplicate, or unsolicited target datagram may be observed by
+a later exchange; that traffic is neither supported nor verified in this
+slice. This is not a general-purpose SOCKS UDP contract or evidence of
+suitability for games or voice.
 
-**Behavioral red.** First extract the current lifecycle mechanically: opening
-the owner only resolves and stores the allowed target; every `send(&mut self, …)`
-still binds, connects, and sends through a fresh socket before replacing the
-owner's latest socket; a short send fails with one fixed generic error; `recv`
-reads from that latest socket into its caller's buffer without allocating or
-owning a timeout; and `relay_udp_packet` creates one owner, sends once, then
-performs the original bounded receive into its original-size buffer. The
-existing UDP relay test must remain green after this extraction.
+**Scope.** Change only `ROADMAP.md`, `STATUS.md`,
+`crates/maverick-server/src/relay.rs`,
+`crates/maverick-server/src/server.rs`, and
+`crates/maverick-tests/tests/tcp_relay.rs`. Keep the target owner crate-private,
+preserve the public `relay_udp_packet` signature as the unchanged one-shot
+compatibility path for a bare initial `UdpPacket`, and preserve all existing
+frame, config, timeout, egress-policy, rate-limit, and error-code contracts.
+`STATUS.md` may receive one narrow current-truth update only after the green
+implementation and all required local gates pass. Keep core, client, CLI, SDK,
+manifests, `Cargo.lock`, and every other file unchanged.
 
-Then add the complete real-loopback test
-`t025a1_connected_udp_owner_reuses_source_and_receives_arrival_order`. With one
-owner, send fixed packet A and packet B before receiving. The real target must
-receive both and record each source alongside its payload. The mechanically
-preserved implementation must fail the direct same-source assertion with exit
-status 101, not a timeout. Record that exact red before changing the lifecycle.
-Do not use a mock, source scan, fixed sleep, or timeout-only silence.
+**Behavioral red.** Add one real-loopback H2 integration test using the public
+`UdpAssociation`. Open one association, send fixed packet A to one real UDP
+target, receive its fixed reply, and record the target-observed source. Before
+sending fixed packet B through that same association to that same target, try
+to bind the exact first source: if the old one-shot server path has already
+released it, retain that bound socket so the kernel cannot accidentally reuse
+the port. The target must receive and reply to packet B. One fixed assertion
+must require both live ownership of the first source and equality of the two
+observed sources. The current implementation must fail that assertion with
+exit status 101, not by compilation failure or timeout. Use bounded positive
+operations, not a mock, source scan, fixed sleep, or timeout-only silence.
 
-**Green implementation.** Let the owner create and connect its socket once and
-reuse that same socket for every successful send and receive. Keep target
-resolution and egress policy unchanged, keep the wrapper's externally visible
-one-packet behavior and existing errors unchanged, and let ordinary ownership
-release the socket when the owner is dropped.
+**Green implementation.** Give each H2 and legacy-H3 `OpenUdp` handler one
+lexically scoped optional connected-target owner. Reuse it only when both the
+`TargetAddr` and port equal the active target. On a target change, drop the old
+owner before resolving or opening the replacement. If target opening, send,
+receive, or its bounded receive timeout fails, drop the slot before returning
+the existing per-packet error. `CloseFlow`, request EOF, idle timeout, handler
+error, task cancellation, and normal handler return must release the slot by
+ordinary Rust ownership. Do not add a manual `Drop` implementation.
 
-**Acceptance.** The same real test must prove that both target datagrams came
-from one source. A foreign socket must first send a fixed forged datagram to
-that source; the real target must then reply in the fixed B/A order; and the
-owner must receive exactly B then A, so target filtering is demonstrated by
-positive traffic rather than silence alone. While the owner lives, binding its
-exact source must fail with `AddrInUse`; after drop, that exact address must
-rebind. The target address must likewise rebind after its socket is dropped.
-Each positive receive must use a fixed 64-byte caller buffer, carry its own
-positive timeout, and compare only the returned slice. Preserve the existing
-UDP relay test, then run the focused server test, the complete server suite,
-formatting, strict Clippy, Rustdoc, `user-smoke.sh`, and `local-harness.sh`
-locally.
+**Acceptance.** The red H2 test must turn green and prove both replies, stable
+same-target source ownership while the association is open, and exact-source
+rebind after explicit association close. Legacy H3 reports local request
+completion before the peer handler's return, so its reclamation check must
+obtain the exact rebind within one fixed total bound, treat only `AddrInUse` as
+pending, fail every other bind error immediately, and require a successful bind
+as positive evidence. Add the smallest server-local tests needed to prove
+target switching without broadening the API. One receive-timeout test must
+prove that the request reached the real target, the timeout cleared the slot,
+and the exact old source can rebind. Preserve bare `UdpPacket` one-shot behavior
+and existing H2 UDP close/EOF, flow-limit, SOCKS UDP, and legacy-H3 UDP tests.
+Run focused tests first, then the relevant server and integration suites under
+no-default, `h3`, and all-features matrices, formatting, strict Clippy,
+Rustdoc, `user-smoke.sh`, and `local-harness.sh` locally.
 
-**Out of scope and stop conditions.** Do not change an H2 or H3 caller, wire or
-flow semantics, DNS relay, public API, feature graph, config/schema/protocol
-version, capacity, metrics, or logging. Do not add a task, lock, queue, map,
-cloneable owner, global state, manager, actor, or watchdog. Stop and
-re-adjudicate if the fix requires another file, a new public type, caller
-changes, more than one target per owner, or any machine network setting.
+**Out of scope and stop conditions.** Do not change the client, core, frame or
+wire formats, protocol/config/schema versions, manifests, lockfile, feature
+graph, DNS relay, metrics, logging, limits, CLI, SDK, TUN, direct-v3/quiche H3,
+or any machine network setting. Do not add a background task, lock, queue, map,
+manager, actor, watchdog, retry, pipeline, target pool, or more than one active
+target per flow. Stop and re-adjudicate if correct ownership needs a sixth file,
+a public type, concurrent request/response handling, or changed bare-packet
+semantics.
 
 ## Execution Order
 

@@ -2319,6 +2319,7 @@ async fn handle_udp_flow(
     )
     .await?;
 
+    let mut target_slot = relay::UdpFlowRelay::new();
     loop {
         let next_frame = timeout(
             Duration::from_millis(idle_timeout_ms),
@@ -2358,8 +2359,15 @@ async fn handle_udp_flow(
             .await?;
             continue;
         }
-        send_udp_packet_response(frame, &mut send_stream, state, user_policy, max_frame_size)
-            .await?;
+        send_udp_packet_response(
+            frame,
+            &mut send_stream,
+            &mut target_slot,
+            state,
+            user_policy,
+            max_frame_size,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2377,6 +2385,7 @@ fn udp_idle_timeout_ms(frame: &Frame, state: &ServerState) -> Result<u64> {
 async fn send_udp_packet_response(
     frame: Frame,
     send_stream: &mut h2::SendStream<Bytes>,
+    target_slot: &mut relay::UdpFlowRelay,
     state: &ServerState,
     user_policy: &UserPolicy,
     max_frame_size: usize,
@@ -2398,12 +2407,13 @@ async fn send_udp_packet_response(
     if let Some(limiter) = &user_policy.rate_limiter {
         limiter.throttle(packet.data.len()).await;
     }
-    match relay::relay_udp_packet(
-        &packet,
-        state.config.advanced.tcp_connect_timeout_ms,
-        &state.config.advanced.egress,
-    )
-    .await
+    match target_slot
+        .relay_packet(
+            &packet,
+            state.config.advanced.tcp_connect_timeout_ms,
+            &state.config.advanced.egress,
+        )
+        .await
     {
         Ok(response) => {
             if let Some(limiter) = &user_policy.rate_limiter {
@@ -2581,6 +2591,7 @@ async fn handle_h3_udp_flow(
     )
     .await?;
 
+    let mut target_slot = relay::UdpFlowRelay::new();
     loop {
         let next_frame = timeout(
             Duration::from_millis(idle_timeout_ms),
@@ -2617,7 +2628,15 @@ async fn handle_h3_udp_flow(
             .await?;
             continue;
         }
-        send_h3_udp_packet_response(frame, &mut stream, state, user_policy, max_frame_size).await?;
+        send_h3_udp_packet_response(
+            frame,
+            &mut stream,
+            &mut target_slot,
+            state,
+            user_policy,
+            max_frame_size,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2626,6 +2645,7 @@ async fn handle_h3_udp_flow(
 async fn send_h3_udp_packet_response(
     frame: Frame,
     stream: &mut H3ServerStream,
+    target_slot: &mut relay::UdpFlowRelay,
     state: &ServerState,
     user_policy: &UserPolicy,
     max_frame_size: usize,
@@ -2647,12 +2667,13 @@ async fn send_h3_udp_packet_response(
     if let Some(limiter) = &user_policy.rate_limiter {
         limiter.throttle(packet.data.len()).await;
     }
-    match relay::relay_udp_packet(
-        &packet,
-        state.config.advanced.tcp_connect_timeout_ms,
-        &state.config.advanced.egress,
-    )
-    .await
+    match target_slot
+        .relay_packet(
+            &packet,
+            state.config.advanced.tcp_connect_timeout_ms,
+            &state.config.advanced.egress,
+        )
+        .await
     {
         Ok(response) => {
             if let Some(limiter) = &user_policy.rate_limiter {

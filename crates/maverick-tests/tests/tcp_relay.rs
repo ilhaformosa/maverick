@@ -17,8 +17,10 @@ use maverick_core::config::{
     AuthV2Config, ClientAuthConfig, ClientConfig, ClientCredentialRotationConfig,
     ClientNextCredentialConfig, FallbackConfig, PreviousCredentialConfig, ShapingConfig,
 };
-use maverick_core::frame::{Frame, FrameType, OpenUdpPayload};
+use maverick_core::frame::{Frame, FrameType, OpenUdpPayload, TargetAddr, UdpPacketPayload};
 use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
+#[cfg(feature = "h3")]
+use maverick_core::GuiTransportCarrier;
 use maverick_core::{Mode, SecretString};
 use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
 use rustls::RootCertStore;
@@ -1828,6 +1830,26 @@ async fn h3_socks5_udp_associate_roundtrip() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_udp_association_keeps_one_connected_target_owner() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    let before = transport::transport_debug_snapshot(&config);
+    assert_eq!(before.active_transport, GuiTransportCarrier::H3);
+    assert!(before.h3_candidate_enabled);
+    assert!(!before.h3_in_cooldown);
+
+    assert_udp_association_keeps_one_connected_target_owner(&config).await?;
+
+    let after = transport::transport_debug_snapshot(&config);
+    assert_eq!(after.active_transport, GuiTransportCarrier::H3);
+    assert!(after.h3_candidate_enabled);
+    assert!(!after.h3_in_cooldown);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn dns_relay_roundtrip() -> Result<()> {
     let upstream = start_fake_dns_server().await?;
@@ -2477,6 +2499,99 @@ async fn socks5_udp_associate_reuses_single_tunnel_flow() -> Result<()> {
     assert!(response.contains("\"authenticated_sessions\":1"));
 
     fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn h2_udp_association_keeps_one_connected_target_owner() -> Result<()> {
+    let fixture = MaverickHarness::start().await?;
+    let config = fixture.client_config();
+    assert_udp_association_keeps_one_connected_target_owner(&config).await?;
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+async fn assert_udp_association_keeps_one_connected_target_owner(
+    config: &ClientConfig,
+) -> Result<()> {
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let target_ip = TargetAddr::Ipv4(target_addr.ip().to_string().parse()?);
+    let mut association = UdpAssociation::open(config).await?;
+
+    let first_packet = UdpPacketPayload::new(
+        target_ip.clone(),
+        target_addr.port(),
+        Bytes::from_static(b"owner-a"),
+    );
+    let (first_response, first_source) = timeout(Duration::from_secs(2), async {
+        let relay = association.relay_packet(first_packet);
+        let target_roundtrip = async {
+            let mut buf = [0u8; 64];
+            let (len, source) = target.recv_from(&mut buf).await?;
+            anyhow::ensure!(&buf[..len] == b"owner-a", "first UDP payload mismatch");
+            target.send_to(b"reply-a", source).await?;
+            Result::<SocketAddr>::Ok(source)
+        };
+        let (response, source) = tokio::join!(relay, target_roundtrip);
+        Result::<(UdpPacketPayload, SocketAddr)>::Ok((response?, source?))
+    })
+    .await??;
+    assert_eq!(first_response.target, target_ip);
+    assert_eq!(first_response.port, target_addr.port());
+    assert_eq!(first_response.data.as_ref(), b"reply-a");
+
+    let first_source_guard = match UdpSocket::bind(first_source).await {
+        Ok(socket) => Some(socket),
+        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => None,
+        Err(err) => return Err(err.into()),
+    };
+
+    let second_packet = UdpPacketPayload::new(
+        target_ip.clone(),
+        target_addr.port(),
+        Bytes::from_static(b"owner-b"),
+    );
+    let (second_response, second_source) = timeout(Duration::from_secs(2), async {
+        let relay = association.relay_packet(second_packet);
+        let target_roundtrip = async {
+            let mut buf = [0u8; 64];
+            let (len, source) = target.recv_from(&mut buf).await?;
+            anyhow::ensure!(&buf[..len] == b"owner-b", "second UDP payload mismatch");
+            target.send_to(b"reply-b", source).await?;
+            Result::<SocketAddr>::Ok(source)
+        };
+        let (response, source) = tokio::join!(relay, target_roundtrip);
+        Result::<(UdpPacketPayload, SocketAddr)>::Ok((response?, source?))
+    })
+    .await??;
+    assert_eq!(second_response.target, target_ip);
+    assert_eq!(second_response.port, target_addr.port());
+    assert_eq!(second_response.data.as_ref(), b"reply-b");
+    assert!(
+        first_source_guard.is_none() && first_source == second_source,
+        "active OpenUdp target owner must keep and reuse one source address"
+    );
+
+    timeout(Duration::from_secs(2), association.close())
+        .await
+        .context("explicit UDP association close must remain bounded")??;
+    let rebound = timeout(Duration::from_secs(2), async {
+        loop {
+            match UdpSocket::bind(first_source).await {
+                Ok(socket) => break Ok(socket),
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::task::yield_now().await;
+                }
+                Err(err) => break Err(err),
+            }
+        }
+    })
+    .await
+    .context("explicit UDP association close must release the target source")??;
+    assert_eq!(rebound.local_addr()?, first_source);
+    drop(rebound);
+    drop(target);
     Ok(())
 }
 

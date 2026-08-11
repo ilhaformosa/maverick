@@ -896,6 +896,67 @@ pub async fn relay_udp_packet(
     egress: &ServerEgressPolicyConfig,
 ) -> Result<UdpPacketPayload> {
     let target = ConnectedUdpTarget::open(&packet.target, packet.port, timeout_ms, egress).await?;
+    relay_connected_udp_packet(&target, packet, timeout_ms).await
+}
+
+pub(super) struct UdpFlowRelay {
+    active: Option<ActiveUdpTarget>,
+}
+
+struct ActiveUdpTarget {
+    target: TargetAddr,
+    port: u16,
+    owner: ConnectedUdpTarget,
+}
+
+impl UdpFlowRelay {
+    pub(super) fn new() -> Self {
+        Self { active: None }
+    }
+
+    pub(super) async fn relay_packet(
+        &mut self,
+        packet: &UdpPacketPayload,
+        timeout_ms: u64,
+        egress: &ServerEgressPolicyConfig,
+    ) -> Result<UdpPacketPayload> {
+        let reuses_active = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.target == packet.target && active.port == packet.port);
+        if !reuses_active {
+            self.active.take();
+            let owner =
+                ConnectedUdpTarget::open(&packet.target, packet.port, timeout_ms, egress).await?;
+            self.active = Some(ActiveUdpTarget {
+                target: packet.target.clone(),
+                port: packet.port,
+                owner,
+            });
+        }
+
+        let result = relay_connected_udp_packet(
+            &self
+                .active
+                .as_ref()
+                .context("UDP flow target missing after open")?
+                .owner,
+            packet,
+            timeout_ms,
+        )
+        .await;
+        if result.is_err() {
+            self.active.take();
+        }
+        result
+    }
+}
+
+async fn relay_connected_udp_packet(
+    target: &ConnectedUdpTarget,
+    packet: &UdpPacketPayload,
+    timeout_ms: u64,
+) -> Result<UdpPacketPayload> {
     target.send(&packet.data).await?;
     let mut buf = vec![0u8; 65_535];
     let len = timeout(Duration::from_millis(timeout_ms), target.recv(&mut buf))
@@ -1160,7 +1221,7 @@ mod tests {
         resolve_allowed_addresses, send_frame, write_all_with_idle_timeout, ConnectedUdpTarget,
         CumulativeLatencyMetric, DirectV3TargetOpenError, DirectV3TargetOpenFailureKind,
         H2SendStall, RateLimiter, TargetOpenFailure, TargetOpenFailureKind, TargetOpenMetricSinks,
-        TunnelRelayPolicy, TARGET_CONNECT_RACE_DELAY,
+        TunnelRelayPolicy, UdpFlowRelay, TARGET_CONNECT_RACE_DELAY,
     };
     use anyhow::Result;
     use bytes::{Bytes, BytesMut};
@@ -2489,6 +2550,132 @@ mod tests {
         })
         .await
         .expect("connected UDP owner loopback I/O must remain bounded")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn t024a1_udp_flow_relay_switches_target_after_releasing_old_owner() -> Result<()> {
+        timeout(Duration::from_secs(4), async {
+            let target_a = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+            let target_b = match UdpSocket::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, 0))).await {
+                Ok(socket) => socket,
+                Err(err) if err.kind() == io::ErrorKind::AddrNotAvailable => return Ok(()),
+                Err(err) => return Err(err.into()),
+            };
+            let target_a_addr = target_a.local_addr()?;
+            let target_b_addr = target_b.local_addr()?;
+            let policy = ServerEgressPolicyConfig {
+                allow_loopback: true,
+                ..ServerEgressPolicyConfig::default()
+            };
+            let mut flow = UdpFlowRelay::new();
+
+            let packet_a = UdpPacketPayload::new(
+                TargetAddr::Ipv4(Ipv4Addr::LOCALHOST),
+                target_a_addr.port(),
+                Bytes::from_static(b"switch-a"),
+            );
+            let (response_a, source_a) = {
+                let relay = flow.relay_packet(&packet_a, 1_000, &policy);
+                let target_roundtrip = async {
+                    let mut buf = [0u8; 64];
+                    let (len, source) = target_a.recv_from(&mut buf).await?;
+                    assert_eq!(&buf[..len], b"switch-a");
+                    target_a.send_to(b"reply-a", source).await?;
+                    Result::<SocketAddr>::Ok(source)
+                };
+                let (response, source) = tokio::join!(relay, target_roundtrip);
+                (response?, source?)
+            };
+            assert_eq!(response_a.data, Bytes::from_static(b"reply-a"));
+
+            let packet_b = UdpPacketPayload::new(
+                TargetAddr::Ipv6(Ipv6Addr::LOCALHOST),
+                target_b_addr.port(),
+                Bytes::from_static(b"switch-b"),
+            );
+            let (response_b, source_b) = {
+                let relay = flow.relay_packet(&packet_b, 1_000, &policy);
+                let target_roundtrip = async {
+                    let mut buf = [0u8; 64];
+                    let (len, source) = target_b.recv_from(&mut buf).await?;
+                    assert_eq!(&buf[..len], b"switch-b");
+                    target_b.send_to(b"reply-b", source).await?;
+                    Result::<SocketAddr>::Ok(source)
+                };
+                let (response, source) = tokio::join!(relay, target_roundtrip);
+                (response?, source?)
+            };
+            assert_eq!(response_b.data, Bytes::from_static(b"reply-b"));
+            assert!(source_a.is_ipv4());
+            assert!(source_b.is_ipv6());
+            let active = flow
+                .active
+                .as_ref()
+                .expect("switched target must remain active");
+            assert_eq!(active.target, TargetAddr::Ipv6(Ipv6Addr::LOCALHOST));
+            assert_eq!(active.port, target_b_addr.port());
+
+            let rebound_a = UdpSocket::bind(source_a).await?;
+            assert_eq!(rebound_a.local_addr()?, source_a);
+            let source_b_error = match UdpSocket::bind(source_b).await {
+                Ok(socket) => {
+                    drop(socket);
+                    panic!("switched UDP target owner must retain its new source address");
+                }
+                Err(error) => error,
+            };
+            assert_eq!(source_b_error.kind(), io::ErrorKind::AddrInUse);
+
+            drop(flow);
+            let rebound_b = UdpSocket::bind(source_b).await?;
+            assert_eq!(rebound_b.local_addr()?, source_b);
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .expect("UDP target switch loopback I/O must remain bounded")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn t024a1_udp_flow_relay_timeout_clears_owner_and_releases_source() -> Result<()> {
+        timeout(Duration::from_secs(4), async {
+            let target = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+            let target_addr = target.local_addr()?;
+            let policy = ServerEgressPolicyConfig {
+                allow_loopback: true,
+                ..ServerEgressPolicyConfig::default()
+            };
+            let mut flow = UdpFlowRelay::new();
+            let stale_packet = UdpPacketPayload::new(
+                TargetAddr::Ipv4(Ipv4Addr::LOCALHOST),
+                target_addr.port(),
+                Bytes::from_static(b"stale-request"),
+            );
+
+            let (stale_result, stale_source) = {
+                let relay = flow.relay_packet(&stale_packet, 250, &policy);
+                let target_receive = async {
+                    let mut buf = [0u8; 64];
+                    let (len, source) = target.recv_from(&mut buf).await?;
+                    assert_eq!(&buf[..len], b"stale-request");
+                    Result::<SocketAddr>::Ok(source)
+                };
+                let (result, source) = tokio::join!(relay, target_receive);
+                (result, source?)
+            };
+            let stale_error = stale_result.expect_err("silent target must time out");
+            assert!(stale_error.to_string().contains("UDP target timed out"));
+            assert!(flow.active.is_none(), "receive timeout must clear the slot");
+
+            let rebound_source = UdpSocket::bind(stale_source).await?;
+            assert_eq!(rebound_source.local_addr()?, stale_source);
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .expect("UDP timeout owner clearing loopback I/O must remain bounded")?;
 
         Ok(())
     }

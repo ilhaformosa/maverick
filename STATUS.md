@@ -162,6 +162,26 @@ censorship resistance, production readiness, or browser identity.
   normal `start_client`, CLI or SDK wiring, non-loopback use, concurrent or
   long-running service, retry or replacement, release state, or deployment
   authorization.
+- Unpublished workspace source now also gives each authenticated legacy H2 or
+  opt-in legacy-H3 `OpenUdp` flow one crate-private connected UDP target slot.
+  Sequential packets naming the same logical `TargetAddr` and port reuse one
+  operating-system socket and source address. A target change drops the old
+  owner before opening the replacement, and an open, send, receive, or bounded
+  target-receive failure leaves the slot empty. Normal handler scope releases
+  it on explicit close, request EOF, idle timeout, handler error, cancellation,
+  or return. A bare initial `UdpPacket` remains the unchanged one-shot path.
+  Local loopback tests cover H2 and legacy-H3 same-target source reuse, target
+  switching, a receive timeout clearing its slot and releasing its exact source,
+  and exact-source reclamation after close. The existing exchange remains
+  serial: send one packet, then receive at most one packet. It has no
+  request-response correlation, so a delayed, duplicate, or unsolicited target
+  datagram may be observed by a later exchange; that traffic is neither
+  supported nor verified here. This changes no published Beta.4 artifact, wire
+  or frame format, config or schema version, limit, CLI, SDK, direct-v3/quiche
+  H3 path, or deployment authorization. It is sequential foundation behavior,
+  not pipelining, CONNECT-UDP, QUIC Datagram, a general-purpose SOCKS UDP
+  contract, evidence of suitability for games or voice, a new human user,
+  real-network evidence, or product-readiness evidence.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

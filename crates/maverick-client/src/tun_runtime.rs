@@ -19,7 +19,9 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::connection_manager::ClientTunnelPool;
-use crate::udp::UdpAssociation;
+#[cfg(feature = "h3")]
+use crate::udp::LegacyH3DuplexUdpAssociation;
+use crate::udp::{TunUdpAssociation, UdpAssociation};
 
 pub(crate) struct MaverickTunConnector {
     tunnel_pool: Arc<ClientTunnelPool>,
@@ -189,6 +191,43 @@ impl FlowConnector for MaverickTunConnector {
             }) as Box<dyn DatagramFlow>)
         })
     }
+
+    fn open_udp_for_target<'a>(
+        &'a self,
+        target: SocketAddr,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Box<dyn DatagramFlow>, FlowError>> {
+        Box::pin(async move {
+            let permit = self.try_flow_permit()?;
+            let association = tokio::select! {
+                _ = self.cancel.cancelled() => {
+                    return Err(FlowError::new(FlowErrorKind::Cancelled));
+                }
+                _ = cancel.cancelled() => {
+                    return Err(FlowError::new(FlowErrorKind::Cancelled));
+                }
+                result = TunUdpAssociation::open_with_pool(
+                    &self.tunnel_pool,
+                    target_addr(target.ip()),
+                    target.port(),
+                ) => result.map_err(|_| FlowError::new(FlowErrorKind::RemoteConnection))?,
+            };
+            match association {
+                TunUdpAssociation::Serial(association) => Ok(Box::new(MaverickDatagramFlow {
+                    association: Some(association),
+                    _permit: permit,
+                })
+                    as Box<dyn DatagramFlow>),
+                #[cfg(feature = "h3")]
+                TunUdpAssociation::Duplex(association) => Ok(Box::new(MaverickDuplexDatagramFlow {
+                    association: Some(association),
+                    target,
+                    _permit: permit,
+                })
+                    as Box<dyn DatagramFlow>),
+            }
+        })
+    }
 }
 
 struct ConnectorTcpStream {
@@ -327,6 +366,81 @@ impl DatagramFlow for MaverickDatagramFlow {
                 return Ok(());
             };
             association
+                .close()
+                .await
+                .map_err(|_| FlowError::new(FlowErrorKind::Closed))
+        })
+    }
+}
+
+#[cfg(feature = "h3")]
+struct MaverickDuplexDatagramFlow {
+    association: Option<Box<LegacyH3DuplexUdpAssociation>>,
+    target: SocketAddr,
+    _permit: OwnedSemaphorePermit,
+}
+
+#[cfg(feature = "h3")]
+impl DatagramFlow for MaverickDuplexDatagramFlow {
+    fn receive_unsolicited<'a>(
+        &'a mut self,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<Datagram>, FlowError>> {
+        Box::pin(async move {
+            let target = self.target;
+            let association = self
+                .association
+                .as_mut()
+                .ok_or_else(|| FlowError::new(FlowErrorKind::Closed))?;
+            let (_, receive) = association.split();
+            let payload = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Err(FlowError::new(FlowErrorKind::Cancelled));
+                }
+                result = receive.receive_packet() => {
+                    result.map_err(|_| FlowError::new(FlowErrorKind::DatagramExchange))?
+                }
+            };
+            Ok(payload.map(|payload| Datagram::new(target, payload)))
+        })
+    }
+
+    fn exchange<'a>(
+        &'a mut self,
+        datagram: Datagram,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Datagram, FlowError>> {
+        Box::pin(async move {
+            if datagram.endpoint != self.target {
+                return Err(FlowError::new(FlowErrorKind::DatagramExchange));
+            }
+            let target = self.target;
+            let association = self
+                .association
+                .as_mut()
+                .ok_or_else(|| FlowError::new(FlowErrorKind::Closed))?;
+            let (send, receive) = association.split();
+            let payload = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Err(FlowError::new(FlowErrorKind::Cancelled));
+                }
+                result = async {
+                    send.send_packet(datagram.payload).await?;
+                    receive.receive_packet().await
+                } => result.map_err(|_| FlowError::new(FlowErrorKind::DatagramExchange))?,
+            };
+            payload
+                .map(|payload| Datagram::new(target, payload))
+                .ok_or_else(|| FlowError::new(FlowErrorKind::Closed))
+        })
+    }
+
+    fn close<'a>(&'a mut self) -> BoxFuture<'a, Result<(), FlowError>> {
+        Box::pin(async move {
+            let Some(association) = self.association.take() else {
+                return Ok(());
+            };
+            (*association)
                 .close()
                 .await
                 .map_err(|_| FlowError::new(FlowErrorKind::Closed))

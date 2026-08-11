@@ -248,9 +248,10 @@ censorship resistance, production readiness, or browser identity.
   At that negotiation-gate slice, production clients did not send that duplex
   mode, H2 and WebSocket did not accept it, and the following source-only
   selected legacy-H3 server foundation was its sole acceptance path. The later
-  library and selected-H3 SOCKS items below add the current client consumers;
-  ordinary `UdpAssociation`, H2, WebSocket, TUN, and flags-zero SOCKS paths
-  remain serial or reject duplex as described below.
+  library, selected-H3 SOCKS, and bounded selected-H3 TUN items below add the
+  current client consumers; ordinary `UdpAssociation`, H2, WebSocket,
+  flags-zero TUN, and flags-zero SOCKS paths remain serial or reject duplex as
+  described below.
   The handshake gate bit means only that both peers understand the gate. New
   clients request that gate bit on H2 and opt-in legacy-H3, and new servers
   select it there only as an authenticated supported subset. WebSocket continues
@@ -675,13 +676,86 @@ censorship resistance, production readiness, or browser identity.
   client or legacy-H3 consumer, a general duplex UDP result, blocked-send
   concurrency evidence, ordering, fairness, no loss, correlation, games or
   voice suitability, real-network evidence, product readiness, or release
-  authorization. A later real-H3 TUN consumer must preserve the existing TUN
-  flags-zero setup behavior and must not inherit the SOCKS-only setup deadline.
+  authorization. The bounded selected-H3 TUN consumer recorded next preserves
+  the existing flags-zero TUN setup behavior and does not inherit the
+  SOCKS-only setup deadline.
   The two additive public trait methods are SemVer-observable and may conflict
   with downstream same-name methods. They change no existing required
   signature, package version, manifest, dependency, `Cargo.lock`, wire number
   or encoding, protocol/config/profile version, or published Beta.4 artifact.
   Any future publication requires a new prerelease and must not rewrite Beta.4.
+- Unpublished workspace source now connects the T025b target-aware TUN runtime
+  contract to a bounded normal `start_client` legacy-H3 UDP consumer when both
+  H3 and TUN are explicitly enabled. Source review shows one existing TUN flow
+  permit, one connector flow, and one association owner. The TUN-specific open
+  calls `ClientTunnelPool::open` once. Only an actual legacy-H3 tunnel whose
+  MAC-, protocol-, and subset-verified `ServerHello` selected mask includes the
+  mode-negotiation bit is consumed by the existing flags-one duplex opener,
+  which requires the exact same-flow, flags-one, empty acknowledgement.
+  Actual H2, WebSocket, and actual H3 with that selected bit clear consume the
+  same already-open tunnel through the existing flags-zero serial
+  `UdpAssociation`. The TUN path keeps its existing packet-runtime outer
+  connect timeout and does not inherit the SOCKS-only fresh post-tunnel
+  flags-zero acknowledgement deadline.
+  Before any UDP request begins, the one pool open retains the existing
+  scheduler behavior: an H3 connection failure may update the existing
+  scheduler cooldown state, emit its existing diagnostic, and fall back to H2
+  within that same pool-open call. Once an authenticated flags-one H3
+  `OpenUdp` begins, an open, send, receive, terminal, or close failure is
+  terminal for that association, with no second pool open, fallback, retry,
+  replay, resend, or automatic reopen.
+  The duplex TUN flow is fixed to the target used at open. `exchange` rejects a
+  different endpoint before any send, then sends once and returns the next
+  same-target datagram without promising request correlation.
+  `receive_unsolicited` receives without sending. Both operations borrow the
+  same association halves, while close takes and consumes the sole owner.
+  Pending receive cancellation remains reusable. Once the existing send poison
+  guard is armed, failure or cancellation of that in-progress send invalidates
+  and aborts the association; cancellation before the guard is armed performs
+  no transport send, while cancellation waiting for receive after a completed
+  send retains the reusable receive semantics. Incomplete close drops the owner
+  through the existing idempotent abort path. The adapter exposes only fixed
+  TUN `FlowErrorKind` categories and adds no logging or raw target, backend,
+  certificate-path, or transport value. The existing pre-request scheduler
+  diagnostic remains outside that new adapter boundary.
+  No production task, channel, queue, lock, map, buffer, counter, config, or
+  second association owner is added.
+  A normal local-loopback `start_client` integration test proves an A
+  roundtrip to one real UDP target, continued ownership of the exact observed
+  target-facing source, delivery of a target push without a new local TUN
+  packet, and a later C roundtrip from the same source. The same run observes
+  H3 selected before and after the push, no H3 cooldown, zero H2 pool activity,
+  one opened and zero failed TUN UDP associations, a clean stopped and
+  quiescent packet runtime, exact source rebind, and clean fixture shutdown.
+  The exact test passes 1/1; `tun_packet_runtime` passes 2/2 without H3 and 3/3
+  with H3. Client library suites pass 71/71 without defaults plus TUN and 79/79
+  without defaults plus H3 and TUN; the ordinary no-default and no-default-H3
+  suites remain 74/74 and 82/82. Focused H2/H3 flags-zero regressions pass 2/2,
+  and the existing selected-H3 SOCKS push regression passes 1/1.
+  The all-features workspace passes, including client 154/154, server 304/304,
+  relay 109/109, TUN packet integration 3/3, and TUN runtime/library 20/20 and
+  4/4. The relay no-default matrix passes 69 tests and its no-default-plus-H3
+  matrix passes 106; each retains only the same pre-existing unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo` failure
+  because private mode rejects
+  `advanced.stealth.tls_fingerprint=rustls_default`. Strict workspace and
+  no-default client Clippy across the relevant H3/TUN combinations,
+  warning-denied all-features Rustdoc, formatting, `user-smoke.sh`, and
+  `local-harness.sh` all pass locally.
+  This changes the opt-in normal public `start_client` TUN runtime result and is
+  SemVer-observable, but this slice adds no public Rust signature, type, method,
+  field, or error. It changes no server, core, SOCKS, DNS, TCP,
+  connection-manager, transport, direct-v3, manifest, dependency, `Cargo.lock`,
+  wire number or encoding, protocol/config/profile version, CLI or SDK
+  signature, published Beta.4 artifact, deployment authorization, or release
+  state. Any future publication requires a new prerelease and must not rewrite
+  Beta.4.
+  This is bounded local evidence for one fixed IPv4 target through one normal
+  selected legacy-H3 TUN consumer. It is not general or multi-target duplex
+  UDP, blocked-send concurrent receive, malicious-peer or transport-pressure
+  evidence, request correlation, ordering, fairness, no loss, physical-H3
+  connection reuse, IPv6-target, real-TUN-device, games or voice, real-network,
+  human-user, product-readiness, deployment, or release evidence.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

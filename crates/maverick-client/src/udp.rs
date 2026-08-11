@@ -66,6 +66,13 @@ pub struct UdpAssociation {
     response_timeout: Duration,
 }
 
+#[cfg(feature = "tun-runtime")]
+pub(crate) enum TunUdpAssociation {
+    Serial(UdpAssociation),
+    #[cfg(feature = "h3")]
+    Duplex(Box<LegacyH3DuplexUdpAssociation>),
+}
+
 pub(crate) enum SocksUdpAssociation {
     Serial(UdpAssociation),
     #[cfg(feature = "h3")]
@@ -432,6 +439,38 @@ impl SocksUdpAssociation {
             #[cfg(feature = "h3")]
             Self::Duplex { association, .. } => association.close().await,
         }
+    }
+}
+
+#[cfg(feature = "tun-runtime")]
+impl TunUdpAssociation {
+    pub(crate) async fn open_with_pool(
+        pool: &ClientTunnelPool,
+        target: TargetAddr,
+        port: u16,
+    ) -> Result<Self> {
+        #[cfg(not(feature = "h3"))]
+        let _ = (&target, port);
+        let tunnel = pool.open().await?;
+
+        #[cfg(feature = "h3")]
+        if matches!(&tunnel, ClientTunnel::H3(_))
+            && tunnel.feature_flags_selected() & FEATURE_OPEN_UDP_MODE_NEGOTIATION != 0
+        {
+            return LegacyH3DuplexUdpAssociation::open_with_authenticated_tunnel(
+                pool.config(),
+                target,
+                port,
+                tunnel,
+            )
+            .await
+            .map(Box::new)
+            .map(Self::Duplex);
+        }
+
+        UdpAssociation::open_with_tunnel(pool.config(), tunnel)
+            .await
+            .map(Self::Serial)
     }
 }
 

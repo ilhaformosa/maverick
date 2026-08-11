@@ -6,10 +6,16 @@ use std::time::Duration;
 
 use anyhow::Result;
 use etherparse::{PacketBuilder, SlicedPacket, TcpHeader, TransportSlice, UdpHeader};
+#[cfg(feature = "h3")]
+use maverick_client::transport;
+#[cfg(feature = "h3")]
+use maverick_core::GuiTransportCarrier;
 use maverick_tun::{
     BoxFuture, PacketIo, PacketRead, PacketReader, PacketRuntimeConfig, PacketRuntimeState,
     PacketWriter,
 };
+#[cfg(feature = "h3")]
+use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Instant};
 
@@ -232,6 +238,141 @@ async fn packet_runtime_reuses_real_auth_h2_tcp_dns_and_udp_paths() -> Result<()
     fixture.shutdown().await
 }
 
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_packet_runtime_receives_target_push_without_new_local_packet() -> Result<()> {
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        experimental_tun: true,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let client_config = fixture.client_config();
+    assert_h3_transport(&client_config);
+
+    let runtime_config = PacketRuntimeConfig {
+        connect_timeout: Duration::from_secs(2),
+        udp_idle_timeout: Duration::from_secs(5),
+        shutdown_timeout: Duration::from_secs(5),
+        ..PacketRuntimeConfig::default()
+    };
+    let queue_depth = runtime_config.packet_queue_depth;
+    let (input, reader) = mpsc::channel(queue_depth);
+    let (writer, output) = mpsc::channel(queue_depth);
+    fixture
+        .client
+        .start_tun_runtime(
+            runtime_config,
+            PacketIo::new(
+                ChannelReader { packets: reader },
+                ChannelWriter { packets: writer },
+            ),
+        )
+        .await?;
+    let mut peer = PacketPeer { input, output };
+    let app = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 41_001);
+
+    peer.send(udp_packet(app, target_addr, b"tun-h3-seed"))
+        .await?;
+    let mut target_buffer = [0u8; 128];
+    let (seed_len, exact_source) =
+        timeout(Duration::from_secs(2), target.recv_from(&mut target_buffer)).await??;
+    assert_eq!(&target_buffer[..seed_len], b"tun-h3-seed");
+    target.send_to(b"tun-h3-seed-reply", exact_source).await?;
+    let (seed_header, seed_reply) = peer.recv_udp().await?;
+    assert_eq!(seed_header.source_port, target_addr.port());
+    assert_eq!(seed_header.destination_port, app.port());
+    assert_eq!(seed_reply, b"tun-h3-seed-reply");
+
+    wait_for(Duration::from_secs(2), || {
+        fixture
+            .client
+            .tun_runtime_snapshot()
+            .is_some_and(|snapshot| snapshot.active_udp_associations == 1)
+    })
+    .await?;
+    assert_h3_transport(&client_config);
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    assert_eq!(pool.active_streams, 0);
+
+    match UdpSocket::bind(exact_source).await {
+        Ok(socket) => {
+            drop(socket);
+            anyhow::bail!("active TUN target source was released before target push");
+        }
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
+        Err(error) => return Err(error.into()),
+    }
+    target.send_to(b"tun-h3-target-push", exact_source).await?;
+    let push_delivered = match timeout(Duration::from_secs(1), peer.recv_udp()).await {
+        Err(_) => false,
+        Ok(result) => {
+            let (push_header, push) = result?;
+            assert_eq!(push_header.source_port, target_addr.port());
+            assert_eq!(push_header.destination_port, app.port());
+            assert_eq!(push, b"tun-h3-target-push");
+            true
+        }
+    };
+
+    if push_delivered {
+        peer.send(udp_packet(app, target_addr, b"tun-h3-after-push"))
+            .await?;
+        let (after_len, after_source) =
+            timeout(Duration::from_secs(2), target.recv_from(&mut target_buffer)).await??;
+        assert_eq!(after_source, exact_source);
+        assert_eq!(&target_buffer[..after_len], b"tun-h3-after-push");
+        target
+            .send_to(b"tun-h3-after-push-reply", after_source)
+            .await?;
+        let (after_header, after_reply) = peer.recv_udp().await?;
+        assert_eq!(after_header.source_port, target_addr.port());
+        assert_eq!(after_header.destination_port, app.port());
+        assert_eq!(after_reply, b"tun-h3-after-push-reply");
+    }
+
+    assert_h3_transport(&client_config);
+    let pool = fixture.client.h2_connection_pool_snapshot();
+    assert_eq!(pool.connections_created, 0);
+    assert_eq!(pool.streams_opened, 0);
+    assert_eq!(pool.active_streams, 0);
+
+    drop(peer);
+    wait_for(Duration::from_secs(3), || {
+        fixture
+            .client
+            .tun_runtime_snapshot()
+            .is_some_and(|snapshot| {
+                snapshot.state == PacketRuntimeState::Stopped
+                    && snapshot.last_failure.is_none()
+                    && snapshot.active_udp_associations == 0
+                    && snapshot.active_tasks == 0
+                    && snapshot.ingress_queue_depth == 0
+                    && snapshot.egress_queue_depth == 0
+                    && snapshot.buffered_bytes == 0
+            })
+    })
+    .await?;
+    let snapshot = fixture.client.tun_runtime_snapshot().unwrap();
+    assert_eq!(snapshot.udp_associations_opened, 1);
+    assert_eq!(snapshot.udp_associations_failed, 0);
+    assert_h3_transport(&client_config);
+
+    let rebound = wait_for_udp_rebind(exact_source).await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    drop(rebound);
+    fixture.shutdown().await?;
+
+    if !push_delivered {
+        panic!("normal TUN legacy-H3 UDP target push stayed unavailable");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn packet_runtime_requires_explicit_runtime_gate() -> Result<()> {
     let mut fixture = MaverickHarness::start().await?;
@@ -265,6 +406,28 @@ async fn wait_for(timeout_duration: Duration, mut predicate: impl FnMut() -> boo
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     Ok(())
+}
+
+#[cfg(feature = "h3")]
+fn assert_h3_transport(config: &maverick_core::config::ClientConfig) {
+    let snapshot = transport::transport_debug_snapshot(config);
+    assert_eq!(snapshot.active_transport, GuiTransportCarrier::H3);
+    assert!(snapshot.h3_candidate_enabled);
+    assert!(!snapshot.h3_in_cooldown);
+}
+
+#[cfg(feature = "h3")]
+async fn wait_for_udp_rebind(address: SocketAddr) -> Result<UdpSocket> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match UdpSocket::bind(address).await {
+            Ok(socket) => return Ok(socket),
+            Err(error) if error.kind() == io::ErrorKind::AddrInUse && Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

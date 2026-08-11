@@ -8,9 +8,10 @@ use crate::error::{Error, Result};
 pub const FRAME_HEADER_LEN: usize = 14;
 /// Selects the existing legacy serial `OpenUdp` behavior.
 pub const OPEN_UDP_FLAGS_SERIAL: u8 = 0;
-/// Requests the carrier-scoped legacy-H3 duplex server/wire foundation after
-/// the mode gate is selected. Legacy H2 and other receivers still reject it;
-/// this constant does not imply production client, SOCKS, or TUN support.
+/// Requests carrier-scoped legacy-H3 duplex mode after the mode gate is
+/// selected. Legacy H2 and other receivers still reject it. Only the opt-in,
+/// feature-gated legacy-H3 library association requests it; ordinary
+/// `UdpAssociation`, SOCKS, and TUN paths remain flags-zero serial users.
 pub const OPEN_UDP_FLAG_DUPLEX: u8 = 1 << 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

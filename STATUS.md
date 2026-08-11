@@ -331,6 +331,76 @@ censorship resistance, production readiness, or browser identity.
   client duplex support, general-purpose SOCKS/TUN UDP, games or voice
   suitability, real-network evidence, a published-artifact change, product
   readiness, or release authorization.
+- Unpublished workspace source now also exposes an additive, public,
+  `feature = "h3"` library API for one opt-in legacy-H3 duplex UDP
+  association. `LegacyH3DuplexUdpAssociation::open` fixes one target and port,
+  and `split(&mut self)` lends distinct send and receive halves without
+  creating owned or `'static` direction handles. A successful
+  `send_packet(Bytes)` means only complete tunnel submission;
+  `receive_packet()` returns the next fixed-target datagram without request
+  correlation and returns `None` only after the server's clean idle close and
+  response FIN. `close(self)` performs the bounded terminal exchange. Normal
+  `UdpAssociation`, H2, WebSocket, SOCKS, TUN, CLI, SDK, and direct-v3/quiche
+  H3 paths remain unchanged and flags-zero serial.
+  Opening first validates the complete client config, requires explicit
+  legacy H3, rejects TLS-terminating fronting and required channel binding,
+  and validates the fixed target and nonzero port before network I/O. It then
+  makes one direct Quinn/H3 connection without consulting the scheduler,
+  fallback, or cooldown state; uses the production authenticated handshake;
+  requires the selected mode gate; and accepts only the exact same-flow,
+  flags-one, empty acknowledgement. The association owns the sole request
+  stream and transport. Its borrowed halves share only one atomic unusable
+  state and a crate-private synchronous abort handle, with no added lock, task,
+  channel, queue, retry, second owner, or multi-target map.
+  Pending receive is cancellation-safe. Send and close arm one scope guard
+  before their first await inside the split transport operation; cancellation,
+  timeout, outer-frame encode or transport failure, or incomplete terminal
+  handling after that point makes the association permanently unusable and
+  aborts the dedicated connection.
+  Every H3 DATA and request FIN has an independent whole-operation completion
+  deadline. Receive requires the fixed flow, flags, target, and port. Close
+  concurrently sends exact `CloseFlow` plus request FIN while draining racing
+  valid packets through response FIN and no trailers; the first direction
+  failure cancels the other immediately. Drop also aborts the owner. Public
+  failures use fixed, source-free categories and do not copy target, backend,
+  credential, certificate-path, or raw transport values.
+  Real public-API Quinn/H3 loopback coverage sends A and B before any target
+  reply from one exact server UDP source, receives three target pushes without
+  another client frame, sends C through the same source, closes, and rebinds
+  that source. Separate tests cover a canceled pending receive that continues,
+  deterministic send cancellation while the guard is armed in a pre-I/O
+  shaping wait, close cancellation, active-owner idle cleanup, and an
+  oversized post-A send that reaches the guarded outer-frame encode failure,
+  returns the fixed send-failed category, aborts, and releases the source.
+  Preflight tests point invalid, disabled-H3, valid WebSocket/fronting, and
+  required-binding configs at a real UDP server sentinel and observe zero
+  datagrams; unavailable H3 with H2 available performs no H2 authentication or
+  target I/O. Unit and source checks cover exact acknowledgement and receive
+  classifiers, sticky single abort, first-error close cancellation, and the
+  guard around real DATA and FIN awaits.
+  This slice does not add a scripted malicious H3 peer, so it does not provide
+  public-carrier dynamic evidence for missing feature selection, a wrong
+  acknowledgement, malformed/wrong-flow/wrong-target response, or the fixed
+  receive-failed and close-failed categories. It also does not deterministically
+  cancel during a transport write or prove a partial write or blocked response;
+  the send-cancel test is specifically pre-I/O. There is no fairness, ordering,
+  no-loss, physical-connection reuse, general SOCKS/TUN UDP, games or voice,
+  real-network, product-readiness, or release claim.
+  The eight-test focused public matrix, 83-test H3 client library suite,
+  101-test H3 relay target, all-features workspace suite, formatting, strict
+  all-target/all-feature and relevant no-default Clippy, warning-denied
+  Rustdoc, `user-smoke.sh`, and `local-harness.sh` pass locally. Client library
+  tests also pass 74/74 with no default features and 80/80 with no default
+  features plus H3. The broader no-default relay runs retain exactly the
+  already recorded unrelated
+  `auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo`
+  private-mode/rustls-default mismatch: 67 other tests pass without default
+  features, and 98 other tests pass with H3. This public source API is
+  SemVer-observable under the opt-in feature, but it changes no published
+  Beta.4 artifact, package version, manifest, dependency, `Cargo.lock`, wire
+  number or encoding, protocol/config/profile version, deployment
+  authorization, human-user result, or release state. Any publication requires
+  a new prerelease.
 - Rust product core and loopback relay path: implemented.
 - Browser-like TLS backend: default build path on supported targets.
 - Generated client profile: browser-like TLS/H2 by default on supported targets.

@@ -10,6 +10,22 @@ use quinn::crypto::rustls::QuicClientConfig;
 use tokio::time::{timeout, Duration};
 
 pub type H3ClientRequestStream = h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
+pub(crate) type H3ClientSendStream = h3::client::RequestStream<h3_quinn::SendStream<Bytes>, Bytes>;
+pub(crate) type H3ClientReceiveStream = h3::client::RequestStream<h3_quinn::RecvStream, Bytes>;
+
+pub(crate) struct H3AbortHandle {
+    endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+    driver: tokio::task::AbortHandle,
+}
+
+impl H3AbortHandle {
+    pub(crate) fn abort(&self) {
+        self.connection.close(0u32.into(), b"maverick-h3-client");
+        self.endpoint.close(0u32.into(), b"maverick-h3-client");
+        self.driver.abort();
+    }
+}
 
 pub struct H3RequestSender {
     endpoint: quinn::Endpoint,
@@ -24,6 +40,14 @@ impl H3RequestSender {
             .send_request(request)
             .await
             .context("send h3 tunnel request")
+    }
+
+    pub(crate) fn abort_handle(&self) -> H3AbortHandle {
+        H3AbortHandle {
+            endpoint: self.endpoint.clone(),
+            connection: self.connection.clone(),
+            driver: self.driver.abort_handle(),
+        }
     }
 }
 

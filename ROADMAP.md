@@ -17,133 +17,161 @@ adopted nor automatically rejected.
 
 ## Current Repository-Local Queue
 
-### T024b-1 — Negotiated legacy-H3 server UDP push
+### T024b-2 — Public legacy-H3 duplex UDP association
 
-**User result.** A directly authenticated legacy-H3 peer whose MAC-verified
-`ServerHello` selected `FEATURE_OPEN_UDP_MODE_NEGOTIATION` may request the
-already named duplex mode with `OpenUdp(flags = OPEN_UDP_FLAG_DUPLEX)`. The
-server acknowledges that exact flow and mode, and the peer's first valid
-same-flow `UdpPacket` fixes one loopback-tested target. After that first packet,
-the target may send additional datagrams through the same H3 request stream
-without waiting for another peer request, while the peer may continue sending
-datagrams in the other direction. This is an authenticated legacy-H3
-server/wire foundation only. Production `UdpAssociation`, SOCKS, and TUN paths
-remain flags-zero serial users and do not request duplex mode.
+**User result.** An opt-in Rust library caller can open one public
+`LegacyH3DuplexUdpAssociation` for one exact target through the already
+authenticated legacy-H3 carrier. It exposes borrowed sending and receiving
+halves, so the caller may submit datagrams and independently receive target
+pushes without changing the existing serial `UdpAssociation`, SOCKS, or TUN
+paths. This is an unpublished, feature-gated library result, not ordinary
+product integration.
 
-**Scope.** Change at most these six files: `ROADMAP.md`, `STATUS.md`,
-`crates/maverick-core/src/frame.rs`, `crates/maverick-server/src/relay.rs`,
-`crates/maverick-server/src/server.rs`, and
-`crates/maverick-tests/tests/tcp_relay.rs`. `STATUS.md` may receive one narrow
-current-truth update only after the implementation and every required local
-gate pass. The public duplex-constant documentation in `frame.rs` changes only
-after behavioral green. Preserve protocol, config, and stored-profile version
-`1`; reuse the existing negotiated feature bit, `OpenUdp` flag, frame types,
-payloads, and encodings without adding a new number or wire field. Preserve
-every public API signature, dependency, feature, manifest, and `Cargo.lock`.
-Keep every client crate, H2 behavior, feature-zero behavior, reserved-mode
-rejection, WebSocket, direct-v3/quiche H3, SOCKS, TUN, DNS, TCP, configuration,
-limits, fallback, metrics, logging, CLI, SDK, and every other file unchanged.
+**Public shape.** Under `feature = "h3"`, add only these public types and
+methods:
 
-**Behavioral red.** Add one raw real-Quinn/H3 loopback test. Before and after
-the request it must prove H3 is the active transport candidate and is not in
-cooldown; the sender must be the actual H3 variant. It must open an H3 request
-stream, receive HTTP `200` with `application/octet-stream`, authenticate the
-returned `ServerHello` MAC, and verify that the selected mask contains the
-requested mode-gate bit. It then sends `OpenUdp` with the duplex flag and a
-valid same-flow packet toward a real loopback UDP target. At the exact parent,
-the test must positively observe the opened flow's exact `ProtocolError`, H3
-response FIN, and a bounded interval with zero target contact before failing at
-one fixed panic with status 101: `negotiated legacy-H3 duplex OpenUdp stayed
-rejected`. A missing symbol, compile error, mock, H2 fallback, missing server,
-wrong content type, unverified handshake, or timeout-only failure is not a
-valid red.
+- `LegacyH3DuplexUdpAssociation::open(&ClientConfig, TargetAddr, u16)`;
+- `split(&mut self) -> (&mut LegacyH3DuplexUdpSendHalf,
+  &mut LegacyH3DuplexUdpReceiveHalf)`;
+- `LegacyH3DuplexUdpSendHalf::send_packet(Bytes)`;
+- `LegacyH3DuplexUdpReceiveHalf::receive_packet() -> Result<Option<Bytes>>`;
+- `LegacyH3DuplexUdpAssociation::close(self)`.
 
-**Green implementation.** Accept duplex mode only on the actual legacy-H3
-carrier when the MAC-verified selected feature mask contains the existing mode
-gate and the `OpenUdp` flags are exactly `OPEN_UDP_FLAG_DUPLEX`. Return an exact
-same-flow `WindowUpdate` with that same duplex flag and an empty payload before
-admitting packet traffic. Feature-zero plus any nonzero flag, any reserved or
-mixed flag, and every nonzero H2 `OpenUdp` remain exact same-flow
-`ProtocolError` plus their existing terminal carrier shape before flow permit,
-`OpenUdp` payload decode, rate policy, target ownership, resolution, socket, or
-target I/O. Flags-zero H2 and legacy-H3 remain serial.
+The target and port are fixed at `open`, so the sending half accepts only
+payload bytes. A successful send means only complete tunnel submission, not
+target receipt. Receive returns the next target datagram without correlation.
+The halves borrow the parent and cannot become independent `'static` owners.
+Document no fairness, ordering, no-loss, SOCKS/TUN, real-network, or product-
+readiness promise.
 
-Keep one handler future and one target owner; add no spawned task, channel,
-queue, lock, retry, replay, packet correlation, second owner, or automatic
-fallback. Split the H3 request stream into its send and receive halves, then
-select among peer-frame input, the active connected UDP target's receive
-future, and the flow idle deadline. H3 DATA and FIN keep the existing
-whole-operation completion deadline. If a response DATA or FIN expires or is
-partially written, immediately unwind and drop the stream and target owner;
-do not retry the response, reuse the ambiguous owner, or send another Maverick
-`Error` on the blocked stream. H3 flow control and the UDP socket buffer are
-the only buffering. A bounded response send may pause both input directions.
+**Scope.** Hard-limit the complete card to these seven files: `ROADMAP.md`,
+`STATUS.md`, `crates/maverick-core/src/frame.rs`,
+`crates/maverick-client/src/udp.rs`,
+`crates/maverick-client/src/tunnel.rs`,
+`crates/maverick-client/src/h3_transport.rs`, and
+`crates/maverick-tests/tests/tcp_relay.rs`. During behavioral red, change only
+`ROADMAP.md`, `udp.rs`, `tunnel.rs`, and `tcp_relay.rs`; `h3_transport.rs` may
+be added only if the final public signature cannot compile without the future
+abort type, and it must not yet implement green abort behavior. Do not touch
+`STATUS.md` or `frame.rs` until every green gate passes. Preserve every
+manifest, dependency, feature, `Cargo.lock`, wire encoding, protocol/config/
+profile version, and every existing public signature.
 
-The first decodable same-flow `UdpPacket` fixes its logical `TargetAddr` and
-port before policy, name resolution, socket creation, or target I/O. Later
-packets may reuse only that exact logical pair. A different target or port
-returns the opened flow's exact `ProtocolError` and FIN without resolving,
-opening, sending to, receiving from, or otherwise touching the different
-target. A wrong-flow actionable frame returns the opened flow's exact
-`ProtocolError` and FIN before payload decode, target locking, rate policy, or
-target I/O. Malformed or unsupported frames fail closed without becoming target
-operations. Prefer a ready peer control frame when selecting, but do not claim
-absolute cross-direction ordering: a valid target datagram that already won a
-selection may be forwarded before a concurrently arriving bad peer frame is
-decoded. Once that bad frame is decoded, start no further target operation and
-release the owner while unwinding.
+**Behavioral red.** First add the final public API shape as a compiling minimal
+scaffold. `open` must make a new direct Quinn/H3 connection without calling the
+general scheduler or its H3-to-H2 fallback and without reading or writing H3
+cooldown state. It must use the production `ClientHello` and verify the
+production `ServerHello` MAC, protocol, and requested-feature subset, require
+the selected mode-gate bit, send exact flags-one `OpenUdp`, and verify the
+exact same-flow, flags-one, empty acknowledgement. Every earlier failure maps
+to the separate source-free category `legacy-H3 duplex UDP open failed`. Only
+after that exact acknowledgement, `open` returns
+`legacy-H3 duplex UDP client unavailable` and drops the dedicated owner, so the
+red test can distinguish the acknowledged path from an early failure. Other
+scaffold methods return the unavailable category rather than panicking or
+exposing a partly usable object.
 
-Apply the existing bounded user rate policy to payload bytes in both
-directions. Reset the flow idle deadline after each valid same-flow peer packet
-and after each datagram received from the fixed target; target traffic may
-therefore keep this foundation flow alive. Request EOF releases the owner.
-Idle expiry sends the existing same-flow empty `CloseFlow` and bounded FIN.
-An explicit valid same-flow `CloseFlow` sends no extra Maverick data frame,
-finishes the H3 response within the existing completion deadline, and releases
-the exact owner.
+One real `MaverickHarness` loopback test must call that public API, prove H3 is
+the active candidate with no cooldown before and after, use a real UDP target,
+observe the fixed error with no source, and prove one bounded second of zero
+target contact. Only then may it fail at the fixed panic
+`public legacy-H3 duplex association stayed unavailable`, producing status
+101. A missing symbol, compile failure, mock, hand-built handshake, H2/WS
+fallback, target contact, timeout-only failure, or different panic is not an
+accepted red. Record the exact parent, command, output, exit status, and diff
+hash, then stop for independent green authorization.
 
-**Acceptance.** The real-H3 test turns green with an exact duplex
-`WindowUpdate`. Send peer packets A and B before any target reply and prove the
-real target receives both from one exact server UDP source. After the first
-request establishes that source, have the target send three datagrams without
-any intervening peer frame; receive three exact same-flow `UdpPacket` frames,
-which is more target output than the two preceding peer requests. Send peer
-packet C afterward and prove the target receives it from the same source. Then
-send explicit same-flow `CloseFlow`, observe H3 FIN, and rebind the exact
-released UDP source. Add bounded tests for target-change rejection with zero
-old- or new-target contact, wrong-flow/malformed rejection, active-owner idle
-close, and blocked-response deadline cleanup.
+**Green ownership and failure contract.** Direct legacy-H3 is the only carrier.
+Keep one dedicated H3 connection and request stream; do not retry, replay, or
+fall back to H2, WebSocket, flags-zero serial, or direct-v3/quiche H3. The
+verified selected mask must contain the existing mode gate, and the client must
+accept only the exact flags-one acknowledgement before exposing the
+association.
 
-Production peer-to-target and target-to-H3 branches must borrow the same
-`UserPolicy` and reuse its same `Option<Arc<RateLimiter>>`, throttling the
-corresponding payload byte length before target-send or H3-send I/O. Keep the
-existing `RateLimiter` unit gate; this card adds no nonzero-rate real-H3 duplex
-timing evidence and must not claim end-to-end rate-policy verification.
+Split the H3 request stream once. The association owns both halves and the sole
+transport. `h3_transport.rs` may provide only a crate-private synchronous abort
+handle shared by those halves. Use one shared atomic unusable flag, without a
+lock, task, channel, queue, second owner, or multi-target map. Pending receive
+must be cancellation-safe. Before the first transport await, send and close
+must poison their direction with a scope guard; cancellation, deadline,
+partial write, transport failure, malformed frame, wrong flow/flags/target, or
+terminal error makes the whole association unusable and synchronously aborts
+the connection. Do not restore, retry, or reuse an ambiguous owner.
 
-The existing feature-zero and reserved-mode H2/H3 rejection matrix, flags-zero
-serial H2/H3 behavior, H2 completion behavior, H3 FIN behavior, wrong-flow
-gate, interrupted-association failure behavior, and target-source reuse and
-release tests must remain green. Run the focused H3 red/green test first, then
-the affected relay and server unit tests, relevant H3 integration tests,
-formatting, strict all-target/all-feature Clippy, Rustdoc with warnings denied,
+Every H3 DATA and request FIN uses a whole-operation completion deadline. Send
+encodes the fixed target and port into exact same-flow flags-zero `UdpPacket`.
+Receive accepts only exact same-flow, flags-zero `UdpPacket` for that fixed
+target and port, returns its payload, maps the server's idle `CloseFlow` plus
+response FIN to `None`, and otherwise fails closed with fixed errors that
+contain no backend, target, server, credential, certificate path, or raw error.
+
+`close(self)` races two bounded operations: send exact same-flow empty
+`CloseFlow` plus request FIN, while draining any already racing valid packets
+until response FIN. Either clean terminal order succeeds and releases the
+owner; cancellation, timeout, partial send, malformed terminal data, or
+transport failure aborts it. Drop without successful close also aborts. This
+card promises no physical-connection reuse.
+
+**Green acceptance.** Split evidence into explicit layers. Through only the
+public API and a real loopback H3 server, send A and B before any target reply
+and prove both reach the target from one exact server UDP source. Then have the
+target send three datagrams without another client frame and receive all three
+in arrival order, which is more target output than preceding requests. Send C
+afterward and prove the same source remains in use. Close, observe bounded
+response completion, and rebind the exact source.
+
+The same public real-H3 layer must prove: full config validation, disabled H3,
+a valid WebSocket/fronting selection, and required channel binding all reject
+before even a configured UDP server sentinel is contacted; unavailable H3
+does not authenticate through an available H2 server; cancelling a pending
+receive permits the same half to continue; cancelling send while its poison
+guard is armed in a deterministic pre-I/O shaping wait poisons the whole
+association; cancelling close aborts and releases the owner; an active target
+owner reaches idle `CloseFlow` plus FIN as `None`; and an oversized send after
+packet A returns the fixed source-free send-failed category, contacts the
+target no further, aborts, and releases the exact source. Later operations
+after either poison path must return the fixed source-free unusable category.
+
+Unit and source evidence lock the other reachable invariants: the exact
+flags-one acknowledgement classifier rejects wrong flags, flow, or payload;
+the receive classifier rejects malformed, wrong-flow, wrong-flags, or
+wrong-target frames; the atomic poison guard is sticky and aborts once; close
+drops a still-pending direction immediately when its peer fails; and the same
+armed guard encloses the real H3 DATA and request-FIN awaits. Existing raw-wire
+server duplex tests remain server/protocol regression evidence, not public API
+causal evidence.
+
+This card does not add a scripted malicious H3 peer, so it does not claim a
+public-carrier dynamic failure for missing feature selection, wrong
+acknowledgement, malformed/wrong-flow/wrong-target response, or the fixed
+receive-failed and close-failed categories. It also does not deterministically
+drive cancellation during a transport write, a partial write, or a blocked
+response; the shaping cancellation is specifically pre-I/O. Preserve the
+server duplex matrix, flags-zero H2/H3 serial association, H2 nonzero
+rejection, WebSocket, SOCKS, TUN, and direct-v3 behavior. Run the focused
+red/green test, affected client unit tests, relevant H3 integration tests,
+formatting, all-target/all-feature strict Clippy, warning-denied Rustdoc,
 `user-smoke.sh`, and `local-harness.sh` locally.
 
-**Out of scope and stop conditions.** Do not add a public client duplex API or
-wire duplex mode into `UdpAssociation`, SOCKS, TUN, H2, WebSocket, DNS,
-direct-v3/quiche H3, CLI, SDK, or configuration. Do not add multi-target
-duplex, target switching, request-response correlation, CONNECT-UDP, QUIC
-Datagram, physical-connection reuse evidence, or a second runtime owner. Do not
-claim product full-duplex UDP, games or voice suitability, general-purpose
-SOCKS/TUN UDP, real-network evidence, a published-artifact change, product
-readiness, or release authorization. Stop and re-adjudicate if safe stream
-splitting, a single fixed target owner, existing H3 completion deadlines, idle
-cleanup, two-direction rate policy, or exact terminal behavior cannot fit the
-six-file allowlist, or if any client/H2/direct-v3 behavior must change.
+**Truth and compatibility.** This additive public API is SemVer-observable
+under the opt-in H3 feature and must not be hidden or called a private seam.
+Package version does not change in this unpublished source card; any future
+publication needs a new prerelease rather than changing Beta.4. Only after all
+green gates pass, update `STATUS.md` to distinguish this public source API from
+the still-serial production client paths, and narrow the duplex-constant
+documentation in `frame.rs` so it remains true. Do not claim a new human user,
+general SOCKS/TUN UDP, games or voice suitability, real-network evidence,
+published-artifact change, product readiness, or release authorization.
 
-The authenticated feature selection and QUIC/TLS transport integrity protect
-this direct legacy-H3 foundation. This card adds no per-flow MAC. It does not
-alter or close the separately documented provider-fronted H2 terminating-
-intermediary trust residual.
+**Out of scope and stop conditions.** Keep existing `UdpAssociation`, H2,
+WebSocket, SOCKS, TUN, DNS, TCP, direct-v3/quiche H3, CLI, SDK, configuration,
+limits, metrics, and logging behavior unchanged. Add no target switching,
+multi-target owner, packet correlation, CONNECT-UDP, QUIC Datagram, retry,
+fallback, task, channel, queue, or lock. Stop and re-adjudicate if compile-ready
+red or safe green needs `transport.rs`, `lib.rs`, a server file, a manifest,
+an eighth file, a public backend type, or cannot satisfy strict negotiation,
+borrowed ownership, synchronous whole-association abort, bounded close, and
+privacy-safe fixed errors.
 
 ## Execution Order
 

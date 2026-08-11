@@ -11,6 +11,8 @@ use bytes::Buf;
 use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use http::{HeaderMap, Method, Request, StatusCode};
+#[cfg(feature = "h3")]
+use maverick_client::udp::LegacyH3DuplexUdpAssociation;
 use maverick_client::{
     connection_manager::H2ConnectionPoolSnapshot, transport, udp::UdpAssociation,
 };
@@ -1836,6 +1838,604 @@ async fn h3_socks5_udp_associate_roundtrip() -> Result<()> {
     assert_eq!(&response[..4], &[0x00, 0x00, 0x00, 0x01]);
     assert_eq!(&response[len - 11..len], b"h3-udp-echo");
 
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_public_duplex_udp_association_opens_real_h3() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let target_ip = TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST);
+    let open_result = timeout(
+        Duration::from_secs(2),
+        LegacyH3DuplexUdpAssociation::open(&config, target_ip, target_addr.port()),
+    )
+    .await
+    .context("public legacy-H3 duplex association open must remain bounded")?;
+    let mut association = match open_result {
+        Ok(association) => association,
+        Err(error) => {
+            assert_eq!(error.to_string(), "legacy-H3 duplex UDP client unavailable");
+            let public_error: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+            assert!(std::error::Error::source(public_error).is_none());
+
+            let mut target_buf = [0_u8; 64];
+            match timeout(Duration::from_secs(1), target.recv_from(&mut target_buf)).await {
+                Err(_) => {}
+                Ok(Ok((len, _))) => panic!(
+                    "unavailable public legacy-H3 duplex association reached the real target with {len} bytes"
+                ),
+                Ok(Err(error)) => {
+                    return Err(error)
+                        .context("observe unavailable public legacy-H3 duplex target")
+                }
+            }
+            assert_h3_transport(&config);
+            fixture.shutdown().await?;
+            panic!("public legacy-H3 duplex association stayed unavailable");
+        }
+    };
+
+    let exact_source = {
+        let (send_half, receive_half) = association.split();
+        let client_direction = async {
+            send_half
+                .send_packet(Bytes::from_static(b"public-duplex-a"))
+                .await?;
+            send_half
+                .send_packet(Bytes::from_static(b"public-duplex-b"))
+                .await?;
+
+            for expected in [
+                b"target-push-one".as_slice(),
+                b"target-push-two".as_slice(),
+                b"target-push-three".as_slice(),
+            ] {
+                let payload = timeout(Duration::from_secs(2), receive_half.receive_packet())
+                    .await
+                    .context("public duplex receive must remain bounded")??
+                    .context("public duplex receive ended before target push")?;
+                anyhow::ensure!(payload.as_ref() == expected, "target push payload mismatch");
+            }
+
+            send_half
+                .send_packet(Bytes::from_static(b"public-duplex-c"))
+                .await?;
+            Result::<()>::Ok(())
+        };
+        let target_direction = async {
+            let mut target_buf = [0_u8; 64];
+            let (len, exact_source) =
+                timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+                    .await
+                    .context("real target did not receive public duplex packet A")??;
+            anyhow::ensure!(
+                &target_buf[..len] == b"public-duplex-a",
+                "public duplex packet A mismatch"
+            );
+
+            let (len, source_b) =
+                timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+                    .await
+                    .context(
+                        "real target did not receive public duplex packet B before replying",
+                    )??;
+            anyhow::ensure!(
+                &target_buf[..len] == b"public-duplex-b",
+                "public duplex packet B mismatch"
+            );
+            anyhow::ensure!(
+                source_b == exact_source,
+                "public duplex packets did not reuse one server UDP source"
+            );
+
+            for payload in [
+                b"target-push-one".as_slice(),
+                b"target-push-two".as_slice(),
+                b"target-push-three".as_slice(),
+            ] {
+                let sent = target.send_to(payload, exact_source).await?;
+                anyhow::ensure!(sent == payload.len(), "target push was truncated");
+            }
+
+            let (len, source_c) =
+                timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+                    .await
+                    .context("real target did not receive public duplex packet C after pushes")??;
+            anyhow::ensure!(
+                &target_buf[..len] == b"public-duplex-c",
+                "public duplex packet C mismatch"
+            );
+            anyhow::ensure!(
+                source_c == exact_source,
+                "public duplex packet C changed the server UDP source"
+            );
+            Result::<SocketAddr>::Ok(exact_source)
+        };
+        let (client_result, target_result) = timeout(Duration::from_secs(5), async {
+            tokio::join!(client_direction, target_direction)
+        })
+        .await
+        .context("public legacy-H3 duplex exchange must remain bounded")?;
+        client_result?;
+        target_result?
+    };
+
+    timeout(Duration::from_secs(2), association.close())
+        .await
+        .context("public legacy-H3 duplex close must remain bounded")??;
+    let rebound = rebind_released_udp_source(exact_source, "public duplex close").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+
+    drop(rebound);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_public_duplex_udp_receive_cancel_remains_usable() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut association = timeout(
+        Duration::from_secs(2),
+        LegacyH3DuplexUdpAssociation::open(
+            &config,
+            TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+            target_addr.port(),
+        ),
+    )
+    .await
+    .context("receive-cancel association open must remain bounded")??;
+
+    let exact_source = {
+        let (send_half, receive_half) = association.split();
+        send_half
+            .send_packet(Bytes::from_static(b"receive-cancel-a"))
+            .await?;
+        let mut target_buf = [0_u8; 64];
+        let (len, exact_source) =
+            timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+                .await
+                .context("receive-cancel target did not receive packet A")??;
+        assert_eq!(&target_buf[..len], b"receive-cancel-a");
+
+        let mut pending_receive = Box::pin(receive_half.receive_packet());
+        assert!(
+            futures::poll!(pending_receive.as_mut()).is_pending(),
+            "receive-cancel future completed without a target push"
+        );
+        drop(pending_receive);
+
+        let pushed = target
+            .send_to(b"receive-after-cancel", exact_source)
+            .await?;
+        assert_eq!(pushed, b"receive-after-cancel".len());
+        let received = timeout(Duration::from_secs(2), receive_half.receive_packet())
+            .await
+            .context("receive after cancellation must remain bounded")??
+            .context("receive after cancellation ended cleanly instead of returning the push")?;
+        assert_eq!(received.as_ref(), b"receive-after-cancel");
+
+        send_half
+            .send_packet(Bytes::from_static(b"receive-cancel-b"))
+            .await?;
+        let (len, source_b) = timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+            .await
+            .context("receive-cancel target did not receive packet B")??;
+        assert_eq!(&target_buf[..len], b"receive-cancel-b");
+        assert_eq!(source_b, exact_source);
+        exact_source
+    };
+
+    timeout(Duration::from_secs(2), association.close())
+        .await
+        .context("receive-cancel close must remain bounded")??;
+    let rebound = rebind_released_udp_source(exact_source, "receive-cancel close").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+    drop(rebound);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_public_duplex_udp_send_cancel_poison_is_sticky() -> Result<()> {
+    let shaping = ShapingConfig {
+        enabled: true,
+        max_padding_bytes_per_frame: 16,
+        max_overhead_ratio: 0.0,
+        max_delay_ms: 250,
+        max_batch_bytes: 4_096,
+        ..ShapingConfig::default()
+    };
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        experimental_h3: true,
+        client_shaping: Some(shaping),
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut association = timeout(
+        Duration::from_secs(3),
+        LegacyH3DuplexUdpAssociation::open(
+            &config,
+            TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+            target_addr.port(),
+        ),
+    )
+    .await
+    .context("send-cancel association open must remain bounded")??;
+
+    let exact_source = {
+        let (send_half, receive_half) = association.split();
+        send_half
+            .send_packet(Bytes::from_static(b"send-cancel-a"))
+            .await?;
+        let mut target_buf = [0_u8; 64];
+        let (len, exact_source) =
+            timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+                .await
+                .context("send-cancel target did not receive packet A")??;
+        assert_eq!(&target_buf[..len], b"send-cancel-a");
+
+        let mut pending_send =
+            Box::pin(send_half.send_packet(Bytes::from_static(b"send-cancel-b")));
+        assert!(
+            futures::poll!(pending_send.as_mut()).is_pending(),
+            "send-cancel future did not reach its armed shaping wait"
+        );
+        drop(pending_send);
+
+        let send_error = send_half
+            .send_packet(Bytes::from_static(b"send-after-cancel"))
+            .await
+            .unwrap_err();
+        assert_source_free_fixed_error(
+            &send_error,
+            "legacy-H3 duplex UDP association is no longer usable",
+        );
+        let receive_error = receive_half.receive_packet().await.unwrap_err();
+        assert_source_free_fixed_error(
+            &receive_error,
+            "legacy-H3 duplex UDP association is no longer usable",
+        );
+        match timeout(
+            Duration::from_millis(500),
+            target.recv_from(&mut target_buf),
+        )
+        .await
+        {
+            Err(_) => {}
+            Ok(Ok((len, _))) => {
+                anyhow::bail!("cancelled public duplex send reached target with {len} bytes")
+            }
+            Ok(Err(error)) => return Err(error).context("observe send-cancel target"),
+        }
+        exact_source
+    };
+
+    let close_error = association.close().await.unwrap_err();
+    assert_source_free_fixed_error(
+        &close_error,
+        "legacy-H3 duplex UDP association is no longer usable",
+    );
+    let rebound = rebind_released_udp_source(exact_source, "send-cancel abort").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+    drop(rebound);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_public_duplex_udp_oversize_send_fails_and_aborts_owner() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut association = LegacyH3DuplexUdpAssociation::open(
+        &config,
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+    )
+    .await?;
+
+    let exact_source = {
+        let (send_half, receive_half) = association.split();
+        send_half
+            .send_packet(Bytes::from_static(b"oversize-owner-a"))
+            .await?;
+        let mut target_buf = [0_u8; 64];
+        let (len, exact_source) =
+            timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+                .await
+                .context("oversize-send target did not receive packet A")??;
+        assert_eq!(&target_buf[..len], b"oversize-owner-a");
+
+        let send_error = send_half
+            .send_packet(Bytes::from(vec![0_u8; 65_536]))
+            .await
+            .unwrap_err();
+        assert_source_free_fixed_error(&send_error, "legacy-H3 duplex UDP send failed");
+        let later_send_error = send_half
+            .send_packet(Bytes::from_static(b"oversize-after-failure"))
+            .await
+            .unwrap_err();
+        assert_source_free_fixed_error(
+            &later_send_error,
+            "legacy-H3 duplex UDP association is no longer usable",
+        );
+        let receive_error = receive_half.receive_packet().await.unwrap_err();
+        assert_source_free_fixed_error(
+            &receive_error,
+            "legacy-H3 duplex UDP association is no longer usable",
+        );
+        match timeout(
+            Duration::from_millis(500),
+            target.recv_from(&mut target_buf),
+        )
+        .await
+        {
+            Err(_) => {}
+            Ok(Ok((len, _))) => {
+                anyhow::bail!("oversize public duplex send reached target with {len} bytes")
+            }
+            Ok(Err(error)) => return Err(error).context("observe oversize-send target"),
+        }
+        exact_source
+    };
+
+    let close_error = association.close().await.unwrap_err();
+    assert_source_free_fixed_error(
+        &close_error,
+        "legacy-H3 duplex UDP association is no longer usable",
+    );
+    let rebound = rebind_released_udp_source(exact_source, "oversize-send abort").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+    drop(rebound);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test(flavor = "current_thread")]
+async fn h3_public_duplex_udp_close_cancel_aborts_owner() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let config = fixture.client_config();
+    assert_h3_transport(&config);
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut association = LegacyH3DuplexUdpAssociation::open(
+        &config,
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+    )
+    .await?;
+    let exact_source = {
+        let (send_half, _) = association.split();
+        send_half
+            .send_packet(Bytes::from_static(b"close-cancel-a"))
+            .await?;
+        let mut target_buf = [0_u8; 64];
+        let (len, exact_source) =
+            timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+                .await
+                .context("close-cancel target did not receive packet A")??;
+        assert_eq!(&target_buf[..len], b"close-cancel-a");
+        exact_source
+    };
+
+    let mut pending_close = Box::pin(association.close());
+    assert!(
+        futures::poll!(pending_close.as_mut()).is_pending(),
+        "close-cancel future completed before its peer could run"
+    );
+    drop(pending_close);
+
+    let rebound = rebind_released_udp_source(exact_source, "close-cancel abort").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+    drop(rebound);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_public_duplex_udp_idle_close_returns_none() -> Result<()> {
+    let fixture = MaverickHarness::start_with_h3().await?;
+    let mut config = fixture.client_config();
+    config.advanced.udp_idle_timeout_ms = 100;
+    assert_h3_transport(&config);
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let mut association = LegacyH3DuplexUdpAssociation::open(
+        &config,
+        TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+        target_addr.port(),
+    )
+    .await?;
+
+    let (received, exact_source) = {
+        let (send_half, receive_half) = association.split();
+        send_half
+            .send_packet(Bytes::from_static(b"idle-active-owner"))
+            .await?;
+        let mut target_buf = [0_u8; 64];
+        let (len, exact_source) =
+            timeout(Duration::from_secs(2), target.recv_from(&mut target_buf))
+                .await
+                .context("idle-close target did not receive the owner-establishing packet")??;
+        assert_eq!(&target_buf[..len], b"idle-active-owner");
+        let received = timeout(Duration::from_secs(2), receive_half.receive_packet())
+            .await
+            .context("public duplex active-owner idle close must remain bounded")??;
+        (received, exact_source)
+    };
+    assert!(received.is_none());
+    association.close().await?;
+    let rebound = rebind_released_udp_source(exact_source, "active-owner idle close").await?;
+    assert_eq!(rebound.local_addr()?, exact_source);
+    assert_h3_transport(&config);
+    drop(rebound);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_public_duplex_udp_preflight_rejects_before_network() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        metrics: true,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let metrics_addr = fixture
+        .server
+        .metrics_addr
+        .context("missing preflight metrics listener")?;
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+    let server_sentinel = UdpSocket::bind("127.0.0.1:0").await?;
+    let server_sentinel_addr = server_sentinel.local_addr()?;
+    let target_ip = TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST);
+    let mut baseline = fixture.client_config();
+    baseline.server.address = server_sentinel_addr.to_string();
+
+    let mut invalid = baseline.clone();
+    invalid.advanced.experimental_h3 = true;
+    invalid.version = 2;
+    let invalid_error = expect_legacy_h3_duplex_open_error(
+        LegacyH3DuplexUdpAssociation::open(&invalid, target_ip.clone(), target_addr.port()).await,
+        "invalid-config public duplex preflight",
+    )?;
+    assert_source_free_fixed_error(&invalid_error, "legacy-H3 duplex UDP open failed");
+
+    let disabled_error = expect_legacy_h3_duplex_open_error(
+        LegacyH3DuplexUdpAssociation::open(&baseline, target_ip.clone(), target_addr.port()).await,
+        "disabled public duplex preflight",
+    )?;
+    assert_source_free_fixed_error(&disabled_error, "legacy-H3 duplex UDP open failed");
+
+    let mut fronted = baseline.clone();
+    fronted.advanced.stealth.tls_fingerprint = Default::default();
+    fronted.advanced.stealth.cdn_fronting.enabled = true;
+    fronted
+        .advanced
+        .stealth
+        .cdn_fronting
+        .trusted_tls_terminating_provider = true;
+    fronted.validate()?;
+    assert!(!fronted.advanced.experimental_h3);
+    assert!(fronted.advanced.cloudflare_ws_enabled());
+    let fronted_error = expect_legacy_h3_duplex_open_error(
+        LegacyH3DuplexUdpAssociation::open(&fronted, target_ip.clone(), target_addr.port()).await,
+        "fronted public duplex preflight",
+    )?;
+    assert_source_free_fixed_error(&fronted_error, "legacy-H3 duplex UDP open failed");
+
+    let mut binding_required = baseline;
+    binding_required.advanced.experimental_h3 = true;
+    binding_required.auth.channel_binding.require = true;
+    let binding_error = expect_legacy_h3_duplex_open_error(
+        LegacyH3DuplexUdpAssociation::open(&binding_required, target_ip, target_addr.port()).await,
+        "binding-required public duplex preflight",
+    )?;
+    assert_source_free_fixed_error(&binding_error, "legacy-H3 duplex UDP open failed");
+
+    let metrics = fetch_metrics(metrics_addr).await?;
+    assert_eq!(metric_value(&metrics, "authenticated_sessions")?, 0);
+    assert_eq!(metric_value(&metrics, "active_connections")?, 0);
+    let mut target_buf = [0_u8; 1];
+    assert!(
+        timeout(
+            Duration::from_millis(200),
+            target.recv_from(&mut target_buf)
+        )
+        .await
+        .is_err(),
+        "preflight rejection unexpectedly contacted its fixed target"
+    );
+    let mut sentinel_buf = [0_u8; 1];
+    assert!(
+        timeout(
+            Duration::from_millis(200),
+            server_sentinel.recv_from(&mut sentinel_buf)
+        )
+        .await
+        .is_err(),
+        "preflight rejection unexpectedly attempted its configured H3 server"
+    );
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn h3_public_duplex_udp_unavailable_h3_never_falls_back_to_h2() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        metrics: true,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let metrics_addr = fixture
+        .server
+        .metrics_addr
+        .context("missing strict-H3 metrics listener")?;
+    let mut config = fixture.client_config();
+    config.advanced.experimental_h3 = true;
+    config.advanced.connect_timeout_ms = 100;
+    assert_h3_transport(&config);
+    let target = UdpSocket::bind("127.0.0.1:0").await?;
+    let target_addr = target.local_addr()?;
+
+    let error = expect_legacy_h3_duplex_open_error(
+        timeout(
+            Duration::from_secs(2),
+            LegacyH3DuplexUdpAssociation::open(
+                &config,
+                TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+                target_addr.port(),
+            ),
+        )
+        .await
+        .context("strict unavailable H3 open must remain bounded")?,
+        "unavailable strict H3 open",
+    )?;
+    assert_source_free_fixed_error(&error, "legacy-H3 duplex UDP open failed");
+    assert_h3_transport(&config);
+
+    let metrics = fetch_metrics(metrics_addr).await?;
+    assert_eq!(metric_value(&metrics, "authenticated_sessions")?, 0);
+    assert_eq!(metric_value(&metrics, "active_connections")?, 0);
+    let mut target_buf = [0_u8; 1];
+    assert!(
+        timeout(
+            Duration::from_millis(200),
+            target.recv_from(&mut target_buf)
+        )
+        .await
+        .is_err(),
+        "unavailable strict H3 open unexpectedly contacted its target"
+    );
     fixture.shutdown().await?;
     Ok(())
 }
@@ -4361,6 +4961,27 @@ fn assert_h3_transport(config: &ClientConfig) {
     assert_eq!(snapshot.active_transport, GuiTransportCarrier::H3);
     assert!(snapshot.h3_candidate_enabled);
     assert!(!snapshot.h3_in_cooldown);
+}
+
+#[cfg(feature = "h3")]
+fn assert_source_free_fixed_error(error: &anyhow::Error, expected: &str) {
+    assert_eq!(error.to_string(), expected);
+    let public_error: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+    assert!(std::error::Error::source(public_error).is_none());
+}
+
+#[cfg(feature = "h3")]
+fn expect_legacy_h3_duplex_open_error(
+    result: Result<LegacyH3DuplexUdpAssociation>,
+    label: &str,
+) -> Result<anyhow::Error> {
+    match result {
+        Ok(association) => {
+            drop(association);
+            anyhow::bail!("{label} unexpectedly opened a public duplex association")
+        }
+        Err(error) => Ok(error),
+    }
 }
 
 #[cfg(feature = "h3")]

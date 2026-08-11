@@ -77,6 +77,29 @@ pub struct H3ClientTunnel {
     _transport: crate::h3_transport::H3RequestSender,
 }
 
+#[cfg(feature = "h3")]
+pub(crate) struct H3DuplexTunnelParts {
+    pub(crate) send: H3DuplexSendHalf,
+    pub(crate) receive: H3DuplexReceiveHalf,
+    pub(crate) transport: crate::h3_transport::H3RequestSender,
+}
+
+#[cfg(feature = "h3")]
+pub(crate) struct H3DuplexSendHalf {
+    stream: crate::h3_transport::H3ClientSendStream,
+    max_frame_size: usize,
+    padding: RuntimePadding,
+    cover_traffic: RuntimeCoverTraffic,
+    batcher: RuntimeBatcher,
+}
+
+#[cfg(feature = "h3")]
+pub(crate) struct H3DuplexReceiveHalf {
+    stream: crate::h3_transport::H3ClientReceiveStream,
+    recv_buf: BytesMut,
+    max_frame_size: usize,
+}
+
 impl ClientTunnel {
     pub fn max_frame_size(&self) -> usize {
         match self {
@@ -95,6 +118,39 @@ impl ClientTunnel {
             Self::H3(tunnel) => tunnel.feature_flags_selected,
         };
         selected.expect("returned client tunnel has a verified ServerHello")
+    }
+
+    #[cfg(feature = "h3")]
+    pub(crate) fn into_legacy_h3_duplex_parts(self) -> Result<H3DuplexTunnelParts> {
+        let Self::H3(tunnel) = self else {
+            bail!("legacy-H3 duplex tunnel requires H3");
+        };
+        let H3ClientTunnel {
+            stream,
+            recv_buf,
+            max_frame_size,
+            feature_flags_selected: _,
+            padding,
+            cover_traffic,
+            batcher,
+            _transport,
+        } = *tunnel;
+        let (send_stream, receive_stream) = stream.split();
+        Ok(H3DuplexTunnelParts {
+            send: H3DuplexSendHalf {
+                stream: send_stream,
+                max_frame_size,
+                padding,
+                cover_traffic,
+                batcher,
+            },
+            receive: H3DuplexReceiveHalf {
+                stream: receive_stream,
+                recv_buf,
+                max_frame_size,
+            },
+            transport: _transport,
+        })
     }
 
     pub async fn send_frame(&mut self, frame: Frame, end_stream: bool) -> Result<()> {
@@ -264,6 +320,105 @@ impl ClientTunnel {
     }
 }
 
+#[cfg(feature = "h3")]
+impl H3DuplexSendHalf {
+    pub(crate) async fn send_frame_with_deadline(
+        &mut self,
+        frame: Frame,
+        end_stream: bool,
+        completion_timeout: Duration,
+    ) -> Result<()> {
+        let frames = prepare_outgoing_frames(frame, &mut self.batcher, &self.padding).await;
+        let last = frames.len().saturating_sub(1);
+        for (idx, frame) in frames.into_iter().enumerate() {
+            if let Some(padding) = self.padding.padding_frame(
+                frame.frame_type,
+                frame.payload.len(),
+                self.max_frame_size,
+            ) {
+                send_h3_data_with_deadline(
+                    &mut self.stream,
+                    padding.encode(self.max_frame_size)?,
+                    completion_timeout,
+                )
+                .await?;
+            }
+            for cover_frame in self.cover_traffic.padding_frames(
+                frame.frame_type,
+                frame.payload.len(),
+                self.max_frame_size,
+            ) {
+                send_h3_data_with_deadline(
+                    &mut self.stream,
+                    cover_frame.encode(self.max_frame_size)?,
+                    completion_timeout,
+                )
+                .await?;
+            }
+            send_h3_data_with_deadline(
+                &mut self.stream,
+                frame.encode(self.max_frame_size)?,
+                completion_timeout,
+            )
+            .await?;
+            if end_stream && idx == last {
+                finish_h3_request_with_deadline(&mut self.stream, completion_timeout).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "h3")]
+impl H3DuplexReceiveHalf {
+    pub(crate) async fn read_next_frame(&mut self) -> Result<Option<Frame>> {
+        loop {
+            if let Some(frame) = Frame::decode_from(&mut self.recv_buf, self.max_frame_size)? {
+                if frame.frame_type == FrameType::Padding {
+                    continue;
+                }
+                return Ok(Some(frame));
+            }
+            match self.stream.recv_data().await? {
+                Some(mut chunk) => {
+                    let bytes = chunk.copy_to_bytes(chunk.remaining());
+                    self.recv_buf.extend_from_slice(&bytes);
+                }
+                None if self.recv_buf.is_empty() => return Ok(None),
+                None => bail!("H3 response ended with an incomplete Maverick frame"),
+            }
+        }
+    }
+
+    pub(crate) async fn finish_response(&mut self) -> Result<()> {
+        loop {
+            while let Some(frame) = Frame::decode_from(&mut self.recv_buf, self.max_frame_size)? {
+                if frame.frame_type != FrameType::Padding {
+                    bail!("H3 response contained data after terminal frame");
+                }
+            }
+            match self.stream.recv_data().await? {
+                Some(mut chunk) => {
+                    let bytes = chunk.copy_to_bytes(chunk.remaining());
+                    self.recv_buf.extend_from_slice(&bytes);
+                }
+                None => break,
+            }
+        }
+        self.finish_trailers_after_body_end().await
+    }
+
+    pub(crate) async fn finish_trailers_after_body_end(&mut self) -> Result<()> {
+        if !self.recv_buf.is_empty() {
+            bail!("H3 response ended with an incomplete Maverick frame");
+        }
+        if self.stream.recv_trailers().await?.is_some() {
+            bail!("legacy-H3 response unexpectedly contained trailers");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum H2RuntimeFailureKind {
     StreamReset,
@@ -310,6 +465,12 @@ pub async fn open(config: &ClientConfig) -> Result<ClientTunnel> {
         #[cfg(feature = "h3")]
         TunnelRequestSender::H3(sender) => open_h3(config, sender).await,
     }
+}
+
+#[cfg(feature = "h3")]
+pub(crate) async fn open_legacy_h3_direct(config: &ClientConfig) -> Result<ClientTunnel> {
+    let transport = crate::h3_transport::connect(config).await?;
+    open_h3_with_policy(config, transport, true).await
 }
 
 pub(crate) async fn open_managed_h2(
@@ -439,7 +600,16 @@ async fn open_cloudflare_ws(
 #[cfg(feature = "h3")]
 async fn open_h3(
     config: &ClientConfig,
+    transport: crate::h3_transport::H3RequestSender,
+) -> Result<ClientTunnel> {
+    open_h3_with_policy(config, transport, false).await
+}
+
+#[cfg(feature = "h3")]
+async fn open_h3_with_policy(
+    config: &ClientConfig,
     mut transport: crate::h3_transport::H3RequestSender,
+    require_octet_stream: bool,
 ) -> Result<ClientTunnel> {
     let uri = format!(
         "https://{}{}",
@@ -465,6 +635,15 @@ async fn open_h3(
         .context("missing h3 tunnel response")?;
     if !response.status().is_success() {
         bail!("server returned non-success status: {}", response.status());
+    }
+    if require_octet_stream
+        && response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            != Some("application/octet-stream")
+    {
+        bail!("legacy-H3 response content type was not accepted");
     }
     let mut tunnel = H3ClientTunnel {
         stream,
@@ -867,6 +1046,29 @@ fn validate_negotiated_max_frame_size(value: u32) -> Result<usize> {
         bail!("server negotiated max_frame_size above the client limit");
     }
     Ok(value)
+}
+
+#[cfg(feature = "h3")]
+async fn send_h3_data_with_deadline(
+    stream: &mut crate::h3_transport::H3ClientSendStream,
+    data: Bytes,
+    completion_timeout: Duration,
+) -> Result<()> {
+    timeout(completion_timeout, stream.send_data(data))
+        .await
+        .map_err(|_| anyhow::anyhow!("legacy-H3 DATA completion timed out"))??;
+    Ok(())
+}
+
+#[cfg(feature = "h3")]
+async fn finish_h3_request_with_deadline(
+    stream: &mut crate::h3_transport::H3ClientSendStream,
+    completion_timeout: Duration,
+) -> Result<()> {
+    timeout(completion_timeout, stream.finish())
+        .await
+        .map_err(|_| anyhow::anyhow!("legacy-H3 FIN completion timed out"))??;
+    Ok(())
 }
 
 #[cfg(feature = "h3")]

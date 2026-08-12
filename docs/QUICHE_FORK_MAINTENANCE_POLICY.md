@@ -12,7 +12,9 @@ This document freezes the minimum maintenance contract that must exist before
 Maverick can either retain any private quiche patch or prove that an old patch
 is no longer required. It is not a patch registry, an adoption decision, a
 replay result, an upstream report, a security review, or permission to add
-quiche, vendor source, Cargo dependencies, H3 runtime, or H3 to Auto.
+quiche, vendor source, product Cargo dependencies, H3 runtime, or H3 to Auto.
+The one test-tool dependency exception for the S2 synthetic verifier is
+defined narrowly below; it is not a quiche or product dependency exception.
 
 The owner has selected quiche as Maverick's only intended H3/UDP backend. That
 direction does not make the preserved fork acceptable. Until every gate below
@@ -212,6 +214,41 @@ fail-closed. It must not download, fetch, update an index, or substitute a
 different source. The verifier itself and its synthetic self-tests are a
 separate S2 implementation slice; the first real official-archive replay is a
 separate S3 evidence run.
+
+### S2 implementation and build boundary
+
+A focused portability probe rejected the proposed Ruby/Fiddle implementation:
+the Darwin system Ruby 2.6 interface cannot safely express the variadic
+`open`/`openat` call used with `O_CREAT`, and the probe created a file with an
+incorrect zero mode. That route remains RED. Python validation tooling remains
+archived and must not be revived or hidden behind an extensionless entrypoint.
+
+S2 therefore has one exact tooling-only exception. It may add one non-product
+verifier binary under the unpublished `maverick-tests` package and exactly:
+
+- add `rustix = { version = "=1.1.4", features = ["fs", "process"] }`, with
+  its default features retained;
+- add `flate2 = { version = "=1.1.9", default-features = false, features =
+  ["rust_backend"] }`;
+- reuse the package's existing Tokio dependency for safe catchable-signal
+  handling; and
+- update `Cargo.lock` only for that exact tool graph.
+
+These dependencies must not enter a product crate, default product binary,
+runtime, vendor tree, quiche graph, config, wire path, or release claim. Any
+additional package, feature, target, or Cargo surface requires a new review and
+keeps S2 RED.
+
+Building and self-testing the verifier is a separate local build phase; it may
+use Cargo only before mechanical replay begins. Mechanical replay runs the
+already-built, exact reviewed binary and must never invoke Cargo, rustc, a
+build script, tests, or input-derived code. The binary remains single-purpose:
+its production entry accepts exactly one repository-external `.crate` path and
+no mode, profile, registry, schema, or expected-value override. It sets umask
+`077` before starting its safe signal listener, restores the prior umask only
+after all creation and cleanup have finished on every controlled exit, and
+uses the same cleanup guard for `INT`, `TERM`, and `HUP`. Synthetic self-tests
+must prove the umask restoration and catchable-signal cleanup paths.
 
 ### Fixed verifier constants and immutable inputs
 

@@ -243,8 +243,25 @@ censorship resistance, production readiness, or browser identity.
   was adopted, and archived Python validation tooling remains frozen. The S2
   policy now permits only one unpublished, non-product `maverick-tests`
   verifier target with exact tool-only `rustix 1.1.4` (`fs`, `process`) and
-  `flate2 1.1.9` (`rust_backend`, no default features) pins, reuse of existing
-  Tokio catchable-signal handling, and the exact reviewed lockfile closure.
+  `flate2 1.1.9` (`rust_backend`, no default features) pins, exact
+  `signal-hook 0.4.4` with default features disabled, its safe high-level flag
+  API only, and a lockfile closure S2 must still prove. The prior Tokio-only
+  receiver design remains RED because signal delivery can become pending before
+  runtime-driver broadcast, leaving a success race. The replacement contract
+  permits one `SeqCst` `ACTIVE`/`SIGNALLED`/`COMMITTED` atomic only; it forbids
+  direct registry or handler code, first-party `unsafe`, timers, yields, and
+  sentinel signals, with safe unregistration by returned registration ID as
+  the only unregistration path. The sole success compare-exchange comes after
+  replay, exact cleanup, and prior-umask restoration. Exact
+  `INT`/`TERM`/`HUP` self-tests must cover barriers before final manifest
+  verification and after cleanup but before that commit. A signal ordered before
+  the compare-exchange makes the result RED; one ordered after it cannot revoke
+  the already committed outcome, even though the handler may overwrite the
+  atomic storage. Because safe unregistration does not restore the prior signal
+  disposition, every signal-bearing test or controlled invocation runs in a
+  disposable child that exits immediately after unregistering; no shared
+  process continues. Production exits immediately after `COMMITTED` with no
+  fallible work.
   Building and synthetic self-testing occur before mechanical replay; replay
   must use the already-built exact binary and cannot invoke Cargo, rustc, or
   input code. This document-only precision does not create the verifier, read

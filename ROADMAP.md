@@ -127,8 +127,19 @@ that exact candidate and replay. No slice may fetch source, contact upstream
 implicitly, edit vendor or product/runtime Cargo code, or advance PR-4 merely
 because the preceding document or tool exists. The sole S2 tooling exception
 is one verifier target in the unpublished `maverick-tests` package, exact
-tool-only `rustix`/`flate2` pins, reuse of existing Tokio signal handling, and
-the corresponding reviewed lockfile closure. It may build and self-test before
+tool-only `rustix`/`flate2` pins, exact `signal-hook 0.4.4` with default
+features disabled, and a corresponding lockfile closure that S2 must still
+prove. Only `signal-hook`'s safe high-level flag API may drive one `SeqCst`
+`ACTIVE`/`SIGNALLED`/`COMMITTED` atomic; direct registry or signal-handler code,
+first-party `unsafe`, timers, yields, and sentinel signals are forbidden; only
+safe unregistration by returned registration ID is allowed. Exact
+`INT`/`TERM`/`HUP` tests must cover deterministic barriers before final
+manifest verification and after cleanup but before the sole success
+compare-exchange. That compare-exchange is the result linearization point: a
+signal ordered first makes the result RED, while a later signal cannot revoke
+an already committed result. Signal-bearing tests run only in disposable child
+processes that exit immediately after safe unregistration; no shared process
+continues with altered signal disposition. It may build and self-test before
 replay, but the already-built mechanical verifier must not invoke Cargo or
 execute input code. Each old patch still needs its own evidence-backed `DROP`
 or complete `RETAIN` result.

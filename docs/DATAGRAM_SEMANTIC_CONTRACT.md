@@ -1,6 +1,6 @@
 # Maverick Datagram Semantic Contract
 
-Date: 2026-08-12
+Date: 2026-08-13
 Status: **Accepted architecture contract; implementation and public API remain unproven**
 
 ## Purpose
@@ -13,15 +13,16 @@ It is an architecture contract, not evidence that the current product already
 implements owned associations, native Datagram, CONNECT-UDP, multi-target
 SOCKS, server fairness, or real-network UDP.
 
-QRET-1 supersession (2026-08-12): config-v1 Quinn H3 is retired from the
-product. References below to legacy H3 DATA preserve the accepted,
-backend-neutral reliable-framing semantics and a temporary loopback test
-oracle only; they do not describe a runnable product path. The Quinn product
-adapter planned for D-004 is stopped. Any future reliable H3 DATA adapter must
-be implemented and validated independently on qualified quiche through
-complete, runnable, and migratable Product Config v2. This note does not alter
-the API, wire, resource, ownership, or acceptance requirements in this
-contract.
+QRET-1/QRET-2 supersession (2026-08-13): config-v1 Quinn H3 is retired from the
+product, and its implementation, dependencies, feature, and loopback test are
+removed from the current source tree. References below to legacy H3 DATA
+preserve the accepted, backend-neutral reliable-framing semantics and immutable
+historical oracle only; they do not describe a runnable product path. The Quinn
+product adapter planned for D-004 is stopped. Any future reliable H3 DATA
+adapter must be implemented and validated independently on qualified quiche
+through complete, runnable, and migratable Product Config v2. This note does
+not alter the API, wire, resource, ownership, or acceptance requirements in
+this contract.
 
 ## Terms
 
@@ -40,7 +41,7 @@ contract.
 | Path | Delivery | Target model | Unsolicited receive | Native Datagram |
 |---|---|---|---:|---:|
 | H2 serial compatibility | reliable ordered compatibility | per-datagram target | no | no |
-| legacy H3 DATA duplex framing (contract/test oracle) | reliable ordered compatibility | fixed target | yes | no |
+| legacy H3 DATA duplex framing (contract/historical oracle) | reliable ordered compatibility | fixed target | yes | no |
 | future CONNECT-UDP over HTTP/3 Datagram | unreliable unordered | fixed target per child | yes | yes |
 | SOCKS UDP manager | determined by each child | child association per target | determined by child | determined by child |
 | TUN five-tuple | determined by adapter | fixed target | determined by adapter | determined by adapter |
@@ -74,10 +75,10 @@ These names are explanatory, not a frozen public Rust API.
 - One supervisor owns the transport, target owner, policy state, and the only
   terminal transition.
 
-A test-only legacy Quinn oracle may use its existing borrowed legacy-H3 split
-internally. The contract does not require those borrowed halves themselves to
-become public or `'static`; the owning supervisor provides the independent
-lifetime boundary. This allowance does not authorize a Quinn product adapter.
+Archived Quinn history used borrowed legacy-H3 halves internally. Those removed
+shapes are provenance, not a public or `'static` API requirement. Any future
+qualified quiche adapter must establish its own independent lifetime boundary;
+history does not authorize restoring a Quinn product adapter.
 
 ## Mandatory invariants
 
@@ -181,7 +182,8 @@ failure, or scheduler race is not evidence.
 D-003 proves ownership and progress only against the fake adapter. Its
 backend-neutral write-backpressure, UDP source/socket release, and carrier
 cleanup requirements remain accepted, but the D-004 Quinn product adaptation
-is stopped by the QRET-1 supersession above. A future quiche adapter must prove
+is stopped by the QRET-1/QRET-2 supersession above. A future quiche adapter must
+prove
 those requirements independently. Test scaffolding must not be promoted into
 a real transport or product claim.
 
@@ -201,8 +203,8 @@ a real transport or product claim.
 
 ## Explicit non-goals for D-001 through D-003
 
-- no change to existing public `DatagramFlow`, `FlowConnector`, or borrowed
-  legacy-H3 public signatures;
+- no change to existing public `DatagramFlow` or `FlowConnector`, and no
+  restoration of removed borrowed legacy-H3 shapes;
 - no production TUN, SOCKS, H2, H3, server, or SDK migration;
 - no config, auth, frame, wire, version, Auto, retry, or fallback change;
 - no CONNECT-UDP, QUIC DATAGRAM, PMTU, IPv6 evidence expansion, multi-target

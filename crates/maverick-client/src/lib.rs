@@ -5,10 +5,7 @@
 pub mod connection_manager;
 pub mod dns;
 pub mod h2_transport;
-#[cfg(feature = "h3")]
-pub mod h3_transport;
 pub mod http_connect;
-pub mod scheduler;
 pub mod session;
 pub mod socks5;
 pub mod transport;

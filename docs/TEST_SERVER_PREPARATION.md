@@ -216,10 +216,10 @@ stacks:
   applying stricter privacy rules.
 
 Config v1 has no H3 exception. `advanced.experimental_h3=true` fails before any
-QUIC/UDP carrier starts, and there is no H3-to-H2 fallback. The retained Quinn
-loopback oracle is not a deployment capability. If a future qualified quiche
-carrier opens through Product Config v2, its host policy must be documented
-separately at that time.
+QUIC/UDP carrier starts, and there is no H3-to-H2 fallback. QRET-2 removes the
+Quinn implementation and loopback oracle; immutable history is not a deployment
+capability. If a future qualified quiche carrier opens through Product Config
+v2, its host policy must be documented separately at that time.
 
 The server-sent half of all three modes' server-to-target TCP connections uses
 the server's TCP congestion-control default. UDP and DNS relay sockets do not

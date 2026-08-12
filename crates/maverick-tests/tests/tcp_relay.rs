@@ -189,14 +189,11 @@ async fn h2_request_shape(
         transport::TunnelRequestSender::CloudflareWs(_) => {
             anyhow::bail!("h2_request_shape does not support websocket carrier")
         }
-        #[cfg(feature = "h3")]
-        transport::TunnelRequestSender::H3(_) => {
-            anyhow::bail!("h2_request_shape does not support h3 carrier")
-        }
     }
 }
 
-async fn start_capture_fallback() -> Result<(SocketAddr, oneshot::Receiver<String>)> {
+async fn start_capture_fallback() -> Result<(SocketAddr, oneshot::Receiver<(String, usize, usize)>)>
+{
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let (request_line_tx, request_line_rx) = oneshot::channel();
@@ -204,23 +201,39 @@ async fn start_capture_fallback() -> Result<(SocketAddr, oneshot::Receiver<Strin
         if let Ok((mut stream, _)) = listener.accept().await {
             let mut request = Vec::new();
             let mut buf = [0u8; 1024];
-            loop {
+            let header_end = loop {
                 match stream.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => return,
                     Ok(n) => {
                         request.extend_from_slice(&buf[..n]);
-                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                            break;
+                        if let Some(position) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            break position + 4;
                         }
                     }
                 }
-            }
-            let request_line = String::from_utf8_lossy(&request)
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]).into_owned();
+            let content_length = headers
                 .lines()
-                .next()
-                .unwrap_or_default()
-                .to_owned();
-            let _ = request_line_tx.send(request_line);
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                match stream.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let request_line = headers.lines().next().unwrap_or_default().to_owned();
+            let _ =
+                request_line_tx.send((request_line, request.len() - header_end, content_length));
             let body = b"captured fallback";
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: text/plain; charset=utf-8\r\nconnection: close\r\n\r\n",
@@ -1173,7 +1186,7 @@ async fn active_probe_h2_rejections_match_reverse_proxy_fallback_shape() -> Resu
 }
 
 #[tokio::test]
-async fn bad_auth_reverse_proxy_fallback_preserves_tunnel_path_and_query() -> Result<()> {
+async fn bad_auth_reverse_proxy_fallback_preserves_path_query_and_available_body() -> Result<()> {
     let (fallback_addr, request_line_rx) = start_capture_fallback().await?;
     let fixture = MaverickHarness::start_with_options(HarnessOptions {
         fallback: Some(FallbackConfig::ReverseProxy {
@@ -1187,11 +1200,14 @@ async fn bad_auth_reverse_proxy_fallback_preserves_tunnel_path_and_query() -> Re
 
     let body = tunnel_attempt_body_at(&bad, "/assets/upload?case=bad-auth", None).await?;
     assert_fallback_body(&body);
-    let request_line = timeout(Duration::from_secs(2), request_line_rx).await??;
+    let (request_line, body_len, declared_body_len) =
+        timeout(Duration::from_secs(2), request_line_rx).await??;
     assert_eq!(
         request_line,
         "POST /mirror/assets/upload?case=bad-auth HTTP/1.1"
     );
+    assert!(body_len > 0);
+    assert_eq!(body_len, declared_body_len);
 
     fixture.shutdown().await?;
     Ok(())
@@ -1570,38 +1586,6 @@ fn auth_v2_hello(config: &ClientConfig, epoch: u64) -> Result<Vec<u8>> {
         0,
     )?
     .encode()?)
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn retired_v1_h3_product_entries_return_fixed_error() -> Result<()> {
-    let server_error = match MaverickHarness::start_with_h3().await {
-        Ok(fixture) => {
-            fixture.shutdown().await?;
-            anyhow::bail!("retired config-v1 H3 unexpectedly started a server")
-        }
-        Err(error) => error,
-    };
-    assert_eq!(
-        server_error.to_string(),
-        "configuration error: advanced.experimental_h3=true is retired for config version 1"
-    );
-
-    let fixture = MaverickHarness::start().await?;
-    let mut config = fixture.client_config();
-    config.advanced.experimental_h3 = true;
-
-    let error = match transport::connect(&config).await {
-        Ok(_) => anyhow::bail!("retired config-v1 H3 unexpectedly selected a transport"),
-        Err(error) => error,
-    };
-    assert_eq!(
-        error.to_string(),
-        "configuration error: advanced.experimental_h3=true is retired for config version 1"
-    );
-
-    fixture.shutdown().await?;
-    Ok(())
 }
 
 #[tokio::test]

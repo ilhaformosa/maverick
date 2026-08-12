@@ -1,8 +1,5 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -11,7 +8,6 @@ use maverick_core::config::v2::{project_v1_client_policy, TransportStrategy};
 use maverick_core::{ClientConfig, GuiTransportCarrier, GuiTransportDebugSnapshot};
 
 use crate::h2_transport;
-use crate::scheduler::{SchedulerPolicy, SchedulerState};
 
 pub struct H2TunnelRequestSender {
     pub sender: h2::client::SendRequest<Bytes>,
@@ -26,14 +22,13 @@ pub struct CloudflareWsTunnel {
 pub enum TunnelRequestSender {
     H2(H2TunnelRequestSender),
     CloudflareWs(Box<CloudflareWsTunnel>),
-    #[cfg(feature = "h3")]
-    H3(crate::h3_transport::H3RequestSender),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportKind {
     H2,
     CloudflareWs,
+    /// Compatibility shape only; no current implementation is installed.
     H3,
 }
 
@@ -114,8 +109,7 @@ fn legacy_default_transport_kind(config: &ClientConfig) -> TransportKind {
     if config.advanced.cloudflare_ws_enabled() {
         return TransportKind::CloudflareWs;
     }
-    let policy = runtime_policy(config);
-    policy.select_transport(&runtime_state(config))
+    TransportKind::H2
 }
 
 pub fn transport_debug_snapshot(config: &ClientConfig) -> GuiTransportDebugSnapshot {
@@ -124,7 +118,7 @@ pub fn transport_debug_snapshot(config: &ClientConfig) -> GuiTransportDebugSnaps
     }
     GuiTransportDebugSnapshot::new(
         gui_transport_carrier(default_transport_kind(config)),
-        h3_runtime_enabled(config),
+        false,
         false,
     )
 }
@@ -136,73 +130,7 @@ pub async fn connect(config: &ClientConfig) -> Result<TunnelRequestSender> {
         TransportKind::CloudflareWs => Ok(TunnelRequestSender::CloudflareWs(Box::new(
             crate::ws_transport::connect(config).await?,
         ))),
-        TransportKind::H3 => match h3_connect(config).await {
-            Ok(sender) => Ok(sender),
-            Err(err) => {
-                let policy = runtime_policy(config);
-                mark_h3_failed(config, policy.h3_cooldown);
-                tracing::debug!(error = %err, "H3 transport failed; falling back to H2");
-                H2Transport.connect(config).await
-            }
-        },
-    }
-}
-
-async fn h3_connect(config: &ClientConfig) -> Result<TunnelRequestSender> {
-    #[cfg(feature = "h3")]
-    {
-        Ok(TunnelRequestSender::H3(
-            crate::h3_transport::connect(config).await?,
-        ))
-    }
-    #[cfg(not(feature = "h3"))]
-    {
-        let _ = config;
-        anyhow::bail!("H3 transport feature is not enabled")
-    }
-}
-
-fn h3_runtime_enabled(config: &ClientConfig) -> bool {
-    let _ = config;
-    false
-}
-
-fn runtime_policy(config: &ClientConfig) -> SchedulerPolicy {
-    let mut policy = SchedulerPolicy::for_mode(config.mode);
-    policy.h3_enabled = h3_runtime_enabled(config);
-    policy
-}
-
-fn runtime_state(config: &ClientConfig) -> SchedulerState {
-    let _ = config;
-    SchedulerState::default()
-}
-
-fn h3_cooldowns() -> &'static Mutex<HashMap<String, Instant>> {
-    static COOLDOWNS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-    COOLDOWNS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn h3_cooldown_key(config: &ClientConfig) -> String {
-    format!("{}|{}", config.server.address, config.server.server_name)
-}
-
-#[cfg(test)]
-fn h3_in_cooldown(config: &ClientConfig) -> bool {
-    let now = Instant::now();
-    let Ok(mut cooldowns) = h3_cooldowns().lock() else {
-        return false;
-    };
-    cooldowns.retain(|_, until| *until > now);
-    cooldowns
-        .get(&h3_cooldown_key(config))
-        .is_some_and(|until| *until > now)
-}
-
-fn mark_h3_failed(config: &ClientConfig, cooldown: std::time::Duration) {
-    let until = Instant::now() + cooldown;
-    if let Ok(mut cooldowns) = h3_cooldowns().lock() {
-        cooldowns.insert(h3_cooldown_key(config), until);
+        TransportKind::H3 => anyhow::bail!("H3 transport implementation is unavailable"),
     }
 }
 
@@ -406,24 +334,20 @@ mod tests {
     }
 
     #[test]
-    fn transport_debug_snapshot_forces_retired_h3_to_h2_even_with_websocket_and_cooldown() {
+    fn transport_debug_snapshot_forces_retired_h3_to_h2_even_with_websocket() {
         let mut config = client_config();
         config.mode = Mode::Auto;
         config.advanced.experimental_h3 = true;
         config.advanced.experimental_cloudflare_ws = true;
-        mark_h3_failed(&config, std::time::Duration::from_secs(300));
         let snapshot = transport_debug_snapshot(&config);
 
         assert_eq!(snapshot.active_transport, GuiTransportCarrier::H2);
         assert!(!snapshot.h3_in_cooldown);
         assert!(!snapshot.h3_candidate_enabled);
-        if let Ok(mut cooldowns) = h3_cooldowns().lock() {
-            cooldowns.remove(&h3_cooldown_key(&config));
-        }
     }
 
     #[tokio::test]
-    async fn retired_v1_h3_is_rejected_before_fallback_or_cooldown() {
+    async fn retired_v1_h3_is_rejected_before_transport_io() {
         let mut config = client_config();
         config.server.address = "127.0.0.1:1".into();
         config.server.server_name = "localhost".into();
@@ -439,7 +363,6 @@ mod tests {
             error.to_string(),
             "configuration error: advanced.experimental_h3=true is retired for config version 1"
         );
-        assert!(!h3_in_cooldown(&config));
     }
 
     fn assert_projected_h2(config: &ClientConfig) {

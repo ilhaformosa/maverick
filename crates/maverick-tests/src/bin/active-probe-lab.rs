@@ -155,11 +155,6 @@ async fn main() -> Result<()> {
                 reason: "the explicit WebSocket carrier rejects a wrong upgrade path instead of invoking the HTTP fallback",
             },
             CoverageItem {
-                surface: "H3 fallback parity",
-                status: "feature_gated_regression",
-                reason: "the H3 harness checks ordinary, malformed, bad-auth, replay, and preserved-body fallback paths",
-            },
-            CoverageItem {
                 surface: "HTTPS reverse-proxy upstream",
                 status: "unsupported_evaluated",
                 reason: "v1.1 accepts only HTTP upstreams and converts unsupported or failed upstreams to a generic 502 response",
@@ -528,8 +523,6 @@ async fn h2_request(
     let mut h2 = match transport::connect(config).await? {
         transport::TunnelRequestSender::H2(h2) => h2,
         transport::TunnelRequestSender::CloudflareWs(_) => bail!("expected H2 transport"),
-        #[cfg(feature = "h3")]
-        transport::TunnelRequestSender::H3(_) => bail!("expected H2 transport"),
     };
     let mut builder = Request::builder().method(method).uri(uri);
     for (name, value) in &headers {

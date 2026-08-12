@@ -2,8 +2,8 @@
 //!
 //! Maverick is an experimental prototype. It uses TLS 1.3 + HTTP/2 for
 //! default transport encryption and HMAC-SHA256 for in-channel client
-//! authentication. The legacy feature-gated Quinn/H3 code remains only as a
-//! temporary test oracle; config-v1 cannot run it.
+//! authentication. Config-v1 H3 is a fixed tombstone and has no current
+//! transport implementation.
 
 #![forbid(unsafe_code)]
 

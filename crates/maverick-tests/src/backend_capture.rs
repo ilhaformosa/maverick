@@ -6,17 +6,15 @@ const RETRY_INTEGRITY_TAG_LENGTH: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObservationSubject {
-    Quinn,
     Quiche,
     Chrome,
 }
 
 impl ObservationSubject {
-    pub const ALL: [Self; 3] = [Self::Quinn, Self::Quiche, Self::Chrome];
+    pub const ALL: [Self; 2] = [Self::Quiche, Self::Chrome];
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Quinn => "quinn",
             Self::Quiche => "quiche",
             Self::Chrome => "chrome",
         }
@@ -25,7 +23,6 @@ impl ObservationSubject {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreflightBlocker {
-    CommonLoopbackObserverAdapterNotImplemented,
     CurrentMainQuicheAdapterUnavailable,
     LegacyChromeQuicDisabled,
 }
@@ -33,9 +30,6 @@ pub enum PreflightBlocker {
 impl fmt::Display for PreflightBlocker {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::CommonLoopbackObserverAdapterNotImplemented => {
-                "common loopback observer adapter not implemented"
-            }
             Self::CurrentMainQuicheAdapterUnavailable => "current main quiche adapter unavailable",
             Self::LegacyChromeQuicDisabled => "legacy Chrome QUIC disabled",
         })
@@ -56,7 +50,7 @@ pub struct SubjectPreflight {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreflightReport {
-    pub subjects: [SubjectPreflight; 3],
+    pub subjects: [SubjectPreflight; 2],
 }
 
 impl PreflightReport {
@@ -95,12 +89,6 @@ impl std::error::Error for PreflightFailure {}
 pub fn current_main_preflight() -> PreflightReport {
     PreflightReport {
         subjects: [
-            SubjectPreflight {
-                subject: ObservationSubject::Quinn,
-                state: PreflightState::Blocked(
-                    PreflightBlocker::CommonLoopbackObserverAdapterNotImplemented,
-                ),
-            },
             SubjectPreflight {
                 subject: ObservationSubject::Quiche,
                 state: PreflightState::Blocked(
@@ -426,10 +414,6 @@ mod tests {
             error.blockers,
             vec![
                 (
-                    ObservationSubject::Quinn,
-                    PreflightBlocker::CommonLoopbackObserverAdapterNotImplemented,
-                ),
-                (
                     ObservationSubject::Quiche,
                     PreflightBlocker::CurrentMainQuicheAdapterUnavailable,
                 ),
@@ -441,14 +425,10 @@ mod tests {
         );
         assert_eq!(
             error.blockers[0].1.to_string(),
-            "common loopback observer adapter not implemented"
-        );
-        assert_eq!(
-            error.blockers[1].1.to_string(),
             "current main quiche adapter unavailable"
         );
         assert_eq!(
-            error.blockers[2].1.to_string(),
+            error.blockers[1].1.to_string(),
             "legacy Chrome QUIC disabled"
         );
     }

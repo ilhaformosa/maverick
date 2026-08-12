@@ -27,7 +27,7 @@ body:
         - CLI
         - config
         - H2 transport
-        - H3 transport
+        - Retired config-v1 H3 flag
         - Cloudflare-fronted WebSocket
         - TUN experimental harness
         - Noise experimental harness

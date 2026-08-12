@@ -13,7 +13,6 @@ path = "src/main.rs"
 default = ["browser-tls"]
 browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
 ech = ["maverick-client/ech", "maverick-server/ech"]
-h3 = ["maverick-client/h3", "maverick-server/h3"]
 
 [dependencies]
 anyhow.workspace = true

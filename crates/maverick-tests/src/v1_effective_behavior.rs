@@ -5,20 +5,16 @@
 //! not read the network, secrets, the clock, cooldown state, or the environment,
 //! and it is not a runtime diagnostics surface. Config-v1 H3 is retired, so
 //! `experimental_h3=true` cannot satisfy this evaluator's validated-input
-//! precondition. Legacy H3 result shapes remain unchanged for source
-//! compatibility until the later Quinn deletion slice.
+//! precondition, and no retired Quinn build or fallback shape remains here.
 
 use maverick_core::config::{CdnFrontingCarrier, CdnFrontingProvider};
 use maverick_core::frame::FRAME_HEADER_LEN;
 use maverick_core::{ClientConfig, Mode, ServerConfig, TlsFingerprintMode};
 
-pub const H3_SETUP_COOLDOWN_SECS: u64 = 300;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MappingBlocker {
     UnsupportedV2Carrier,
     MixedTrustRoutesNotRepresentable,
-    H3SetupFallbackCrossesSecurityBoundary,
     EnabledShapingPolicyUnfrozen,
     LegacyModeCompatibilityUnresolved,
 }
@@ -42,48 +38,12 @@ pub enum ClientCarrier {
     H2Only,
     FrontedH2,
     FrontedWebSocket,
-    /// Compatibility-only shape retained until the later Quinn deletion slice.
-    H3PreferredWithSetupFailureFallbackToH2,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum H3SetupFailureClass {
-    DnsResolution,
-    LocalQuicEndpoint,
-    CertificateAuthorityOrPin,
-    ServerName,
-    TlsOrQuicHandshake,
-    H3ConnectionSetup,
-    SetupTimeout,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct H3AttemptPolicy {
-    pub setup_failure_classes: [H3SetupFailureClass; 7],
-    pub setup_failure_falls_back_to_h2: bool,
-    pub setup_failure_starts_cooldown_secs: u64,
-    pub current_cooldown_suppresses_h3_setup: bool,
-    pub post_setup_failure_falls_back_to_h2: bool,
-    pub post_setup_failure_starts_cooldown: bool,
-    pub oracle_reads_current_cooldown: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClientCarrierPolicy {
     pub candidate_selection_policy: ClientCarrier,
     pub h3_configured: bool,
-    pub h3_build_available: bool,
-    pub h3_suppressed_by_stable_mode: bool,
-    pub h3_attempt_policy: Option<H3AttemptPolicy>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServerH3Entry {
-    DisabledByConfig,
-    /// Compatibility-only shape retained until the later Quinn deletion slice.
-    Enabled,
-    /// Compatibility-only shape retained until the later Quinn deletion slice.
-    BuildUnavailableAtStartup,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,8 +51,6 @@ pub struct ServerCarrierPolicy {
     pub h2_entry_enabled: bool,
     pub websocket_entry_enabled: bool,
     pub h3_configured: bool,
-    pub h3_build_available: bool,
-    pub h3_entry: ServerH3Entry,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,7 +73,6 @@ pub struct LocalTrustRoute {
 pub enum Carrier {
     H2,
     WebSocket,
-    H3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -301,11 +258,9 @@ pub struct ServerV1Behavior {
 }
 
 /// Evaluates a `ClientConfig` that has already passed `ClientConfig::validate`.
-pub fn evaluate_client(config: &ClientConfig, h3_compiled: bool) -> ClientV1Behavior {
+pub fn evaluate_client(config: &ClientConfig) -> ClientV1Behavior {
     let fronted = config.advanced.tls_terminating_fronting_enabled();
     let h3_configured = config.advanced.experimental_h3;
-    let h3_suppressed_by_stable_mode = false;
-    let h3_attempt = None;
     let carrier = if config.advanced.cloudflare_ws_enabled() {
         ClientCarrier::FrontedWebSocket
     } else if config.advanced.cdn_fronted_h2_enabled() {
@@ -340,20 +295,6 @@ pub fn evaluate_client(config: &ClientConfig, h3_compiled: bool) -> ClientV1Beha
             TlsFingerprintMode::RustlsDefault,
             channel_binding,
         )],
-        ClientCarrier::H3PreferredWithSetupFailureFallbackToH2 => vec![
-            client_carrier_security(
-                Carrier::H3,
-                configured_trust_route,
-                TlsFingerprintMode::RustlsDefault,
-                channel_binding,
-            ),
-            client_carrier_security(
-                Carrier::H2,
-                configured_trust_route,
-                config.advanced.stealth.tls_fingerprint,
-                channel_binding,
-            ),
-        ],
     };
     let shaping = client_shaping(config);
     let mut blockers = Vec::new();
@@ -376,9 +317,6 @@ pub fn evaluate_client(config: &ClientConfig, h3_compiled: bool) -> ClientV1Beha
         carrier: ClientCarrierPolicy {
             candidate_selection_policy: carrier,
             h3_configured,
-            h3_build_available: h3_compiled,
-            h3_suppressed_by_stable_mode,
-            h3_attempt_policy: h3_attempt,
         },
         carrier_security,
         auth: ClientAuthBehavior {
@@ -401,11 +339,10 @@ pub fn evaluate_client(config: &ClientConfig, h3_compiled: bool) -> ClientV1Beha
 }
 
 /// Evaluates a `ServerConfig` that has already passed `ServerConfig::validate`.
-pub fn evaluate_server(config: &ServerConfig, h3_compiled: bool) -> ServerV1Behavior {
+pub fn evaluate_server(config: &ServerConfig) -> ServerV1Behavior {
     let front_configuration_disables_binding = config.advanced.tls_terminating_fronting_enabled();
     let websocket_entry_enabled = config.advanced.cloudflare_ws_enabled();
     let h3_configured = config.advanced.experimental_h3;
-    let h3_entry = ServerH3Entry::DisabledByConfig;
     let channel_binding = configured_channel_binding(
         config.auth.channel_binding.enabled,
         config.auth.channel_binding.require,
@@ -481,8 +418,6 @@ pub fn evaluate_server(config: &ServerConfig, h3_compiled: bool) -> ServerV1Beha
             h2_entry_enabled: true,
             websocket_entry_enabled,
             h3_configured,
-            h3_build_available: h3_compiled,
-            h3_entry,
         },
         carrier_security,
         auth: ServerAuthBehavior {
@@ -545,7 +480,7 @@ fn client_carrier_security(
         Carrier::H2 if configured_fingerprint == TlsFingerprintMode::BrowserMimic => {
             TlsBackend::BrowserMimic
         }
-        Carrier::H2 | Carrier::WebSocket | Carrier::H3 => TlsBackend::Rustls,
+        Carrier::H2 | Carrier::WebSocket => TlsBackend::Rustls,
     };
     CarrierSecurity {
         carrier,
@@ -774,13 +709,13 @@ fallback:
     #[test]
     fn mode_wire_ids_remain_local_and_peer_unconfirmed() {
         for (mode, wire_id) in [(Mode::Auto, 0), (Mode::Stable, 1)] {
-            let client = evaluate_client(&client(mode), true);
+            let client = evaluate_client(&client(mode));
             assert_eq!(client.mode.client_hello_mode, mode);
             assert_eq!(client.mode.wire_id, wire_id);
             assert!(!client.mode.peer_confirmed_session_mode);
         }
         for (mode, wire_id) in [(Mode::Auto, 0), (Mode::Stable, 1), (Mode::Private, 2)] {
-            let server = evaluate_server(&server(mode), true);
+            let server = evaluate_server(&server(mode));
             assert_eq!(server.mode.local_mode_default, mode);
             assert_eq!(server.mode.wire_id, wire_id);
             assert!(!server.mode.client_mode_compared_or_stored);
@@ -799,7 +734,7 @@ fallback:
             explicit
         }] {
             config.validate().unwrap();
-            let behavior = evaluate_client(&config, false);
+            let behavior = evaluate_client(&config);
             assert!(behavior.blockers.is_empty());
             let projection = project_v1_client_policy(&config).unwrap();
             let policy = projection.policy();
@@ -855,7 +790,7 @@ fallback:
 
         let mut fronted_h2 = client(Mode::Auto);
         enable_front(&mut fronted_h2, CdnFrontingCarrier::H2);
-        assert!(evaluate_client(&fronted_h2, true).blockers.is_empty());
+        assert!(evaluate_client(&fronted_h2).blockers.is_empty());
         assert_eq!(
             project_v1_client_policy(&fronted_h2),
             Err(V1ClientPolicyProjectionBlocker::TlsTerminatingFrontConfigured)
@@ -865,11 +800,11 @@ fallback:
     #[test]
     fn stable_and_server_legacy_mode_blockers_remain() {
         assert_eq!(
-            evaluate_client(&client(Mode::Stable), false).blockers,
+            evaluate_client(&client(Mode::Stable)).blockers,
             vec![MappingBlocker::LegacyModeCompatibilityUnresolved]
         );
         assert_eq!(
-            evaluate_server(&server(Mode::Auto), false).blockers,
+            evaluate_server(&server(Mode::Auto)).blockers,
             vec![MappingBlocker::LegacyModeCompatibilityUnresolved]
         );
     }
@@ -884,7 +819,7 @@ fallback:
     #[test]
     fn private_client_legacy_mode_blocker_remains() {
         assert_eq!(
-            evaluate_client(&client(Mode::Private), false).blockers,
+            evaluate_client(&client(Mode::Private)).blockers,
             vec![MappingBlocker::LegacyModeCompatibilityUnresolved]
         );
     }
@@ -898,7 +833,7 @@ fallback:
     ))]
     #[test]
     fn private_client_keeps_wire_id_two_without_peer_confirmation() {
-        let behavior = evaluate_client(&client(Mode::Private), true);
+        let behavior = evaluate_client(&client(Mode::Private));
         assert_eq!(behavior.mode.client_hello_mode, Mode::Private);
         assert_eq!(behavior.mode.wire_id, 2);
         assert!(!behavior.mode.peer_confirmed_session_mode);
@@ -961,10 +896,7 @@ advanced:
 "#
         ))
         .unwrap();
-        assert_eq!(
-            evaluate_client(&implicit, false),
-            evaluate_client(&explicit, false)
-        );
+        assert_eq!(evaluate_client(&implicit), evaluate_client(&explicit));
 
         let implicit = server(Mode::Auto);
         let explicit = ServerConfig::from_yaml_str(&format!(
@@ -1014,25 +946,19 @@ advanced:
 "#
         ))
         .unwrap();
-        assert_eq!(
-            evaluate_server(&implicit, false),
-            evaluate_server(&explicit, false)
-        );
+        assert_eq!(evaluate_server(&implicit), evaluate_server(&explicit));
     }
 
     #[test]
-    fn client_oracle_records_test_build_without_enabling_h3_for_valid_config() {
+    fn client_oracle_records_h2_without_a_retired_h3_candidate() {
         let config = client(Mode::Auto);
         config.validate().unwrap();
-        let behavior = evaluate_client(&config, true);
+        let behavior = evaluate_client(&config);
         assert_eq!(
             behavior.carrier.candidate_selection_policy,
             ClientCarrier::H2Only
         );
-        assert!(behavior.carrier.h3_build_available);
         assert!(!behavior.carrier.h3_configured);
-        assert!(!behavior.carrier.h3_suppressed_by_stable_mode);
-        assert!(behavior.carrier.h3_attempt_policy.is_none());
         assert_eq!(behavior.carrier_security.len(), 1);
         assert_eq!(behavior.carrier_security[0].carrier, Carrier::H2);
         assert!(behavior.blockers.is_empty());
@@ -1042,7 +968,7 @@ advanced:
     fn fronted_client_carriers_keep_route_tls_name_and_binding_facts() {
         let mut h2 = client(Mode::Auto);
         enable_front(&mut h2, CdnFrontingCarrier::H2);
-        let h2 = evaluate_client(&h2, true);
+        let h2 = evaluate_client(&h2);
         assert_eq!(
             h2.carrier.candidate_selection_policy,
             ClientCarrier::FrontedH2
@@ -1064,7 +990,7 @@ advanced:
 
         let mut ws = client(Mode::Auto);
         enable_front(&mut ws, CdnFrontingCarrier::WebSocket);
-        let ws = evaluate_client(&ws, true);
+        let ws = evaluate_client(&ws);
         assert_eq!(
             ws.carrier.candidate_selection_policy,
             ClientCarrier::FrontedWebSocket
@@ -1074,14 +1000,12 @@ advanced:
     }
 
     #[test]
-    fn server_oracle_records_test_build_without_enabling_h3_for_valid_config() {
+    fn server_oracle_records_h2_without_a_retired_h3_entry() {
         let config = server(Mode::Auto);
         config.validate().unwrap();
-        let behavior = evaluate_server(&config, true);
+        let behavior = evaluate_server(&config);
         assert!(behavior.carrier.h2_entry_enabled);
-        assert!(behavior.carrier.h3_build_available);
         assert!(!behavior.carrier.h3_configured);
-        assert_eq!(behavior.carrier.h3_entry, ServerH3Entry::DisabledByConfig);
         assert_eq!(behavior.carrier_security.len(), 1);
         assert_eq!(behavior.carrier_security[0].carrier, Carrier::H2);
         assert_eq!(
@@ -1094,7 +1018,7 @@ advanced:
     fn server_front_entries_keep_fixed_route_and_security_facts() {
         let mut h2 = server(Mode::Auto);
         enable_server_front(&mut h2, CdnFrontingCarrier::H2);
-        let h2 = evaluate_server(&h2, true);
+        let h2 = evaluate_server(&h2);
         assert_eq!(
             h2.carrier_security[0].trust_route.configured_assumption,
             TrustRoute::TlsTerminatingFront {
@@ -1121,7 +1045,7 @@ advanced:
 
         let mut ws_config = server(Mode::Auto);
         enable_server_front(&mut ws_config, CdnFrontingCarrier::WebSocket);
-        let ws = evaluate_server(&ws_config, true);
+        let ws = evaluate_server(&ws_config);
         assert!(ws.carrier.websocket_entry_enabled);
         assert_eq!(ws.carrier_security[0].carrier, Carrier::H2);
         assert_eq!(
@@ -1152,7 +1076,7 @@ advanced:
 
         ws_config.advanced.experimental_cloudflare_ws = true;
         ws_config.validate().unwrap();
-        assert_eq!(evaluate_server(&ws_config, true), ws);
+        assert_eq!(evaluate_server(&ws_config), ws);
     }
 
     #[test]
@@ -1175,7 +1099,7 @@ advanced:
         client.auth.v2.enabled = true;
         client.auth.rotation.active_epoch = Some("7".into());
         client.validate().unwrap();
-        let client = evaluate_client(&client, true);
+        let client = evaluate_client(&client);
         assert_eq!(client.auth.sends, ClientAuthProtocol::V2);
         assert_eq!(
             client.auth.credential_selection,
@@ -1191,7 +1115,7 @@ advanced:
         server.auth.v2.require = true;
         server.auth.v2.accepted_epochs = vec![7];
         server.validate().unwrap();
-        let server = evaluate_server(&server, true);
+        let server = evaluate_server(&server);
         assert_eq!(server.auth.accepts, ServerAuthProtocol::RequireV2);
         assert!(!server.auth.client_mode_compared_or_stored);
     }
@@ -1207,7 +1131,7 @@ advanced:
         });
         client.validate().unwrap();
         assert_eq!(
-            evaluate_client(&client, true).auth.credential_selection,
+            evaluate_client(&client).auth.credential_selection,
             ClientCredentialSelection::ClockDependentAndNotSelected
         );
 
@@ -1221,7 +1145,7 @@ advanced:
         });
         server.validate().unwrap();
         assert!(
-            evaluate_server(&server, true)
+            evaluate_server(&server)
                 .auth
                 .rotated_credential_acceptance_needs_clock
         );
@@ -1233,7 +1157,7 @@ advanced:
         required.auth.channel_binding.require = true;
         required.validate().unwrap();
         assert_eq!(
-            evaluate_client(&required, true).carrier_security[0].channel_binding,
+            evaluate_client(&required).carrier_security[0].channel_binding,
             ChannelBindingCandidate::TlsExporterRequired
         );
 
@@ -1241,7 +1165,7 @@ advanced:
         disabled.auth.channel_binding.enabled = false;
         disabled.validate().unwrap();
         assert_eq!(
-            evaluate_client(&disabled, true).carrier_security[0].channel_binding,
+            evaluate_client(&disabled).carrier_security[0].channel_binding,
             ChannelBindingCandidate::DisabledByPolicy
         );
 
@@ -1256,13 +1180,13 @@ advanced:
     #[test]
     fn shaping_mode_gates_match_runtime_padding_and_batcher_helpers() {
         assert!(
-            !evaluate_client(&client(Mode::Auto), true)
+            !evaluate_client(&client(Mode::Auto))
                 .shaping
                 .facts
                 .effective_enabled
         );
         assert!(
-            !evaluate_server(&server(Mode::Auto), true)
+            !evaluate_server(&server(Mode::Auto))
                 .shaping
                 .facts
                 .effective_enabled
@@ -1271,7 +1195,7 @@ advanced:
             let mut config = server(mode);
             config.advanced.shaping.enabled = true;
             config.validate().unwrap();
-            let behavior = evaluate_server(&config, true);
+            let behavior = evaluate_server(&config);
             assert_eq!(
                 behavior.shaping.facts.effective_enabled,
                 mode != Mode::Stable
@@ -1292,7 +1216,7 @@ advanced:
         let batcher = RuntimeBatcher::from_config(config.mode, &config.advanced.shaping);
         assert!(batcher.is_enabled());
         assert!(matches!(
-            evaluate_client(&config, true).shaping.batching,
+            evaluate_client(&config).shaping.batching,
             ClientBatching::EligibleFramesUseSingleSendCallDelayThenFlush {
                 cross_call_batching: false,
                 ..
@@ -1302,7 +1226,7 @@ advanced:
         let mut stable = client(Mode::Stable);
         stable.advanced.shaping.enabled = true;
         stable.validate().unwrap();
-        let stable = evaluate_client(&stable, true);
+        let stable = evaluate_client(&stable);
         assert!(!stable.shaping.facts.effective_enabled);
         assert_eq!(stable.shaping.batching, ClientBatching::Disabled);
     }
@@ -1319,7 +1243,7 @@ advanced:
         let mut config = client(Mode::Private);
         config.advanced.shaping.enabled = true;
         config.validate().unwrap();
-        let shaping = evaluate_client(&config, true).shaping;
+        let shaping = evaluate_client(&config).shaping;
         assert!(shaping.facts.effective_enabled);
         assert_eq!(
             shaping.facts.regular_padding,
@@ -1343,7 +1267,7 @@ advanced:
             config.validate().unwrap();
 
             assert_eq!(
-                evaluate_client(&config, true).shaping.batching,
+                evaluate_client(&config).shaping.batching,
                 ClientBatching::NoEligibleFrame {
                     max_batch_bytes: cap,
                     frame_header_bytes: FRAME_HEADER_LEN,
@@ -1360,7 +1284,7 @@ advanced:
         config.advanced.shaping.max_batch_bytes = (FRAME_HEADER_LEN + 1) as u32;
         config.validate().unwrap();
         assert!(matches!(
-            evaluate_client(&config, true).shaping.batching,
+            evaluate_client(&config).shaping.batching,
             ClientBatching::EligibleFramesUseSingleSendCallDelayThenFlush { .. }
         ));
         let mut runtime = RuntimeBatcher::from_config(config.mode, &config.advanced.shaping);
@@ -1378,7 +1302,7 @@ advanced:
         config.advanced.shaping.cover_traffic_operator_approved = true;
         config.advanced.shaping.max_overhead_ratio = 0.0;
         config.validate().unwrap();
-        let behavior = evaluate_client(&config, true);
+        let behavior = evaluate_client(&config);
         assert!(
             behavior
                 .shaping
@@ -1401,7 +1325,7 @@ advanced:
         config.advanced.shaping.max_overhead_ratio = 0.25;
         config.validate().unwrap();
         assert_eq!(
-            evaluate_client(&config, true)
+            evaluate_client(&config)
                 .shaping
                 .facts
                 .cover
@@ -1423,7 +1347,7 @@ advanced:
             .shaping
             .cover_traffic_operator_approved = true;
         client_config.validate().unwrap();
-        let cover = evaluate_client(&client_config, true).shaping.facts.cover;
+        let cover = evaluate_client(&client_config).shaping.facts.cover;
         assert!(cover.allowed_by_mode_config_and_approval);
         assert_eq!(
             cover.budget_eligibility,
@@ -1438,11 +1362,11 @@ advanced:
         let mut server = server(Mode::Auto);
         server.advanced.shaping.enabled = true;
         server.validate().unwrap();
-        let server = evaluate_server(&server, true);
+        let server = evaluate_server(&server);
         assert!(!server.shaping.batching.batcher_present);
         assert!(server.shaping.batching.configured_max_delay_runtime_inert);
         assert_eq!(
-            evaluate_client(&client(Mode::Auto), true)
+            evaluate_client(&client(Mode::Auto))
                 .shaping
                 .legacy_advanced_padding,
             LegacyPaddingField::RuntimeInert
@@ -1463,7 +1387,7 @@ advanced:
         config.advanced.shaping.enabled = true;
         config.validate().unwrap();
         assert_eq!(
-            evaluate_client(&config, true).blockers,
+            evaluate_client(&config).blockers,
             vec![
                 MappingBlocker::UnsupportedV2Carrier,
                 MappingBlocker::EnabledShapingPolicyUnfrozen,
@@ -1481,7 +1405,7 @@ advanced:
         config.advanced.padding = PRIVATE_MARKER.into();
         config.validate().unwrap();
 
-        let rendered = format!("{:?}", evaluate_client(&config, true));
+        let rendered = format!("{:?}", evaluate_client(&config));
         assert!(!rendered.contains(PRIVATE_MARKER));
     }
 }

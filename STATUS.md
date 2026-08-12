@@ -193,6 +193,20 @@ censorship resistance, production readiness, or browser identity.
   are stopped and must not be committed. This decision does not change v1.2
   Direct H2, does not place H3 in Auto, and does not count reliable H3 DATA
   framing as native UDP.
+- QRET-1 config-v1 retirement boundary (local candidate, 2026-08-12):
+  `advanced.experimental_h3=true` fails closed with the fixed root error
+  `advanced.experimental_h3=true is retired for config version 1` before DNS,
+  bind, file or referenced secret-store reads, local I/O, fallback, or cooldown
+  work. The field,
+  default/explicit `false`, Serde/URI/SDK shapes, and H2 behavior and bytes stay
+  unchanged. Direct public legacy H3 connection is also retired. Quinn code,
+  dependencies, and its local loopback test remain temporarily as a test-only
+  oracle for QRET-2; this slice adds no quiche runtime, Product Config v2, Auto
+  H3, wire change, or UDP product claim. Retired Quinn product tests duplicated
+  existing H2 relay, padding, auth, malformed/replay, DNS, SOCKS UDP, and
+  concurrency semantics; the one Quinn reverse-proxy available-body detail
+  remains an immutable-archive semantic oracle until it can be re-expressed
+  backend-neutrally.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by
@@ -600,9 +614,10 @@ Maverick wire or YAML settings. They govern packets sent by that server; they
 cannot make the owner's Mac, a provider edge, or a remote website use Linux
 BBR. The `stable` mode is always H2/TCP; `auto` and `private` default to H2/TCP,
 so all three normal carriers' server-sent halves can use the host's BBRv1 plus
-`fq` or `fq_codel`. Explicit experimental H3/QUIC uses UDP and its userspace
-congestion controller instead of TCP BBR, although its outgoing packets still
-pass through the server queue. The server-sent half of all three modes'
+`fq` or `fq_codel`. Config-v1 H3 has no host-policy exception: its retired flag
+fails before any QUIC/UDP socket or H3-to-H2 fallback. DNS and SOCKS UDP relay
+remain separate inner functions, not H3 or native-Datagram evidence. The
+server-sent half of all three modes'
 server-to-target TCP connections continues to use the server TCP policy.
 
 The repository-local gate passes formatting, strict workspace linting, all 492

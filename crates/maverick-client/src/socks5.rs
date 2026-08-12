@@ -161,6 +161,7 @@ pub async fn serve_udp_associate(
     flow_permit: OwnedSemaphorePermit,
     control_peer: Option<SocketAddr>,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(&config)?;
     let tunnel_pool = Arc::new(ClientTunnelPool::new(config));
     let result =
         serve_udp_associate_with_pool(control, Arc::clone(&tunnel_pool), flow_permit, control_peer)
@@ -175,6 +176,7 @@ pub(crate) async fn serve_udp_associate_with_pool(
     _flow_permit: OwnedSemaphorePermit,
     control_peer: Option<SocketAddr>,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(tunnel_pool.config())?;
     let socket = UdpSocket::bind("127.0.0.1:0").await?;
     let bind_addr = socket.local_addr()?;
     write_udp_associate_success(&mut control, bind_addr).await?;
@@ -346,8 +348,42 @@ fn encode_udp_response(packet: &UdpPacketPayload) -> Result<Bytes> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maverick_core::config::{
+        ClientAdvancedConfig, ClientServerConfig, LocalConfig, LogConfig, Socks5Config,
+    };
+    use maverick_core::{Mode, SecretString};
     use std::net::SocketAddr;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn retired_h3_config() -> ClientConfig {
+        ClientConfig {
+            version: 1,
+            mode: Mode::Auto,
+            local: LocalConfig {
+                socks5: Socks5Config {
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                },
+                dns: None,
+                http_connect: None,
+            },
+            server: ClientServerConfig {
+                address: "127.0.0.1:1".into(),
+                server_name: "localhost".into(),
+                tunnel_path: "/assets/upload".into(),
+                credential_id: "u_udp".into(),
+                secret: SecretString::generate(),
+                ca_cert: None,
+                cert_pin: None,
+            },
+            auth: Default::default(),
+            log: LogConfig::default(),
+            advanced: ClientAdvancedConfig {
+                experimental_h3: true,
+                ..ClientAdvancedConfig::default()
+            },
+        }
+    }
 
     #[tokio::test]
     async fn handshake_success_domain_connect() {
@@ -368,6 +404,28 @@ mod tests {
         assert_eq!(req.command, SocksCommand::Connect);
         assert_eq!(req.target, TargetAddr::Domain("example.com".into()));
         assert_eq!(req.port, 443);
+    }
+
+    #[tokio::test]
+    async fn public_udp_helper_rejects_retired_h3_before_bind_or_control_eof() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let peer = TcpStream::connect(addr).await?;
+        let (control, _) = listener.accept().await?;
+        drop(peer);
+        let permit = Arc::new(tokio::sync::Semaphore::new(1))
+            .acquire_owned()
+            .await?;
+
+        let error = serve_udp_associate(control, Arc::new(retired_h3_config()), permit, None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
+        Ok(())
     }
 
     #[tokio::test]

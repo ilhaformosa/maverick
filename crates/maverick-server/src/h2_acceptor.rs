@@ -6,6 +6,11 @@ use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use maverick_core::ServerConfig;
 
 pub fn rustls_server_config(config: &ServerConfig) -> Result<rustls::ServerConfig> {
+    if config.version == 1 && config.advanced.experimental_h3 {
+        return Err(anyhow::Error::new(maverick_core::Error::Config(
+            "advanced.experimental_h3=true is retired for config version 1".into(),
+        )));
+    }
     let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&config.tls.cert_path)
         .with_context(|| format!("open cert {}", config.tls.cert_path.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -148,6 +153,23 @@ mod tests {
         let tls_config = rustls_server_config(&config)?;
 
         assert_eq!(tls_config.alpn_protocols, vec![b"h2".to_vec()]);
+        Ok(())
+    }
+
+    #[test]
+    fn h2_acceptor_rejects_retired_h3_before_certificate_file_io() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let mut config = test_config(&tmp, false);
+        config.advanced.experimental_h3 = true;
+        config.tls.cert_path = tmp.path().join("missing-retired-h3-cert.pem");
+        config.tls.key_path = tmp.path().join("missing-retired-h3-key.pem");
+
+        let error = rustls_server_config(&config).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         Ok(())
     }
 }

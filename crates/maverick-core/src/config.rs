@@ -278,6 +278,7 @@ impl ClientConfig {
         if self.version != 1 {
             return Err(Error::Config("only config version 1 is supported".into()));
         }
+        reject_retired_v1_h3(self.advanced.experimental_h3)?;
         self.log.validate()?;
         self.server.secret.validate()?;
         if self.server.tunnel_path.is_empty() || !self.server.tunnel_path.starts_with('/') {
@@ -705,6 +706,7 @@ impl ServerConfig {
         if self.version != 1 {
             return Err(Error::Config("only config version 1 is supported".into()));
         }
+        reject_retired_v1_h3(self.advanced.experimental_h3)?;
         self.log.validate()?;
         if self.maverick.tunnel_path.is_empty() || !self.maverick.tunnel_path.starts_with('/') {
             return Err(Error::Config(
@@ -1961,6 +1963,15 @@ fn validate_experimental_ech(enabled: bool) -> Result<()> {
         return Err(Error::Config(
             "advanced.experimental_ech is reserved until TLS stack ECH support is implemented"
                 .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_retired_v1_h3(enabled: bool) -> Result<()> {
+    if enabled {
+        return Err(Error::Config(
+            "advanced.experimental_h3=true is retired for config version 1".into(),
         ));
     }
     Ok(())
@@ -3816,7 +3827,7 @@ advanced:
     }
 
     #[test]
-    fn server_stable_mode_rejects_experimental_h3() {
+    fn server_stable_mode_uses_uniform_experimental_h3_retirement() {
         let secret = SecretString::generate();
         let input = format!(
             r#"
@@ -3841,7 +3852,40 @@ advanced:
             secret.expose_secret()
         );
         let err = ServerConfig::from_yaml_str(&input).unwrap_err();
-        assert!(err.to_string().contains("experimental_h3"));
+        assert_eq!(
+            err.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
+    }
+
+    #[test]
+    fn v1_client_retires_experimental_h3_before_other_validation() {
+        let mut config =
+            client_config_with_server(client_server_config("u_abc123", SecretString::generate()));
+        config.advanced.experimental_h3 = true;
+        config.advanced.connect_timeout_ms = 0;
+
+        let error = config.validate().unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
+    }
+
+    #[test]
+    fn v1_server_retires_experimental_h3_before_other_validation() {
+        let mut config = server_config_with_user("u_abc123", "/assets/upload");
+        config.maverick.mode_default = Mode::Stable;
+        config.advanced.experimental_h3 = true;
+        config.advanced.max_concurrent_connections = 0;
+
+        let error = config.validate().unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
     }
 
     #[test]
@@ -4487,7 +4531,7 @@ fallback:
     }
 
     #[test]
-    fn channel_binding_require_rejects_unsupported_transports() {
+    fn retired_h3_precedes_channel_binding_transport_validation() {
         let secret = SecretString::generate();
         let input = format!(
             r#"
@@ -4511,6 +4555,9 @@ advanced:
             secret.expose_secret()
         );
         let err = ClientConfig::from_yaml_str(&input).unwrap_err();
-        assert!(err.to_string().contains("channel_binding.require"));
+        assert_eq!(
+            err.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
     }
 }

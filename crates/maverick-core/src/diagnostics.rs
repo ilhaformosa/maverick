@@ -192,6 +192,7 @@ impl GuiDiagnosticsSnapshot {
         connection_state: GuiConnectionState,
         last_error_class: Option<GuiErrorClass>,
     ) -> Self {
+        let retired_v1_h3 = config.version == 1 && config.advanced.experimental_h3;
         let dns_listener = config
             .local
             .dns
@@ -204,22 +205,41 @@ impl GuiDiagnosticsSnapshot {
             .and_then(|http| http.enabled.then_some(http.listen).flatten());
         let tun_safety = GuiTunSafetySnapshot::default_disabled();
         Self {
-            connection_state,
+            connection_state: if retired_v1_h3 {
+                GuiConnectionState::Error
+            } else {
+                connection_state
+            },
             policy_mode: config.mode,
             profile_name: profile_name.into(),
             local_socks5: config.local.socks5.listen,
             dns_listener,
             http_connect_listener,
             credential_display: redact_id(&config.server.credential_id),
-            last_error_class,
+            last_error_class: if retired_v1_h3 {
+                Some(GuiErrorClass::Config)
+            } else {
+                last_error_class
+            },
             tun_controls_enabled: tun_safety.controls_enabled,
             tun_safety,
-            transport_status: GuiTransportStatus::Ready,
+            transport_status: if retired_v1_h3 {
+                GuiTransportStatus::Degraded
+            } else {
+                GuiTransportStatus::Ready
+            },
             transport_debug: None,
         }
     }
 
     pub fn with_transport_debug(mut self, debug: GuiTransportDebugSnapshot) -> Self {
+        if self.connection_state == GuiConnectionState::Error
+            && self.last_error_class == Some(GuiErrorClass::Config)
+            && self.transport_status == GuiTransportStatus::Degraded
+            && self.transport_debug.is_none()
+        {
+            return self;
+        }
         self.transport_status = debug.public_status();
         self.transport_debug = Some(debug);
         self
@@ -465,18 +485,24 @@ mod tests {
     }
 
     #[test]
-    fn gui_diagnostics_keeps_transport_details_debug_only() {
+    fn gui_diagnostics_marks_raw_retired_h3_config_invalid_without_runnable_state() {
         let mut config = client_config("u123", SecretString::generate());
         config.mode = Mode::Private;
         config.advanced.experimental_h3 = true;
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         let snapshot = GuiDiagnosticsSnapshot::from_client_config(
             "primary",
             &config,
             GuiConnectionState::Connected,
             None,
         );
+        assert_eq!(snapshot.connection_state, GuiConnectionState::Error);
         assert_eq!(snapshot.policy_mode, Mode::Private);
-        assert_eq!(snapshot.transport_status, GuiTransportStatus::Ready);
+        assert_eq!(snapshot.transport_status, GuiTransportStatus::Degraded);
+        assert_eq!(snapshot.last_error_class, Some(GuiErrorClass::Config));
         assert_eq!(snapshot.transport_debug, None);
 
         let ordinary_json = serde_json::to_string(&snapshot).unwrap();
@@ -487,23 +513,39 @@ mod tests {
         assert!(!ordinary_rendered.contains("experimental"));
 
         let debug = GuiTransportDebugSnapshot::new(GuiTransportCarrier::H2, true, true);
-        let debug_snapshot = snapshot.with_transport_debug(debug);
+        let debug_snapshot = snapshot.with_transport_debug(debug.clone());
+        assert_eq!(debug_snapshot.connection_state, GuiConnectionState::Error);
         assert_eq!(
             debug_snapshot.transport_status,
             GuiTransportStatus::Degraded
         );
-        assert_eq!(
-            debug_snapshot
-                .transport_debug
-                .as_ref()
-                .unwrap()
-                .active_transport,
-            GuiTransportCarrier::H2
-        );
+        assert_eq!(debug_snapshot.transport_debug, None);
 
         let debug_json = serde_json::to_string(&debug_snapshot).unwrap();
-        assert!(debug_json.contains("h2"));
-        assert!(debug_json.contains("h3_in_cooldown"));
+        assert!(!debug_json.contains("h2"));
+        assert!(!debug_json.contains("h3_in_cooldown"));
+
+        let ordinary = GuiDiagnosticsSnapshot::from_client_config(
+            "ordinary",
+            &client_config("u123", SecretString::generate()),
+            GuiConnectionState::Error,
+            Some(GuiErrorClass::Config),
+        )
+        .with_transport_debug(debug)
+        .with_transport_debug(GuiTransportDebugSnapshot::new(
+            GuiTransportCarrier::H2,
+            false,
+            false,
+        ));
+        assert_eq!(ordinary.transport_status, GuiTransportStatus::Ready);
+        assert_eq!(
+            ordinary.transport_debug,
+            Some(GuiTransportDebugSnapshot::new(
+                GuiTransportCarrier::H2,
+                false,
+                false,
+            ))
+        );
     }
 
     #[test]

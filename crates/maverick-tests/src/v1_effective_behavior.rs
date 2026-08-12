@@ -3,7 +3,10 @@
 //! Parsing has already collapsed omitted fields and explicit defaults, so this
 //! module cannot recover source syntax or field presence. It deliberately does
 //! not read the network, secrets, the clock, cooldown state, or the environment,
-//! and it is not a runtime diagnostics surface.
+//! and it is not a runtime diagnostics surface. Config-v1 H3 is retired, so
+//! `experimental_h3=true` cannot satisfy this evaluator's validated-input
+//! precondition. Legacy H3 result shapes remain unchanged for source
+//! compatibility until the later Quinn deletion slice.
 
 use maverick_core::config::{CdnFrontingCarrier, CdnFrontingProvider};
 use maverick_core::frame::FRAME_HEADER_LEN;
@@ -39,6 +42,7 @@ pub enum ClientCarrier {
     H2Only,
     FrontedH2,
     FrontedWebSocket,
+    /// Compatibility-only shape retained until the later Quinn deletion slice.
     H3PreferredWithSetupFailureFallbackToH2,
 }
 
@@ -76,7 +80,9 @@ pub struct ClientCarrierPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerH3Entry {
     DisabledByConfig,
+    /// Compatibility-only shape retained until the later Quinn deletion slice.
     Enabled,
+    /// Compatibility-only shape retained until the later Quinn deletion slice.
     BuildUnavailableAtStartup,
 }
 
@@ -298,31 +304,12 @@ pub struct ServerV1Behavior {
 pub fn evaluate_client(config: &ClientConfig, h3_compiled: bool) -> ClientV1Behavior {
     let fronted = config.advanced.tls_terminating_fronting_enabled();
     let h3_configured = config.advanced.experimental_h3;
-    let h3_suppressed_by_stable_mode = h3_configured && config.mode == Mode::Stable;
-    let h3_attempt = (h3_configured && h3_compiled && !h3_suppressed_by_stable_mode && !fronted)
-        .then_some(H3AttemptPolicy {
-            setup_failure_classes: [
-                H3SetupFailureClass::DnsResolution,
-                H3SetupFailureClass::LocalQuicEndpoint,
-                H3SetupFailureClass::CertificateAuthorityOrPin,
-                H3SetupFailureClass::ServerName,
-                H3SetupFailureClass::TlsOrQuicHandshake,
-                H3SetupFailureClass::H3ConnectionSetup,
-                H3SetupFailureClass::SetupTimeout,
-            ],
-            setup_failure_falls_back_to_h2: true,
-            setup_failure_starts_cooldown_secs: H3_SETUP_COOLDOWN_SECS,
-            current_cooldown_suppresses_h3_setup: true,
-            post_setup_failure_falls_back_to_h2: false,
-            post_setup_failure_starts_cooldown: false,
-            oracle_reads_current_cooldown: false,
-        });
+    let h3_suppressed_by_stable_mode = false;
+    let h3_attempt = None;
     let carrier = if config.advanced.cloudflare_ws_enabled() {
         ClientCarrier::FrontedWebSocket
     } else if config.advanced.cdn_fronted_h2_enabled() {
         ClientCarrier::FrontedH2
-    } else if h3_attempt.is_some() {
-        ClientCarrier::H3PreferredWithSetupFailureFallbackToH2
     } else {
         ClientCarrier::H2Only
     };
@@ -373,9 +360,6 @@ pub fn evaluate_client(config: &ClientConfig, h3_compiled: bool) -> ClientV1Beha
     if h3_configured || config.advanced.cloudflare_ws_enabled() {
         blockers.push(MappingBlocker::UnsupportedV2Carrier);
     }
-    if h3_attempt.is_some() {
-        blockers.push(MappingBlocker::H3SetupFallbackCrossesSecurityBoundary);
-    }
     if shaping.facts.effective_enabled {
         blockers.push(MappingBlocker::EnabledShapingPolicyUnfrozen);
     }
@@ -421,13 +405,7 @@ pub fn evaluate_server(config: &ServerConfig, h3_compiled: bool) -> ServerV1Beha
     let front_configuration_disables_binding = config.advanced.tls_terminating_fronting_enabled();
     let websocket_entry_enabled = config.advanced.cloudflare_ws_enabled();
     let h3_configured = config.advanced.experimental_h3;
-    let h3_entry = if !h3_configured {
-        ServerH3Entry::DisabledByConfig
-    } else if h3_compiled {
-        ServerH3Entry::Enabled
-    } else {
-        ServerH3Entry::BuildUnavailableAtStartup
-    };
+    let h3_entry = ServerH3Entry::DisabledByConfig;
     let channel_binding = configured_channel_binding(
         config.auth.channel_binding.enabled,
         config.auth.channel_binding.require,
@@ -467,14 +445,6 @@ pub fn evaluate_server(config: &ServerConfig, h3_compiled: bool) -> ServerV1Beha
         carrier_security.push(server_carrier_security(
             Carrier::WebSocket,
             front_trust_route,
-            front_configuration_disables_binding,
-            channel_binding,
-        ));
-    }
-    if h3_entry == ServerH3Entry::Enabled {
-        carrier_security.push(server_carrier_security(
-            Carrier::H3,
-            direct_trust_route,
             front_configuration_disables_binding,
             channel_binding,
         ));
@@ -710,8 +680,6 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use maverick_client::scheduler::{SchedulerPolicy, SchedulerState};
-    use maverick_client::transport::TransportKind;
     use maverick_core::config::v2::{
         project_v1_client_policy, NamePrivacyMinimum as V2NamePrivacyMinimum,
         TrafficShapingPolicy as V2TrafficShapingPolicy, TransportStrategy as V2TransportStrategy,
@@ -873,24 +841,16 @@ fallback:
     }
 
     #[test]
-    fn h3_and_fronted_h2_projection_blockers_match_oracle_boundaries() {
+    fn retired_h3_and_fronted_h2_projection_boundaries_are_distinct() {
         let mut h3 = client(Mode::Auto);
         h3.advanced.experimental_h3 = true;
-        h3.validate().unwrap();
+        assert_eq!(
+            h3.validate().unwrap_err().to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         assert_eq!(
             project_v1_client_policy(&h3),
-            Err(V1ClientPolicyProjectionBlocker::H3Configured)
-        );
-        assert_eq!(
-            evaluate_client(&h3, false).blockers,
-            vec![MappingBlocker::UnsupportedV2Carrier]
-        );
-        assert_eq!(
-            evaluate_client(&h3, true).blockers,
-            vec![
-                MappingBlocker::UnsupportedV2Carrier,
-                MappingBlocker::H3SetupFallbackCrossesSecurityBoundary,
-            ]
+            Err(V1ClientPolicyProjectionBlocker::InvalidSourceConfig)
         );
 
         let mut fronted_h2 = client(Mode::Auto);
@@ -1061,75 +1021,21 @@ advanced:
     }
 
     #[test]
-    fn client_carriers_record_h3_build_mode_and_exact_failure_boundary() {
-        let mut config = client(Mode::Auto);
-        config.advanced.experimental_h3 = true;
+    fn client_oracle_records_test_build_without_enabling_h3_for_valid_config() {
+        let config = client(Mode::Auto);
         config.validate().unwrap();
-
-        let unavailable = evaluate_client(&config, false);
+        let behavior = evaluate_client(&config, true);
         assert_eq!(
-            unavailable.carrier.candidate_selection_policy,
+            behavior.carrier.candidate_selection_policy,
             ClientCarrier::H2Only
         );
-        assert!(unavailable.carrier.h3_attempt_policy.is_none());
-
-        let available = evaluate_client(&config, true);
-        assert_eq!(
-            available.carrier.candidate_selection_policy,
-            ClientCarrier::H3PreferredWithSetupFailureFallbackToH2
-        );
-        let attempt = available.carrier.h3_attempt_policy.unwrap();
-        assert_eq!(
-            attempt.setup_failure_classes,
-            [
-                H3SetupFailureClass::DnsResolution,
-                H3SetupFailureClass::LocalQuicEndpoint,
-                H3SetupFailureClass::CertificateAuthorityOrPin,
-                H3SetupFailureClass::ServerName,
-                H3SetupFailureClass::TlsOrQuicHandshake,
-                H3SetupFailureClass::H3ConnectionSetup,
-                H3SetupFailureClass::SetupTimeout,
-            ]
-        );
-        assert_eq!(
-            attempt.setup_failure_starts_cooldown_secs,
-            H3_SETUP_COOLDOWN_SECS
-        );
-        assert!(attempt.setup_failure_falls_back_to_h2);
-        assert!(attempt.current_cooldown_suppresses_h3_setup);
-        assert!(!attempt.post_setup_failure_falls_back_to_h2);
-        assert!(!attempt.post_setup_failure_starts_cooldown);
-        assert!(!attempt.oracle_reads_current_cooldown);
-        assert_eq!(
-            available.carrier_security[0]
-                .trust_route
-                .configured_assumption,
-            TrustRoute::DirectToMaverick
-        );
-        assert_eq!(
-            available.carrier_security[1]
-                .trust_route
-                .configured_assumption,
-            TrustRoute::DirectToMaverick
-        );
-
-        let mut policy = SchedulerPolicy::for_mode(Mode::Auto);
-        policy.h3_enabled = true;
-        assert_eq!(
-            policy.select_transport(&SchedulerState::default()),
-            TransportKind::H3
-        );
-
-        let mut stable = client(Mode::Stable);
-        stable.advanced.experimental_h3 = true;
-        stable.validate().unwrap();
-        let stable = evaluate_client(&stable, true);
-        assert_eq!(
-            stable.carrier.candidate_selection_policy,
-            ClientCarrier::H2Only
-        );
-        assert!(stable.carrier.h3_suppressed_by_stable_mode);
-        assert!(stable.carrier.h3_attempt_policy.is_none());
+        assert!(behavior.carrier.h3_build_available);
+        assert!(!behavior.carrier.h3_configured);
+        assert!(!behavior.carrier.h3_suppressed_by_stable_mode);
+        assert!(behavior.carrier.h3_attempt_policy.is_none());
+        assert_eq!(behavior.carrier_security.len(), 1);
+        assert_eq!(behavior.carrier_security[0].carrier, Carrier::H2);
+        assert!(behavior.blockers.is_empty());
     }
 
     #[test]
@@ -1168,17 +1074,20 @@ advanced:
     }
 
     #[test]
-    fn server_entries_are_not_a_client_fallback_model() {
-        let mut config = server(Mode::Auto);
-        config.advanced.experimental_h3 = true;
+    fn server_oracle_records_test_build_without_enabling_h3_for_valid_config() {
+        let config = server(Mode::Auto);
         config.validate().unwrap();
+        let behavior = evaluate_server(&config, true);
+        assert!(behavior.carrier.h2_entry_enabled);
+        assert!(behavior.carrier.h3_build_available);
+        assert!(!behavior.carrier.h3_configured);
+        assert_eq!(behavior.carrier.h3_entry, ServerH3Entry::DisabledByConfig);
+        assert_eq!(behavior.carrier_security.len(), 1);
+        assert_eq!(behavior.carrier_security[0].carrier, Carrier::H2);
         assert_eq!(
-            evaluate_server(&config, false).carrier.h3_entry,
-            ServerH3Entry::BuildUnavailableAtStartup
+            behavior.blockers,
+            vec![MappingBlocker::LegacyModeCompatibilityUnresolved]
         );
-        let available = evaluate_server(&config, true);
-        assert!(available.carrier.h2_entry_enabled);
-        assert_eq!(available.carrier.h3_entry, ServerH3Entry::Enabled);
     }
 
     #[test]
@@ -1247,70 +1156,15 @@ advanced:
     }
 
     #[test]
-    fn server_front_and_h3_keep_per_carrier_routes_and_mixed_route_blocker() {
+    fn server_fronting_cannot_bypass_retired_h3_validation() {
         for front_carrier in [CdnFrontingCarrier::H2, CdnFrontingCarrier::WebSocket] {
             let mut config = server(Mode::Auto);
             enable_server_front(&mut config, front_carrier);
             config.advanced.experimental_h3 = true;
             config.advanced.shaping.enabled = true;
-            config.validate().unwrap();
-
-            let behavior = evaluate_server(&config, true);
-            let h2 = behavior
-                .carrier_security
-                .iter()
-                .find(|security| security.carrier == Carrier::H2)
-                .unwrap();
-            if front_carrier == CdnFrontingCarrier::H2 {
-                assert!(matches!(
-                    h2.trust_route.configured_assumption,
-                    TrustRoute::TlsTerminatingFront {
-                        carrier: CdnFrontingCarrier::H2,
-                        trusted_tls_terminating_provider: true,
-                        ..
-                    }
-                ));
-            } else {
-                assert_eq!(
-                    h2.trust_route.configured_assumption,
-                    TrustRoute::DirectToMaverick
-                );
-            }
-            assert!(!h2.trust_route.network_topology_proven);
-            if front_carrier == CdnFrontingCarrier::WebSocket {
-                let websocket = behavior
-                    .carrier_security
-                    .iter()
-                    .find(|security| security.carrier == Carrier::WebSocket)
-                    .unwrap();
-                assert!(matches!(
-                    websocket.trust_route.configured_assumption,
-                    TrustRoute::TlsTerminatingFront {
-                        carrier: CdnFrontingCarrier::WebSocket,
-                        trusted_tls_terminating_provider: true,
-                        ..
-                    }
-                ));
-                assert!(!websocket.trust_route.network_topology_proven);
-            }
-            let h3 = behavior
-                .carrier_security
-                .iter()
-                .find(|security| security.carrier == Carrier::H3)
-                .unwrap();
             assert_eq!(
-                h3.trust_route.configured_assumption,
-                TrustRoute::DirectToMaverick
-            );
-            assert!(!h3.trust_route.network_topology_proven);
-            assert_eq!(
-                behavior.blockers,
-                vec![
-                    MappingBlocker::UnsupportedV2Carrier,
-                    MappingBlocker::MixedTrustRoutesNotRepresentable,
-                    MappingBlocker::EnabledShapingPolicyUnfrozen,
-                    MappingBlocker::LegacyModeCompatibilityUnresolved,
-                ]
+                config.validate().unwrap_err().to_string(),
+                "configuration error: advanced.experimental_h3=true is retired for config version 1"
             );
         }
     }
@@ -1374,7 +1228,7 @@ advanced:
     }
 
     #[test]
-    fn required_disabled_and_h3_binding_candidates_are_distinct() {
+    fn required_and_disabled_binding_candidates_survive_h3_retirement() {
         let mut required = client(Mode::Auto);
         required.auth.channel_binding.require = true;
         required.validate().unwrap();
@@ -1393,12 +1247,9 @@ advanced:
 
         let mut h3 = client(Mode::Auto);
         h3.advanced.experimental_h3 = true;
-        h3.validate().unwrap();
-        let h3 = evaluate_client(&h3, true);
-        assert_eq!(h3.carrier_security[0].carrier, Carrier::H3);
         assert_eq!(
-            h3.carrier_security[0].channel_binding,
-            ChannelBindingCandidate::UnavailableForCarrierOrFrontConfiguration
+            h3.validate().unwrap_err().to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
         );
     }
 
@@ -1601,14 +1452,20 @@ advanced:
     #[test]
     fn blockers_are_conditional_unique_and_stably_ordered() {
         let mut config = client(Mode::Auto);
-        config.advanced.experimental_h3 = true;
+        config.advanced.experimental_cloudflare_ws = true;
+        config.advanced.stealth.cdn_fronting.enabled = true;
+        config
+            .advanced
+            .stealth
+            .cdn_fronting
+            .trusted_tls_terminating_provider = true;
+        config.advanced.stealth.tls_fingerprint = TlsFingerprintMode::RustlsDefault;
         config.advanced.shaping.enabled = true;
         config.validate().unwrap();
         assert_eq!(
             evaluate_client(&config, true).blockers,
             vec![
                 MappingBlocker::UnsupportedV2Carrier,
-                MappingBlocker::H3SetupFallbackCrossesSecurityBoundary,
                 MappingBlocker::EnabledShapingPolicyUnfrozen,
             ]
         );

@@ -786,6 +786,11 @@ impl StoredClientProfile {
     }
 
     pub fn to_client_config(&self, store: &impl ProfileSecretStore) -> Result<ClientConfig> {
+        if self.version == 1 && self.advanced.experimental_h3 {
+            return Err(anyhow::Error::new(maverick_core::Error::Config(
+                "advanced.experimental_h3=true is retired for config version 1".into(),
+            )));
+        }
         let channel_binding = match self.compatibility_status() {
             StoredClientProfileCompatibility::LegacyNeedsExplicitChannelBindingMigration => {
                 anyhow::bail!(
@@ -1754,13 +1759,30 @@ mod tests {
             .server_address("127.0.0.1:443")
             .server_name("localhost")
             .credential("u_sdk", secret)
-            .experimental_h3(true)
             .experimental_tun(true)
             .build()?;
         assert_eq!(config.server.credential_id, "u_sdk");
         assert_eq!(config.local.socks5.listen.to_string(), "127.0.0.1:0");
-        assert!(config.advanced.experimental_h3);
+        assert!(!config.advanced.experimental_h3);
         assert!(config.advanced.experimental_tun);
+        Ok(())
+    }
+
+    #[test]
+    fn client_builder_preserves_h3_method_but_retires_true_for_v1() -> Result<()> {
+        let error = client_config_builder()
+            .local_socks5("127.0.0.1:0".parse()?)
+            .server_address("127.0.0.1:443")
+            .server_name("localhost")
+            .credential("u_sdk", SecretString::generate())
+            .experimental_h3(true)
+            .build()
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         Ok(())
     }
 
@@ -2704,6 +2726,22 @@ mod tests {
     }
 
     #[test]
+    fn stored_profile_rejects_retired_h3_before_secret_read() -> Result<()> {
+        let mut profile = current_stored_client_profile()?;
+        profile.advanced.experimental_h3 = true;
+
+        let error = profile
+            .to_client_config(&PanicOnSecretReadStore)
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn stored_client_profile_migrates_all_bindings_and_preserves_represented_fields() -> Result<()>
     {
         let legacy_flat = legacy_stored_client_profile_flat_value()?;
@@ -2922,9 +2960,10 @@ mod tests {
         let err = incompatible_current
             .to_client_config(&PanicOnSecretReadStore)
             .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("unsupported by the stored transport metadata"));
+        assert_eq!(
+            err.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         assert!(!err.to_string().contains("missing profile secret"));
 
         let migrated = legacy.migrate_legacy_with_channel_binding(AuthChannelBindingConfig {

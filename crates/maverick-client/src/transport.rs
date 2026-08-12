@@ -119,14 +119,18 @@ fn legacy_default_transport_kind(config: &ClientConfig) -> TransportKind {
 }
 
 pub fn transport_debug_snapshot(config: &ClientConfig) -> GuiTransportDebugSnapshot {
+    if config.version == 1 && config.advanced.experimental_h3 {
+        return GuiTransportDebugSnapshot::new(GuiTransportCarrier::H2, false, false);
+    }
     GuiTransportDebugSnapshot::new(
         gui_transport_carrier(default_transport_kind(config)),
         h3_runtime_enabled(config),
-        h3_in_cooldown(config),
+        false,
     )
 }
 
 pub async fn connect(config: &ClientConfig) -> Result<TunnelRequestSender> {
+    crate::reject_retired_v1_h3(config)?;
     match default_transport_kind(config) {
         TransportKind::H2 => H2Transport.connect(config).await,
         TransportKind::CloudflareWs => Ok(TunnelRequestSender::CloudflareWs(Box::new(
@@ -159,15 +163,8 @@ async fn h3_connect(config: &ClientConfig) -> Result<TunnelRequestSender> {
 }
 
 fn h3_runtime_enabled(config: &ClientConfig) -> bool {
-    #[cfg(feature = "h3")]
-    {
-        config.advanced.experimental_h3
-    }
-    #[cfg(not(feature = "h3"))]
-    {
-        let _ = config;
-        false
-    }
+    let _ = config;
+    false
 }
 
 fn runtime_policy(config: &ClientConfig) -> SchedulerPolicy {
@@ -177,11 +174,8 @@ fn runtime_policy(config: &ClientConfig) -> SchedulerPolicy {
 }
 
 fn runtime_state(config: &ClientConfig) -> SchedulerState {
-    let mut state = SchedulerState::default();
-    if h3_in_cooldown(config) {
-        state.mark_failed(TransportKind::H3);
-    }
-    state
+    let _ = config;
+    SchedulerState::default()
 }
 
 fn h3_cooldowns() -> &'static Mutex<HashMap<String, Instant>> {
@@ -193,6 +187,7 @@ fn h3_cooldown_key(config: &ClientConfig) -> String {
     format!("{}|{}", config.server.address, config.server.server_name)
 }
 
+#[cfg(test)]
 fn h3_in_cooldown(config: &ClientConfig) -> bool {
     let now = Instant::now();
     let Ok(mut cooldowns) = h3_cooldowns().lock() else {
@@ -290,16 +285,11 @@ mod tests {
     }
 
     #[test]
-    fn stable_h3_websocket_fronting_and_shaping_keep_legacy_selection() {
+    fn stable_websocket_fronting_and_shaping_keep_legacy_selection() {
         let mut stable = client_config();
         stable.mode = Mode::Stable;
         stable.validate().unwrap();
         assert_legacy_selection(&stable);
-
-        let mut h3 = client_config();
-        h3.advanced.experimental_h3 = true;
-        h3.validate().unwrap();
-        assert_legacy_selection(&h3);
 
         let mut websocket = client_config();
         websocket.advanced.stealth.tls_fingerprint = TlsFingerprintMode::RustlsDefault;
@@ -416,23 +406,40 @@ mod tests {
     }
 
     #[test]
-    fn transport_debug_snapshot_reports_compiled_runtime_gate() {
+    fn transport_debug_snapshot_forces_retired_h3_to_h2_even_with_websocket_and_cooldown() {
         let mut config = client_config();
         config.mode = Mode::Auto;
         config.advanced.experimental_h3 = true;
+        config.advanced.experimental_cloudflare_ws = true;
+        mark_h3_failed(&config, std::time::Duration::from_secs(300));
         let snapshot = transport_debug_snapshot(&config);
 
-        #[cfg(feature = "h3")]
-        assert_eq!(snapshot.active_transport, GuiTransportCarrier::H3);
-        #[cfg(not(feature = "h3"))]
         assert_eq!(snapshot.active_transport, GuiTransportCarrier::H2);
-
         assert!(!snapshot.h3_in_cooldown);
-
-        #[cfg(feature = "h3")]
-        assert!(snapshot.h3_candidate_enabled);
-        #[cfg(not(feature = "h3"))]
         assert!(!snapshot.h3_candidate_enabled);
+        if let Ok(mut cooldowns) = h3_cooldowns().lock() {
+            cooldowns.remove(&h3_cooldown_key(&config));
+        }
+    }
+
+    #[tokio::test]
+    async fn retired_v1_h3_is_rejected_before_fallback_or_cooldown() {
+        let mut config = client_config();
+        config.server.address = "127.0.0.1:1".into();
+        config.server.server_name = "localhost".into();
+        config.advanced.connect_timeout_ms = 1;
+        config.advanced.experimental_h3 = true;
+
+        let error = match connect(&config).await {
+            Ok(_) => panic!("retired H3 config unexpectedly connected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
+        assert!(!h3_in_cooldown(&config));
     }
 
     fn assert_projected_h2(config: &ClientConfig) {

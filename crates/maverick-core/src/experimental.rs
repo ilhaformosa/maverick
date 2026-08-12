@@ -81,8 +81,8 @@ pub struct ExperimentalTrackDescriptor {
 pub const EXPERIMENTAL_TRACK_REGISTRY: &[ExperimentalTrackDescriptor] = &[
     ExperimentalTrackDescriptor {
         track: ExperimentalTrackId::H3QuicCarrier,
-        title: "H3/QUIC carrier",
-        status: ExperimentalTrackStatus::RuntimeExperimental,
+        title: "Retired config-v1 Quinn H3/QUIC carrier",
+        status: ExperimentalTrackStatus::DisabledRegistryEntry,
         build_gate: Some("h3"),
         runtime_gate: Some("advanced.experimental_h3"),
         default_enabled: false,
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn local_only_runtime_tracks_are_explicitly_bounded() {
+    fn retired_h3_is_not_listed_as_a_runtime_track() {
         let runtime_tracks: Vec<_> = experimental_track_registry()
             .iter()
             .filter(|descriptor| {
@@ -280,7 +280,14 @@ mod tests {
             })
             .map(|descriptor| descriptor.track)
             .collect();
-        assert_eq!(runtime_tracks, vec![ExperimentalTrackId::H3QuicCarrier]);
+        assert!(runtime_tracks.is_empty());
+        let retired_h3 = experimental_track_descriptor(ExperimentalTrackId::H3QuicCarrier);
+        assert_eq!(
+            retired_h3.status,
+            ExperimentalTrackStatus::DisabledRegistryEntry
+        );
+        assert_eq!(retired_h3.build_gate, Some("h3"));
+        assert_eq!(retired_h3.runtime_gate, Some("advanced.experimental_h3"));
     }
 
     #[test]

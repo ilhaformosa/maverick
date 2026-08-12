@@ -13,6 +13,16 @@ It is an architecture contract, not evidence that the current product already
 implements owned associations, native Datagram, CONNECT-UDP, multi-target
 SOCKS, server fairness, or real-network UDP.
 
+QRET-1 supersession (2026-08-12): config-v1 Quinn H3 is retired from the
+product. References below to legacy H3 DATA preserve the accepted,
+backend-neutral reliable-framing semantics and a temporary loopback test
+oracle only; they do not describe a runnable product path. The Quinn product
+adapter planned for D-004 is stopped. Any future reliable H3 DATA adapter must
+be implemented and validated independently on qualified quiche through
+complete, runnable, and migratable Product Config v2. This note does not alter
+the API, wire, resource, ownership, or acceptance requirements in this
+contract.
+
 ## Terms
 
 | Term | Meaning |
@@ -30,14 +40,14 @@ SOCKS, server fairness, or real-network UDP.
 | Path | Delivery | Target model | Unsolicited receive | Native Datagram |
 |---|---|---|---:|---:|
 | H2 serial compatibility | reliable ordered compatibility | per-datagram target | no | no |
-| legacy H3 DATA duplex framing | reliable ordered compatibility | fixed target | yes | no |
+| legacy H3 DATA duplex framing (contract/test oracle) | reliable ordered compatibility | fixed target | yes | no |
 | future CONNECT-UDP over HTTP/3 Datagram | unreliable unordered | fixed target per child | yes | yes |
 | SOCKS UDP manager | determined by each child | child association per target | determined by child | determined by child |
 | TUN five-tuple | determined by adapter | fixed target | determined by adapter | determined by adapter |
 
 The phrase `legacy_h3_reliable_duplex_udp_framing` is the unambiguous name for
-the current H3 DATA path. It must not be shortened in a way that implies RFC
-9221, RFC 9297, or RFC 9298 support.
+this backend-neutral semantic category. It must not be shortened in a way that
+implies a current product path or RFC 9221, RFC 9297, or RFC 9298 support.
 
 ## Association shape
 
@@ -64,9 +74,10 @@ These names are explanatory, not a frozen public Rust API.
 - One supervisor owns the transport, target owner, policy state, and the only
   terminal transition.
 
-The supervisor may use an existing borrowed legacy-H3 split internally. The
-contract does not require those borrowed halves themselves to become public or
-`'static`; the owning supervisor provides the independent lifetime boundary.
+A test-only legacy Quinn oracle may use its existing borrowed legacy-H3 split
+internally. The contract does not require those borrowed halves themselves to
+become public or `'static`; the owning supervisor provides the independent
+lifetime boundary. This allowance does not authorize a Quinn product adapter.
 
 ## Mandatory invariants
 
@@ -167,10 +178,12 @@ oracle, not a current-main API. The accepted RED fails only at the explicit
 post-observation assertion and then completes cleanup; a timeout, leak, compile
 failure, or scheduler race is not evidence.
 
-D-003 proves ownership and progress only against the fake adapter. Real
-legacy-H3 DATA write backpressure, UDP source/socket release, and carrier
-cleanup belong to D-004. Test scaffolding must not be promoted into a real
-transport or product claim.
+D-003 proves ownership and progress only against the fake adapter. Its
+backend-neutral write-backpressure, UDP source/socket release, and carrier
+cleanup requirements remain accepted, but the D-004 Quinn product adaptation
+is stopped by the QRET-1 supersession above. A future quiche adapter must prove
+those requirements independently. Test scaffolding must not be promoted into
+a real transport or product claim.
 
 ## Consumer model
 

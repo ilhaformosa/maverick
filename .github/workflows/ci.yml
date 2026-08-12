@@ -136,17 +136,22 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
-      - name: Check the independent H3 feature build
+      - name: Check the legacy Quinn H3 test-oracle build
         if: steps.scope.outputs.docs_only != 'true'
         run: >-
           cargo check --locked
           -p maverick-cli -p maverick-sdk -p maverick-tests
           --all-targets --no-default-features --features h3
-      - name: Test focused H3 loopback compatibility
+      - name: Test the legacy Quinn loopback oracle and v1 H3 retirement
         if: steps.scope.outputs.docs_only != 'true'
-        run: >-
-          cargo test --locked -p maverick-tests --features h3
-          --test h3_loopback --test tcp_relay h3_
+        run: |
+          set -euo pipefail
+          loopback_tests="$(cargo test --locked -p maverick-tests --features h3 --test h3_loopback -- --list)"
+          grep -Fqx 'h3_loopback_request_response_uses_ephemeral_local_udp: test' <<<"${loopback_tests}"
+          cargo test --locked -p maverick-tests --features h3 --test h3_loopback h3_loopback_request_response_uses_ephemeral_local_udp -- --exact
+          retirement_tests="$(cargo test --locked -p maverick-tests --features h3 --test tcp_relay -- --list)"
+          grep -Fqx 'retired_v1_h3_product_entries_return_fixed_error: test' <<<"${retirement_tests}"
+          cargo test --locked -p maverick-tests --features h3 --test tcp_relay retired_v1_h3_product_entries_return_fixed_error -- --exact
       - name: Install Linux build and verification tools
         if: steps.scope.outputs.docs_only != 'true'
         run: |

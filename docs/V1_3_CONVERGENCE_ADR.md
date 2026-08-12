@@ -1,7 +1,7 @@
 # Maverick v1.3 Convergence Decision Record
 
 Date: 2026-08-12
-Status: **Accepted — OD-01 through OD-09 ratified by the project owner on 2026-08-12**
+Status: **Accepted and amended — OD-01 through OD-09 ratified; B-003 direction superseded on 2026-08-12**
 
 ## Authority and claim boundary
 
@@ -82,6 +82,51 @@ These corrections narrow wording without changing the playbook's direction.
 | OD-08 | Let Auto use H3 immediately | **No.** H3 remains outside Auto until every architecture, security, fingerprint, and weak-network gate passes. |
 | OD-09 | Keep separate v1.2 H2 and v1.3 release trains | **Yes.** Neither train silently authorizes a release or field run. |
 
+## 2026-08-12 amendment — quiche is the single H3/UDP direction
+
+After the decisions above were recorded, the owner recalled and explicitly
+reaffirmed an earlier project decision: Maverick is to abandon Quinn for the
+H3/UDP product path and continue only toward quiche. This amendment preserves
+the table above as the historical OD-01 through OD-09 answer and supersedes
+only its later conditional B-003 selection procedure.
+
+The repository facts supporting recovery scope are narrower than a claim that
+all 23 historical heads are quiche implementations:
+
+- the six `codex/t027c2d-*` through `codex/t027c2i-*` heads terminate in the
+  direct-v3 quiche runtime sequence;
+- the 17 `codex/t024*` and `codex/t025*` heads terminate in Quinn legacy-H3
+  reliable DATA/UDP semantic work, although the single linear chain means
+  their ancestry also contains the earlier quiche foundation;
+- `archive/v1.3-direct-foundation-7f6158d` is the preferred quiche source
+  oracle. The later `7f6158d..40b0aa7` range did not change the quiche
+  foundation/runtime/vendor paths or Cargo dependency files, so later Quinn
+  heads add no newer quiche implementation to recover.
+
+This is a direction choice, not acceptance evidence. B-001 becomes a
+single-subject qualification of quiche against a neutral Chrome reference and
+the same fixed objective matrix. B-002 remains **RED**. Any retained private
+delta must pass every named-owner, upstream/rebase, security-SLA, and
+independent-delta fork-budget gate. A pure-upstream candidate may omit the old
+patches only after evidence-backed `DROP / not required` dispositions plus its
+dependency, security, and target-aware SBOM gates pass. Privacy, fingerprint,
+resource, and platform gates remain mandatory in either case. No quiche patch
+may be enlarged merely to improve a qualification result. If quiche fails, H3
+remains outside the product; Quinn is not a fallback.
+
+The stopped Quinn-specific B-001 relay qualification and D-004 implementation
+work-in-progress are not to be committed. Existing Quinn product code is
+removed later in one separate, reviewable, reversible slice so deletion cannot
+hide quiche adoption risk. Immutable archives remain available as semantic and
+test oracles; they are not current product code. Recovery should extract
+contracts and tests from the quiche oracle, not copy dependency downgrades or
+adopt the preserved private fork by default.
+
+Compatibility is unchanged for the v1.2 H2 train. Auto still does not use H3,
+and reliable H3 DATA framing still does not become native UDP. Rollback of this
+document amendment restores planning text only; it cannot silently restore a
+second product backend or count archived code as current implementation.
+
 ## Frozen stop boundaries
 
 The following stop rules remain active after acceptance:
@@ -89,7 +134,7 @@ The following stop rules remain active after acceptance:
 - do not create T025g or another scheduling probe;
 - do not call legacy H3 DATA framing native Datagram;
 - do not change public API, config schema, auth wire, frame wire, or Auto;
-- do not add functionality to either H3 backend;
+- do not add Quinn H3 functionality or restore quiche before its gates pass;
 - do not expand the vendored quiche delta;
 - do not squash, merge, delete, or force-update the cumulative branches;
 - do not tag, publish, deploy, spend, or perform a new field run;
@@ -115,10 +160,14 @@ forward shape.
 
 ### H3 backend
 
-No backend is selected by this record. B-001/B-002 must compare the same
-observable workload using the same method. B-003 requires a later owner
-signature choosing Quinn, quiche, or neither. If neither passes, v1.3 remains
-H2-only and both H3 paths remain research material.
+The dated amendment selects quiche as the only intended H3/UDP product
+direction. B-001 must qualify quiche against the neutral Chrome reference using
+the same observable workload where comparison is technically meaningful, and
+B-002 must resolve every old private patch through either a complete retained-
+fork budget or an evidence-backed DROP disposition before adoption. B-003 therefore
+records a fixed direction, not a technical PASS. If quiche does not pass its
+objective gates, v1.3 remains H2-only; Quinn is not restored as a product
+candidate.
 
 ### Release trains
 
@@ -140,21 +189,26 @@ outcomes:
 - G-003 Draft exact-head remote baseline, with no rerun or merge;
 - D-001 semantic contract, D-003 old-API RED, D-002 private actor prototype,
   and D-003 GREEN implementation;
-- B-001 capture-only planning and B-002 read-only fork-delta audit;
+- B-001 quiche-only qualification planning and B-002 fork-delta closure;
 - read-only v1.2 RC/Stable release-gap analysis.
 
-Config/wire/public API changes beyond a separately approved smallest slice, a
-product backend selection, Auto, publication, and real-network work remain
-stopped.
+Config/wire/public API changes beyond a separately approved smallest slice,
+quiche product adoption, Auto, publication, and real-network work remain
+stopped. Quinn removal is a separate reversible code slice, not part of this
+document amendment.
 
-## Open questions requiring owner decisions
+## Recorded and delegated technical gates
 
-1. Before C-001 implementation, select schema-3 compatibility treatment and
-   the first runnable v2 TrustRoute/auth matrix.
-2. Before the v1.2 release slice, select the Stable H2 support scope, GitHub
-   Latest behavior, and whether the exact-RC security gate means independent
-   review or a new formal third-party audit.
-3. After B-001/B-002, sign B-003 as Quinn, quiche, or neither.
+1. Before C-001 implementation, Codex records the schema-3 compatibility
+   treatment and the first runnable v2 TrustRoute/auth matrix under the owner's
+   standing delegation; this is an objective migration gate, not an owner
+   choice.
+2. R1 through R4 already fix the v1.2 release policy: Direct H2 only for first
+   Stable, RC prerelease/non-Latest, Stable non-prerelease/Latest, Beta.4 exact
+   rollback, and exact-RC independent security plus supply-chain review with no
+   unresolved Critical or High finding. Candidate evidence is still required.
+3. No backend choice remains open. B-001/B-002 determine whether the fixed
+   quiche direction is admissible; failure keeps product H3 disabled.
 
 ## Supersession rule
 

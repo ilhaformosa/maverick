@@ -1,17 +1,18 @@
-# B-001 Common QUIC Initial Observation Contract
+# B-001 quiche Qualification Observation Contract
 
 Date: 2026-08-12
-Status: **first observation-contract/parser slice implemented locally; three-subject observation remains RED**
+Status: **direction amended; quiche-plus-reference observation remains RED**
 
 ## Result and boundary
 
 This document freezes the smallest common, local-only observation contract for
-the later Quinn and quiche bakeoff, with Chrome as the reference subject. Chrome
-is not a selectable backend. This slice does not select a backend, run a
-capture, compare a fingerprint, or complete B-001. The current-main preflight
-must fail before any network work because no common Quinn observer adapter is
-implemented, the quiche candidate has no adapter there, and the legacy Chrome
-lab explicitly disables QUIC.
+qualifying quiche, the owner's single selected H3/UDP product direction,
+against Chrome as a neutral reference. Chrome is not a selectable backend.
+Quinn is no longer an observation subject or product candidate. This contract
+does not run a capture, compare a fingerprint, adopt quiche, or complete B-001.
+The current-main lab remains RED before network work because it still encodes
+the superseded three-subject design, has no quiche adapter, and the legacy
+Chrome lab explicitly disables QUIC.
 
 This slice adds no QUIC implementation, parser dependency, product API, wire
 behavior, config, credential, route, or capture privilege. Raw UDP payloads are
@@ -19,8 +20,8 @@ test input only; committed output may contain only the normalized fields below.
 
 ## Frozen common workload
 
-Every observation subject must eventually use the same workload without subject-only
-patches:
+The quiche subject and Chrome reference must eventually use the same workload
+without subject-only product or vendor patches:
 
 - one fresh candidate process and fresh connection state per sample;
 - IPv4 loopback `127.0.0.1` and OS-assigned ephemeral UDP ports only;
@@ -30,8 +31,8 @@ patches:
 - one exact lab-server revision, neutral loopback server identity, SNI,
   temporary certificate and validation policy, ALPN list, Retry policy,
   Version Negotiation policy, request, and response are held constant for all
-  three subjects; each subject-specific trust-injection mechanism is recorded
-  and must not weaken certificate validation;
+  observation participants; each participant-specific trust-injection
+  mechanism is recorded and must not weaken certificate validation;
 - a normalized platform label (for example, target triple), architecture,
   exact subject revision or reference version, and sample count are recorded
   alongside the normalized observations; exact OS build details stay outside
@@ -39,8 +40,8 @@ patches:
 - Chrome uses a temporary profile, background networking disabled, and an
   explicit loopback QUIC origin; it must not reuse the existing fingerprint
   lab path while that path passes `--disable-quic`;
-- a subject that cannot use the same observer and workload is `FAIL`, not a
-  reason to loosen the other subjects' method.
+- if quiche cannot use the same observer and workload as the reference, the
+  applicable dimension is `FAIL`, not a reason to loosen the method.
 
 The observer receives bytes from a later unprivileged loopback adapter. It does
 not open a socket, launch a browser, run packet capture, or infer subject
@@ -81,7 +82,7 @@ credentials, or backend free-form errors.
 
 The following cannot be learned from unencrypted outer Initial framing and stay
 `UNKNOWN` until one neutral, independently reviewed decryption/key-log method
-can be applied equally to all subjects:
+can be applied equally to quiche and the Chrome reference:
 
 - TLS ClientHello contents and ordering;
 - QUIC transport parameters, ACK/PTO/migration behavior, and decrypted packet
@@ -95,7 +96,7 @@ can be applied equally to all subjects:
 An unavailable or unequal key-log path stays `UNKNOWN`; it must not be replaced
 with a candidate's self-report.
 
-## Deterministic preflight RED
+## Deterministic preflight RED and required replacement
 
 Run:
 
@@ -103,8 +104,8 @@ Run:
 cargo run -q -p maverick-tests --bin backend-capture-lab -- preflight
 ```
 
-Current main must exit nonzero before invoking an observer, binding UDP, or
-starting Chrome, and report these exact blockers:
+Current main exits nonzero before invoking an observer, binding UDP, or
+starting Chrome, but reports the obsolete three-subject blockers:
 
 ```text
 quinn: common loopback observer adapter not implemented
@@ -112,54 +113,64 @@ quiche: current main quiche adapter unavailable
 chrome: legacy Chrome QUIC disabled
 ```
 
-Quinn being source-available does not make its observer adapter ready. The two
-backend candidates and the Chrome reference form one observation gate, so any
-blocker prevents all capture work. The unit test
+The Quinn line is now itself evidence that the lab implements the superseded
+contract. Any blocker still prevents all capture work. The unit test
 `current_main_preflight_is_a_network_before_red` proves the guarded observer
-closure is not called.
+closure is not called. This is preserved RED evidence only; it is not the new
+contract.
 
-## GREEN for this first slice
+The next bounded B-001 implementation slice must remove Quinn from the subject
+set without launching either remaining process. Its preflight remains nonzero
+until both adapters are ready and reports only fixed quiche and Chrome blocker
+categories. Any Quinn adapter, Quinn process, or Quinn result row is a contract
+failure, not a missing prerequisite. That implementation change is separate
+from this decision-only document amendment.
 
-GREEN means only that the contract is frozen and the byte-only parser's unit
-tests pass for padded Initial, coalesced Initial/Handshake, token-length,
+## Preserved neutral parser result
+
+The merged byte-only QUIC framing parser remains backend-neutral and useful. Its
+unit tests pass for padded Initial, coalesced Initial/Handshake, token-length,
 Retry, Version Negotiation, truncation, unsupported-version, and declared-
-length cases. The preflight intentionally remains RED until a later bounded
-slice supplies equal, reviewable adapters.
+length cases. That parser result is not B-001 GREEN, and the preflight remains
+RED until a later bounded slice supplies equal, reviewable quiche and Chrome
+adapters. The uncommitted Quinn relay-qualification follow-up is stopped and is
+not part of current main.
 
 ## Full B-001 completion gate
 
-This first slice cannot close B-001. The later bakeoff must compare Quinn and
+This first slice cannot close B-001. The later qualification must compare
 quiche against the same Chrome reference and record `PASS`, `FAIL`, or `UNKNOWN`
 for every PLAYBOOK dimension: TLS ClientHello; QUIC Initial and transport
 parameters; H3 SETTINGS, QPACK, headers, and close behavior; exporter;
 CONNECT; the RFC 9297/9298 capability gate, send/receive behavior, and PMTU
 API; bounded weak-network behavior;
 maintenance cost; platform buildability; and supply-chain update cost. It must
-also publish the normalized Quinn/quiche diffs and maintenance-cost table.
-Until then, and until the separate B-002 fork audit also completes, B-003
-cannot select Quinn, quiche, or neither.
+also publish the normalized quiche/reference diffs and quiche maintenance-cost
+table. B-003 has already fixed the product direction, but that does not close
+B-001 or B-002. Until both objective gates pass, quiche cannot be adopted; if
+qualification fails, product H3 remains disabled rather than falling back to
+Quinn.
 
 ## Stop and privacy rules
 
-Stop without capturing if any subject needs a product/backend/vendor patch,
-a third QUIC implementation, a privileged capture, a system proxy/DNS/route/
-firewall/VPN/interface change, or a real network. Also stop if Chrome cannot
-produce a stable loopback Initial, subjects cannot use the same observer,
-key-log access is unequal, a new dependency is not independently reviewed, or
-normalized output would expose raw packets, keys, endpoints, targets, profiles,
-credentials, or private environment details.
+Stop without capturing if quiche needs a product/backend/vendor patch to
+compete, a Quinn or third QUIC implementation, a privileged capture, a system
+proxy/DNS/route/firewall/VPN/interface change, or a real network. Also stop if
+Chrome cannot produce a stable loopback Initial, quiche and Chrome cannot use
+the same observer, key-log access is unequal, a new dependency is not
+independently reviewed, or normalized output would expose raw packets, keys,
+endpoints, targets, profiles, credentials, or private environment details.
 
 No `pcap`, key log, temporary browser profile, raw packet, endpoint, or
 subject free-form error is a repository artifact. A later result table must
-mark every dimension `PASS`, `FAIL`, or `UNKNOWN` and must keep B-003 backend
-selection separately owner-gated.
+mark every dimension `PASS`, `FAIL`, or `UNKNOWN`. A direction decision must
+never be reported as a qualification result.
 
 ## Compatibility and rollback
 
-This slice changes only the unpublished `maverick-tests` crate and this
-contract. It changes no Maverick product API, config/schema, auth/frame wire,
-artifact, release, or runtime behavior. Rollback is deletion of this document,
-the lab binary, the lab-only module, and its `lib.rs` registration.
-
-`STATUS.md` and `ROADMAP.md` are unchanged because B-001 is still incomplete
-and the execution order did not change.
+The previously merged parser/lab slice changed only the unpublished
+`maverick-tests` crate and this contract; it changed no Maverick product API,
+config/schema, auth/frame wire, artifact, release, or runtime behavior. This
+dated direction amendment changes governance documents only. It deliberately
+does not delete the neutral parser or modify the obsolete preflight in the same
+slice. A later code change must be independently reviewable and reversible.

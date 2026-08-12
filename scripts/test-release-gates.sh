@@ -10,6 +10,7 @@ tag_verifier="$repo_root/scripts/verify-release-tag.sh"
 test_root=""
 
 readonly TEST_VERSION="1.2.0-beta.2"
+readonly TEST_BETA_ONE_VERSION="1.2.0-beta.1"
 readonly TEST_RC_VERSION="1.2.0-rc.1"
 readonly TEST_BETA_MULTIDIGIT_VERSION="1.2.0-beta.10"
 readonly TEST_RC_MULTIDIGIT_VERSION="1.2.0-rc.10"
@@ -17,6 +18,8 @@ readonly TEST_RELEASE_NOTE_VERSION="1.2.0-beta.3"
 readonly TEST_REVISION="1111111111111111111111111111111111111111"
 readonly TEST_MARKER="SYNTH_PRIVATE_MARKER_DO_NOT_ECHO"
 readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
+readonly PILOT_RELEASE_WORKFLOW_SHA256="cf60b57afe553b6a23404853def0a0824f4a985808bc52139113cbdec6f122b7"
+readonly PILOT_RELEASE_PUBLISH_STEP_SHA256="e5578640dc3066f3e18fc33f9a628cedd8fd1440a1805bef679f76e61c03280c"
 
 cleanup() {
   case "$test_root" in
@@ -145,6 +148,7 @@ compile_fixture_binary() {
   local output="$1"
   local mode="$2"
   local marker_path="$3"
+  local version="${4:-$TEST_VERSION}"
   local source="$test_root/fixture-$mode.c"
   command -v cc >/dev/null 2>&1 || fail_test
   {
@@ -153,6 +157,7 @@ compile_fixture_binary() {
     echo '#include <unistd.h>'
     printf '%s\n' "#define FIXTURE_MODE $mode"
     printf '%s\n' "#define MARKER_PATH \"$marker_path\""
+    printf '%s\n' "#define FIXTURE_VERSION \"$version\""
     cat <<'C_SOURCE'
 static void record_execution(void) {
   if (MARKER_PATH[0] != '\0') {
@@ -174,7 +179,7 @@ int main(int argc, char **argv) {
       puts("maverick wrong-version");
       return 0;
     }
-    puts("maverick 1.2.0-beta.2");
+    printf("maverick %s\n", FIXTURE_VERSION);
     puts("protocol_version: 1");
     puts("features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke");
     return 0;
@@ -209,6 +214,7 @@ make_payload() {
   local payload_parent="$1"
   local binary="$2"
   local target="$3"
+  local version="${4:-$TEST_VERSION}"
   local root="$payload_parent/maverick-pilot"
   mkdir -p "$root"
   chmod 0755 "$root"
@@ -217,13 +223,13 @@ make_payload() {
     "repository: https://github.com/ilhaformosa/maverick" \
     "git_revision: $TEST_REVISION" \
     "source_state: clean" \
-    "version: $TEST_VERSION" \
+    "version: $version" \
     "target: $target" >"$root/SOURCE.txt"
   sed -n "/^cat >.*START_HERE\\.txt.*<<'GUIDE'$/,/^GUIDE$/p" \
     "$repo_root/scripts/build-pilot.sh" |
     sed '1d;$d' >"$root/START_HERE.txt"
   printf '%s\n' \
-    "maverick $TEST_VERSION" \
+    "maverick $version" \
     "protocol_version: 1" \
     "$FEATURES_LINE" >"$root/VERSION.txt"
   cp "$binary" "$root/maverick"
@@ -237,11 +243,12 @@ new_artifact_case() {
   local name="$1"
   local binary="${2:-$native_binary}"
   local target="${3:-$native_target}"
+  local version="${4:-$TEST_VERSION}"
   current_case="$test_root/artifacts/$name"
-  current_archive="$current_case/maverick-${TEST_VERSION}-pilot-${target}.tar.gz"
+  current_archive="$current_case/maverick-${version}-pilot-${target}.tar.gz"
   current_target="$target"
   mkdir -p "$current_case/payload"
-  make_payload "$current_case/payload" "$binary" "$target"
+  make_payload "$current_case/payload" "$binary" "$target" "$version"
   pack_payload "$current_case/payload" "$current_archive"
 }
 
@@ -249,9 +256,10 @@ run_artifact() {
   local archive="$1"
   local target="$2"
   local level="$3"
+  local version="${4:-$TEST_VERSION}"
   "$artifact_verifier" \
     --archive "$archive" \
-    --expected-version "$TEST_VERSION" \
+    --expected-version "$version" \
     --expected-revision "$TEST_REVISION" \
     --expected-target "$target" \
     --verification-level "$level"
@@ -262,9 +270,11 @@ expect_artifact_pass() {
   local archive="$2"
   local target="$3"
   local level="$4"
+  local version="${5:-$TEST_VERSION}"
   local log="$test_root/logs/$label"
   trace_test "$label"
-  run_artifact "$archive" "$target" "$level" >"$log" 2>&1 || fail_test
+  run_artifact "$archive" "$target" "$level" "$version" >"$log" 2>&1 ||
+    fail_test
   grep -Fx "pilot artifact $level verification OK" "$log" >/dev/null || fail_test
 }
 
@@ -274,9 +284,10 @@ expect_artifact_fail() {
   local target="$3"
   local level="$4"
   local hidden="${5:-}"
+  local version="${6:-$TEST_VERSION}"
   local log="$test_root/logs/$label"
   trace_test "$label"
-  if run_artifact "$archive" "$target" "$level" >"$log" 2>&1; then
+  if run_artifact "$archive" "$target" "$level" "$version" >"$log" 2>&1; then
     fail_test
   fi
   log_lines="$(wc -l <"$log" | tr -d '[:space:]')"
@@ -571,6 +582,51 @@ extract_release_note_function() {
   printf '%s\n' "$function_block" | sed 's/^          //' >>"$destination"
 }
 
+exact_line_in() {
+  local file="$1"
+  local pattern="$2"
+  local matches
+  local line
+  matches="$(grep -Fnx -- "$pattern" "$file")" || fail_test
+  [[ "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d '[:space:]')" -eq 1 ]] ||
+    fail_test
+  line="${matches%%:*}"
+  [[ "$line" =~ ^[0-9]+$ ]] || fail_test
+  printf '%s\n' "$line"
+}
+
+insert_line_after() {
+  local source="$1"
+  local destination="$2"
+  local anchor="$3"
+  local inserted="$4"
+  awk -v anchor="$anchor" -v inserted="$inserted" '
+    { print }
+    $0 == anchor { print inserted; matches++ }
+    END { if (matches != 1) exit 1 }
+  ' "$source" >"$destination" || fail_test
+}
+
+insert_line_before() {
+  local source="$1"
+  local destination="$2"
+  local anchor="$3"
+  local inserted="$4"
+  awk -v anchor="$anchor" -v inserted="$inserted" '
+    $0 == anchor { print inserted; matches++ }
+    { print }
+    END { if (matches != 1) exit 1 }
+  ' "$source" >"$destination" || fail_test
+}
+
+workflow_contract_matches() {
+  [[ "$(sha256_file "$1")" == "$PILOT_RELEASE_WORKFLOW_SHA256" ]]
+}
+
+publish_step_contract_matches() {
+  [[ "$(sha256_file "$1")" == "$PILOT_RELEASE_PUBLISH_STEP_SHA256" ]]
+}
+
 test_root="$(mktemp -d /tmp/maverick-release-gates.XXXXXX 2>/dev/null)" || fail_test
 [[ -d "$test_root" && ! -L "$test_root" ]] || fail_test
 chmod 0700 "$test_root"
@@ -597,9 +653,9 @@ grep -F "notes_source=\"docs/releases/v\${version}.md\"" "$release_workflow" \
 snapshot_call_pattern="snapshot_release_note \"\$notes_source\" \"\$version\" \"\$notes_file\""
 verification_call_pattern="verify_release_note \"\$notes_file\" \"\$version\""
 digest_call_pattern="notes_sha=\"\$(release_note_sha256 \"\$notes_file\")\""
-final_digest_pattern="release_note_digest_matches \"\$NOTES_FILE\" \"\$NOTES_SHA\""
-notes_file_pattern="--notes-file \"\$NOTES_FILE\""
-release_create_pattern="exec gh release create \"\$GITHUB_REF_NAME\""
+publish_step_pattern='      - name: Recheck remote gates and publish the reverified prerelease'
+release_create_pattern="          exec gh release create \"\$GITHUB_REF_NAME\" \\"
+notes_file_pattern="            --notes-file \"\$NOTES_FILE\""
 snapshot_call_line="$(
   grep -Fn "$snapshot_call_pattern" "$release_workflow" | cut -d: -f1
 )"
@@ -609,24 +665,102 @@ verification_call_line="$(
 digest_call_line="$(
   grep -Fn "$digest_call_pattern" "$release_workflow" | cut -d: -f1
 )"
-final_digest_call_line="$(
-  grep -Fn "$final_digest_pattern" "$release_workflow" | cut -d: -f1
-)"
-release_create_line="$(
-  grep -Fn "$release_create_pattern" "$release_workflow" | cut -d: -f1
-)"
+publish_step_line="$(exact_line_in "$release_workflow" "$publish_step_pattern")"
+release_create_line="$(exact_line_in "$release_workflow" "$release_create_pattern")"
+notes_file_line="$(exact_line_in "$release_workflow" "$notes_file_pattern")"
 [[ "$snapshot_call_line" =~ ^[0-9]+$ ]] || fail_test
 [[ "$verification_call_line" =~ ^[0-9]+$ ]] || fail_test
 [[ "$digest_call_line" =~ ^[0-9]+$ ]] || fail_test
-[[ "$final_digest_call_line" =~ ^[0-9]+$ ]] || fail_test
-[[ "$release_create_line" =~ ^[0-9]+$ ]] || fail_test
 [[ "$snapshot_call_line" -lt "$verification_call_line" ]] || fail_test
 [[ "$verification_call_line" -lt "$digest_call_line" ]] || fail_test
-[[ "$((release_create_line - final_digest_call_line))" -eq 4 ]] || fail_test
-[[ "$(grep -Fc "$final_digest_pattern" "$release_workflow")" -eq 1 ]] ||
+[[ "$publish_step_line" -lt "$release_create_line" ]] || fail_test
+[[ "$release_create_line" -lt "$notes_file_line" ]] || fail_test
+workflow_contract_matches "$release_workflow" || fail_test
+publish_block="$test_root/publish-workflow-block"
+sed -n "${publish_step_line},\$p" "$release_workflow" >"$publish_block"
+[[ -s "$publish_block" ]] || fail_test
+publish_step_contract_matches "$publish_block" || fail_test
+publish_file_set_line="$(
+  exact_line_in "$publish_block" \
+    "          test \"\$actual_files\" = \"\$expected_files\""
+)"
+publish_file_count_line="$(
+  exact_line_in "$publish_block" \
+    "          test \"\$(find \"\$STAGING\" -mindepth 1 -maxdepth 1 -print | wc -l)\" -eq 6"
+)"
+publish_fetch_line="$(
+  exact_line_in "$publish_block" \
+    "          git fetch --no-tags --force --atomic origin \\"
+)"
+publish_tag_line="$(
+  exact_line_in "$publish_block" \
+    "          ./scripts/verify-release-tag.sh \\"
+)"
+notes_guard_pattern="          if ! release_note_digest_matches \"\$NOTES_FILE\" \"\$NOTES_SHA\"; then"
+notes_guard_line="$(exact_line_in "$release_workflow" "$notes_guard_pattern")"
+publish_notes_guard_line="$(exact_line_in "$publish_block" "$notes_guard_pattern")"
+publish_create_line="$(exact_line_in "$publish_block" "$release_create_pattern")"
+[[ "$publish_file_set_line" -lt "$publish_file_count_line" ]] || fail_test
+[[ "$publish_file_count_line" -lt "$publish_fetch_line" ]] || fail_test
+[[ "$publish_fetch_line" -lt "$publish_tag_line" ]] || fail_test
+[[ "$publish_tag_line" -lt "$publish_notes_guard_line" ]] || fail_test
+[[ "$publish_notes_guard_line" -lt "$publish_create_line" ]] || fail_test
+[[ "$notes_guard_line" -lt "$release_create_line" ]] || fail_test
+actual_release_command="$(
+  sed -n "${notes_guard_line},${notes_file_line}p" "$release_workflow"
+)"
+# The following single-quoted block is the literal workflow command contract.
+# shellcheck disable=SC2016
+expected_release_command='          if ! release_note_digest_matches "$NOTES_FILE" "$NOTES_SHA"; then
+            echo "release note verification failed" >&2
+            exit 1
+          fi
+          exec gh release create "$GITHUB_REF_NAME" \
+            "$STAGING/$LINUX_NAME" \
+            "$STAGING/$LINUX_NAME.sha256" \
+            "$STAGING/$LINUX_SBOM_NAME" \
+            "$STAGING/$MAC_NAME" \
+            "$STAGING/$MAC_NAME.sha256" \
+            "$STAGING/$MAC_SBOM_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --latest=false \
+            --title "Maverick $GITHUB_REF_NAME" \
+            --notes-file "$NOTES_FILE"'
+[[ "$actual_release_command" == "$expected_release_command" ]] || fail_test
+[[ "$(grep -Fc "gh release create" "$release_workflow")" -eq 1 ]] ||
   fail_test
-[[ "$(grep -Fc -- "$notes_file_pattern" "$release_workflow")" -eq 1 ]] ||
+[[ "$(grep -Fc -- "--prerelease" "$release_workflow")" -eq 1 ]] ||
   fail_test
+[[ "$(grep -Fc -- "--latest" "$release_workflow")" -eq 1 ]] ||
+  fail_test
+[[ "$(grep -Ec -- '(^|[[:space:]])gh([[:space:]]|$)' "$release_workflow")" -eq 1 ]] ||
+  fail_test
+release_command_block="$test_root/release-command-block"
+printf '%s\n' "$actual_release_command" >"$release_command_block"
+[[ "$(grep -Ec -- '(^|[[:space:]])--verify-tag(=|[[:space:]]|$)' "$release_command_block")" -eq 1 ]] ||
+  fail_test
+[[ "$(grep -Ec -- '(^|[[:space:]])--prerelease(=|[[:space:]]|$)' "$release_command_block")" -eq 1 ]] ||
+  fail_test
+[[ "$(grep -Ec -- '(^|[[:space:]])--latest(=|[[:space:]]|$)' "$release_command_block")" -eq 1 ]] ||
+  fail_test
+
+trace_test workflow-hash-rejects-errexit-disable
+errexit_mutation="$test_root/pilot-release-errexit-disabled.yml"
+insert_line_before "$publish_block" "$errexit_mutation" \
+  "          expected_files=\"\$(" "          set +e"
+if publish_step_contract_matches "$errexit_mutation"; then
+  fail_test
+fi
+
+trace_test workflow-hash-rejects-asset-rebinding
+asset_mutation="$test_root/pilot-release-asset-rebound.yml"
+insert_line_after "$publish_block" "$asset_mutation" \
+  "            --main-ref origin/main" "          MAC_NAME=\"\$LINUX_NAME\""
+if publish_step_contract_matches "$asset_mutation"; then
+  fail_test
+fi
 
 release_notes_root="$test_root/release-notes"
 mkdir "$release_notes_root"
@@ -742,6 +876,40 @@ compile_fixture_binary "$native_binary" 0 ""
 new_artifact_case positive
 expect_artifact_pass positive-static "$current_archive" "$current_target" static
 expect_artifact_pass positive-native "$current_archive" "$current_target" native
+
+for supported_version in \
+  "$TEST_BETA_ONE_VERSION" "$TEST_BETA_MULTIDIGIT_VERSION" \
+  "$TEST_RC_VERSION" "$TEST_RC_MULTIDIGIT_VERSION"; do
+  supported_binary="$test_root/native-maverick-$supported_version"
+  compile_fixture_binary "$supported_binary" 0 "" "$supported_version"
+  new_artifact_case "supported-$supported_version" "$supported_binary" \
+    "$native_target" "$supported_version"
+  expect_artifact_pass "supported-$supported_version-static" \
+    "$current_archive" "$current_target" static "$supported_version"
+  if [[ "$supported_version" == "$TEST_RC_VERSION" ]]; then
+    expect_artifact_pass "supported-$supported_version-native" \
+      "$current_archive" "$current_target" native "$supported_version"
+  fi
+done
+
+while IFS='|' read -r unsupported_label unsupported_version; do
+  unsupported_binary="$test_root/unsupported-$unsupported_label-binary"
+  compile_fixture_binary "$unsupported_binary" 0 "" "$unsupported_version"
+  new_artifact_case "unsupported-$unsupported_label" "$unsupported_binary" \
+    "$native_target" "$unsupported_version"
+  expect_artifact_fail "unsupported-$unsupported_label" "$current_archive" \
+    "$current_target" static "" "$unsupported_version"
+done <<'UNSUPPORTED_ARTIFACT_VERSIONS'
+stable|1.2.0
+alpha|1.2.0-alpha.1
+major|2.2.0-beta.1
+minor|1.3.0-beta.1
+patch|1.2.1-beta.1
+beta-zero|1.2.0-beta.0
+beta-leading-zero|1.2.0-beta.01
+rc-zero|1.2.0-rc.0
+rc-leading-zero|1.2.0-rc.01
+UNSUPPORTED_ARTIFACT_VERSIONS
 
 new_artifact_case gnu-zero-device-fields
 raw_tar="$current_case/archive.tar"

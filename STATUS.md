@@ -243,23 +243,34 @@ censorship resistance, production readiness, or browser identity.
   Latest. Immutable `v1.2.0-beta.4` is the exact rollback partner. The full
   contract and still-closed gates are recorded in
   `docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`. This policy does not make an RC or
-  Stable candidate exist. The standing delegation authorizes only the bounded
-  RLC-001 repository tooling slice at this point; it does not authorize a tag,
-  publication, a field run, a server, spending, a paid audit, or a Stable
+  Stable candidate exist. The standing delegation authorizes only the next
+  bounded RLC-001b repository tooling slice at this point; it does not authorize
+  a tag, publication, a field run, a server, spending, a paid audit, or a Stable
   claim.
-- RLC-001 local candidate evidence: the deterministic release-gate fixture
-  first showed that a valid annotated `v1.2.0-rc.1` failed only at the old
-  Beta-only version syntax. The smallest candidate now accepts only canonical
-  positive `v1.2.0-beta.N` and `v1.2.0-rc.N` tags while retaining Stable,
-  Alpha, other version-line, zero/leading-zero sequence, tag-shape, exact-SHA,
-  ancestry, and missing-history rejection. The focused release-gate suite
-  passes locally; the local product smoke and complete local harness also pass.
-  This is implementation evidence, not an RC artifact, a complete RC
-  publication pipeline, or RLC-001 completion. The artifact verifier remains
-  Beta-only, and no RC package version, release note, archive, SBOM, or
-  publication input exists. Independent review, exact-head public checks,
-  privacy review, and merge must still pass before the bounded tag-verifier
-  slice can be counted complete.
+- RLC-001 is merged current truth at `main` commit
+  `9423bff57818da199c9b1141edfeb89e03c801a1`. The release-tag verifier accepts
+  only canonical positive `v1.2.0-beta.N` and `v1.2.0-rc.N` annotated tags while
+  retaining Stable, Alpha, other version-line, zero/leading-zero sequence,
+  tag-shape, exact-SHA, ancestry, and missing-history rejection. This replaces
+  the stale pre-merge candidate wording and completes only the bounded
+  tag-verifier slice; it did not create or authorize an RC tag, artifact, or
+  publication.
+- RLC-001b is the next smallest local candidate. Its deterministic RED used an
+  otherwise-valid `1.2.0-rc.1` archive whose filename, source metadata, version
+  metadata, inner and outer digests, target, architecture, and native binary
+  output agreed, and the former Beta-only artifact-version gate rejected it.
+  The local candidate now accepts only canonical positive `1.2.0-beta.N` and
+  `1.2.0-rc.N` artifact versions, keeps Stable, Alpha, foreign version lines,
+  zero, and leading-zero sequences fail-closed, and statically locks the
+  unchanged publication workflow's prerelease/non-Latest classification and
+  final tag, six-file, checksum, digest, and release-note rechecks before its
+  sole release-create command. Static verification and current-host native
+  verification pass for the RC fixture. This remains local candidate evidence:
+  RLC-001b still requires independent exact-hash review, privacy review,
+  exact-head public checks, and merge. No exact-RC package version, release
+  note, archive, SBOM, tag, or publication input exists; candidate preparation,
+  security, supply-chain, compatibility, Beta.4 rollback, field, and
+  publication gates remain RED.
 - Stable, mature, production-ready, anonymity, broad censorship-resistance, and
   exact browser-equivalence claims: not made. Entering Beta does not imply any
   of those claims.
@@ -755,8 +766,8 @@ option when one exists; otherwise it must choose the smallest safe,
 failure-driven option and record the decision and reason. A further owner
 selection or approval is not required. This standing delegation covers placing
 the remaining playbook work into the `ROADMAP.md` queue and its ordinary local,
-public-repository, review, and required public-CI workflow. RLC-001 is therefore
-authorized as the next v1.2 tooling slice.
+public-repository, review, and required public-CI workflow. RLC-001 is merged;
+RLC-001b is therefore authorized as the next bounded v1.2 tooling slice.
 
 The delegation is decision authority, not evidence. It does not turn a RED or
 UNKNOWN gate green, inherit evidence from another commit or route, waive

@@ -9,7 +9,6 @@ repository.workspace = true
 default = []
 browser-tls = []
 ech = []
-h3 = []
 hpke-experimental = []
 noise-experimental = ["dep:snow"]
 ml-kem-hybrid = []

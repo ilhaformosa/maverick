@@ -15,13 +15,6 @@ required-features = ["tun-phase2"]
 default = ["browser-tls"]
 browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
 ech = ["maverick-client/ech", "maverick-server/ech"]
-h3 = [
-  "dep:h3",
-  "dep:h3-quinn",
-  "dep:quinn",
-  "maverick-client/h3",
-  "maverick-server/h3",
-]
 tun-runtime = [
   "dep:etherparse",
   "dep:maverick-tun",
@@ -37,14 +30,11 @@ clap = { workspace = true, optional = true }
 etherparse = { version = "=0.20.3", optional = true }
 futures.workspace = true
 h2.workspace = true
-h3 = { workspace = true, optional = true }
-h3-quinn = { workspace = true, optional = true }
 http.workspace = true
 maverick-client = { path = "../maverick-client", default-features = false }
 maverick-core = { path = "../maverick-core", default-features = false }
 maverick-server = { path = "../maverick-server" }
 maverick-tun = { path = "../maverick-tun", optional = true }
-quinn = { workspace = true, optional = true }
 rcgen.workspace = true
 rustls.workspace = true
 serde.workspace = true

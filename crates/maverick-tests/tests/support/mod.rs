@@ -3,8 +3,6 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-#[cfg(feature = "h3")]
-use bytes::Buf;
 use bytes::{Bytes, BytesMut};
 use http::Request;
 use maverick_client::transport;
@@ -149,15 +147,6 @@ impl MaverickHarness {
     pub async fn start_with_client_flow_limit(max_concurrent_flows: u32) -> Result<Self> {
         Self::start_with_options(HarnessOptions {
             client_max_concurrent_flows: Some(max_concurrent_flows),
-            ..HarnessOptions::default()
-        })
-        .await
-    }
-
-    #[cfg(feature = "h3")]
-    pub async fn start_with_h3() -> Result<Self> {
-        Self::start_with_options(HarnessOptions {
-            experimental_h3: true,
             ..HarnessOptions::default()
         })
         .await
@@ -536,26 +525,6 @@ pub async fn tunnel_attempt_body_at(
         }
         transport::TunnelRequestSender::CloudflareWs(_) => {
             anyhow::bail!("tunnel_attempt_body does not support websocket carrier")
-        }
-        #[cfg(feature = "h3")]
-        transport::TunnelRequestSender::H3(mut h3) => {
-            let uri = format!("https://{}{}", config.server.server_name, tunnel_uri);
-            let req = Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/octet-stream")
-                .body(())?;
-            let mut stream = h3.send_request(req).await?;
-            stream.send_data(frame.encode(65_536)?).await?;
-            stream.finish().await?;
-            let response = stream.recv_response().await?;
-            let mut body = BytesMut::new();
-            while let Some(mut chunk) = stream.recv_data().await? {
-                let bytes = chunk.copy_to_bytes(chunk.remaining());
-                body.extend_from_slice(&bytes);
-            }
-            decode_optional_server_hello(&response, &body)?;
-            Ok(body.freeze())
         }
     }
 }

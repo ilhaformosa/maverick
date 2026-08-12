@@ -804,9 +804,9 @@ advanced:
 The fixed retirement error is returned before DNS, bind, certificate or secret
 file reads, local reads or writes, fallback, or cooldown work. No H3 attempt,
 H3-to-H2 fallback, or H3 cooldown is created. Direct public
-`h3_transport::connect` is also retired even when a raw config has the flag
-`false`. Quinn code, dependencies, and the `h3` feature remain temporarily only
-for a local loopback test oracle; their deletion is a separate QRET-2 slice.
+`h3_transport::connect` was also retired rather than retained as a public
+escape hatch. QRET-2 removes Quinn/hyperium-H3 code, dependencies, the `h3`
+feature, and the local loopback oracle from the current source tree.
 Future product H3 may use only the qualified quiche route through a complete,
 runnable, migratable Product Config v2. It cannot re-enable this v1 flag, and
 Auto remains H2-only.
@@ -1166,7 +1166,7 @@ limits concurrent unauthenticated handshake and tunnel-sniffing work across
 the runnable H2 and WebSocket carriers. Server `advanced.fallback_max_concurrent` bounds
 ordinary static or reverse-proxy fallback work. Server
 `advanced.h2_max_concurrent_streams` advertises the HTTP/2 concurrent stream
-limit per connection. The retained Quinn loopback oracle is not a config-v1
+limit per connection. Archived Quinn loopback history is not a config-v1
 product carrier or a separate concurrency claim. `advanced.h2_max_concurrent_reset_streams`,
 `advanced.h2_max_pending_accept_reset_streams`, and
 `advanced.h2_max_local_error_reset_streams` make HTTP/2 reset-stream defense

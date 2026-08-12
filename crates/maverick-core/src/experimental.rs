@@ -81,9 +81,9 @@ pub struct ExperimentalTrackDescriptor {
 pub const EXPERIMENTAL_TRACK_REGISTRY: &[ExperimentalTrackDescriptor] = &[
     ExperimentalTrackDescriptor {
         track: ExperimentalTrackId::H3QuicCarrier,
-        title: "Retired config-v1 Quinn H3/QUIC carrier",
+        title: "Retired config-v1 H3/QUIC carrier slot",
         status: ExperimentalTrackStatus::DisabledRegistryEntry,
-        build_gate: Some("h3"),
+        build_gate: None,
         runtime_gate: Some("advanced.experimental_h3"),
         default_enabled: false,
         requires_external_test_host: false,
@@ -246,10 +246,16 @@ mod tests {
                 ExperimentalTrackStatus::RuntimeExperimental => {
                     assert!(descriptor.runtime_gate.is_some(), "{:?}", descriptor.track);
                 }
-                ExperimentalTrackStatus::ConfigGateOnly
-                | ExperimentalTrackStatus::DisabledRegistryEntry => {
+                ExperimentalTrackStatus::ConfigGateOnly => {
                     assert!(descriptor.build_gate.is_some(), "{:?}", descriptor.track);
                     assert!(descriptor.runtime_gate.is_some(), "{:?}", descriptor.track);
+                }
+                ExperimentalTrackStatus::DisabledRegistryEntry => {
+                    assert!(
+                        descriptor.build_gate.is_some() || descriptor.runtime_gate.is_some(),
+                        "{:?}",
+                        descriptor.track
+                    );
                 }
                 ExperimentalTrackStatus::ResearchOnly => {}
             }
@@ -286,7 +292,7 @@ mod tests {
             retired_h3.status,
             ExperimentalTrackStatus::DisabledRegistryEntry
         );
-        assert_eq!(retired_h3.build_gate, Some("h3"));
+        assert_eq!(retired_h3.build_gate, None);
         assert_eq!(retired_h3.runtime_gate, Some("advanced.experimental_h3"));
     }
 

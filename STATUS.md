@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-08-12
+Date: 2026-08-13
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -174,10 +174,10 @@ censorship resistance, production readiness, or browser identity.
   gated future option, not authorized current work.
 - H3/UDP backend direction (owner decision, 2026-08-12): Maverick will not build
   a Quinn product path. The single intended H3/UDP product backend is quiche.
-  Current main's unpublished Quinn feature is retained temporarily only to
-  extract backend-neutral semantic and test oracles; immutable archives
-  preserve its permanent history, and current-main Quinn code is then removed
-  in a separate reversible slice. This supersedes the conditional B-003
+  QRET-2 removes the unpublished Quinn/hyperium-H3 implementation, feature,
+  dependencies, and loopback oracle from the current source tree in a separate
+  reversible slice. Immutable Git and archived provenance preserve its
+  backend-neutral semantic history. This supersedes the conditional B-003
   choice in the convergence ADR without making quiche usable or ready. B-001
   still must qualify quiche against the neutral Chrome reference and the fixed
   objective matrix, and B-002 remains **RED**: the preserved fork has no
@@ -202,14 +202,14 @@ censorship resistance, production readiness, or browser identity.
   bind, file or referenced secret-store reads, local I/O, fallback, or cooldown
   work. The field,
   default/explicit `false`, Serde/URI/SDK shapes, and H2 behavior and bytes stay
-  unchanged. Direct public legacy H3 connection is also retired. Quinn code,
-  dependencies, and its local loopback test remain temporarily as a test-only
-  oracle for QRET-2; this slice adds no quiche runtime, Product Config v2, Auto
-  H3, wire change, or UDP product claim. Retired Quinn product tests duplicated
+  unchanged. Direct public legacy H3 connection is also retired. QRET-2 now
+  separately removes Quinn/hyperium-H3 code, features, dependencies, and the
+  local loopback test without adding quiche runtime, Product Config v2, Auto
+  H3, a wire change, or a UDP product claim. The retired Quinn tests duplicated
   existing H2 relay, padding, auth, malformed/replay, DNS, SOCKS UDP, and
-  concurrency semantics; the one Quinn reverse-proxy available-body detail
-  remains an immutable-archive semantic oracle until it can be re-expressed
-  backend-neutrally.
+  concurrency semantics. The one reverse-proxy available-body detail is now
+  expressed by an exact backend-neutral H2 fallback test; immutable Git and
+  archived material remain historical provenance only.
 - B-002-S1 document-only policy contract: it assigns explicit
   protocol-safety, privacy-logging, and dependency-security responsibilities;
   freezes patch-specific `DROP`/`RETAIN`, upstream/rebase, and fail-closed H3

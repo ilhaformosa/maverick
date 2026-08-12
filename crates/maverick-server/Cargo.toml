@@ -8,21 +8,17 @@ repository.workspace = true
 [features]
 default = []
 ech = ["maverick-core/ech"]
-h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn"]
 
 [dependencies]
 anyhow.workspace = true
 bytes.workspace = true
 futures.workspace = true
 h2.workspace = true
-h3 = { workspace = true, optional = true }
-h3-quinn = { workspace = true, optional = true }
 http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 maverick-core = { path = "../maverick-core" }
-quinn = { workspace = true, optional = true }
 rustls.workspace = true
 time.workspace = true
 tokio.workspace = true

@@ -1,7 +1,7 @@
 # B-001 quiche Qualification Observation Contract
 
-Date: 2026-08-12
-Status: **direction amended; quiche-plus-reference observation remains RED**
+Date: 2026-08-13
+Status: **two-subject quiche-plus-reference observation remains RED**
 
 ## Result and boundary
 
@@ -10,9 +10,9 @@ qualifying quiche, the owner's single selected H3/UDP product direction,
 against Chrome as a neutral reference. Chrome is not a selectable backend.
 Quinn is no longer an observation subject or product candidate. This contract
 does not run a capture, compare a fingerprint, adopt quiche, or complete B-001.
-The current-main lab remains RED before network work because it still encodes
-the superseded three-subject design, has no quiche adapter, and the legacy
-Chrome lab explicitly disables QUIC.
+QRET-2 mechanically narrows the active lab to quiche plus Chrome. It remains RED
+before network work because it has no quiche adapter and the legacy Chrome lab
+explicitly disables QUIC.
 
 This slice adds no QUIC implementation, parser dependency, product API, wire
 behavior, config, credential, route, or capture privilege. Raw UDP payloads are
@@ -104,27 +104,21 @@ Run:
 cargo run -q -p maverick-tests --bin backend-capture-lab -- preflight
 ```
 
-Current main exits nonzero before invoking an observer, binding UDP, or
-starting Chrome, but reports the obsolete three-subject blockers:
+The current source tree exits nonzero before invoking an observer, binding UDP,
+or starting Chrome and reports exactly the two current blockers:
 
 ```text
-quinn: common loopback observer adapter not implemented
 quiche: current main quiche adapter unavailable
 chrome: legacy Chrome QUIC disabled
 ```
 
-The Quinn line is now itself evidence that the lab implements the superseded
-contract. Any blocker still prevents all capture work. The unit test
+Any blocker prevents all capture work. The unit test
 `current_main_preflight_is_a_network_before_red` proves the guarded observer
-closure is not called. This is preserved RED evidence only; it is not the new
-contract.
-
-The next bounded B-001 implementation slice must remove Quinn from the subject
-set without launching either remaining process. Its preflight remains nonzero
-until both adapters are ready and reports only fixed quiche and Chrome blocker
-categories. Any Quinn adapter, Quinn process, or Quinn result row is a contract
-failure, not a missing prerequisite. That implementation change is separate
-from this decision-only document amendment.
+closure is not called. This is preserved RED evidence only; it does not qualify
+quiche or complete B-001. The preflight remains nonzero until both adapters are
+ready and reports only fixed quiche and Chrome blocker categories. Any Quinn
+adapter, Quinn process, or Quinn result row is a contract failure, not a missing
+prerequisite.
 
 ## Preserved neutral parser result
 
@@ -133,8 +127,7 @@ unit tests pass for padded Initial, coalesced Initial/Handshake, token-length,
 Retry, Version Negotiation, truncation, unsupported-version, and declared-
 length cases. That parser result is not B-001 GREEN, and the preflight remains
 RED until a later bounded slice supplies equal, reviewable quiche and Chrome
-adapters. The uncommitted Quinn relay-qualification follow-up is stopped and is
-not part of current main.
+adapters. The uncommitted Quinn relay-qualification follow-up remains stopped.
 
 ## Full B-001 completion gate
 
@@ -168,9 +161,10 @@ never be reported as a qualification result.
 
 ## Compatibility and rollback
 
-The previously merged parser/lab slice changed only the unpublished
-`maverick-tests` crate and this contract; it changed no Maverick product API,
-config/schema, auth/frame wire, artifact, release, or runtime behavior. This
-dated direction amendment changes governance documents only. It deliberately
-does not delete the neutral parser or modify the obsolete preflight in the same
-slice. A later code change must be independently reviewable and reversible.
+The parser/lab remains inside the unpublished `maverick-tests` crate. QRET-2
+changes only its active subject list and fixed RED blockers; it preserves the
+neutral parser. The complete QRET-2 slice intentionally removes unpublished
+Quinn-specific Rust modules, variants, and Cargo features while preserving the
+config-v1/schema, auth/frame wire, artifact/release formats and gates, and
+runnable H2/WebSocket behavior. Later adapter work must be independently
+reviewable and reversible.

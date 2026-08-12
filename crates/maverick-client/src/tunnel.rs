@@ -1,8 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-#[cfg(feature = "h3")]
-use bytes::Buf;
 use bytes::{Bytes, BytesMut};
 use futures::{future::poll_fn, SinkExt, StreamExt};
 use http::Request;
@@ -37,8 +35,6 @@ impl std::error::Error for H2SendStalled {}
 pub enum ClientTunnel {
     H2(Box<H2ClientTunnel>),
     CloudflareWs(Box<WsClientTunnel>),
-    #[cfg(feature = "h3")]
-    H3(Box<H3ClientTunnel>),
 }
 
 pub struct H2ClientTunnel {
@@ -62,24 +58,11 @@ pub struct WsClientTunnel {
     batcher: RuntimeBatcher,
 }
 
-#[cfg(feature = "h3")]
-pub struct H3ClientTunnel {
-    stream: crate::h3_transport::H3ClientRequestStream,
-    recv_buf: BytesMut,
-    max_frame_size: usize,
-    padding: RuntimePadding,
-    cover_traffic: RuntimeCoverTraffic,
-    batcher: RuntimeBatcher,
-    _transport: crate::h3_transport::H3RequestSender,
-}
-
 impl ClientTunnel {
     pub fn max_frame_size(&self) -> usize {
         match self {
             Self::H2(tunnel) => tunnel.max_frame_size,
             Self::CloudflareWs(tunnel) => tunnel.max_frame_size,
-            #[cfg(feature = "h3")]
-            Self::H3(tunnel) => tunnel.max_frame_size,
         }
     }
 
@@ -166,40 +149,6 @@ impl ClientTunnel {
                 }
                 Ok(())
             }
-            #[cfg(feature = "h3")]
-            Self::H3(tunnel) => {
-                let frames =
-                    prepare_outgoing_frames(frame, &mut tunnel.batcher, &tunnel.padding).await;
-                let last = frames.len().saturating_sub(1);
-                for (idx, frame) in frames.into_iter().enumerate() {
-                    if let Some(padding) = tunnel.padding.padding_frame(
-                        frame.frame_type,
-                        frame.payload.len(),
-                        max_frame_size,
-                    ) {
-                        tunnel
-                            .stream
-                            .send_data(padding.encode(max_frame_size)?)
-                            .await?;
-                    }
-                    for cover_frame in tunnel.cover_traffic.padding_frames(
-                        frame.frame_type,
-                        frame.payload.len(),
-                        max_frame_size,
-                    ) {
-                        tunnel
-                            .stream
-                            .send_data(cover_frame.encode(max_frame_size)?)
-                            .await?;
-                    }
-                    let encoded = frame.encode(max_frame_size)?;
-                    tunnel.stream.send_data(encoded).await?;
-                    if end_stream && idx == last {
-                        tunnel.stream.finish().await?;
-                    }
-                }
-                Ok(())
-            }
         }
     }
 
@@ -211,8 +160,6 @@ impl ClientTunnel {
                 result
             }
             Self::CloudflareWs(tunnel) => read_next_ws_frame(tunnel).await,
-            #[cfg(feature = "h3")]
-            Self::H3(tunnel) => read_next_h3_frame(tunnel).await,
         }
     }
 
@@ -244,8 +191,6 @@ impl ClientTunnel {
                 result
             }
             Self::CloudflareWs(_) => Ok(()),
-            #[cfg(feature = "h3")]
-            Self::H3(_) => Ok(()),
         }
     }
 }
@@ -293,8 +238,6 @@ pub async fn open(config: &ClientConfig) -> Result<ClientTunnel> {
         TunnelRequestSender::CloudflareWs(connection) => {
             open_cloudflare_ws(config, *connection).await
         }
-        #[cfg(feature = "h3")]
-        TunnelRequestSender::H3(sender) => open_h3(config, sender).await,
     }
 }
 
@@ -408,56 +351,6 @@ async fn open_cloudflare_ws(
     tunnel.max_frame_size =
         validate_negotiated_max_frame_size(hello.verify_server_hello(&server_frame.payload)?)?;
     Ok(ClientTunnel::CloudflareWs(Box::new(tunnel)))
-}
-
-#[cfg(feature = "h3")]
-async fn open_h3(
-    config: &ClientConfig,
-    mut transport: crate::h3_transport::H3RequestSender,
-) -> Result<ClientTunnel> {
-    let uri = format!(
-        "https://{}{}",
-        config.server.server_name, config.server.tunnel_path
-    );
-    let req = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/octet-stream")
-        .body(())?;
-    let mut stream = transport.send_request(req).await?;
-    let hello = ClientHandshake::new(config, None)?;
-    stream
-        .send_data(
-            Frame::new(FrameType::ClientHello, 0, 0, hello.encode()?)
-                .encode(DEFAULT_MAX_FRAME_SIZE)?,
-        )
-        .await?;
-
-    let response = stream
-        .recv_response()
-        .await
-        .context("missing h3 tunnel response")?;
-    if !response.status().is_success() {
-        bail!("server returned non-success status: {}", response.status());
-    }
-    let mut tunnel = H3ClientTunnel {
-        stream,
-        recv_buf: BytesMut::new(),
-        max_frame_size: DEFAULT_MAX_FRAME_SIZE,
-        padding: RuntimePadding::from_config(config.mode, &config.advanced.shaping),
-        cover_traffic: RuntimeCoverTraffic::from_config(config.mode, &config.advanced.shaping),
-        batcher: RuntimeBatcher::from_config(config.mode, &config.advanced.shaping),
-        _transport: transport,
-    };
-    let server_frame = read_next_h3_frame(&mut tunnel)
-        .await?
-        .context("missing ServerHello")?;
-    if server_frame.frame_type != FrameType::ServerHello {
-        bail!("missing ServerHello");
-    }
-    tunnel.max_frame_size =
-        validate_negotiated_max_frame_size(hello.verify_server_hello(&server_frame.payload)?)?;
-    Ok(ClientTunnel::H3(Box::new(tunnel)))
 }
 
 enum ClientHandshakeMessage {
@@ -1430,24 +1323,5 @@ mod tests {
 
         assert!(hello.verify_server_hello(&wrong_epoch.encode()?).is_err());
         Ok(())
-    }
-}
-
-#[cfg(feature = "h3")]
-async fn read_next_h3_frame(tunnel: &mut H3ClientTunnel) -> Result<Option<Frame>> {
-    loop {
-        if let Some(frame) = Frame::decode_from(&mut tunnel.recv_buf, tunnel.max_frame_size)? {
-            if frame.frame_type == FrameType::Padding {
-                continue;
-            }
-            return Ok(Some(frame));
-        }
-        match tunnel.stream.recv_data().await? {
-            Some(mut chunk) => {
-                let bytes = chunk.copy_to_bytes(chunk.remaining());
-                tunnel.recv_buf.extend_from_slice(&bytes);
-            }
-            None => return Ok(None),
-        }
     }
 }

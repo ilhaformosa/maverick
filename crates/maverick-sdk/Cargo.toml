@@ -9,7 +9,6 @@ repository.workspace = true
 default = ["browser-tls"]
 browser-tls = ["maverick-core/browser-tls", "maverick-client/browser-tls"]
 ech = ["maverick-core/ech", "maverick-client/ech", "maverick-server/ech"]
-h3 = ["maverick-client/h3", "maverick-server/h3"]
 tun-runtime = ["maverick-client/tun-runtime", "dep:maverick-tun"]
 
 [dependencies]

@@ -136,22 +136,26 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
-      - name: Check the legacy Quinn H3 test-oracle build
+      - name: Check the supported no-default build
         if: steps.scope.outputs.docs_only != 'true'
         run: >-
           cargo check --locked
           -p maverick-cli -p maverick-sdk -p maverick-tests
-          --all-targets --no-default-features --features h3
-      - name: Test the legacy Quinn loopback oracle and v1 H3 retirement
+          --all-targets --no-default-features
+      - name: Test config-v1 H3 retirement and the H2 fallback oracle
         if: steps.scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
-          loopback_tests="$(cargo test --locked -p maverick-tests --features h3 --test h3_loopback -- --list)"
-          grep -Fqx 'h3_loopback_request_response_uses_ephemeral_local_udp: test' <<<"${loopback_tests}"
-          cargo test --locked -p maverick-tests --features h3 --test h3_loopback h3_loopback_request_response_uses_ephemeral_local_udp -- --exact
-          retirement_tests="$(cargo test --locked -p maverick-tests --features h3 --test tcp_relay -- --list)"
-          grep -Fqx 'retired_v1_h3_product_entries_return_fixed_error: test' <<<"${retirement_tests}"
-          cargo test --locked -p maverick-tests --features h3 --test tcp_relay retired_v1_h3_product_entries_return_fixed_error -- --exact
+          retirement_tests="$(cargo test --locked -p maverick-tests --no-default-features \
+            --test tcp_relay -- --list)"
+          grep -Fqx 'server_rejects_retired_v1_h3_config_with_fixed_error: test' \
+            <<<"${retirement_tests}"
+          grep -Fqx 'bad_auth_reverse_proxy_fallback_preserves_path_query_and_available_body: test' \
+            <<<"${retirement_tests}"
+          cargo test --locked -p maverick-tests --no-default-features \
+            --test tcp_relay server_rejects_retired_v1_h3_config_with_fixed_error -- --exact
+          cargo test --locked -p maverick-tests --no-default-features \
+            --test tcp_relay bad_auth_reverse_proxy_fallback_preserves_path_query_and_available_body -- --exact
       - name: Install Linux build and verification tools
         if: steps.scope.outputs.docs_only != 'true'
         run: |

@@ -83,6 +83,7 @@ active_docs=(
   CONFIG.md
   THREAT_MODEL.md
   SECURITY.md
+  docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md
   docs/TRANSPORT_ARCHITECTURE.md
   docs/TEST_SERVER_PREPARATION.md
   docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md
@@ -99,6 +100,7 @@ active_privacy_pattern='/U''sers/|fi''le://|ssh''-rsa|BEGIN (RSA |EC |OPENSSH )?
 active_privacy_status=0
 rg -q "$active_privacy_pattern" \
   AGENTS.md README.md STATUS.md ROADMAP.md CONFIG.md THREAT_MODEL.md SECURITY.md \
+  docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md \
   docs/TRANSPORT_ARCHITECTURE.md docs/TEST_SERVER_PREPARATION.md \
   docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md scripts/user-smoke.sh \
   scripts/build-pilot.sh scripts/generate-cyclonedx-sbom.sh \

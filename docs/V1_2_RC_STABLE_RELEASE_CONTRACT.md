@@ -58,9 +58,10 @@ All release tags must be annotated, resolve directly to the reviewed candidate
 commit, match the Rust package version, and remain immutable. The exact files
 selected for upload must be reverified immediately before publication.
 
-The current tooling is an intentional RED for this contract:
+The parent tooling at entry to RLC-001 was an intentional RED for this
+contract:
 
-- `scripts/verify-release-tag.sh` accepts only Beta version/tag syntax; and
+- `scripts/verify-release-tag.sh` accepted only Beta version/tag syntax; and
 - `.github/workflows/pilot-release.yml` always publishes a prerelease with
   `latest=false`.
 
@@ -70,6 +71,14 @@ its own gates. Stable classification must remain fail-closed until one exact RC
 completes every gate in this contract and Codex records a go/no-go decision for
 **RLC-002**, which implements and tests the Stable row. Neither tooling slice
 by itself authorizes a tag.
+
+RLC-001 is deliberately limited to the release-tag verifier and its local gate
+tests. It does not make the complete RC publication pipeline ready:
+`scripts/verify-pilot-artifact.sh` still accepts Beta artifact versions only,
+and no exact-RC package version, release note, archive, SBOM, or publication
+input exists. A later separately queued exact-RC candidate-preparation slice
+must close those named RED gates before any RC tag is created. Their current
+failure keeps publication fail-closed; it is not evidence that RLC-001 failed.
 
 ## Exact-candidate rule
 
@@ -182,8 +191,10 @@ exact browser equivalence.
 ## Execution order
 
 1. Merge this policy-only contract after ordinary review and privacy checks.
-2. Implement authorized RLC-001: deterministic tooling that accepts Beta and RC
-   while deliberately continuing to reject Stable.
+2. Complete independent review, exact-head public checks, privacy review, and
+   merge for authorized RLC-001. Its tag verifier accepts Beta and RC while
+   deliberately continuing to reject Stable; downstream RC artifact and
+   candidate-preparation gates remain RED.
 3. Prepare and independently review one exact Direct H2 RC candidate.
 4. After a recorded exact-candidate publication go/no-go, publish that RC as
    prerelease/non-Latest.

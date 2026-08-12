@@ -122,6 +122,15 @@ non-prerelease/Latest classification. No tag, release, publication, server,
 field run, spending, paid audit, or Stable claim follows from this contract
 alone; each remains a separate gated task.
 
+The RLC-001 candidate has deterministic local RED/GREEN evidence: the former
+Beta-only version gate rejected a valid annotated RC solely at its version
+syntax, while the candidate accepts canonical positive Beta/RC sequences and
+keeps Stable plus malformed or foreign versions fail-closed. Local evidence is
+not completion or a complete RC pipeline: the artifact verifier and all exact-RC
+candidate inputs remain RED. Independent review, exact-head public checks,
+privacy review, and merge remain mandatory before the queue may advance beyond
+the bounded RLC-001 tag-verifier slice.
+
 **Acceptance.** The release contract makes Beta, RC, and Stable tag and release
 behavior unambiguous and fail-closed. Exact-candidate Direct H2 field,
 independent-security-review, supply-chain, compatibility, Beta.4 rollback,
@@ -138,10 +147,11 @@ result, release result, or publication authorization.
    cumulative tree.
 2. **Run D-001/D-002/D-003 and B-001/B-002 in parallel.** The Datagram
    prototype is private; the backend work is measurement-only.
-3. **Freeze the v1.2 release contract, then implement authorized RLC-001.**
-   Stable remains fail-closed until the exact RC gates pass and Codex records
-   the RLC-002 go/no-go decision. This train does not wait for H3; tags,
-   releases, field work, and Stable publication remain separate gated tasks.
+3. **Freeze the v1.2 release contract, then review and merge authorized
+   RLC-001.** Stable remains fail-closed until the exact RC gates pass and Codex
+   records the RLC-002 go/no-go decision. This train does not wait for H3;
+   tags, releases, field work, and Stable publication remain separate gated
+   tasks.
 4. **Rebuild small stacked slices.** Auth core/spec, config convergence, direct
    H2 proof, the chosen H3 backend/session, Datagram adapters, consumers, and
    only then standard CONNECT-UDP/QUIC DATAGRAM.

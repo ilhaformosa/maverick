@@ -172,6 +172,27 @@ censorship resistance, production readiness, or browser identity.
   server-side ECH work and will not fork rustls or vendor an unmerged ECH patch
   in the current execution plan. A native implementation remains a separately
   gated future option, not authorized current work.
+- H3/UDP backend direction (owner decision, 2026-08-12): Maverick will not build
+  a Quinn product path. The single intended H3/UDP product backend is quiche.
+  Current main's unpublished Quinn feature is retained temporarily only to
+  extract backend-neutral semantic and test oracles; immutable archives
+  preserve its permanent history, and current-main Quinn code is then removed
+  in a separate reversible slice. This supersedes the conditional B-003
+  choice in the convergence ADR without making quiche usable or ready. B-001
+  still must qualify quiche against the neutral Chrome reference and the fixed
+  objective matrix, and B-002 remains **RED**: the preserved fork has no named
+  patch owners, upstream routes, mechanical rebase proof, frozen security-
+  update SLA, or independent delta review. No private fork or delta may be
+  restored until the complete fork budget passes. A pure-upstream quiche
+  candidate may omit all three old private patches only after an evidence-backed
+  `DROP / not required` disposition and dependency, security, and SBOM gates
+  pass. H3 product runtime and native Datagram claims remain blocked in either
+  case by their other objective gates. A failed qualification leaves product H3
+  disabled; it does not revive Quinn. The two unpublished Quinn-specific
+  work-in-progress slices for B-001 relay qualification and D-004 adaptation
+  are stopped and must not be committed. This decision does not change v1.2
+  Direct H2, does not place H3 in Auto, and does not count reliable H3 DATA
+  framing as native UDP.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by
@@ -755,12 +776,13 @@ record the results, and close it without a rerun. It does not authorize changing
 an archive ref, synchronizing or merging the cumulative 77-commit branch,
 silently bypassing a failed gate, or treating governance evidence as a product
 result. A rebuilt small PR may merge only after its own task gates, independent
-review, and privacy gate pass. Backend selection, config/wire/public-API
-changes, tags, releases, field runs, provider resources, paid audits, spending,
-and destructive actions remain separate recorded tasks with their own
-objective gates. They no longer require another owner choice, but they are not
-authorized merely because an earlier task completed. Host-network changes
-remain prohibited by `AGENTS.md`.
+review, and privacy gate pass. The owner has now fixed quiche as the sole H3/UDP
+backend direction, but product adoption, config/wire/public-API changes, tags,
+releases, field runs, provider resources, paid audits, spending, and destructive
+actions remain separate recorded tasks with their own objective gates. They no
+longer require another owner choice, but they are not authorized merely because
+a direction or an earlier task completed. Host-network changes remain prohibited
+by `AGENTS.md`.
 
 Repository-local work may build, test, and use `127.0.0.1` with OS-assigned
 ephemeral ports. The following owner authorization applies only to the first

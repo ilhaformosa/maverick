@@ -38,8 +38,11 @@ commit. Every one of the 77 commits changes the old `ROADMAP.md`, and 17 change
   schema migration rollback, `W` versioned wire rollback.
 
 `S-*` means an independent mainline candidate that must be reproduced and
-authorized separately. `PR4-V` exists only if B-003 selects quiche and the fork
-budget passes.
+authorized separately. The owner has selected quiche as the single H3/UDP
+direction. `PR4-V` is now the gated private-vendor direction: it remains
+blocked unless B-002's complete retained-fork budget passes. A pure-upstream
+path may omit it only after each old patch receives an evidence-backed
+`DROP / not required` disposition and the replacement dependency gates pass.
 
 ## Summary
 
@@ -56,7 +59,7 @@ budget passes.
 | PR-2 config convergence | 3 | all must be rewritten after OD-06 and config compatibility decisions |
 | PR-3 direct H2 proof | 3 | better-proven Beta carrier reference; no H3/vendor |
 | PR-4 H3 runtime/reference | 41 | source inventory only; never one giant PR |
-| PR4-V conditional vendor | 2 | drop unless quiche wins and B-002 passes |
+| PR4-V gated quiche vendor | 2 | only if retained-fork B-002 budget passes; otherwise explicit DROP |
 | PR-5 Datagram/legacy adapter | 11 | split semantic contract/actor from legacy adapter |
 | PR-6 TUN/SOCKS consumers | 6 | split TUN and SOCKS |
 | Independent candidates | 3 | reproduce and queue separately on current main |
@@ -70,15 +73,15 @@ inside the linear cumulative branch. It is not permission to import the old
 cross-bucket coupling into a rebuilt PR. In particular, later config invariants
 from rows 18 and 32 must be extracted and rewritten into `PR-2-core` before any
 consumer, while `PR-4` must be split into foundation and runtime stages around
-the conditional vendor delta. If an invariant cannot be decoupled this way, it
+the gated vendor delta. If an invariant cannot be decoupled this way, it
 must be reclassified rather than creating a target-PR cycle.
 
 ```text
 G-004 -> PR-1 -> PR-2-core -> PR-3
 
-B-003 + PR-2-core -> PR-4-foundation
-PR-4-foundation -> PR-4-runtime (non-quiche path)
-PR-4-foundation -> PR4-V (quiche only, after B-002) -> PR-4-runtime
+PR-2-core + B-001-quiche-qualification + B-002 -> PR-4-foundation
+PR-4-foundation -> PR4-V (retained private delta only) -> PR-4-runtime
+PR-4-foundation -> pure-upstream quiche (explicit old-patch DROP) -> PR-4-runtime
 PR-4-runtime -> B-004 -> A-002
 
 D-001 -> D-003-RED -> D-002-private-prototype -> D-003-GREEN
@@ -86,6 +89,31 @@ D-003-GREEN -> PR-5-adapters -> PR-6-TUN / PR-6-SOCKS
 
 PR-3 + A-002 + PR-5-adapters + PR-6-TUN + PR-6-SOCKS -> PR-7
 ```
+
+There is no rebuilt non-quiche H3 runtime path. If a quiche gate remains red,
+the graph stops before `PR-4-foundation`; it does not branch to Quinn.
+
+## Historical 23-head interpretation after the backend decision
+
+The 23 old `codex/*` heads in the playbook appendix are milestone pointers on
+one linear chain, not 23 independent quiche branches:
+
+- six heads, `t027c2d` through `t027c2i`, terminate in direct-v3 quiche runtime
+  work;
+- 17 heads, `t024*` and `t025*`, terminate in Quinn legacy-H3 reliable
+  DATA/UDP semantics. They still inherit the earlier quiche commits because
+  they are descendants on the same chain;
+- the preferred quiche source oracle is
+  `archive/v1.3-direct-foundation-7f6158d`. The subsequent
+  `7f6158d..40b0aa7` changes touch legacy-H3/UDP consumers, core frame/auth
+  constants, tests, and control documents, but no quiche foundation/runtime/
+  vendor path or Cargo dependency file.
+
+The 17 later heads remain useful for backend-neutral Datagram contracts and
+tests. They do not authorize a Quinn product path, and their inherited quiche
+files are not a reason to use a later head as the quiche oracle. Rebuild from
+the named archive in small slices; do not copy an old dependency downgrade or
+adopt the preserved private fork without B-002.
 
 ## Commit inventory
 
@@ -105,7 +133,7 @@ PR-3 + A-002 + PR-5-adapters + PR-6-TUN + PR-6-SOCKS -> PR-7
 | 12 | `af85ac594638aa4595fd5961ebeff56ab9a4e58c` Bind auth-v3 exporter to QUIC generation | H3-RT | #2,#3,#5 | exporter invariant | M | REWRITE | PR-4 | T | F |
 | 13 | `6d8b79c85641b22e372c8bc72221ce92e6ac6706` Reject post-observation pre-auth H3 activity | H3-RT | #12 | pre-auth gate | M | REWRITE | PR-4 | T | F |
 | 14 | `d8c97b094e9975d85a58887dbe66ab3cf4a9ddd9` docs: freeze direct H3 auth v3 mapping | AUTH | #4 | H3 normative mapping | N | KEEP | PR-1 | D,W | W |
-| 15 | `65157042427a8c803ded724e30bfd2c05a5647f9` T026b-1: adopt vendored quiche strict push gate | VENDOR | #2 | conditional fork import | M | REWRITE | PR4-V | B | V |
+| 15 | `65157042427a8c803ded724e30bfd2c05a5647f9` T026b-1: adopt vendored quiche strict push gate | VENDOR | #2 | gated fork source | M | REWRITE | PR4-V | B | V |
 | 16 | `596da6ef9b33434b392d6440baf8d4313dd49751` T026b-2: suppress vendored quiche H3 traces | VENDOR | #15 | trace privacy delta | M | REWRITE | PR4-V | B | V |
 | 17 | `5373972f3af34c937760350f5ab7d7f7ad6d8ec0` T026c: add test-private H3 auth-v3 runtime reference | H3-RT | #12-#16 | runtime oracle | Y | REWRITE | PR-4 | T | F |
 | 18 | `12ec55c08d3e5dbbccb9b96d56105ae4c2986153` core: require trusted direct-v3 authority | CFG | #7,#9,#10,#17 | authority invariant | M | REWRITE | PR-2 | A,C,D | C |
@@ -173,10 +201,12 @@ PR-3 + A-002 + PR-5-adapters + PR-6-TUN + PR-6-SOCKS -> PR-7
 
 1. No row authorizes a cherry-pick, merge, public API, schema, wire, backend,
    release, or field action.
-2. PR-4 is a source bucket, not a 41-commit PR. B-001/B-002/B-003 decide what,
-   if anything, is rebuilt.
-3. Vendor code remains isolated and conditional. If quiche does not win or the
-   fork budget fails, PR4-V is dropped.
+2. PR-4 is a source bucket, not a 41-commit PR. B-003 fixes quiche as the only
+   direction; B-001/B-002 decide whether any quiche product slice is admissible.
+3. Vendor code remains isolated and gated. If the retained-fork budget fails,
+   PR4-V is dropped. A pure-upstream path still needs evidence-backed DROP
+   dispositions for all old patches plus dependency/security/SBOM gates. If no
+   quiche path passes, product H3 remains stopped; Quinn is not a fallback.
 4. Config rows are rewritten only after OD-06 plus schema-3 compatibility and
    first-runtime support decisions.
 5. Public/test-support seams preserve assertions only; they do not become
@@ -196,3 +226,6 @@ PR-3 + A-002 + PR-5-adapters + PR-6-TUN + PR-6-SOCKS -> PR-7
     and must not be hidden by patching the frozen branch. Every rebuilt
     dependency slice must update and review its target-aware SBOM inventory in
     the same slice.
+11. Remove Quinn product code only in a separate reversible slice after its
+    backend-neutral semantic/test oracles are identified. Do not mix deletion
+    with quiche import, dependency, vendor, runtime, config, or wire changes.

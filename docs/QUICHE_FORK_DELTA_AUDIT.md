@@ -10,14 +10,38 @@ Result: **RED — the complete fork budget is not satisfied**
 
 This is a one-time, read-only audit of the three patch artifacts preserved in
 the experimental quiche tree. It is not a patch registry, maintenance receipt,
-backend selection, product result, or permission to vendor quiche into current
-`main`.
+product result, or permission to vendor quiche into current `main`.
 
 The child-friendly summary is: the three old parts can still be inspected and
 their focused test passes, but no person is named to maintain each part, no
 upstream route is recorded, no clean rebase drill exists, no security-update
 deadline is frozen, and no independent delta review is recorded. Therefore the
 quiche fork remains experimental.
+
+## 2026-08-12 direction amendment
+
+The owner subsequently fixed quiche as Maverick's sole intended H3/UDP product
+backend and abandoned Quinn as a product direction. That governance choice
+supersedes this audit's earlier prohibition on *selecting* a backend; it does
+not alter any historical measurement, table cell, or RED result below.
+
+Selection direction and adoption are different gates. Adoption remains
+blocked. If any private patch is retained, every missing named owner, upstream
+route or written exception, independent patch test, mechanical clean-source
+rebase, security-release SLA, and independent vendor-delta review must be
+supplied and pass. A pure-upstream quiche candidate may omit all three old
+patches only after each receives an evidence-backed `DROP / not required`
+disposition and the resolved dependency, security, and target-aware SBOM gates
+pass. The separate B-001 qualification, privacy, fingerprint, resource, and
+platform gates also remain open. If those gates do not pass, product H3 stays
+disabled; Quinn is not restored as a fallback.
+
+The frozen experimental tree's retained Quinn path keeps the historical
+`No second Quinn product path` row RED. Quinn deletion belongs in a separate,
+small, reversible code slice and cannot be mixed with this read-only audit or a
+future quiche import. The preferred recovery oracle is
+`archive/v1.3-direct-foundation-7f6158d`; archived dependency downgrades and the
+private fork are evidence to audit, not code to copy automatically.
 
 ## Fixed baselines
 
@@ -152,7 +176,7 @@ not permission for this document to invent the missing answer.
 
 | Budget item | Strict push | Adoption hardening | Trace privacy |
 |---|---|---|---|
-| Explicit security/privacy necessity | **PARTIAL**: internal pre-auth push rationale exists; bakeoff necessity is unproven | **PARTIAL**: visibility and documentation tightening exists; fork necessity is unproven | **PARTIAL**: synthetic peer-controlled trace exposure is tested; fork necessity over an upstream solution is unproven |
+| Explicit security/privacy necessity | **PARTIAL**: internal pre-auth push rationale exists; qualification necessity is unproven | **PARTIAL**: visibility and documentation tightening exists; fork necessity is unproven | **PARTIAL**: synthetic peer-controlled trace exposure is tested; fork necessity over an upstream solution is unproven |
 | Named patch owner | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
 | Upstream issue/PR or written cannot-upstream reason | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
 | Patch independently testable | **PARTIAL / RED**: focused behavior tests pass; no independent run is recorded | **MISSING / RED**: no unique behavior test | **PARTIAL / RED**: focused trace test passes; no independent run is recorded |
@@ -193,11 +217,13 @@ reconstructed green check.
 ## Decision and stop line
 
 B-002 is **RED**. Object-integrity PASS and the 15-test focused PASS do not
-upgrade it. Under OD-05, quiche cannot become Maverick's product backend while
-the complete fork budget remains red.
+upgrade it. Under OD-05, the selected quiche direction cannot restore this
+private fork while the complete fork budget remains red. A pure-upstream
+candidate still requires the explicit DROP dispositions and dependency,
+security, and SBOM gates described above.
 
-Do not select a backend, expand vendor code, edit Cargo files, add CI, assign an
-owner by implication, contact upstream, or download a replacement source as a
-follow-up hidden inside this audit. B-003 remains evidence-gated until B-001
-produces comparable observations and the fork budget is either completed or
-retained as an explicit RED input to a recorded backend decision.
+Do not expand vendor code, edit Cargo files, add CI, assign an owner by
+implication, contact upstream, or download a replacement source as a follow-up
+hidden inside this audit. B-003 now records the fixed direction only. It does
+not convert B-001 observations, the fork budget, product adoption, security,
+fingerprint, native Datagram, release, or real-network evidence to green.

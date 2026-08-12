@@ -75,31 +75,44 @@ signals. No wall-clock sleep or probabilistic timeout is causal evidence.
 change, `Arc<Mutex<transport>>`, a per-packet task, an unbounded resource, a
 sleep-based order, hidden retry/replay, or a real-carrier claim from fake data.
 
-### B-001 and B-002 — capture-only backend bakeoff and fork audit
+### B-001 through B-003 — quiche qualification, fork audit, and fixed direction
 
-**User result.** Give the owner comparable evidence for Quinn, quiche, or
-neither without adding features to make either candidate look better.
+**User result.** Determine whether the owner's single selected H3/UDP backend,
+quiche, can satisfy the same objective product gates without keeping a second
+Quinn product stack.
 
-**Scope.** Freeze one common local-only workload and observation method;
-compare TLS/QUIC/H3 behavior, exporter/capability facts, weak-network behavior,
-maintenance cost, and supply-chain cost. Audit each quiche patch for necessity,
-owner, upstream path, mechanical rebase test, security-update budget, and
-independent delta review. Raw captures and key material remain outside git;
-committed results must be normalized and privacy-safe.
+**Scope.** B-003's direction is recorded: quiche is the only intended H3/UDP
+product backend, and a failed gate leaves H3 disabled rather than reviving
+Quinn. B-001 observes one subject, quiche, against a neutral Chrome reference
+using one fixed local-only workload and objective matrix. It records
+PASS/FAIL/UNKNOWN for TLS/QUIC/H3 behavior, exporter/capability facts,
+weak-network behavior, maintenance cost, platform buildability, and
+supply-chain cost. B-002 audits each preserved quiche patch for necessity,
+named owner, upstream path, mechanical rebase test, security-update budget,
+and independent delta review. Raw captures and key material remain outside
+git; committed results must be normalized and privacy-safe.
 
-**Non-goals.** No backend feature development, product selection, third backend,
-vendor expansion, public API, real-network capture, system route/firewall/DNS
-change, or claim of browser identity.
+**Non-goals.** No Quinn workload adapter or product implementation; no backend
+feature work to improve a qualification result; no third backend, vendor
+expansion, public API, real-network capture, system route/firewall/DNS change,
+or claim of browser identity. The stopped Quinn-specific B-001 relay and D-004
+work-in-progress are not submission candidates.
 
-**Acceptance.** Both candidates are measured with the same method and workload;
-each dimension is PASS/FAIL/UNKNOWN; B-002 either satisfies the complete fork
-budget or remains red; a later B-003 records the evidence-backed selection of
-exactly one of Quinn, quiche, or neither.
+**Acceptance.** Quiche and the Chrome reference use the same observer and
+workload where comparison is technically meaningful; every objective dimension
+is PASS/FAIL/UNKNOWN. Any retained private quiche delta must satisfy the
+complete fork budget. A pure-upstream candidate instead needs an explicit,
+evidence-backed `DROP / not required` disposition for every old patch plus the
+resolved dependency, security, and target-aware SBOM gates. Quinn removal is a
+separate, small, reviewable, reversible code slice; it is not mixed into this
+decision-only work. B-003 direction alone is not B-001/B-002, product,
+security, fingerprint, native-Datagram, release, or real-network evidence.
 
-**Stop conditions.** Stop if common observation is impossible, a candidate
-requires product/vendor patches to compete, a stable important fingerprint
-difference is unexplained, a patch lacks an owner/upstream/rebase path, a
-resource is unbounded, or output would expose private capture material.
+**Stop conditions.** Stop if common observation is impossible, quiche requires
+product/vendor patches to compete, a stable important fingerprint difference
+is unexplained, a patch lacks an owner/upstream/rebase path, a resource is
+unbounded, or output would expose private capture material. On a failed gate,
+keep H3 outside the product and Auto; do not fall back to Quinn.
 
 ### Train A contract — v1.2 H2 RC/Stable
 
@@ -146,15 +159,20 @@ result, release result, or publication authorization.
 1. **Close G-001 through G-004.** Preserve and classify first; never merge the
    cumulative tree.
 2. **Run D-001/D-002/D-003 and B-001/B-002 in parallel.** The Datagram
-   prototype is private; the backend work is measurement-only.
+   prototype is private. B-001 now qualifies only quiche against the neutral
+   reference; B-002 must resolve the old private patches before quiche adoption.
+   Do not submit the
+   stopped Quinn-specific B-001 or D-004 work.
 3. **Freeze the v1.2 release contract, then review and merge authorized
    RLC-001.** Stable remains fail-closed until the exact RC gates pass and Codex
    records the RLC-002 go/no-go decision. This train does not wait for H3;
    tags, releases, field work, and Stable publication remain separate gated
    tasks.
 4. **Rebuild small stacked slices.** Auth core/spec, config convergence, direct
-   H2 proof, the chosen H3 backend/session, Datagram adapters, consumers, and
-   only then standard CONNECT-UDP/QUIC DATAGRAM.
+   H2 proof, gated quiche foundation/vendor and persistent session, Datagram
+   adapters, consumers, and only then standard CONNECT-UDP/QUIC DATAGRAM.
+   Remove Quinn product code in its own reversible slice; do not combine that
+   deletion with quiche adoption.
 5. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate
@@ -176,6 +194,8 @@ result, release result, or publication authorization.
   authorization recorded in `STATUS.md`.
 - No T025g-style scheduling micro-patch, long-term dual H3 product backend,
   permanent policy-only Product Config v2, giant 77-commit merge, or H3 in Auto.
+- No new Quinn H3/UDP implementation, adapter, capture subject, or production
+  D-004 work. Archived Quinn code remains provenance and a semantic oracle only.
 
 ## Failure-Driven Follow-Up
 

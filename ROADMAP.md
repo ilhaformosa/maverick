@@ -18,11 +18,13 @@ adopted nor automatically rejected.
 ## Current Repository-Local Queue
 
 The current authorization boundary is recorded in `STATUS.md`. The owner
-accepted OD-01 through OD-09 in `docs/V1_3_CONVERGENCE_ADR.md` on 2026-08-12.
-Together they place the ordered recovery and architecture work below in the
-queue. They do not authorize merging the cumulative experimental tree, skipping
-a task gate, releasing, tagging, running a field test, creating a server,
-changing a provider or host network, spending, or making a Stable claim.
+accepted OD-01 through OD-09 in `docs/V1_3_CONVERGENCE_ADR.md` and delegated
+the remaining project decisions in this thread to Codex on 2026-08-12. Codex
+therefore places and decides the smallest playbook slices without returning
+technical choices to the owner. This delegation does not authorize merging the
+cumulative experimental tree, skipping a task gate, or treating a later
+release, field run, provider resource, paid action, destructive action, or
+Stable claim as completed before its own recorded prerequisites pass.
 
 ### G-001 through G-004 — v1.3 recovery and convergence governance
 
@@ -91,30 +93,40 @@ change, or claim of browser identity.
 
 **Acceptance.** Both candidates are measured with the same method and workload;
 each dimension is PASS/FAIL/UNKNOWN; B-002 either satisfies the complete fork
-budget or remains red; a later B-003 asks the owner to select exactly one of
-Quinn, quiche, or neither.
+budget or remains red; a later B-003 records the evidence-backed selection of
+exactly one of Quinn, quiche, or neither.
 
 **Stop conditions.** Stop if common observation is impossible, a candidate
 requires product/vendor patches to compete, a stable important fingerprint
 difference is unexplained, a patch lacks an owner/upstream/rebase path, a
 resource is unbounded, or output would expose private capture material.
 
-### Train A planning — v1.2 H2 RC/Stable release contract
+### Train A contract — v1.2 H2 RC/Stable
 
 **User result.** Keep the better-proven Beta H2 path moving independently
 without mistaking Beta.4 or old field/audit evidence for an exact Stable
 candidate.
 
-**Scope.** First obtain owner decisions on the supported H2 TrustRoute,
-RC/Stable GitHub Release classification, Beta.4 rollback pair, and exact-RC
-security-review meaning. Only then define a separate RED/GREEN release-tooling
-slice. No tag, release, publication, server, field run, or Stable claim is
-authorized here.
+**Scope.** The owner approved R1 through R4 on 2026-08-12. The first Stable
+support claim is Direct H2 only; provider-fronted H2 remains Beta. RC is a
+prerelease and non-Latest; Stable is a non-prerelease and Latest. Immutable
+`v1.2.0-beta.4` is the rollback partner. The exact RC requires an independent
+security review, supply-chain checks, and no unresolved Critical or High
+finding; a new paid third-party formal audit is optional. The complete policy
+is frozen in `docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`.
 
-**Acceptance.** The approved release contract makes Beta, RC, and Stable tag
-and release behavior unambiguous and fail-closed; exact-candidate field,
-security, compatibility, rollback, and publication gates remain visibly
-uncompleted until separately authorized and performed.
+The next implementation unit is authorized RLC-001: deterministic RC-aware
+tooling in which Stable remains a tested rejection. Only after every exact-RC
+gate passes may Codex record a go/no-go decision for RLC-002 to add Stable
+non-prerelease/Latest classification. No tag, release, publication, server,
+field run, spending, paid audit, or Stable claim follows from this contract
+alone; each remains a separate gated task.
+
+**Acceptance.** The release contract makes Beta, RC, and Stable tag and release
+behavior unambiguous and fail-closed. Exact-candidate Direct H2 field,
+independent-security-review, supply-chain, compatibility, Beta.4 rollback,
+artifact, and publication gates remain uncompleted until separately authorized
+and performed. Beta.4 field/audit evidence is not inherited by a new RC.
 
 Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user
@@ -126,8 +138,10 @@ result, release result, or publication authorization.
    cumulative tree.
 2. **Run D-001/D-002/D-003 and B-001/B-002 in parallel.** The Datagram
    prototype is private; the backend work is measurement-only.
-3. **Prepare the v1.2 release contract independently.** It does not wait for
-   H3, but implementation waits for its named owner decisions.
+3. **Freeze the v1.2 release contract, then implement authorized RLC-001.**
+   Stable remains fail-closed until the exact RC gates pass and Codex records
+   the RLC-002 go/no-go decision. This train does not wait for H3; tags,
+   releases, field work, and Stable publication remain separate gated tasks.
 4. **Rebuild small stacked slices.** Auth core/spec, config convergence, direct
    H2 proof, the chosen H3 backend/session, Datagram adapters, consumers, and
    only then standard CONNECT-UDP/QUIC DATAGRAM.
@@ -163,9 +177,9 @@ Use the shortest failure-driven next step:
 - active probe distinguished the server -> harden handshake/fallback behavior;
 - Beta baseline passed -> accept privacy-safe feedback, but do not recruit
   another user or widen platform, protocol, packaging, or governance scope
-  without a separate owner decision.
+  without a recorded compatibility, safety, and evidence-based decision.
 
 The Maverick protocol version, config version, and stored-profile schema
 version remain `1` in the published Beta.4 release; existing authentication and
 frame wire formats are unchanged. Any future version or wire-format change
-requires an explicit compatibility decision based on observed user need.
+requires a recorded compatibility decision based on observed user need.

@@ -222,9 +222,23 @@ censorship resistance, production readiness, or browser identity.
   Latest. Immutable `v1.2.0-beta.4` is the exact rollback partner. The full
   contract and still-closed gates are recorded in
   `docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`. This policy does not make an RC or
-  Stable candidate exist and does not authorize release tooling, a tag,
+  Stable candidate exist. The standing delegation authorizes only the bounded
+  RLC-001 repository tooling slice at this point; it does not authorize a tag,
   publication, a field run, a server, spending, a paid audit, or a Stable
   claim.
+- RLC-001 local candidate evidence: the deterministic release-gate fixture
+  first showed that a valid annotated `v1.2.0-rc.1` failed only at the old
+  Beta-only version syntax. The smallest candidate now accepts only canonical
+  positive `v1.2.0-beta.N` and `v1.2.0-rc.N` tags while retaining Stable,
+  Alpha, other version-line, zero/leading-zero sequence, tag-shape, exact-SHA,
+  ancestry, and missing-history rejection. The focused release-gate suite
+  passes locally; the local product smoke and complete local harness also pass.
+  This is implementation evidence, not an RC artifact, a complete RC
+  publication pipeline, or RLC-001 completion. The artifact verifier remains
+  Beta-only, and no RC package version, release note, archive, SBOM, or
+  publication input exists. Independent review, exact-head public checks,
+  privacy review, and merge must still pass before the bounded tag-verifier
+  slice can be counted complete.
 - Stable, mature, production-ready, anonymity, broad censorship-resistance, and
   exact browser-equivalence claims: not made. Entering Beta does not imply any
   of those claims.

@@ -10,6 +10,9 @@ tag_verifier="$repo_root/scripts/verify-release-tag.sh"
 test_root=""
 
 readonly TEST_VERSION="1.2.0-beta.2"
+readonly TEST_RC_VERSION="1.2.0-rc.1"
+readonly TEST_BETA_MULTIDIGIT_VERSION="1.2.0-beta.10"
+readonly TEST_RC_MULTIDIGIT_VERSION="1.2.0-rc.10"
 readonly TEST_RELEASE_NOTE_VERSION="1.2.0-beta.3"
 readonly TEST_REVISION="1111111111111111111111111111111111111111"
 readonly TEST_MARKER="SYNTH_PRIVATE_MARKER_DO_NOT_ECHO"
@@ -1266,6 +1269,36 @@ second_commit="$(git -C "$tag_repo" rev-parse HEAD)"
 git -C "$tag_repo" tag -a "v$TEST_VERSION" -m "annotated fixture" "$second_commit"
 expect_tag_pass annotated-main "$tag_repo" "v$TEST_VERSION" "$second_commit" \
   "$TEST_VERSION" main
+
+git -C "$tag_repo" tag -a "v$TEST_RC_VERSION" -m "annotated RC fixture" \
+  "$second_commit"
+expect_tag_pass annotated-rc-main "$tag_repo" "v$TEST_RC_VERSION" \
+  "$second_commit" "$TEST_RC_VERSION" main
+
+for release_version in \
+  "$TEST_BETA_MULTIDIGIT_VERSION" "$TEST_RC_MULTIDIGIT_VERSION"; do
+  git -C "$tag_repo" tag -a "v$release_version" \
+    -m "annotated multi-digit fixture" "$second_commit"
+  expect_tag_pass "annotated-$release_version" "$tag_repo" \
+    "v$release_version" "$second_commit" "$release_version" main
+done
+
+while IFS='|' read -r unsupported_label unsupported_version; do
+  git -C "$tag_repo" tag -a "v$unsupported_version" \
+    -m "unsupported release fixture" "$second_commit"
+  expect_tag_fail "unsupported-$unsupported_label" "$tag_repo" \
+    "v$unsupported_version" "$second_commit" "$unsupported_version" main
+done <<'UNSUPPORTED_RELEASE_VERSIONS'
+stable|1.2.0
+alpha|1.2.0-alpha.1
+major|2.2.0-beta.1
+minor|1.3.0-beta.1
+patch|1.2.1-beta.1
+beta-zero|1.2.0-beta.0
+beta-leading-zero|1.2.0-beta.01
+rc-zero|1.2.0-rc.0
+rc-leading-zero|1.2.0-rc.01
+UNSUPPORTED_RELEASE_VERSIONS
 
 git -C "$tag_repo" checkout -q --detach "$first_commit"
 git -C "$tag_repo" tag -d "v$TEST_VERSION" >/dev/null

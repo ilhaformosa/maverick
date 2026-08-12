@@ -2205,6 +2205,1685 @@ fn duration_millis_u64(duration: Duration) -> u64 {
 mod tests {
     use super::*;
 
+    struct BlockedExchangeState {
+        exchange_entered: Notify,
+        send_release: Notify,
+        inbound_ready: Notify,
+        inbound_injected: AtomicBool,
+        exchange_calls: AtomicUsize,
+        close_calls: AtomicUsize,
+    }
+
+    impl BlockedExchangeState {
+        fn new() -> Self {
+            Self {
+                exchange_entered: Notify::new(),
+                send_release: Notify::new(),
+                inbound_ready: Notify::new(),
+                inbound_injected: AtomicBool::new(false),
+                exchange_calls: AtomicUsize::new(0),
+                close_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn inject_inbound(&self) {
+            self.inbound_injected.store(true, Ordering::SeqCst);
+            self.inbound_ready.notify_one();
+        }
+    }
+
+    struct BlockedExchangeFlow {
+        state: Arc<BlockedExchangeState>,
+        response: Datagram,
+    }
+
+    impl crate::DatagramFlow for BlockedExchangeFlow {
+        fn exchange<'a>(
+            &'a mut self,
+            _datagram: Datagram,
+            _cancel: CancellationToken,
+        ) -> crate::BoxFuture<'a, Result<Datagram, crate::FlowError>> {
+            let state = Arc::clone(&self.state);
+            let response = self.response.clone();
+            Box::pin(async move {
+                state.exchange_calls.fetch_add(1, Ordering::SeqCst);
+                state.exchange_entered.notify_one();
+                state.send_release.notified().await;
+                state.inbound_ready.notified().await;
+                if !state.inbound_injected.load(Ordering::SeqCst) {
+                    return Err(crate::FlowError::new(FlowErrorKind::DatagramExchange));
+                }
+                Ok(response)
+            })
+        }
+
+        fn close<'a>(&'a mut self) -> crate::BoxFuture<'a, Result<(), crate::FlowError>> {
+            self.state.close_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct BlockedExchangeConnector {
+        state: Arc<BlockedExchangeState>,
+        response: Datagram,
+    }
+
+    impl FlowConnector for BlockedExchangeConnector {
+        fn snapshot(&self) -> FlowConnectorSnapshot {
+            FlowConnectorSnapshot::default()
+        }
+
+        fn open_tcp<'a>(
+            &'a self,
+            _target: SocketAddr,
+            _cancel: CancellationToken,
+        ) -> crate::BoxFuture<'a, Result<BoxTcpFlow, crate::FlowError>> {
+            Box::pin(async { Err(crate::FlowError::new(FlowErrorKind::RemoteConnection)) })
+        }
+
+        fn exchange_dns<'a>(
+            &'a self,
+            _query: Bytes,
+            _cancel: CancellationToken,
+        ) -> crate::BoxFuture<'a, Result<Bytes, crate::FlowError>> {
+            Box::pin(async { Err(crate::FlowError::new(FlowErrorKind::DnsExchange)) })
+        }
+
+        fn open_udp<'a>(
+            &'a self,
+            _cancel: CancellationToken,
+        ) -> crate::BoxFuture<'a, Result<Box<dyn crate::DatagramFlow>, crate::FlowError>> {
+            let flow = BlockedExchangeFlow {
+                state: Arc::clone(&self.state),
+                response: self.response.clone(),
+            };
+            Box::pin(async move { Ok(Box::new(flow) as Box<dyn crate::DatagramFlow>) })
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PrivateDatagramError {
+        Closed,
+        Cancelled,
+        Capacity,
+        SendFailed,
+        ReceiveFailed,
+        TimedOut,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PrivateTerminalState {
+        Running,
+        Closed,
+        Cancelled,
+        SendFailed,
+        ReceiveFailed,
+    }
+
+    impl PrivateTerminalState {
+        fn error(self) -> PrivateDatagramError {
+            match self {
+                Self::Running | Self::Closed => PrivateDatagramError::Closed,
+                Self::Cancelled => PrivateDatagramError::Cancelled,
+                Self::SendFailed => PrivateDatagramError::SendFailed,
+                Self::ReceiveFailed => PrivateDatagramError::ReceiveFailed,
+            }
+        }
+    }
+
+    async fn wait_for_private_terminal(
+        mut terminal: tokio::sync::watch::Receiver<PrivateTerminalState>,
+    ) -> PrivateDatagramError {
+        loop {
+            let state = *terminal.borrow();
+            if state != PrivateTerminalState::Running {
+                return state.error();
+            }
+            if terminal.changed().await.is_err() {
+                return PrivateDatagramError::Closed;
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct PrivateAssociationLimits {
+        packet_count: usize,
+        byte_count: usize,
+        channel_depth: usize,
+    }
+
+    impl Default for PrivateAssociationLimits {
+        fn default() -> Self {
+            Self {
+                packet_count: 2,
+                byte_count: 64,
+                channel_depth: 2,
+            }
+        }
+    }
+
+    struct PrivateQueuedDatagram {
+        datagram: Datagram,
+        _packet_permit: OwnedSemaphorePermit,
+        _byte_permit: OwnedSemaphorePermit,
+    }
+
+    struct PrivateSendCommand {
+        datagram: Datagram,
+        complete: oneshot::Sender<Result<(), PrivateDatagramError>>,
+        _packet_permit: OwnedSemaphorePermit,
+        _byte_permit: OwnedSemaphorePermit,
+    }
+
+    async fn acquire_private_budget(
+        packet_budget: &Arc<Semaphore>,
+        byte_budget: &Arc<Semaphore>,
+        byte_capacity: usize,
+        payload_len: usize,
+    ) -> Result<(OwnedSemaphorePermit, OwnedSemaphorePermit), PrivateDatagramError> {
+        if payload_len > byte_capacity || payload_len > u32::MAX as usize {
+            return Err(PrivateDatagramError::Capacity);
+        }
+        let packet_permit = Arc::clone(packet_budget)
+            .acquire_owned()
+            .await
+            .map_err(|_| PrivateDatagramError::Closed)?;
+        let byte_permit = Arc::clone(byte_budget)
+            .acquire_many_owned(payload_len as u32)
+            .await
+            .map_err(|_| PrivateDatagramError::Closed)?;
+        Ok((packet_permit, byte_permit))
+    }
+
+    struct PrivateDatagramTx {
+        commands: mpsc::Sender<PrivateSendCommand>,
+        terminal: tokio::sync::watch::Receiver<PrivateTerminalState>,
+        packet_budget: Arc<Semaphore>,
+        byte_budget: Arc<Semaphore>,
+        byte_capacity: usize,
+        state: Arc<PrivateFakeState>,
+    }
+
+    impl PrivateDatagramTx {
+        async fn send(&self, datagram: Datagram) -> Result<(), PrivateDatagramError> {
+            if *self.terminal.borrow() != PrivateTerminalState::Running {
+                return Err(self.terminal.borrow().error());
+            }
+            let (packet_permit, byte_permit) = match acquire_private_budget(
+                &self.packet_budget,
+                &self.byte_budget,
+                self.byte_capacity,
+                datagram.payload.len(),
+            )
+            .await
+            {
+                Ok(budget) => budget,
+                Err(PrivateDatagramError::Capacity) => {
+                    return Err(PrivateDatagramError::Capacity);
+                }
+                Err(PrivateDatagramError::Closed) => {
+                    return Err(wait_for_private_terminal(self.terminal.clone()).await);
+                }
+                Err(error) => return Err(error),
+            };
+            self.state.outbound_admitted.fetch_add(1, Ordering::SeqCst);
+            self.state.outbound_admitted_notify.notify_one();
+            let (complete, wait) = oneshot::channel();
+            if self
+                .commands
+                .send(PrivateSendCommand {
+                    datagram,
+                    complete,
+                    _packet_permit: packet_permit,
+                    _byte_permit: byte_permit,
+                })
+                .await
+                .is_err()
+            {
+                return Err(wait_for_private_terminal(self.terminal.clone()).await);
+            }
+            match wait.await {
+                Ok(result) => result,
+                Err(_) => Err(wait_for_private_terminal(self.terminal.clone()).await),
+            }
+        }
+    }
+
+    struct PrivateDatagramRx {
+        inbound: mpsc::Receiver<PrivateQueuedDatagram>,
+        terminal: tokio::sync::watch::Receiver<PrivateTerminalState>,
+    }
+
+    impl PrivateDatagramRx {
+        async fn recv(&mut self) -> Result<Datagram, PrivateDatagramError> {
+            loop {
+                tokio::select! {
+                    biased;
+                    changed = self.terminal.changed() => {
+                        if changed.is_err()
+                            || *self.terminal.borrow() != PrivateTerminalState::Running
+                        {
+                            return Err(self.terminal.borrow().error());
+                        }
+                    }
+                    item = self.inbound.recv() => {
+                        return match item {
+                            Some(queued) => Ok(queued.datagram),
+                            None => Err(wait_for_private_terminal(self.terminal.clone()).await),
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    enum PrivateControlCommand {
+        Close(oneshot::Sender<Result<(), PrivateDatagramError>>),
+    }
+
+    struct PrivateDatagramControl {
+        commands: mpsc::Sender<PrivateControlCommand>,
+        immediate_cancel: CancellationToken,
+        terminal: tokio::sync::watch::Receiver<PrivateTerminalState>,
+        join: Option<JoinHandle<()>>,
+    }
+
+    impl PrivateDatagramControl {
+        async fn close(mut self) -> Result<(), PrivateDatagramError> {
+            let (complete, wait) = oneshot::channel();
+            if self
+                .commands
+                .send(PrivateControlCommand::Close(complete))
+                .await
+                .is_err()
+            {
+                self.join_task().await?;
+                return match *self.terminal.borrow() {
+                    PrivateTerminalState::Closed => Ok(()),
+                    state => Err(state.error()),
+                };
+            }
+            let result = match timeout(Duration::from_secs(1), wait).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Err(wait_for_private_terminal(self.terminal.clone()).await),
+                Err(_) => {
+                    self.immediate_cancel.cancel();
+                    Err(PrivateDatagramError::TimedOut)
+                }
+            };
+            let join = self.join_task().await;
+            result.and(join)
+        }
+
+        async fn cancel(mut self) -> Result<(), PrivateDatagramError> {
+            self.immediate_cancel.cancel();
+            self.join_task().await
+        }
+
+        async fn join_task(&mut self) -> Result<(), PrivateDatagramError> {
+            let Some(mut join) = self.join.take() else {
+                return Ok(());
+            };
+            match timeout(Duration::from_secs(1), &mut join).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err(PrivateDatagramError::Cancelled),
+                Err(_) => {
+                    self.immediate_cancel.cancel();
+                    join.abort();
+                    let _ = join.await;
+                    Err(PrivateDatagramError::TimedOut)
+                }
+            }
+        }
+    }
+
+    impl Drop for PrivateDatagramControl {
+        fn drop(&mut self) {
+            self.immediate_cancel.cancel();
+        }
+    }
+
+    struct PrivateOwnedDatagramAssociation {
+        tx: PrivateDatagramTx,
+        rx: PrivateDatagramRx,
+        control: PrivateDatagramControl,
+    }
+
+    struct PrivateFakeState {
+        send_entered: Notify,
+        send_release: Notify,
+        send_accepted: Notify,
+        outbound_admitted_notify: Notify,
+        inbound_admission_attempted: Notify,
+        inbound_received: Notify,
+        inbound_forwarded: Notify,
+        close_requested: Notify,
+        actor_started: Notify,
+        actor_released: Notify,
+        fail_send: AtomicBool,
+        active_actors: AtomicUsize,
+        active_adapters: AtomicUsize,
+        send_calls: AtomicUsize,
+        send_inflight: AtomicUsize,
+        send_accepts: AtomicUsize,
+        outbound_admitted: AtomicUsize,
+        inbound_admission_attempts: AtomicUsize,
+        receive_calls: AtomicUsize,
+        receive_forwarded: AtomicUsize,
+        close_requests: AtomicUsize,
+        close_calls: AtomicUsize,
+    }
+
+    impl PrivateFakeState {
+        fn new() -> Self {
+            Self {
+                send_entered: Notify::new(),
+                send_release: Notify::new(),
+                send_accepted: Notify::new(),
+                outbound_admitted_notify: Notify::new(),
+                inbound_admission_attempted: Notify::new(),
+                inbound_received: Notify::new(),
+                inbound_forwarded: Notify::new(),
+                close_requested: Notify::new(),
+                actor_started: Notify::new(),
+                actor_released: Notify::new(),
+                fail_send: AtomicBool::new(false),
+                active_actors: AtomicUsize::new(0),
+                active_adapters: AtomicUsize::new(0),
+                send_calls: AtomicUsize::new(0),
+                send_inflight: AtomicUsize::new(0),
+                send_accepts: AtomicUsize::new(0),
+                outbound_admitted: AtomicUsize::new(0),
+                inbound_admission_attempts: AtomicUsize::new(0),
+                receive_calls: AtomicUsize::new(0),
+                receive_forwarded: AtomicUsize::new(0),
+                close_requests: AtomicUsize::new(0),
+                close_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    struct PrivateActorGuard {
+        state: Arc<PrivateFakeState>,
+        terminal: tokio::sync::watch::Sender<PrivateTerminalState>,
+        terminal_published: bool,
+    }
+
+    impl PrivateActorGuard {
+        fn new(
+            state: Arc<PrivateFakeState>,
+            terminal: tokio::sync::watch::Sender<PrivateTerminalState>,
+        ) -> Self {
+            state.active_actors.fetch_add(1, Ordering::SeqCst);
+            state.actor_started.notify_one();
+            Self {
+                state,
+                terminal,
+                terminal_published: false,
+            }
+        }
+
+        fn publish_terminal(&mut self, state: PrivateTerminalState) {
+            if !self.terminal_published {
+                self.terminal_published = true;
+                let _ = self.terminal.send(state);
+            }
+        }
+    }
+
+    impl Drop for PrivateActorGuard {
+        fn drop(&mut self) {
+            self.publish_terminal(PrivateTerminalState::Cancelled);
+            self.state.active_actors.fetch_sub(1, Ordering::SeqCst);
+            self.state.actor_released.notify_one();
+        }
+    }
+
+    struct PrivateSendAttemptGuard {
+        state: Arc<PrivateFakeState>,
+    }
+
+    impl PrivateSendAttemptGuard {
+        fn new(state: Arc<PrivateFakeState>) -> Self {
+            state.send_inflight.fetch_add(1, Ordering::SeqCst);
+            Self { state }
+        }
+    }
+
+    impl Drop for PrivateSendAttemptGuard {
+        fn drop(&mut self) {
+            self.state.send_inflight.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    struct PrivateFakeSendHalf {
+        state: Arc<PrivateFakeState>,
+    }
+
+    impl PrivateFakeSendHalf {
+        fn begin_send(
+            &mut self,
+            _datagram: Datagram,
+        ) -> crate::BoxFuture<'static, Result<(), PrivateDatagramError>> {
+            let state = Arc::clone(&self.state);
+            Box::pin(async move {
+                state.send_calls.fetch_add(1, Ordering::SeqCst);
+                let _inflight = PrivateSendAttemptGuard::new(Arc::clone(&state));
+                state.send_entered.notify_one();
+                state.send_release.notified().await;
+                if state.fail_send.load(Ordering::SeqCst) {
+                    return Err(PrivateDatagramError::SendFailed);
+                }
+                state.send_accepts.fetch_add(1, Ordering::SeqCst);
+                state.send_accepted.notify_one();
+                Ok(())
+            })
+        }
+    }
+
+    struct PrivateFakeRecvHalf {
+        inbound: mpsc::Receiver<Result<PrivateQueuedDatagram, PrivateDatagramError>>,
+        state: Arc<PrivateFakeState>,
+    }
+
+    struct PrivateFakeCloseOwner {
+        state: Arc<PrivateFakeState>,
+        closed: bool,
+    }
+
+    impl PrivateFakeCloseOwner {
+        fn new(state: Arc<PrivateFakeState>) -> Self {
+            state.active_adapters.fetch_add(1, Ordering::SeqCst);
+            Self {
+                state,
+                closed: false,
+            }
+        }
+
+        async fn close(&mut self) {
+            if !self.closed {
+                self.closed = true;
+                self.state.close_calls.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    impl Drop for PrivateFakeCloseOwner {
+        fn drop(&mut self) {
+            self.state.active_adapters.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Clone)]
+    struct PrivateFakeIngress {
+        inbound: mpsc::Sender<Result<PrivateQueuedDatagram, PrivateDatagramError>>,
+        packet_budget: Arc<Semaphore>,
+        byte_budget: Arc<Semaphore>,
+        byte_capacity: usize,
+        state: Arc<PrivateFakeState>,
+    }
+
+    impl PrivateFakeIngress {
+        async fn inject(&self, datagram: Datagram) -> Result<(), PrivateDatagramError> {
+            self.state
+                .inbound_admission_attempts
+                .fetch_add(1, Ordering::SeqCst);
+            self.state.inbound_admission_attempted.notify_one();
+            let (packet_permit, byte_permit) = acquire_private_budget(
+                &self.packet_budget,
+                &self.byte_budget,
+                self.byte_capacity,
+                datagram.payload.len(),
+            )
+            .await?;
+            self.inbound
+                .send(Ok(PrivateQueuedDatagram {
+                    datagram,
+                    _packet_permit: packet_permit,
+                    _byte_permit: byte_permit,
+                }))
+                .await
+                .map_err(|_| PrivateDatagramError::Closed)
+        }
+
+        async fn fail_receive(&self) -> Result<(), PrivateDatagramError> {
+            self.inbound
+                .send(Err(PrivateDatagramError::ReceiveFailed))
+                .await
+                .map_err(|_| PrivateDatagramError::Closed)
+        }
+    }
+
+    struct PrivateAssociationHarness {
+        ingress: PrivateFakeIngress,
+        state: Arc<PrivateFakeState>,
+        outbound_packets: Arc<Semaphore>,
+        outbound_bytes: Arc<Semaphore>,
+        inbound_packets: Arc<Semaphore>,
+        inbound_bytes: Arc<Semaphore>,
+        limits: PrivateAssociationLimits,
+    }
+
+    impl PrivateAssociationHarness {
+        fn release_send(&self) {
+            self.state.send_release.notify_one();
+        }
+
+        fn fail_send(&self) {
+            self.state.fail_send.store(true, Ordering::SeqCst);
+        }
+
+        fn assert_released(&self) {
+            assert_eq!(self.state.active_actors.load(Ordering::SeqCst), 0);
+            assert_eq!(self.state.active_adapters.load(Ordering::SeqCst), 0);
+            assert_eq!(self.state.send_inflight.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                self.outbound_packets.available_permits(),
+                self.limits.packet_count
+            );
+            assert_eq!(
+                self.outbound_bytes.available_permits(),
+                self.limits.byte_count
+            );
+            assert_eq!(
+                self.inbound_packets.available_permits(),
+                self.limits.packet_count
+            );
+            assert_eq!(
+                self.inbound_bytes.available_permits(),
+                self.limits.byte_count
+            );
+            assert_eq!(self.state.close_calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PrivateDirectionExit {
+        Graceful,
+        Cancelled,
+        Fatal(PrivateDatagramError),
+    }
+
+    fn fail_queued_private_sends(
+        commands: &mut mpsc::Receiver<PrivateSendCommand>,
+        error: PrivateDatagramError,
+    ) {
+        commands.close();
+        while let Ok(command) = commands.try_recv() {
+            let _ = command.complete.send(Err(error));
+        }
+    }
+
+    async fn drive_private_send_direction(
+        mut send_half: PrivateFakeSendHalf,
+        mut commands: mpsc::Receiver<PrivateSendCommand>,
+        graceful_stop: CancellationToken,
+        immediate_cancel: CancellationToken,
+        terminal: tokio::sync::watch::Receiver<PrivateTerminalState>,
+    ) -> PrivateDirectionExit {
+        loop {
+            let command = tokio::select! {
+                biased;
+                _ = immediate_cancel.cancelled() => {
+                    let error = match *terminal.borrow() {
+                        PrivateTerminalState::Running => PrivateDatagramError::Cancelled,
+                        state => state.error(),
+                    };
+                    fail_queued_private_sends(
+                        &mut commands,
+                        error,
+                    );
+                    return if error == PrivateDatagramError::Cancelled {
+                        PrivateDirectionExit::Cancelled
+                    } else {
+                        PrivateDirectionExit::Fatal(error)
+                    };
+                }
+                _ = graceful_stop.cancelled() => {
+                    fail_queued_private_sends(
+                        &mut commands,
+                        PrivateDatagramError::Closed,
+                    );
+                    return PrivateDirectionExit::Graceful;
+                }
+                command = commands.recv() => match command {
+                    Some(command) => command,
+                    None => return PrivateDirectionExit::Graceful,
+                }
+            };
+            let PrivateSendCommand {
+                datagram,
+                complete,
+                _packet_permit,
+                _byte_permit,
+            } = command;
+            let mut pending_send = send_half.begin_send(datagram);
+            let result = tokio::select! {
+                biased;
+                _ = immediate_cancel.cancelled() => {
+                    Err(match *terminal.borrow() {
+                        PrivateTerminalState::Running => PrivateDatagramError::Cancelled,
+                        state => state.error(),
+                    })
+                }
+                result = &mut pending_send => result,
+            };
+            let _ = complete.send(result);
+            drop(_packet_permit);
+            drop(_byte_permit);
+            match result {
+                Ok(()) => {}
+                Err(PrivateDatagramError::Cancelled) => {
+                    fail_queued_private_sends(&mut commands, PrivateDatagramError::Cancelled);
+                    return PrivateDirectionExit::Cancelled;
+                }
+                Err(error) => {
+                    fail_queued_private_sends(&mut commands, error);
+                    return PrivateDirectionExit::Fatal(error);
+                }
+            }
+        }
+    }
+
+    async fn drive_private_receive_direction(
+        mut recv_half: PrivateFakeRecvHalf,
+        inbound: mpsc::Sender<PrivateQueuedDatagram>,
+        graceful_stop: CancellationToken,
+        immediate_cancel: CancellationToken,
+    ) -> PrivateDirectionExit {
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = immediate_cancel.cancelled() => {
+                    return PrivateDirectionExit::Cancelled;
+                }
+                _ = graceful_stop.cancelled() => {
+                    return PrivateDirectionExit::Graceful;
+                }
+                event = recv_half.inbound.recv() => match event {
+                    Some(event) => event,
+                    None => {
+                        return PrivateDirectionExit::Fatal(
+                            PrivateDatagramError::ReceiveFailed,
+                        );
+                    }
+                }
+            };
+            let queued = match event {
+                Ok(queued) => queued,
+                Err(error) => return PrivateDirectionExit::Fatal(error),
+            };
+            recv_half.state.receive_calls.fetch_add(1, Ordering::SeqCst);
+            recv_half.state.inbound_received.notify_one();
+            let deliver = inbound.send(queued);
+            tokio::pin!(deliver);
+            let delivered = tokio::select! {
+                biased;
+                _ = immediate_cancel.cancelled() => false,
+                _ = graceful_stop.cancelled() => false,
+                result = &mut deliver => result.is_ok(),
+            };
+            if !delivered {
+                return if immediate_cancel.is_cancelled() {
+                    PrivateDirectionExit::Cancelled
+                } else {
+                    PrivateDirectionExit::Graceful
+                };
+            }
+            recv_half
+                .state
+                .receive_forwarded
+                .fetch_add(1, Ordering::SeqCst);
+            recv_half.state.inbound_forwarded.notify_one();
+        }
+    }
+
+    fn terminal_state_for(error: Option<PrivateDatagramError>) -> PrivateTerminalState {
+        match error {
+            None | Some(PrivateDatagramError::Closed) => PrivateTerminalState::Closed,
+            Some(PrivateDatagramError::Cancelled | PrivateDatagramError::TimedOut) => {
+                PrivateTerminalState::Cancelled
+            }
+            Some(PrivateDatagramError::SendFailed) => PrivateTerminalState::SendFailed,
+            Some(PrivateDatagramError::ReceiveFailed | PrivateDatagramError::Capacity) => {
+                PrivateTerminalState::ReceiveFailed
+            }
+        }
+    }
+
+    struct PrivateActorBudgets {
+        outbound_packets: Arc<Semaphore>,
+        outbound_bytes: Arc<Semaphore>,
+        inbound_packets: Arc<Semaphore>,
+        inbound_bytes: Arc<Semaphore>,
+    }
+
+    impl PrivateActorBudgets {
+        fn close(&self) {
+            self.outbound_packets.close();
+            self.outbound_bytes.close();
+            self.inbound_packets.close();
+            self.inbound_bytes.close();
+        }
+    }
+
+    struct PrivateAssociationActorContext {
+        send_half: PrivateFakeSendHalf,
+        recv_half: PrivateFakeRecvHalf,
+        close_owner: PrivateFakeCloseOwner,
+        send_commands: mpsc::Receiver<PrivateSendCommand>,
+        inbound: mpsc::Sender<PrivateQueuedDatagram>,
+        control: mpsc::Receiver<PrivateControlCommand>,
+        immediate_cancel: CancellationToken,
+        terminal: tokio::sync::watch::Sender<PrivateTerminalState>,
+        budgets: PrivateActorBudgets,
+        state: Arc<PrivateFakeState>,
+    }
+
+    async fn run_private_association_actor(context: PrivateAssociationActorContext) {
+        let PrivateAssociationActorContext {
+            send_half,
+            recv_half,
+            mut close_owner,
+            send_commands,
+            inbound,
+            mut control,
+            immediate_cancel,
+            terminal,
+            budgets,
+            state,
+        } = context;
+        let direction_terminal = terminal.subscribe();
+        let mut actor = PrivateActorGuard::new(Arc::clone(&state), terminal);
+        let graceful_stop = CancellationToken::new();
+        let mut send_direction = Box::pin(drive_private_send_direction(
+            send_half,
+            send_commands,
+            graceful_stop.clone(),
+            immediate_cancel.clone(),
+            direction_terminal,
+        ));
+        let mut receive_direction = Box::pin(drive_private_receive_direction(
+            recv_half,
+            inbound,
+            graceful_stop.clone(),
+            immediate_cancel.clone(),
+        ));
+        let mut send_exit = None;
+        let mut receive_exit = None;
+        let mut close_waiter = None;
+        let mut terminal_error = None;
+
+        while send_exit.is_none() || receive_exit.is_none() {
+            tokio::select! {
+                biased;
+                _ = immediate_cancel.cancelled(), if terminal_error.is_none() => {
+                    terminal_error = Some(PrivateDatagramError::Cancelled);
+                    actor.publish_terminal(PrivateTerminalState::Cancelled);
+                    graceful_stop.cancel();
+                }
+                command = control.recv(),
+                    if close_waiter.is_none() && terminal_error.is_none() =>
+                {
+                    match command {
+                        Some(PrivateControlCommand::Close(waiter)) => {
+                            state.close_requests.fetch_add(1, Ordering::SeqCst);
+                            state.close_requested.notify_one();
+                            close_waiter = Some(waiter);
+                            graceful_stop.cancel();
+                        }
+                        None => {
+                            terminal_error = Some(PrivateDatagramError::Cancelled);
+                            immediate_cancel.cancel();
+                            graceful_stop.cancel();
+                        }
+                    }
+                }
+                result = &mut send_direction, if send_exit.is_none() => {
+                    send_exit = Some(result);
+                    if let PrivateDirectionExit::Fatal(error) = result {
+                        if terminal_error.is_none() {
+                            terminal_error = Some(error);
+                            actor.publish_terminal(terminal_state_for(Some(error)));
+                        }
+                        immediate_cancel.cancel();
+                        graceful_stop.cancel();
+                    } else if result == PrivateDirectionExit::Cancelled
+                        && terminal_error.is_none()
+                    {
+                        terminal_error = Some(PrivateDatagramError::Cancelled);
+                        immediate_cancel.cancel();
+                        graceful_stop.cancel();
+                    }
+                }
+                result = &mut receive_direction, if receive_exit.is_none() => {
+                    receive_exit = Some(result);
+                    if let PrivateDirectionExit::Fatal(error) = result {
+                        if terminal_error.is_none() {
+                            terminal_error = Some(error);
+                            actor.publish_terminal(terminal_state_for(Some(error)));
+                        }
+                        immediate_cancel.cancel();
+                        graceful_stop.cancel();
+                    } else if result == PrivateDirectionExit::Cancelled
+                        && terminal_error.is_none()
+                    {
+                        terminal_error = Some(PrivateDatagramError::Cancelled);
+                        immediate_cancel.cancel();
+                        graceful_stop.cancel();
+                    }
+                }
+            }
+        }
+
+        let final_state = terminal_state_for(terminal_error);
+        actor.publish_terminal(final_state);
+        budgets.close();
+        close_owner.close().await;
+        if let Some(waiter) = close_waiter {
+            let result = terminal_error.map_or(Ok(()), Err);
+            let _ = waiter.send(result);
+        }
+    }
+
+    fn start_private_owned_association(
+        limits: PrivateAssociationLimits,
+    ) -> (PrivateOwnedDatagramAssociation, PrivateAssociationHarness) {
+        assert!(limits.packet_count > 0);
+        assert!(limits.byte_count > 0);
+        assert!(limits.channel_depth > 0);
+        let state = Arc::new(PrivateFakeState::new());
+        let outbound_packets = Arc::new(Semaphore::new(limits.packet_count));
+        let outbound_bytes = Arc::new(Semaphore::new(limits.byte_count));
+        let inbound_packets = Arc::new(Semaphore::new(limits.packet_count));
+        let inbound_bytes = Arc::new(Semaphore::new(limits.byte_count));
+        let (send_commands, send_command_rx) = mpsc::channel(limits.channel_depth);
+        let (adapter_inbound, adapter_inbound_rx) = mpsc::channel(limits.channel_depth);
+        let (inbound, inbound_rx) = mpsc::channel(limits.channel_depth);
+        let (control, control_rx) = mpsc::channel(1);
+        let (terminal, terminal_rx) = tokio::sync::watch::channel(PrivateTerminalState::Running);
+        let immediate_cancel = CancellationToken::new();
+        let send_half = PrivateFakeSendHalf {
+            state: Arc::clone(&state),
+        };
+        let recv_half = PrivateFakeRecvHalf {
+            inbound: adapter_inbound_rx,
+            state: Arc::clone(&state),
+        };
+        let close_owner = PrivateFakeCloseOwner::new(Arc::clone(&state));
+        let budgets = PrivateActorBudgets {
+            outbound_packets: Arc::clone(&outbound_packets),
+            outbound_bytes: Arc::clone(&outbound_bytes),
+            inbound_packets: Arc::clone(&inbound_packets),
+            inbound_bytes: Arc::clone(&inbound_bytes),
+        };
+        let actor_cancel = immediate_cancel.clone();
+        let actor_state = Arc::clone(&state);
+        let join = tokio::spawn(async move {
+            run_private_association_actor(PrivateAssociationActorContext {
+                send_half,
+                recv_half,
+                close_owner,
+                send_commands: send_command_rx,
+                inbound,
+                control: control_rx,
+                immediate_cancel: actor_cancel,
+                terminal,
+                budgets,
+                state: actor_state,
+            })
+            .await;
+        });
+        let association = PrivateOwnedDatagramAssociation {
+            tx: PrivateDatagramTx {
+                commands: send_commands,
+                terminal: terminal_rx.clone(),
+                packet_budget: Arc::clone(&outbound_packets),
+                byte_budget: Arc::clone(&outbound_bytes),
+                byte_capacity: limits.byte_count,
+                state: Arc::clone(&state),
+            },
+            rx: PrivateDatagramRx {
+                inbound: inbound_rx,
+                terminal: terminal_rx.clone(),
+            },
+            control: PrivateDatagramControl {
+                commands: control,
+                immediate_cancel,
+                terminal: terminal_rx,
+                join: Some(join),
+            },
+        };
+        let harness = PrivateAssociationHarness {
+            ingress: PrivateFakeIngress {
+                inbound: adapter_inbound,
+                packet_budget: Arc::clone(&inbound_packets),
+                byte_budget: Arc::clone(&inbound_bytes),
+                byte_capacity: limits.byte_count,
+                state: Arc::clone(&state),
+            },
+            state,
+            outbound_packets,
+            outbound_bytes,
+            inbound_packets,
+            inbound_bytes,
+            limits,
+        };
+        (association, harness)
+    }
+
+    #[tokio::test]
+    async fn old_udp_worker_blocks_inbound_until_exchange_is_released() {
+        let app = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 40_001);
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let key = UdpAssociationKey { app, target };
+        let outbound = Bytes::from_static(b"A");
+        let inbound = Bytes::from_static(b"B");
+        let state = Arc::new(BlockedExchangeState::new());
+        let connector: Arc<dyn FlowConnector> = Arc::new(BlockedExchangeConnector {
+            state: Arc::clone(&state),
+            response: Datagram::new(target, inbound.clone()),
+        });
+        let counters = Arc::new(Counters::new());
+        let cancel = CancellationToken::new();
+        let (commands_tx, commands_rx) = mpsc::channel(1);
+        let (events_tx, mut events_rx) = mpsc::channel(2);
+        commands_tx
+            .send(UdpCommand {
+                endpoint: target,
+                payload: Tracked::new(outbound, Arc::clone(&counters)),
+            })
+            .await
+            .unwrap();
+
+        let worker = tokio::spawn(udp_worker(UdpWorkerContext {
+            key,
+            connector,
+            commands: commands_rx,
+            events: events_tx,
+            cancel,
+            connect_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
+            counters,
+            max_payload_bytes: 64,
+        }));
+
+        state.exchange_entered.notified().await;
+        assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 1);
+        state.inject_inbound();
+        let delivered_before_release =
+            matches!(events_rx.try_recv(), Ok(EngineEvent::UdpResponse { .. }));
+
+        state.send_release.notify_one();
+        match timeout(Duration::from_secs(1), events_rx.recv())
+            .await
+            .expect("old UDP worker did not finish exchange cleanup")
+            .expect("old UDP worker closed its event channel")
+        {
+            EngineEvent::UdpResponse {
+                key: event_key,
+                endpoint,
+                payload,
+                accepted,
+            } => {
+                assert_eq!(event_key, key);
+                assert_eq!(endpoint, target);
+                assert_eq!(payload.as_slice(), inbound.as_ref());
+                let _ = accepted.send(());
+            }
+            _ => panic!("unexpected old UDP worker event"),
+        }
+        drop(commands_tx);
+        match timeout(Duration::from_secs(1), events_rx.recv())
+            .await
+            .expect("old UDP worker did not finish terminal cleanup")
+            .expect("old UDP worker closed before terminal event")
+        {
+            EngineEvent::UdpDone {
+                key: event_key,
+                failed,
+            } => {
+                assert_eq!(event_key, key);
+                assert!(!failed);
+            }
+            _ => panic!("unexpected old UDP worker terminal event"),
+        }
+        timeout(Duration::from_secs(1), worker)
+            .await
+            .expect("old UDP worker task leaked")
+            .expect("old UDP worker task panicked");
+        assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(state.close_calls.load(Ordering::SeqCst), 1);
+
+        assert!(
+            !delivered_before_release,
+            "old UDP worker unexpectedly delivered inbound before exchange(A) completed"
+        );
+    }
+
+    fn assert_private_handle_is_send_static<T: Send + 'static>() {}
+
+    async fn wait_for_private_count(
+        counter: &AtomicUsize,
+        notify: &Notify,
+        expected: usize,
+        message: &'static str,
+    ) {
+        timeout(Duration::from_secs(1), async {
+            while counter.load(Ordering::SeqCst) < expected {
+                notify.notified().await;
+            }
+        })
+        .await
+        .expect(message);
+    }
+
+    #[tokio::test]
+    async fn private_owned_actor_receives_while_send_remains_pending() {
+        assert_private_handle_is_send_static::<PrivateDatagramTx>();
+        assert_private_handle_is_send_static::<PrivateDatagramRx>();
+        assert_private_handle_is_send_static::<PrivateDatagramControl>();
+
+        for _ in 0..64 {
+            let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+            let (association, harness) =
+                start_private_owned_association(PrivateAssociationLimits::default());
+            let PrivateOwnedDatagramAssociation {
+                tx,
+                mut rx,
+                control,
+            } = association;
+            let send = tokio::spawn(async move {
+                tx.send(Datagram::new(target, Bytes::from_static(b"A")))
+                    .await
+            });
+
+            timeout(
+                Duration::from_secs(1),
+                harness.state.send_entered.notified(),
+            )
+            .await
+            .expect("private send never reached the explicit barrier");
+            assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(harness.state.send_inflight.load(Ordering::SeqCst), 1);
+            assert!(!send.is_finished());
+
+            let receive = tokio::spawn(async move { rx.recv().await });
+            harness
+                .ingress
+                .inject(Datagram::new(target, Bytes::from_static(b"B")))
+                .await
+                .unwrap();
+            let received = timeout(Duration::from_secs(1), receive)
+                .await
+                .expect("private receive made no progress while send was blocked")
+                .expect("private receive task panicked")
+                .expect("private receive failed");
+            assert_eq!(received, Datagram::new(target, Bytes::from_static(b"B")));
+            assert!(!send.is_finished());
+            assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 0);
+            assert_eq!(harness.state.send_inflight.load(Ordering::SeqCst), 1);
+
+            harness.release_send();
+            timeout(Duration::from_secs(1), send)
+                .await
+                .expect("private send did not complete after barrier release")
+                .expect("private send task panicked")
+                .expect("private send failed");
+            assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 1);
+            assert_eq!(harness.state.send_inflight.load(Ordering::SeqCst), 0);
+            assert_eq!(harness.state.receive_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(harness.state.receive_forwarded.load(Ordering::SeqCst), 1);
+
+            control.close().await.expect("private close failed");
+            harness.assert_released();
+        }
+    }
+
+    #[tokio::test]
+    async fn private_owned_actor_finishes_accepted_send_after_waiter_cancel() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            mut rx,
+            control,
+        } = association;
+        let send = tokio::spawn(async move {
+            tx.send(Datagram::new(target, Bytes::from_static(b"A")))
+                .await
+        });
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_entered.notified(),
+        )
+        .await
+        .expect("private send never reached the explicit barrier");
+        send.abort();
+        assert!(send
+            .await
+            .expect_err("send waiter was not cancelled")
+            .is_cancelled());
+
+        harness
+            .ingress
+            .inject(Datagram::new(target, Bytes::from_static(b"B")))
+            .await
+            .unwrap();
+        let received = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("receive stalled after send waiter cancellation")
+            .expect("receive failed after send waiter cancellation");
+        assert_eq!(received.payload, Bytes::from_static(b"B"));
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 0);
+
+        harness.release_send();
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_accepted.notified(),
+        )
+        .await
+        .expect("accepted send was cancelled with its caller");
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 1);
+        control.close().await.expect("private close failed");
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_receive_wait_can_be_cancelled_without_consuming_next_packet() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx: _tx,
+            mut rx,
+            control,
+        } = association;
+        let mut cancelled_wait = Box::pin(rx.recv());
+        assert!(futures::poll!(&mut cancelled_wait).is_pending());
+        drop(cancelled_wait);
+
+        harness
+            .ingress
+            .inject(Datagram::new(target, Bytes::from_static(b"B")))
+            .await
+            .unwrap();
+        let received = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("new receive wait did not make progress")
+            .expect("new receive wait failed");
+        assert_eq!(received.payload, Bytes::from_static(b"B"));
+        control.close().await.expect("private close failed");
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_immediate_cancel_releases_blocked_send_and_all_budgets() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            rx: _rx,
+            control,
+        } = association;
+        let send = tokio::spawn(async move {
+            tx.send(Datagram::new(target, Bytes::from_static(b"A")))
+                .await
+        });
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_entered.notified(),
+        )
+        .await
+        .expect("private send never reached the explicit barrier");
+
+        control.cancel().await.expect("private cancel failed");
+        let send_result = timeout(Duration::from_secs(1), send)
+            .await
+            .expect("cancelled send waiter leaked")
+            .expect("cancelled send waiter task panicked");
+        assert_eq!(send_result, Err(PrivateDatagramError::Cancelled));
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 0);
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_outbound_packet_and_byte_budgets_backpressure_third_send() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let limits = PrivateAssociationLimits {
+            packet_count: 2,
+            byte_count: 2,
+            channel_depth: 1,
+        };
+        let (association, harness) = start_private_owned_association(limits);
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            rx: _rx,
+            control,
+        } = association;
+        let sends = tokio::spawn(async move {
+            tokio::join!(
+                tx.send(Datagram::new(target, Bytes::from_static(b"A"))),
+                tx.send(Datagram::new(target, Bytes::from_static(b"B"))),
+                tx.send(Datagram::new(target, Bytes::from_static(b"C"))),
+            )
+        });
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_entered.notified(),
+        )
+        .await
+        .expect("first bounded send never entered");
+        wait_for_private_count(
+            &harness.state.outbound_admitted,
+            &harness.state.outbound_admitted_notify,
+            2,
+            "two outbound budget slots were not admitted",
+        )
+        .await;
+        assert_eq!(harness.outbound_packets.available_permits(), 0);
+        assert_eq!(harness.outbound_bytes.available_permits(), 0);
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert!(!sends.is_finished());
+
+        harness.release_send();
+        wait_for_private_count(
+            &harness.state.send_calls,
+            &harness.state.send_entered,
+            2,
+            "second bounded send never entered",
+        )
+        .await;
+        wait_for_private_count(
+            &harness.state.outbound_admitted,
+            &harness.state.outbound_admitted_notify,
+            3,
+            "third outbound send never acquired released budget",
+        )
+        .await;
+        harness.release_send();
+        wait_for_private_count(
+            &harness.state.send_calls,
+            &harness.state.send_entered,
+            3,
+            "third bounded send never entered",
+        )
+        .await;
+        harness.release_send();
+
+        let results = timeout(Duration::from_secs(1), sends)
+            .await
+            .expect("bounded sends did not finish")
+            .expect("bounded send task panicked");
+        assert_eq!(results, (Ok(()), Ok(()), Ok(())));
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 3);
+        control.close().await.expect("private close failed");
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_full_inbound_queue_backpressures_and_preserves_packet_order() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let limits = PrivateAssociationLimits {
+            packet_count: 2,
+            byte_count: 2,
+            channel_depth: 1,
+        };
+        let (association, harness) = start_private_owned_association(limits);
+        let PrivateOwnedDatagramAssociation {
+            tx: _tx,
+            mut rx,
+            control,
+        } = association;
+        harness
+            .ingress
+            .inject(Datagram::new(target, Bytes::from_static(b"A")))
+            .await
+            .unwrap();
+        wait_for_private_count(
+            &harness.state.receive_forwarded,
+            &harness.state.inbound_forwarded,
+            1,
+            "first inbound packet was not queued",
+        )
+        .await;
+        harness
+            .ingress
+            .inject(Datagram::new(target, Bytes::from_static(b"B")))
+            .await
+            .unwrap();
+        wait_for_private_count(
+            &harness.state.receive_calls,
+            &harness.state.inbound_received,
+            2,
+            "second inbound packet did not reach bounded delivery",
+        )
+        .await;
+        assert_eq!(harness.state.receive_forwarded.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.inbound_packets.available_permits(), 0);
+        assert_eq!(harness.inbound_bytes.available_permits(), 0);
+
+        let third_ingress = harness.ingress.clone();
+        let third = tokio::spawn(async move {
+            third_ingress
+                .inject(Datagram::new(target, Bytes::from_static(b"C")))
+                .await
+        });
+        wait_for_private_count(
+            &harness.state.inbound_admission_attempts,
+            &harness.state.inbound_admission_attempted,
+            3,
+            "third inbound admission was not attempted",
+        )
+        .await;
+        assert!(!third.is_finished());
+
+        let first = rx.recv().await.unwrap();
+        assert_eq!(first.payload, Bytes::from_static(b"A"));
+        wait_for_private_count(
+            &harness.state.receive_forwarded,
+            &harness.state.inbound_forwarded,
+            2,
+            "second inbound packet did not leave backpressure",
+        )
+        .await;
+        timeout(Duration::from_secs(1), third)
+            .await
+            .expect("third inbound packet stayed blocked after budget release")
+            .expect("third inbound injector panicked")
+            .expect("third inbound injection failed");
+        wait_for_private_count(
+            &harness.state.receive_calls,
+            &harness.state.inbound_received,
+            3,
+            "third inbound packet did not reach delivery",
+        )
+        .await;
+        let second = rx.recv().await.unwrap();
+        let third = rx.recv().await.unwrap();
+        assert_eq!(second.payload, Bytes::from_static(b"B"));
+        assert_eq!(third.payload, Bytes::from_static(b"C"));
+        control.close().await.expect("private close failed");
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_graceful_close_waits_for_the_same_pending_send() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            rx: _rx,
+            control,
+        } = association;
+        let send = tokio::spawn(async move {
+            tx.send(Datagram::new(target, Bytes::from_static(b"A")))
+                .await
+        });
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_entered.notified(),
+        )
+        .await
+        .expect("private send never reached the explicit barrier");
+        let close = tokio::spawn(control.close());
+        wait_for_private_count(
+            &harness.state.close_requests,
+            &harness.state.close_requested,
+            1,
+            "graceful close did not reach the supervisor",
+        )
+        .await;
+        assert!(!close.is_finished());
+        assert!(!send.is_finished());
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_inflight.load(Ordering::SeqCst), 1);
+
+        harness.release_send();
+        timeout(Duration::from_secs(1), send)
+            .await
+            .expect("pending send did not finish during graceful close")
+            .expect("pending send task panicked")
+            .expect("pending send failed during graceful close");
+        timeout(Duration::from_secs(1), close)
+            .await
+            .expect("graceful close did not finish after send acceptance")
+            .expect("graceful close task panicked")
+            .expect("graceful close failed");
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 1);
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_hard_close_deadline_cancels_blocked_send_without_leak() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            rx: _rx,
+            control,
+        } = association;
+        let send = tokio::spawn(async move {
+            tx.send(Datagram::new(target, Bytes::from_static(b"A")))
+                .await
+        });
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_entered.notified(),
+        )
+        .await
+        .expect("private send never reached the explicit barrier");
+
+        let close_result = control.close().await;
+        assert_eq!(close_result, Err(PrivateDatagramError::TimedOut));
+        let send_result = timeout(Duration::from_secs(1), send)
+            .await
+            .expect("hard-close send waiter leaked")
+            .expect("hard-close send waiter task panicked");
+        assert_eq!(send_result, Err(PrivateDatagramError::Cancelled));
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 0);
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_fatal_send_error_reaches_receive_terminal_once() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            mut rx,
+            control,
+        } = association;
+        let send = tokio::spawn(async move {
+            tx.send(Datagram::new(target, Bytes::from_static(b"A")))
+                .await
+        });
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_entered.notified(),
+        )
+        .await
+        .expect("private send never reached the explicit barrier");
+        harness.fail_send();
+        harness.release_send();
+
+        let send_result = timeout(Duration::from_secs(1), send)
+            .await
+            .expect("fatal send waiter leaked")
+            .expect("fatal send waiter task panicked");
+        assert_eq!(send_result, Err(PrivateDatagramError::SendFailed));
+        let receive_result = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("receive side did not observe fatal send terminal");
+        assert_eq!(receive_result, Err(PrivateDatagramError::SendFailed));
+        assert_eq!(control.close().await, Err(PrivateDatagramError::SendFailed));
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 0);
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_fatal_receive_error_makes_sender_unavailable() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            mut rx,
+            control,
+        } = association;
+        harness.ingress.fail_receive().await.unwrap();
+
+        let receive_result = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("receive side did not observe its fatal terminal");
+        assert_eq!(receive_result, Err(PrivateDatagramError::ReceiveFailed));
+        let send_result = timeout(
+            Duration::from_secs(1),
+            tx.send(Datagram::new(target, Bytes::from_static(b"A"))),
+        )
+        .await
+        .expect("sender did not become terminal");
+        assert_eq!(send_result, Err(PrivateDatagramError::ReceiveFailed));
+        assert_eq!(
+            control.close().await,
+            Err(PrivateDatagramError::ReceiveFailed)
+        );
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 0);
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_receive_fatal_reaches_pending_send_with_one_category() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            mut rx,
+            control,
+        } = association;
+        let send = tokio::spawn(async move {
+            tx.send(Datagram::new(target, Bytes::from_static(b"A")))
+                .await
+        });
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_entered.notified(),
+        )
+        .await
+        .expect("private send never reached the explicit barrier");
+        harness.ingress.fail_receive().await.unwrap();
+
+        let receive_result = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("receive side did not observe its fatal terminal");
+        let send_result = timeout(Duration::from_secs(1), send)
+            .await
+            .expect("pending send did not observe receive fatal")
+            .expect("pending send task panicked");
+        assert_eq!(receive_result, Err(PrivateDatagramError::ReceiveFailed));
+        assert_eq!(send_result, Err(PrivateDatagramError::ReceiveFailed));
+        assert_eq!(
+            control.close().await,
+            Err(PrivateDatagramError::ReceiveFailed)
+        );
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 0);
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn private_receive_fatal_reaches_sender_waiting_for_budget() {
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let limits = PrivateAssociationLimits {
+            packet_count: 1,
+            byte_count: 1,
+            channel_depth: 1,
+        };
+        let (association, harness) = start_private_owned_association(limits);
+        let PrivateOwnedDatagramAssociation {
+            tx,
+            mut rx,
+            control,
+        } = association;
+        let sends = tokio::spawn(async move {
+            tokio::join!(
+                tx.send(Datagram::new(target, Bytes::from_static(b"A"))),
+                tx.send(Datagram::new(target, Bytes::from_static(b"B"))),
+            )
+        });
+        timeout(
+            Duration::from_secs(1),
+            harness.state.send_entered.notified(),
+        )
+        .await
+        .expect("first private send never reached the explicit barrier");
+        assert_eq!(harness.outbound_packets.available_permits(), 0);
+        assert_eq!(harness.outbound_bytes.available_permits(), 0);
+        assert!(!sends.is_finished());
+
+        harness.ingress.fail_receive().await.unwrap();
+        let receive_result = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("receive side did not observe its fatal terminal");
+        let send_results = timeout(Duration::from_secs(1), sends)
+            .await
+            .expect("budget-waiting senders did not observe receive fatal")
+            .expect("budget-waiting send task panicked");
+        assert_eq!(receive_result, Err(PrivateDatagramError::ReceiveFailed));
+        assert_eq!(
+            send_results,
+            (
+                Err(PrivateDatagramError::ReceiveFailed),
+                Err(PrivateDatagramError::ReceiveFailed)
+            )
+        );
+        assert_eq!(
+            control.close().await,
+            Err(PrivateDatagramError::ReceiveFailed)
+        );
+        assert_eq!(harness.state.send_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(harness.state.send_accepts.load(Ordering::SeqCst), 0);
+        harness.assert_released();
+    }
+
+    #[tokio::test]
+    async fn dropping_private_control_cancels_and_releases_the_actor() {
+        let (association, harness) =
+            start_private_owned_association(PrivateAssociationLimits::default());
+        let PrivateOwnedDatagramAssociation {
+            tx: _tx,
+            rx: _rx,
+            control,
+        } = association;
+        timeout(
+            Duration::from_secs(1),
+            harness.state.actor_started.notified(),
+        )
+        .await
+        .expect("private actor never started");
+        let released = harness.state.actor_released.notified();
+        drop(control);
+        timeout(Duration::from_secs(1), released)
+            .await
+            .expect("dropped private control left the actor running");
+        harness.assert_released();
+    }
+
     #[test]
     fn default_configuration_is_bounded() {
         let config = PacketRuntimeConfig::default();

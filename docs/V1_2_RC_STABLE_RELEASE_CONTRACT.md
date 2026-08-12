@@ -58,27 +58,28 @@ All release tags must be annotated, resolve directly to the reviewed candidate
 commit, match the Rust package version, and remain immutable. The exact files
 selected for upload must be reverified immediately before publication.
 
-The parent tooling at entry to RLC-001 was an intentional RED for this
-contract:
+RLC-001 is merged at `main` commit
+`9423bff57818da199c9b1141edfeb89e03c801a1`. Its release-tag verifier accepts
+Beta and RC while continuing to reject Stable. This completed only the bounded
+tag-verifier slice and did not authorize an RC tag.
 
-- `scripts/verify-release-tag.sh` accepted only Beta version/tag syntax; and
-- `.github/workflows/pilot-release.yml` always publishes a prerelease with
-  `latest=false`.
+Authorized **RLC-001b** is the next smallest local tooling slice. It must make
+the artifact verifier accept only canonical positive Beta and RC versions
+while Stable stays a tested rejection. Its fixtures must prove the archive
+filename, source and version metadata, inner and outer checksums, architecture,
+and native binary version all agree; RC must pass static inspection and native
+verification on the current matching host. Static tests must also lock the
+unchanged workflow's sole `gh release create` to prerelease/non-Latest and prove
+that final tag, exact six-file, checksum, digest, and release-note rechecks occur
+before creation. RLC-001b must not change the workflow or create a release.
 
-Authorized **RLC-001** must accept Beta and RC while continuing to reject
-Stable; no RC tag may be created before that implementation passes review and
-its own gates. Stable classification must remain fail-closed until one exact RC
-completes every gate in this contract and Codex records a go/no-go decision for
-**RLC-002**, which implements and tests the Stable row. Neither tooling slice
-by itself authorizes a tag.
-
-RLC-001 is deliberately limited to the release-tag verifier and its local gate
-tests. It does not make the complete RC publication pipeline ready:
-`scripts/verify-pilot-artifact.sh` still accepts Beta artifact versions only,
-and no exact-RC package version, release note, archive, SBOM, or publication
-input exists. A later separately queued exact-RC candidate-preparation slice
-must close those named RED gates before any RC tag is created. Their current
-failure keeps publication fail-closed; it is not evidence that RLC-001 failed.
+RLC-001b still does not make the complete RC publication pipeline ready. No
+exact-RC package version, release note, archive, SBOM, tag, or publication input
+exists. A later separately queued exact-RC candidate-preparation slice must
+close those RED gates before any RC tag is created. Stable classification stays
+fail-closed until one exact RC completes every gate in this contract and Codex
+records a go/no-go decision for **RLC-002**, which implements and tests the
+Stable row. No tooling slice by itself authorizes a tag.
 
 ## Exact-candidate rule
 
@@ -190,11 +191,11 @@ exact browser equivalence.
 
 ## Execution order
 
-1. Merge this policy-only contract after ordinary review and privacy checks.
-2. Complete independent review, exact-head public checks, privacy review, and
-   merge for authorized RLC-001. Its tag verifier accepts Beta and RC while
-   deliberately continuing to reject Stable; downstream RC artifact and
-   candidate-preparation gates remain RED.
+1. Preserve this merged policy-only contract as the release-policy boundary.
+2. Preserve merged RLC-001 as current truth. Complete independent exact-hash
+   review, exact-head public checks, privacy review, and merge for authorized
+   RLC-001b. Its artifact verifier accepts Beta and RC while deliberately
+   continuing to reject Stable; exact-RC candidate inputs remain RED.
 3. Prepare and independently review one exact Direct H2 RC candidate.
 4. After a recorded exact-candidate publication go/no-go, publish that RC as
    prerelease/non-Latest.

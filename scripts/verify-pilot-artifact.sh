@@ -181,7 +181,7 @@ done
 
 [[ -n "$archive_path" && -n "$expected_version" && -n "$expected_revision" ]] || fail
 [[ -n "$expected_target" && -n "$verification_level" ]] || fail
-[[ "$expected_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]] || fail
+[[ "$expected_version" =~ ^1\.2\.0-(beta|rc)\.[1-9][0-9]*$ ]] || fail
 [[ "$expected_revision" =~ ^[0-9a-f]{40}$ ]] || fail
 case "$expected_target" in
   aarch64-apple-darwin | x86_64-unknown-linux-gnu) ;;

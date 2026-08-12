@@ -128,21 +128,27 @@ security review, supply-chain checks, and no unresolved Critical or High
 finding; a new paid third-party formal audit is optional. The complete policy
 is frozen in `docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`.
 
-The next implementation unit is authorized RLC-001: deterministic RC-aware
-tooling in which Stable remains a tested rejection. Only after every exact-RC
-gate passes may Codex record a go/no-go decision for RLC-002 to add Stable
-non-prerelease/Latest classification. No tag, release, publication, server,
-field run, spending, paid audit, or Stable claim follows from this contract
-alone; each remains a separate gated task.
+RLC-001 is merged: the release-tag verifier accepts canonical positive Beta/RC
+tags while Stable remains a tested rejection. The next implementation unit is
+RLC-001b, the smallest downstream local tooling slice: make the artifact
+verifier accept the same canonical positive Beta/RC version line, prove the RC
+fixture statically and natively on the current host, and statically lock the
+unchanged publication workflow's single prerelease/non-Latest create command
+behind final tag, exact six-file, checksum, digest, and release-note rechecks.
+Only after every exact-RC gate passes may Codex record a go/no-go decision for
+RLC-002 to add Stable non-prerelease/Latest classification. No tag, release,
+publication, server, field run, spending, paid audit, or Stable claim follows
+from either tooling slice.
 
-The RLC-001 candidate has deterministic local RED/GREEN evidence: the former
-Beta-only version gate rejected a valid annotated RC solely at its version
-syntax, while the candidate accepts canonical positive Beta/RC sequences and
-keeps Stable plus malformed or foreign versions fail-closed. Local evidence is
-not completion or a complete RC pipeline: the artifact verifier and all exact-RC
-candidate inputs remain RED. Independent review, exact-head public checks,
-privacy review, and merge remain mandatory before the queue may advance beyond
-the bounded RLC-001 tag-verifier slice.
+The RLC-001b local candidate has deterministic RED/GREEN evidence: the former
+Beta-only artifact version gate rejected an otherwise-valid RC archive, while
+the candidate accepts canonical positive Beta/RC sequences and keeps Stable
+plus malformed or foreign versions fail-closed. Local evidence is not
+completion or a complete RC pipeline. Independent exact-hash review, privacy
+review, exact-head public checks, and merge remain mandatory. No exact-RC
+package version, release note, archive, SBOM, tag, or publication input exists;
+candidate preparation, security, supply-chain, compatibility, Beta.4 rollback,
+field, artifact, and publication gates remain RED.
 
 **Acceptance.** The release contract makes Beta, RC, and Stable tag and release
 behavior unambiguous and fail-closed. Exact-candidate Direct H2 field,
@@ -161,10 +167,9 @@ result, release result, or publication authorization.
 2. **Run D-001/D-002/D-003 and B-001/B-002 in parallel.** The Datagram
    prototype is private. B-001 now qualifies only quiche against the neutral
    reference; B-002 must resolve the old private patches before quiche adoption.
-   Do not submit the
-   stopped Quinn-specific B-001 or D-004 work.
-3. **Freeze the v1.2 release contract, then review and merge authorized
-   RLC-001.** Stable remains fail-closed until the exact RC gates pass and Codex
+   Do not submit the stopped Quinn-specific B-001 or D-004 work.
+3. **Keep merged RLC-001 as current truth, then review and merge authorized
+   RLC-001b.** Stable remains fail-closed until the exact RC gates pass and Codex
    records the RLC-002 go/no-go decision. This train does not wait for H3;
    tags, releases, field work, and Stable publication remain separate gated
    tasks.

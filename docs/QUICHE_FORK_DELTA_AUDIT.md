@@ -13,10 +13,13 @@ the experimental quiche tree. It is not a patch registry, maintenance receipt,
 product result, or permission to vendor quiche into current `main`.
 
 The child-friendly summary is: the three old parts can still be inspected and
-their focused test passes, but no person is named to maintain each part, no
-upstream route is recorded, no clean rebase drill exists, no security-update
-deadline is frozen, and no independent delta review is recorded. Therefore the
-quiche fork remains experimental.
+their focused test passes. B-002-S1 now assigns explicit
+maintenance roles and deadlines, and the official source archive is locally
+available at its public checksum. But no patch has a passing `DROP` or `RETAIN`
+decision, no required upstream route or still-valid written cannot-upstream
+exception is recorded, no clean replay has run, the Boring
+dependency conflict is unresolved, and no independent delta review is
+recorded. Therefore the quiche fork remains experimental.
 
 ## 2026-08-12 direction amendment
 
@@ -43,11 +46,41 @@ future quiche import. The preferred recovery oracle is
 `archive/v1.3-direct-foundation-7f6158d`; archived dependency downgrades and the
 private fork are evidence to audit, not code to copy automatically.
 
+## B-002-S1 maintenance contract
+
+`docs/QUICHE_FORK_MAINTENANCE_POLICY.md` freezes a document-only contract
+for accountable, delegated, patch-operational, dependency-security, and
+independent-review roles; patch-specific `DROP`/`RETAIN` gates; an offline
+replay contract; upstream and rebase rules; security-release deadlines; and
+fail-closed H3 behavior. It assigns P1 and P2 to
+`H3-PROTOCOL-SAFETY`, P3 to `H3-PRIVACY-LOGGING`, and source, dependency,
+security-update, and SBOM responsibility to `DEPENDENCY-SECURITY` under the
+repository owner's accountability and Codex's standing delegated execution.
+
+The replay contract uses B-002-specific reviewed fixed constants, secure
+repository-external cleanup, byte-only reconstruction, and separate historical
+and selected-candidate runs; executable qualification is later and bound to the
+exact candidate and replay hashes. The dependency gate requires the real H3
+feature's graph, `links` closure, target SBOM, and final artifact on both
+supported release targets. Unclassified advisories default to Critical,
+ordinary releases have a 14-day decision deadline, and any rule that disables
+H3 rejects new work, invalidates idle pools and resumption, and immediately
+terminates affected existing carriers without sending or replaying application
+data to H2.
+
+That responsibility and SLA surface is **PARTIAL / RED** only. No role
+assignment proves necessity, creates an upstream issue or PR, applies a patch,
+resolves the dependency graph, demonstrates response to a real security
+release, or supplies the required independent reviewer and result. The policy
+does not authorize source, Cargo, vendor, runtime, capture, release, or network
+changes.
+
 ## Fixed baselines
 
 | Role | Exact object |
 |---|---|
-| Current audit base | `origin/main` at `9820be7ea3d9e152054eb71e9f665062ab59ee98` |
+| Original read-only audit base | `origin/main` at `9820be7ea3d9e152054eb71e9f665062ab59ee98` |
+| B-002-S1 implementation base | `main` at `be5f3ae532037468edbb1d619731a223284164c5` |
 | Archived experimental source | `40b0aa7b630c0decc411c0983795828d15252bda` |
 | Experimental source tree | `e57322e1467d84dbeb9c920269c64635b465efa9` |
 | Archived vendor tree | `79e628882099575a6b9f9d10fa3a12571dff9677` (68 blobs; 2,455,232 bytes) |
@@ -55,25 +88,39 @@ private fork are evidence to audit, not code to copy automatically.
 | Claimed upstream commit | `09b125d4cfc16e78d73d8382c93926f3aba063d4` |
 | Claimed pristine `.crate` SHA-256 | `61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d` |
 
-The last three values are claims copied from the archived `UPSTREAM.md`.
-The pristine `.crate` is not a Git object in the audited repository, so this
-slice cannot independently recompute that archive hash or reconstruct the full
-unmodified preimage.
+The original read-only audit copied the last three values from archived
+`UPSTREAM.md`; the pristine `.crate` is not a Git object in this repository.
+During B-002-S1, a read-only check found the exact official archive in the
+local Cargo registry cache. Its recomputed SHA-256 matches both the table and
+the locally cached crates.io index checksum; its `.cargo_vcs_info.json` names
+the table's upstream commit, and its `COPYING` hash is
+`2ef4b5abfce387a83933bda738e72467a79d15c1c17679143ec55011dae66b84`.
+This proves local preimage availability only. S1 did not apply the patches,
+compare a replay result, or independently review the full vendor delta.
+
+The official 0.29.3 package manifest uses `boring = "4.3"` for its Boring
+feature, while the exact S1 implementation base locks `boring`/`boring-sys`
+5.1.0 and `tokio-boring` 5.0.0. The maintenance contract therefore blocks both
+a Boring 5.x downgrade and simultaneous Boring 4.x/5.x closures. A reviewed
+exact candidate using the real H3 feature must prove one Boring 5.x dependency
+and `links` closure, target-aware SBOM, and final artifact on both supported
+release targets. That evidence is still **MISSING / RED**.
 
 ## Fail-closed object checks
 
 Run these checks from a checkout containing the archived objects. They disable
-lazy fetching and optional Git locks. If any object is absent, stop; do not
-fetch, download, or substitute another source during this audit.
+replacement objects, lazy fetching, and optional Git locks. If any object is
+absent, stop; do not fetch, download, or substitute another source during this
+audit.
 
 ```sh
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
   git cat-file -e 40b0aa7b630c0decc411c0983795828d15252bda^{commit}
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
   git cat-file -e e57322e1467d84dbeb9c920269c64635b465efa9^{tree}
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
   git rev-parse 40b0aa7b630c0decc411c0983795828d15252bda^{tree}
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
   git cat-file -e 79e628882099575a6b9f9d10fa3a12571dff9677^{tree}
 ```
 
@@ -81,21 +128,21 @@ For every path below, first resolve its blob and then require that exact blob
 to exist locally:
 
 ```sh
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
   40b0aa7b630c0decc411c0983795828d15252bda:vendor/quiche-0.29.3/UPSTREAM.md
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
   40b0aa7b630c0decc411c0983795828d15252bda:vendor/quiche-0.29.3/PATCHES/quiche-0.29.3-reject-peer-push-activity.patch
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
   40b0aa7b630c0decc411c0983795828d15252bda:vendor/quiche-0.29.3/PATCHES/maverick-adoption-review-hardening.patch
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
   40b0aa7b630c0decc411c0983795828d15252bda:vendor/quiche-0.29.3/PATCHES/maverick-h3-trace-privacy.patch
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
   git cat-file -e 789e8e0d4d607b6b589c4597331d338072e3354b^{blob}
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
   git cat-file -e 387ff8d539e68d5bcdf21b1b8d4a3e1145b8952a^{blob}
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
   git cat-file -e a2c982213c564e4556399c9aafa2b211fdfadcfc^{blob}
-env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
+env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 \
   git cat-file -e a7fa42323e27fd414f8664d6875f658183313cc5^{blob}
 ```
 
@@ -103,16 +150,16 @@ The final H3 source and focused-test blobs are independently bound to their
 archived paths, rather than inferred from the patch objects:
 
 ```sh
-test "$(env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
+test "$(env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
   40b0aa7b630c0decc411c0983795828d15252bda:vendor/quiche-0.29.3/src/h3/mod.rs)" = \
   00ba6c88edcab281abec43047d9a36838bfe1145
-test "$(env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
+test "$(env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
   40b0aa7b630c0decc411c0983795828d15252bda:vendor/quiche-0.29.3/src/h3/stream.rs)" = \
   2cb31493501e5298ef9f1d6305043aaa27e16665
-test "$(env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
+test "$(env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
   40b0aa7b630c0decc411c0983795828d15252bda:vendor/quiche-0.29.3/src/h3/qpack/decoder.rs)" = \
   7bb0af4e6b56f8288fde1f06d6b8a2bec7d75000
-test "$(env GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
+test "$(env GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 git rev-parse \
   40b0aa7b630c0decc411c0983795828d15252bda:crates/maverick-client/tests/quiche_strict_push.rs)" = \
   b6f2312251ec6b6d18fa436bce45d45498e4f360
 ```
@@ -177,50 +224,71 @@ not permission for this document to invent the missing answer.
 | Budget item | Strict push | Adoption hardening | Trace privacy |
 |---|---|---|---|
 | Explicit security/privacy necessity | **PARTIAL**: internal pre-auth push rationale exists; qualification necessity is unproven | **PARTIAL**: visibility and documentation tightening exists; fork necessity is unproven | **PARTIAL**: synthetic peer-controlled trace exposure is tested; fork necessity over an upstream solution is unproven |
-| Named patch owner | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
-| Upstream issue/PR or written cannot-upstream reason | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
+| Named patch owner | **PARTIAL / RED**: `H3-PROTOCOL-SAFETY` responsibility is frozen; no passing disposition or adoption owner result exists | **PARTIAL / RED**: folded into P1 under `H3-PROTOCOL-SAFETY`; it cannot be retained alone | **PARTIAL / RED**: `H3-PRIVACY-LOGGING` responsibility is frozen; no passing disposition or adoption owner result exists |
+| Required upstream route or still-valid written cannot-upstream exception | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
 | Patch independently testable | **PARTIAL / RED**: focused behavior tests pass; no independent run is recorded | **MISSING / RED**: no unique behavior test | **PARTIAL / RED**: focused trace test passes; no independent run is recorded |
-| Mechanical clean-source rebase test | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
-| Frozen security-release evaluation/upgrade/replay/CI SLA | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
+| Historical reconstruction and selected-candidate replay | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
+| Frozen security-release evaluation/upgrade/replay/CI SLA | **PARTIAL / RED**: deadlines and exact-head CI requirement are frozen; no real release response is demonstrated | **PARTIAL / RED**: follows P1; no real response is demonstrated | **PARTIAL / RED**: deadlines and exact-head CI requirement are frozen; no real release response is demonstrated |
 | Independent vendor-delta reviewer and result | **MISSING / RED** | **MISSING / RED** | **MISSING / RED** |
 | Cryptographic primitive modified by this artifact | **NO / PASS** | **NO / PASS** | **NO / PASS** |
 | No second Quinn product path | **RED**: the frozen experimental tree also retains Quinn | **RED**: same tree-wide condition | **RED**: same tree-wide condition |
 | Overall patch budget | **RED** | **RED** | **RED** |
 
 The archived sentence “Maverick maintainers own review, rebasing, and security
-maintenance” is a general responsibility claim. It does not name one owner per
-patch, define an upstream route, set an SLA, prove a rebase, or record an
-independent reviewer. It cannot fill any red cell above.
+maintenance” is a general responsibility claim. S1 now adds explicit
+operational roles and deadlines, but neither statement provides a passing
+patch disposition, required upstream route or still-valid written exception,
+clean replay, demonstrated release
+response, or independent reviewer and result. The remaining red cells cannot
+be filled by implication.
 
-## Missing preimage boundary
+## Preimage availability and replay boundary
 
 The first patch records abbreviated preimage/result blob pairs
-`b6c2552..32ed044` and `97e018b..3c846f7`, but none of those four exact blobs
-is present locally. The original `.crate` is also not stored in Git. The
-adoption patch has no index-object line, and its changes were committed together
-with the strict-push adoption. Consequently this audit can verify the retained
-patch bytes and final archived result, but cannot prove this full chain from
-locally retained evidence:
+`b6c2552..32ed044` and `97e018b..3c846f7`; none of those four exact Git blobs
+is retained in this repository. The adoption patch has no index-object line,
+and its changes were committed together with the strict-push adoption. The
+official `.crate` was observed locally outside Git during S1, and its public
+source, commit, and license hashes matched as described above, but S1
+deliberately did not perform the frozen replay. Consequently this audit still
+cannot prove the historical-only provenance chain:
 
 ```text
 pristine crates.io archive
   -> strict-push patch
   -> adoption-hardening patch
   -> trace-privacy patch
-  -> byte-identical archived vendor result
+  -> patched upstream source matching its fixed historical checksums
 ```
 
-Downloading the archive, fetching missing objects, or fabricating a preimage
-would exceed this document-only slice. The correct result is **UNKNOWN**, not a
+Passing that chain would prove only reconstruction of the old patched upstream
+source. Archived omissions, curated Cargo/package and dependency changes, and
+test-support files require a separate fixed historical byte inventory; the
+three patches cannot prove that complete vendor provenance or decide whether
+any patch belongs in a selected candidate. After
+proposed dispositions, a second B-002-specific fixed-constant replay must start from
+the exact selected official upstream, apply only retained patches (P2 only if
+P1 is retained), prove dropped patches absent and the complete result tree
+exact, and produce pure upstream when all patches are dropped. Mechanical
+replay executes no Cargo, `build.rs`, tests, or source. Tests, dependency and
+security inventory, target SBOMs, final artifacts, and normal gates run later
+in a separate controlled qualification bound to the exact candidate and replay
+hashes.
+
+Fetching missing objects, applying patches, or fabricating a result would
+exceed this document-only slice. The next mechanical verifier must use the
+explicit, offline, fuzz-free working directories and strip levels frozen in
+the maintenance policy. The correct current result is **UNKNOWN**, not a
 reconstructed green check.
 
 ## Decision and stop line
 
-B-002 is **RED**. Object-integrity PASS and the 15-test focused PASS do not
-upgrade it. Under OD-05, the selected quiche direction cannot restore this
-private fork while the complete fork budget remains red. A pure-upstream
-candidate still requires the explicit DROP dispositions and dependency,
-security, and SBOM gates described above.
+B-002 is **RED**. Object-integrity PASS, local official-preimage availability,
+the 15-test focused PASS, and the S1 policy/SLA contract do not upgrade it.
+Under OD-05, the selected quiche direction cannot restore this private fork
+while the complete fork budget remains red. A pure-upstream candidate still
+requires the explicit DROP dispositions and dependency, security, and SBOM
+gates described above.
 
 Do not expand vendor code, edit Cargo files, add CI, assign an owner by
 implication, contact upstream, or download a replacement source as a follow-up

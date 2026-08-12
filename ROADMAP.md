@@ -103,16 +103,30 @@ workload where comparison is technically meaningful; every objective dimension
 is PASS/FAIL/UNKNOWN. Any retained private quiche delta must satisfy the
 complete fork budget. A pure-upstream candidate instead needs an explicit,
 evidence-backed `DROP / not required` disposition for every old patch plus the
-resolved dependency, security, and target-aware SBOM gates. Quinn removal is a
-separate, small, reviewable, reversible code slice; it is not mixed into this
+resolved security gates and proof, for the real H3 product feature on every
+supported release target, of one Boring 5.x dependency/link closure, target
+SBOM, and final artifact. Quinn removal is a separate, small, reviewable,
+reversible code slice; it is not mixed into this
 decision-only work. B-003 direction alone is not B-001/B-002, product,
 security, fingerprint, native-Datagram, release, or real-network evidence.
 
 **Stop conditions.** Stop if common observation is impossible, quiche requires
 product/vendor patches to compete, a stable important fingerprint difference
-is unexplained, a patch lacks an owner/upstream/rebase path, a resource is
+is unexplained, a patch lacks an owner, required upstream route or still-valid
+written cannot-upstream exception, or rebase path, a resource is
 unbounded, or output would expose private capture material. On a failed gate,
 keep H3 outside the product and Auto; do not fall back to Quinn.
+
+**B-002 closure order.** S1 freezes the contract in
+`docs/QUICHE_FORK_MAINTENANCE_POLICY.md` while keeping B-002 RED. After S1 is on
+current main, S2 may add only the narrow byte-only verifier and synthetic
+self-tests. S3 separately reconstructs historical patched source and accounts
+for curated bytes, then a later narrow run replays the exact selected candidate.
+Executable qualification and independent review remain separate and bind to
+that exact candidate and replay. No slice may fetch source, contact upstream
+implicitly, edit vendor/Cargo/runtime code, or advance PR-4 merely because the
+preceding document or tool exists. Each old patch still needs its own
+evidence-backed `DROP` or complete `RETAIN` result.
 
 ### Train A contract — v1.2 H2 RC/Stable
 
@@ -128,27 +142,25 @@ security review, supply-chain checks, and no unresolved Critical or High
 finding; a new paid third-party formal audit is optional. The complete policy
 is frozen in `docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`.
 
-RLC-001 is merged: the release-tag verifier accepts canonical positive Beta/RC
-tags while Stable remains a tested rejection. The next implementation unit is
-RLC-001b, the smallest downstream local tooling slice: make the artifact
-verifier accept the same canonical positive Beta/RC version line, prove the RC
-fixture statically and natively on the current host, and statically lock the
+RLC-001 and RLC-001b are merged bounded tooling. The tag verifier accepts
+canonical positive Beta/RC tags while Stable remains a tested rejection. The
+artifact verifier accepts the same canonical positive Beta/RC version line,
+keeps Stable and malformed or foreign versions fail-closed, verifies the RC
+fixture statically and natively on the current host, and statically locks the
 unchanged publication workflow's single prerelease/non-Latest create command
 behind final tag, exact six-file, checksum, digest, and release-note rechecks.
-Only after every exact-RC gate passes may Codex record a go/no-go decision for
-RLC-002 to add Stable non-prerelease/Latest classification. No tag, release,
-publication, server, field run, spending, paid audit, or Stable claim follows
-from either tooling slice.
+Independent exact-hash and privacy review, exact-head public checks, and merge
+passed for those bounded tools only; they do not form a complete RC pipeline.
 
-The RLC-001b local candidate has deterministic RED/GREEN evidence: the former
-Beta-only artifact version gate rejected an otherwise-valid RC archive, while
-the candidate accepts canonical positive Beta/RC sequences and keeps Stable
-plus malformed or foreign versions fail-closed. Local evidence is not
-completion or a complete RC pipeline. Independent exact-hash review, privacy
-review, exact-head public checks, and merge remain mandatory. No exact-RC
-package version, release note, archive, SBOM, tag, or publication input exists;
-candidate preparation, security, supply-chain, compatibility, Beta.4 rollback,
-field, artifact, and publication gates remain RED.
+The next bounded v1.2 work is preparation of exact local RC inputs only after
+their objective prerequisites are recorded and pass. It does not create a tag
+or publication. No exact-RC package version, release note, archive, SBOM, tag,
+or publication input currently exists; candidate preparation, security,
+supply-chain, compatibility, Beta.4 rollback, field, artifact, and publication
+gates remain RED. Only after every exact-RC gate passes may Codex record a
+go/no-go decision for RLC-002 to add Stable non-prerelease/Latest
+classification. No tag, release, publication, server, field run, spending,
+paid audit, or Stable claim follows from either merged tooling slice.
 
 **Acceptance.** The release contract makes Beta, RC, and Stable tag and release
 behavior unambiguous and fail-closed. Exact-candidate Direct H2 field,
@@ -162,13 +174,13 @@ result, release result, or publication authorization.
 
 ### QRET-1/QRET-2 — tombstone first, delete Quinn separately
 
-QRET-1 keeps the config-v1 field and default `false`, but makes `true` fail
-closed with one fixed pre-I/O error while preserving H2. Quinn remains only as
-a temporary loopback test oracle. QRET-2 separately deletes current-tree Quinn
-product code and dependencies. Neither slice adds quiche, Config v2, wire,
-Auto, fallback, or UDP product work. A quiche product route may begin only after
-its qualification and fork/supply-chain gates pass, through a complete,
-runnable, migratable Product Config v2.
+QRET-1 is merged: it keeps the config-v1 field and default `false`, but makes
+`true` fail closed with one fixed pre-I/O error while preserving H2. Quinn
+remains only as a temporary loopback test oracle. QRET-2 next separately deletes
+current-tree Quinn product code and dependencies. Neither slice adds quiche,
+Config v2, wire, Auto, fallback, or UDP product work. A quiche product route may
+begin only after its qualification and fork/supply-chain gates pass, through a
+complete, runnable, migratable Product Config v2.
 
 ## Execution Order
 
@@ -178,17 +190,17 @@ runnable, migratable Product Config v2.
    prototype is private. B-001 now qualifies only quiche against the neutral
    reference; B-002 must resolve the old private patches before quiche adoption.
    Do not submit the stopped Quinn-specific B-001 or D-004 work.
-3. **Keep merged RLC-001 as current truth, then review and merge authorized
-   RLC-001b.** Stable remains fail-closed until the exact RC gates pass and Codex
-   records the RLC-002 go/no-go decision. This train does not wait for H3;
-   tags, releases, field work, and Stable publication remain separate gated
+3. **Keep merged RLC-001 and RLC-001b as current truth and continue the
+   remaining exact-RC gates.** Stable remains fail-closed until those gates pass
+   and Codex records the RLC-002 go/no-go decision. This train does not wait for
+   H3; tags, releases, field work, and Stable publication remain separate gated
    tasks.
-4. **Complete QRET-1 before QRET-2, and keep QRET-2 separate from quiche
-   adoption. Rebuild small stacked slices.** Auth core/spec, config convergence, direct
-   H2 proof, gated quiche foundation/vendor and persistent session, Datagram
-   adapters, consumers, and only then standard CONNECT-UDP/QUIC DATAGRAM.
-   Remove Quinn product code in its own reversible slice; do not combine that
-   deletion with quiche adoption.
+4. **Keep merged QRET-1 as current truth, complete QRET-2 separately from
+   quiche adoption, and rebuild small stacked slices.** Auth core/spec, config
+   convergence, direct H2 proof, gated quiche foundation/vendor and persistent
+   session, Datagram adapters, consumers, and only then standard
+   CONNECT-UDP/QUIC DATAGRAM. Remove Quinn product code in its own reversible
+   slice; do not combine that deletion with quiche adoption.
 5. **Keep stronger supply-chain claims deferred.** Provenance and attestation
    need an explicit identity and remote-permission design; signatures need a
    trust-root and key-custody decision; reproducible builds need a separate

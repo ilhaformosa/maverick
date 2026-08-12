@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-08-02
+Date: 2026-08-12
 
 This is the only active current-truth document. Archived plans, manifests,
 evidence records, and release notes do not override it.
@@ -699,6 +699,27 @@ censorship-resistance, exact browser-equivalence, native-ECH, or
 provider-independent claims.
 
 ## Authorization Boundary
+
+On 2026-08-12, the owner authorized strict execution of the dated Maverick
+v1.3 recovery playbook and ratified OD-01 through OD-09. This current
+authorization is limited to the smallest slices ordered in `ROADMAP.md`:
+G-001 through G-004 governance and recovery, the D-001 through D-003
+Datagram contract/private prototype/deterministic proof, local-only B-001
+capture measurement and B-002 fork audit, and read-only v1.2 RC/Stable contract
+planning. For those named slices it permits privacy-safe local branches,
+commits, pushes, Draft pull requests, and the ordinary required public-repository
+checks for a reviewed head.
+
+The same authorization covered the one-time remote recovery controls now
+completed: protect and create the five exact `archive/v1.3-*` branches, open one
+exact-head Draft `DO NOT MERGE` baseline PR, let its normal checks run once,
+record the results, and close it without a rerun. It does not authorize changing
+an archive ref, synchronizing or merging the cumulative 77-commit branch,
+silently bypassing a failed gate, or treating governance evidence as a product
+result. A rebuilt small PR may merge only after its own task gates, independent
+review, and privacy gate pass. Backend selection, config/wire/public-API
+changes beyond a separately queued smallest slice, tags, releases, field runs,
+provider resources, spending, and host-network changes remain separately gated.
 
 Repository-local work may build, test, and use `127.0.0.1` with OS-assigned
 ephemeral ports. The following owner authorization applies only to the first

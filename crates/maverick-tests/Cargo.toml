@@ -11,6 +11,10 @@ name = "maverick-tun-phase2"
 path = "src/bin/maverick-tun-phase2.rs"
 required-features = ["tun-phase2"]
 
+[[bin]]
+name = "quiche-fork-replay-verifier"
+path = "src/bin/quiche-fork-replay-verifier.rs"
+
 [features]
 default = ["browser-tls"]
 browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
@@ -31,15 +35,18 @@ etherparse = { version = "=0.20.3", optional = true }
 futures.workspace = true
 h2.workspace = true
 http.workspace = true
+flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 maverick-client = { path = "../maverick-client", default-features = false }
 maverick-core = { path = "../maverick-core", default-features = false }
 maverick-server = { path = "../maverick-server" }
 maverick-tun = { path = "../maverick-tun", optional = true }
 rcgen.workspace = true
 rustls.workspace = true
+rustix = { version = "=1.1.4", features = ["fs", "process"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+signal-hook = { version = "=0.4.4", default-features = false }
 tempfile.workspace = true
 time.workspace = true
 tokio.workspace = true

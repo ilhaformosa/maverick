@@ -236,37 +236,45 @@ censorship resistance, production readiness, or browser identity.
   separate Train A exact-candidate H2 impact gate; this slice neither changes H2
   nor exempts it. B-002, quiche adoption, H3 runtime, security, supply-chain,
   product, release, and real-network gates remain RED.
-- B-002-S2 tooling-route precision (2026-08-13): a focused portability probe
-  rejected the proposed Ruby/Fiddle verifier because the Darwin system Ruby
-  2.6 interface could not safely express variadic `open`/`openat` with
-  `O_CREAT`; the probe produced an incorrect zero file mode. No Ruby verifier
-  was adopted, and archived Python validation tooling remains frozen. The S2
-  policy now permits only one unpublished, non-product `maverick-tests`
-  verifier target with exact tool-only `rustix 1.1.4` (`fs`, `process`) and
-  `flate2 1.1.9` (`rust_backend`, no default features) pins, exact
-  `signal-hook 0.4.4` with default features disabled, its safe high-level flag
-  API only, and a lockfile closure S2 must still prove. The prior Tokio-only
-  receiver design remains RED because signal delivery can become pending before
-  runtime-driver broadcast, leaving a success race. The replacement contract
-  permits one `SeqCst` `ACTIVE`/`SIGNALLED`/`COMMITTED` atomic only; it forbids
-  direct registry or handler code, first-party `unsafe`, timers, yields, and
-  sentinel signals, with safe unregistration by returned registration ID as
-  the only unregistration path. The sole success compare-exchange comes after
-  replay, exact cleanup, and prior-umask restoration. Exact
-  `INT`/`TERM`/`HUP` self-tests must cover barriers before final manifest
-  verification and after cleanup but before that commit. A signal ordered before
-  the compare-exchange makes the result RED; one ordered after it cannot revoke
-  the already committed outcome, even though the handler may overwrite the
-  atomic storage. Because safe unregistration does not restore the prior signal
-  disposition, every signal-bearing test or controlled invocation runs in a
-  disposable child that exits immediately after unregistering; no shared
-  process continues. Production exits immediately after `COMMITTED` with no
-  fallible work.
-  Building and synthetic self-testing occur before mechanical replay; replay
-  must use the already-built exact binary and cannot invoke Cargo, rustc, or
-  input code. This document-only precision does not create the verifier, read
-  a real quiche archive, replay a patch, resolve a disposition, adopt quiche,
-  or change product/runtime/config/wire/release behavior. B-002 remains RED.
+- B-002-S2 synthetic replay verifier (2026-08-13): the current tree contains
+  one unpublished, non-product `maverick-tests` verifier and fixed synthetic
+  self-tests. Its production entry accepts exactly one absolute,
+  repository-external `.crate`; opens it once through no-follow directory-FD
+  traversal; checks fixed size and hashes; makes and rehashes one private copy;
+  parses one bounded gzip member and a strict ustar subset; applies one exact,
+  fuzz-free patch in memory; and checks fixed initial/final tree manifests plus
+  a fixed, non-quiche Git commit/tree/blob chain. It requires `/usr/bin/git`
+  2.45 or newer for the fixed `--no-lazy-fetch` invocation. It never
+  materializes the reconstructed source tree, invokes Cargo or rustc, executes
+  archive/input code, or uses a network during mechanical replay.
+  The locked `0700` workspace uses no-follow FDs, device/inode identities, one
+  exact private-file ledger, bounded reads, and fail-closed cleanup. These
+  controls detect replacement and unexpected residue, but `0700` is not an
+  isolation boundary against a hostile process running as the same OS user;
+  that same-UID limitation remains part of the local threat boundary.
+  Catchable signals use only `signal-hook 0.4.4`'s safe high-level flag API and
+  one `SeqCst` `ACTIVE`/`SIGNALLED`/`COMMITTED` atomic. `INT`, `TERM`, and `HUP`
+  register before work; the sole success compare-exchange occurs only after
+  replay, exact cleanup, and prior-umask restoration. Production exits
+  immediately after `COMMITTED`. Deterministic disposable-child tests send each
+  signal before final-manifest verification and after cleanup but before that
+  compare-exchange; RED paths safely unregister every returned ID and then exit
+  immediately. Panic, partial-registration rollback, umask, cleanup, and silent
+  production exit tests are also GREEN.
+  The exact tool-only graph pins `rustix 1.1.4`, `flate2 1.1.9`, and
+  `signal-hook 0.4.4` with default features disabled. `signal-hook` is the only
+  new locked package beyond the five reviewed compression packages;
+  its packaged build script is an empty operation for this feature set, and its
+  optional `cc` edge, default `channel`/`iterator`, and extended features are
+  not activated.
+  No existing package was upgraded, and the new `flate2`/`signal-hook`
+  additions do not enter a product binary. This is synthetic mechanism evidence
+  only: no official quiche archive
+  or P1/P2/P3 object was read or replayed, no vendor candidate was selected or
+  qualified, and no Boring/SBOM, independent review, upstream disposition,
+  runtime/config/Auto/product, release, or real-network gate advanced. B-002
+  remains **PARTIAL / RED**; S3 must replace constants in a separate reviewed
+  diff and be executed by an independent maintainer.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

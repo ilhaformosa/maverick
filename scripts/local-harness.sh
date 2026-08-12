@@ -22,6 +22,9 @@ echo "==> formatting"
 echo "==> clippy"
 "$cargo_bin" clippy --workspace --all-targets -- -D warnings
 
+echo "==> B-002-S2 synthetic replay verifier"
+"$cargo_bin" build --locked -p maverick-tests --bin quiche-fork-replay-verifier
+
 echo "==> Rust tests"
 "$cargo_bin" test --workspace
 

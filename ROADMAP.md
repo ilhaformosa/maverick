@@ -124,9 +124,14 @@ self-tests. S3 separately reconstructs historical patched source and accounts
 for curated bytes, then a later narrow run replays the exact selected candidate.
 Executable qualification and independent review remain separate and bind to
 that exact candidate and replay. No slice may fetch source, contact upstream
-implicitly, edit vendor/Cargo/runtime code, or advance PR-4 merely because the
-preceding document or tool exists. Each old patch still needs its own
-evidence-backed `DROP` or complete `RETAIN` result.
+implicitly, edit vendor or product/runtime Cargo code, or advance PR-4 merely
+because the preceding document or tool exists. The sole S2 tooling exception
+is one verifier target in the unpublished `maverick-tests` package, exact
+tool-only `rustix`/`flate2` pins, reuse of existing Tokio signal handling, and
+the corresponding reviewed lockfile closure. It may build and self-test before
+replay, but the already-built mechanical verifier must not invoke Cargo or
+execute input code. Each old patch still needs its own evidence-backed `DROP`
+or complete `RETAIN` result.
 
 ### Train A contract — v1.2 H2 RC/Stable
 

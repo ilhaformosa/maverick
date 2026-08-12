@@ -236,6 +236,20 @@ censorship resistance, production readiness, or browser identity.
   separate Train A exact-candidate H2 impact gate; this slice neither changes H2
   nor exempts it. B-002, quiche adoption, H3 runtime, security, supply-chain,
   product, release, and real-network gates remain RED.
+- B-002-S2 tooling-route precision (2026-08-13): a focused portability probe
+  rejected the proposed Ruby/Fiddle verifier because the Darwin system Ruby
+  2.6 interface could not safely express variadic `open`/`openat` with
+  `O_CREAT`; the probe produced an incorrect zero file mode. No Ruby verifier
+  was adopted, and archived Python validation tooling remains frozen. The S2
+  policy now permits only one unpublished, non-product `maverick-tests`
+  verifier target with exact tool-only `rustix 1.1.4` (`fs`, `process`) and
+  `flate2 1.1.9` (`rust_backend`, no default features) pins, reuse of existing
+  Tokio catchable-signal handling, and the exact reviewed lockfile closure.
+  Building and synthetic self-testing occur before mechanical replay; replay
+  must use the already-built exact binary and cannot invoke Cargo, rustc, or
+  input code. This document-only precision does not create the verifier, read
+  a real quiche archive, replay a patch, resolve a disposition, adopt quiche,
+  or change product/runtime/config/wire/release behavior. B-002 remains RED.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

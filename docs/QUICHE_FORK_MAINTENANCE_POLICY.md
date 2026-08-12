@@ -230,14 +230,36 @@ verifier binary under the unpublished `maverick-tests` package and exactly:
   its default features retained;
 - add `flate2 = { version = "=1.1.9", default-features = false, features =
   ["rust_backend"] }`;
-- reuse the package's existing Tokio dependency for safe catchable-signal
-  handling; and
+- add `signal-hook = { version = "=0.4.4", default-features = false }` and use
+  only its safe high-level flag API; and
 - update `Cargo.lock` only for that exact tool graph.
 
 These dependencies must not enter a product crate, default product binary,
 runtime, vendor tree, quiche graph, config, wire path, or release claim. Any
 additional package, feature, target, or Cargo surface requires a new review and
-keeps S2 RED.
+keeps S2 RED. `signal-hook` is expected to be the only additional lockfile
+package beyond the exact `rustix`/`flate2` tool graph named above; the S2
+implementation must prove the complete exact locked graph before it may pass.
+Direct use of `signal-hook-registry`, a direct signal-handler closure,
+`sigaction`, or first-party `unsafe` is forbidden. The only permitted
+unregistration path is `signal-hook`'s safe public unregistration by the
+registration IDs returned by the flag API.
+
+The prior Tokio-only receiver design remains RED. Delivery can set Tokio's
+internal pending state before the runtime driver broadcasts readiness; a
+worker can finish in that interval, so selecting the worker branch cannot prove
+that a delivered signal lost the success race. S2 must instead register `INT`,
+`TERM`, and `HUP` before work begins so the safe flag API stores into one
+`AtomicUsize` with `SeqCst` ordering. Its storage has exactly three values:
+`ACTIVE`, `SIGNALLED`, and `COMMITTED`. A signal stores `SIGNALLED`; the
+verifier may attempt exactly one `ACTIVE`-to-`COMMITTED` compare-exchange only
+after replay work, exact cleanup, and prior-umask restoration all succeed. A
+signal store ordered before that compare-exchange makes it fail and the outcome
+is RED. A successful compare-exchange is the irrevocable outcome linearization
+point: a later signal may overwrite the storage with `SIGNALLED`, but the
+verifier never reads it again and the already committed outcome is not revoked.
+Do not use a timer, yield, sentinel signal, second atomic, receiver, or inferred
+ordering as the success barrier.
 
 Building and self-testing the verifier is a separate local build phase; it may
 use Cargo only before mechanical replay begins. Mechanical replay runs the
@@ -245,10 +267,18 @@ already-built, exact reviewed binary and must never invoke Cargo, rustc, a
 build script, tests, or input-derived code. The binary remains single-purpose:
 its production entry accepts exactly one repository-external `.crate` path and
 no mode, profile, registry, schema, or expected-value override. It sets umask
-`077` before starting its safe signal listener, restores the prior umask only
-after all creation and cleanup have finished on every controlled exit, and
-uses the same cleanup guard for `INT`, `TERM`, and `HUP`. Synthetic self-tests
-must prove the umask restoration and catchable-signal cleanup paths.
+`077` before work begins, restores the prior umask only after all creation and
+cleanup have finished on every controlled exit, and uses the same cleanup guard
+for `INT`, `TERM`, and `HUP`. Synthetic self-tests must send each exact signal
+at deterministic barriers before final manifest verification and after cleanup
+but before the `ACTIVE`-to-`COMMITTED` compare-exchange. Each case must prove
+RED, exact cleanup, and prior-umask restoration. Safe unregistration does not
+restore the previous or default signal disposition. Every signal-bearing
+self-test or controlled non-production invocation therefore runs in its own
+disposable child process; after unregistering every returned registration ID,
+that child exits immediately and no shared or long-lived process continues.
+After the production compare-exchange records `COMMITTED`, the process exits
+successfully immediately, with no fallible work, output, or unregistration.
 
 ### Fixed verifier constants and immutable inputs
 

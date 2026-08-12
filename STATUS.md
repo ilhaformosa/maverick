@@ -210,9 +210,21 @@ censorship resistance, production readiness, or browser identity.
   security audit of the then-current repository code completed with no open
   findings reported. This is a point-in-time result, not a warranty,
   certification, or claim that later changes inherit the same review.
-- Future formal audits are optional and are not a pilot, release, or progress
-  requirement. Open-source users remain responsible for deciding whether the
-  software and its threat model fit their use.
+- A new paid third-party formal audit remains optional. The owner-approved
+  v1.2 RC/Stable contract instead requires an independent security review bound
+  to the exact RC, supply-chain checks, and no unresolved Critical or High
+  finding. Neither the 2026-07-21 audit nor Beta.4 field/artifact evidence is
+  inherited by a later RC. Open-source users remain responsible for deciding
+  whether the software and its threat model fit their use.
+- v1.2 RC/Stable release policy (owner-approved 2026-08-12): the first Stable
+  support claim is Direct H2 only, while provider-fronted H2 remains Beta. RC
+  must be a prerelease and non-Latest; Stable must be a non-prerelease and
+  Latest. Immutable `v1.2.0-beta.4` is the exact rollback partner. The full
+  contract and still-closed gates are recorded in
+  `docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`. This policy does not make an RC or
+  Stable candidate exist and does not authorize release tooling, a tag,
+  publication, a field run, a server, spending, a paid audit, or a Stable
+  claim.
 - Stable, mature, production-ready, anonymity, broad censorship-resistance, and
   exact browser-equivalence claims: not made. Entering Beta does not imply any
   of those claims.
@@ -701,14 +713,26 @@ provider-independent claims.
 ## Authorization Boundary
 
 On 2026-08-12, the owner authorized strict execution of the dated Maverick
-v1.3 recovery playbook and ratified OD-01 through OD-09. This current
-authorization is limited to the smallest slices ordered in `ROADMAP.md`:
-G-001 through G-004 governance and recovery, the D-001 through D-003
-Datagram contract/private prototype/deterministic proof, local-only B-001
-capture measurement and B-002 fork audit, and read-only v1.2 RC/Stable contract
-planning. For those named slices it permits privacy-safe local branches,
-commits, pushes, Draft pull requests, and the ordinary required public-repository
-checks for a reviewed head.
+v1.3 recovery playbook, ratified OD-01 through OD-09, approved v1.2 release
+decisions R1 through R4, and then delegated every remaining project and task
+decision in this thread to Codex. Codex must use the playbook's recommended
+option when one exists; otherwise it must choose the smallest safe,
+failure-driven option and record the decision and reason. A further owner
+selection or approval is not required. This standing delegation covers placing
+the remaining playbook work into the `ROADMAP.md` queue and its ordinary local,
+public-repository, review, and required public-CI workflow. RLC-001 is therefore
+authorized as the next v1.2 tooling slice.
+
+The delegation is decision authority, not evidence. It does not turn a RED or
+UNKNOWN gate green, inherit evidence from another commit or route, waive
+independent review or privacy checks, or override the non-negotiable host-network
+boundary in `AGENTS.md`. Codex may approve a later release, field run, provider
+resource, paid action, or destructive cleanup only after the exact task,
+target, objective prerequisites, cost/lifetime cap, and rollback or cleanup are
+recorded and independently checkable; uncertainty defaults to no action. A step
+that requires the owner to physically use a device, supply unavailable access,
+or make a legal/personal attestation will be reported as required participation,
+not returned as a technical project decision.
 
 The same authorization covered the one-time remote recovery controls now
 completed: protect and create the five exact `archive/v1.3-*` branches, open one
@@ -718,8 +742,11 @@ an archive ref, synchronizing or merging the cumulative 77-commit branch,
 silently bypassing a failed gate, or treating governance evidence as a product
 result. A rebuilt small PR may merge only after its own task gates, independent
 review, and privacy gate pass. Backend selection, config/wire/public-API
-changes beyond a separately queued smallest slice, tags, releases, field runs,
-provider resources, spending, and host-network changes remain separately gated.
+changes, tags, releases, field runs, provider resources, paid audits, spending,
+and destructive actions remain separate recorded tasks with their own
+objective gates. They no longer require another owner choice, but they are not
+authorized merely because an earlier task completed. Host-network changes
+remain prohibited by `AGENTS.md`.
 
 Repository-local work may build, test, and use `127.0.0.1` with OS-assigned
 ephemeral ports. The following owner authorization applies only to the first
@@ -747,7 +774,9 @@ pilot and does not create standing authorization for later runs:
 - excluded purchases: backups, additional disks, load balancers, and every
   other paid add-on; and
 - stop rule: any additional resource, duration, person, network, trust change,
-  or possible cost above these limits requires a new owner decision first.
+  or possible cost above these limits requires a new separately recorded Codex
+  go/no-go decision under the standing delegation above, with exact boundaries
+  and cleanup; it is not inherited from this first-pilot authorization.
 
 The exact provider account or team, neutral resource name, region, containing
 owner-controlled zone, dedicated pilot hostname, and access method were
@@ -829,7 +858,8 @@ Before every authorized session, apply all offered package and default-kernel
 updates, reboot when required, and pass the host verifier before Maverick
 starts. Expiry, a failed baseline or verifier, unexplained configuration drift,
 suspected compromise or credential exposure, or degraded routing or reputation
-requires retirement and a new owner decision before replacement.
+requires retirement. A replacement requires a separate recorded Codex go/no-go
+decision with an exact target, need, lifetime, cost cap, and cleanup plan.
 
 This authorization changes only the lifetime and diagnostic role of that one
 replacement. It does not rewrite the completed first pilot's seven-day
@@ -837,19 +867,20 @@ boundary, authorize Codex to create the manually selected server, authorize a
 second concurrent origin, a different provider or specification, paid add-ons,
 unrelated users or networks, automatic renewal, production use, or a Stable
 claim. The last exact total-spend ceiling remains `US$6`; stop before retention
-could exceed it and obtain a new owner decision instead. The owner determined
-that this same freshly provisioned clean replacement, its from-scratch
-deployment, basic browsing, and applicable diagnostic checks satisfy the prior
+could exceed it and record a new bounded Codex go/no-go decision instead. The
+owner determined that this same freshly provisioned clean replacement, its
+from-scratch deployment, basic browsing, and applicable diagnostic checks satisfy the prior
 Beta-entry requirement. Before Stable, fresh-origin validation must be repeated
 for the Stable candidate. That requirement does not grant authority to create
 a server.
 
 The replacement's current origin certificate is deliberately short-lived and
 does not authorize automatic renewal. If its validity cannot cover a later
-authorized session, stop and obtain a separate owner decision before renewing
-or replacing it. The replacement has passed the ordinary-browsing baseline and
-is accepted as the fixed reference origin only within the recorded lifetime,
-cost, certificate, person, network, and stop boundaries.
+authorized session, stop and record a separate Codex go/no-go decision with the
+exact hostname, validity, access, cost, and revocation or expiry plan before
+renewing or replacing it. The replacement has passed the ordinary-browsing
+baseline and is accepted as the fixed reference origin only within the recorded
+lifetime, cost, certificate, person, network, and stop boundaries.
 
 For the Alpha.6 reference trial, the owner also authorized and completed an
 application-local comparison between a clean Firefox profile and one temporary
@@ -878,4 +909,6 @@ communicated manual path.
 Beyond that one manual replacement, its approved 30-day reference trial, and
 the completed browser-local comparison above, any new live-field run, remote
 resource, provider change, spending, production or Stable claim, or native-ECH
-implementation requires a new owner decision.
+implementation is a new task. It requires a separate recorded Codex go/no-go
+decision under the standing delegation, after its exact objective prerequisites,
+scope, target, privacy boundary, cost/lifetime cap, and cleanup are checkable.

@@ -2205,6 +2205,200 @@ fn duration_millis_u64(duration: Duration) -> u64 {
 mod tests {
     use super::*;
 
+    struct BlockedExchangeState {
+        exchange_entered: Notify,
+        send_release: Notify,
+        inbound_ready: Notify,
+        inbound_injected: AtomicBool,
+        exchange_calls: AtomicUsize,
+        close_calls: AtomicUsize,
+    }
+
+    impl BlockedExchangeState {
+        fn new() -> Self {
+            Self {
+                exchange_entered: Notify::new(),
+                send_release: Notify::new(),
+                inbound_ready: Notify::new(),
+                inbound_injected: AtomicBool::new(false),
+                exchange_calls: AtomicUsize::new(0),
+                close_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn inject_inbound(&self) {
+            self.inbound_injected.store(true, Ordering::SeqCst);
+            self.inbound_ready.notify_one();
+        }
+    }
+
+    struct BlockedExchangeFlow {
+        state: Arc<BlockedExchangeState>,
+        response: Datagram,
+    }
+
+    impl crate::DatagramFlow for BlockedExchangeFlow {
+        fn exchange<'a>(
+            &'a mut self,
+            _datagram: Datagram,
+            _cancel: CancellationToken,
+        ) -> crate::BoxFuture<'a, Result<Datagram, crate::FlowError>> {
+            let state = Arc::clone(&self.state);
+            let response = self.response.clone();
+            Box::pin(async move {
+                state.exchange_calls.fetch_add(1, Ordering::SeqCst);
+                state.exchange_entered.notify_one();
+                state.send_release.notified().await;
+                state.inbound_ready.notified().await;
+                if !state.inbound_injected.load(Ordering::SeqCst) {
+                    return Err(crate::FlowError::new(FlowErrorKind::DatagramExchange));
+                }
+                Ok(response)
+            })
+        }
+
+        fn close<'a>(
+            &'a mut self,
+        ) -> crate::BoxFuture<'a, Result<(), crate::FlowError>> {
+            self.state.close_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct BlockedExchangeConnector {
+        state: Arc<BlockedExchangeState>,
+        response: Datagram,
+    }
+
+    impl FlowConnector for BlockedExchangeConnector {
+        fn snapshot(&self) -> FlowConnectorSnapshot {
+            FlowConnectorSnapshot::default()
+        }
+
+        fn open_tcp<'a>(
+            &'a self,
+            _target: SocketAddr,
+            _cancel: CancellationToken,
+        ) -> crate::BoxFuture<'a, Result<BoxTcpFlow, crate::FlowError>> {
+            Box::pin(async {
+                Err(crate::FlowError::new(FlowErrorKind::RemoteConnection))
+            })
+        }
+
+        fn exchange_dns<'a>(
+            &'a self,
+            _query: Bytes,
+            _cancel: CancellationToken,
+        ) -> crate::BoxFuture<'a, Result<Bytes, crate::FlowError>> {
+            Box::pin(async { Err(crate::FlowError::new(FlowErrorKind::DnsExchange)) })
+        }
+
+        fn open_udp<'a>(
+            &'a self,
+            _cancel: CancellationToken,
+        ) -> crate::BoxFuture<
+            'a,
+            Result<Box<dyn crate::DatagramFlow>, crate::FlowError>,
+        > {
+            let flow = BlockedExchangeFlow {
+                state: Arc::clone(&self.state),
+                response: self.response.clone(),
+            };
+            Box::pin(async move { Ok(Box::new(flow) as Box<dyn crate::DatagramFlow>) })
+        }
+    }
+
+    #[tokio::test]
+    async fn old_udp_worker_delivers_inbound_before_blocked_exchange_is_released() {
+        let app = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 40_001);
+        let target = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 443);
+        let key = UdpAssociationKey { app, target };
+        let outbound = Bytes::from_static(b"A");
+        let inbound = Bytes::from_static(b"B");
+        let state = Arc::new(BlockedExchangeState::new());
+        let connector: Arc<dyn FlowConnector> = Arc::new(BlockedExchangeConnector {
+            state: Arc::clone(&state),
+            response: Datagram::new(target, inbound.clone()),
+        });
+        let counters = Arc::new(Counters::new());
+        let cancel = CancellationToken::new();
+        let (commands_tx, commands_rx) = mpsc::channel(1);
+        let (events_tx, mut events_rx) = mpsc::channel(2);
+        commands_tx
+            .send(UdpCommand {
+                endpoint: target,
+                payload: Tracked::new(outbound, Arc::clone(&counters)),
+            })
+            .await
+            .unwrap();
+
+        let worker = tokio::spawn(udp_worker(UdpWorkerContext {
+            key,
+            connector,
+            commands: commands_rx,
+            events: events_tx,
+            cancel,
+            connect_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
+            counters,
+            max_payload_bytes: 64,
+        }));
+
+        state.exchange_entered.notified().await;
+        assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 1);
+        state.inject_inbound();
+        let delivered_before_release = matches!(
+            events_rx.try_recv(),
+            Ok(EngineEvent::UdpResponse { .. })
+        );
+
+        state.send_release.notify_one();
+        match timeout(Duration::from_secs(1), events_rx.recv())
+            .await
+            .expect("old UDP worker did not finish exchange cleanup")
+            .expect("old UDP worker closed its event channel")
+        {
+            EngineEvent::UdpResponse {
+                key: event_key,
+                endpoint,
+                payload,
+                accepted,
+            } => {
+                assert_eq!(event_key, key);
+                assert_eq!(endpoint, target);
+                assert_eq!(payload.as_slice(), inbound.as_ref());
+                let _ = accepted.send(());
+            }
+            _ => panic!("unexpected old UDP worker event"),
+        }
+        drop(commands_tx);
+        match timeout(Duration::from_secs(1), events_rx.recv())
+            .await
+            .expect("old UDP worker did not finish terminal cleanup")
+            .expect("old UDP worker closed before terminal event")
+        {
+            EngineEvent::UdpDone {
+                key: event_key,
+                failed,
+            } => {
+                assert_eq!(event_key, key);
+                assert!(!failed);
+            }
+            _ => panic!("unexpected old UDP worker terminal event"),
+        }
+        timeout(Duration::from_secs(1), worker)
+            .await
+            .expect("old UDP worker task leaked")
+            .expect("old UDP worker task panicked");
+        assert_eq!(state.exchange_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(state.close_calls.load(Ordering::SeqCst), 1);
+
+        assert!(
+            delivered_before_release,
+            "old UDP worker cannot deliver inbound B while exchange(A) is blocked"
+        );
+    }
+
     #[test]
     fn default_configuration_is_bounded() {
         let config = PacketRuntimeConfig::default();

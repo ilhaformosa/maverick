@@ -180,10 +180,12 @@ censorship resistance, production readiness, or browser identity.
   in a separate reversible slice. This supersedes the conditional B-003
   choice in the convergence ADR without making quiche usable or ready. B-001
   still must qualify quiche against the neutral Chrome reference and the fixed
-  objective matrix, and B-002 remains **RED**: the preserved fork has no named
-  patch owners, upstream routes, mechanical rebase proof, frozen security-
-  update SLA, or independent delta review. No private fork or delta may be
-  restored until the complete fork budget passes. A pure-upstream quiche
+  objective matrix, and B-002 remains **RED**: the preserved fork has no
+  passing patch dispositions, required upstream routes or still-valid written
+  cannot-upstream exceptions, clean rebase/replay proof, demonstrated
+  security-update SLA response, or independent delta
+  review. No private fork or delta may be restored until the complete fork
+  budget passes. A pure-upstream quiche
   candidate may omit all three old private patches only after an evidence-backed
   `DROP / not required` disposition and dependency, security, and SBOM gates
   pass. H3 product runtime and native Datagram claims remain blocked in either
@@ -193,7 +195,8 @@ censorship resistance, production readiness, or browser identity.
   are stopped and must not be committed. This decision does not change v1.2
   Direct H2, does not place H3 in Auto, and does not count reliable H3 DATA
   framing as native UDP.
-- QRET-1 config-v1 retirement boundary (local candidate, 2026-08-12):
+- QRET-1 is merged current truth at `main` commit
+  `be5f3ae532037468edbb1d619731a223284164c5` (2026-08-13):
   `advanced.experimental_h3=true` fails closed with the fixed root error
   `advanced.experimental_h3=true is retired for config version 1` before DNS,
   bind, file or referenced secret-store reads, local I/O, fallback, or cooldown
@@ -207,6 +210,32 @@ censorship resistance, production readiness, or browser identity.
   concurrency semantics; the one Quinn reverse-proxy available-body detail
   remains an immutable-archive semantic oracle until it can be re-expressed
   backend-neutrally.
+- B-002-S1 document-only policy contract: it assigns explicit
+  protocol-safety, privacy-logging, and dependency-security responsibilities;
+  freezes patch-specific `DROP`/`RETAIN`, upstream/rebase, and fail-closed H3
+  rules; and records the S1 point-in-time observation that an official quiche
+  0.29.3 archive matched its public checksum, upstream revision, and license
+  hash. The replay
+  contract now requires reviewed fixed task-specific verifier constants, a
+  repository-external `0700` temporary workspace, byte-only non-executing
+  reconstruction, and separate
+  historical patched-source reconstruction, separate curated-delta byte
+  accounting, and selected-candidate runs followed by exact-hash
+  qualification. Unclassified advisories fail closed as Critical, and ordinary
+  releases require a decision within 14 calendar days. Any policy disable event
+  — including unknown/Critical/High risk, an ordinary-release decision miss,
+  Medium/Low overdue point, exception expiry, or any required-gate invalidation
+  — rejects new H3 work, invalidates idle pools and resumption, and terminates
+  affected existing H3 carriers without sending or replaying application data
+  to H2. This is **PARTIAL / RED** policy evidence
+  only. No patch was applied or resolved, no upstream contact or independent
+  delta review occurred, and the official package's Boring 4.x requirement is
+  still incompatible with the required proof of one Boring 5.x closure for the
+  real H3 product feature, dependency/link graph, target SBOM, and final
+  artifact on both supported release targets. A shared-Boring risk must open a
+  separate Train A exact-candidate H2 impact gate; this slice neither changes H2
+  nor exempts it. B-002, quiche adoption, H3 runtime, security, supply-chain,
+  product, release, and real-network gates remain RED.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by
@@ -257,10 +286,9 @@ censorship resistance, production readiness, or browser identity.
   Latest. Immutable `v1.2.0-beta.4` is the exact rollback partner. The full
   contract and still-closed gates are recorded in
   `docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`. This policy does not make an RC or
-  Stable candidate exist. The standing delegation authorizes only the next
-  bounded RLC-001b repository tooling slice at this point; it does not authorize
-  a tag, publication, a field run, a server, spending, a paid audit, or a Stable
-  claim.
+  Stable candidate exist. RLC-001b is merged as bounded repository tooling; it
+  does not authorize a tag, publication, a field run, a server, spending, a paid
+  audit, or a Stable claim.
 - RLC-001 is merged current truth at `main` commit
   `9423bff57818da199c9b1141edfeb89e03c801a1`. The release-tag verifier accepts
   only canonical positive `v1.2.0-beta.N` and `v1.2.0-rc.N` annotated tags while
@@ -269,22 +297,22 @@ censorship resistance, production readiness, or browser identity.
   the stale pre-merge candidate wording and completes only the bounded
   tag-verifier slice; it did not create or authorize an RC tag, artifact, or
   publication.
-- RLC-001b is the next smallest local candidate. Its deterministic RED used an
-  otherwise-valid `1.2.0-rc.1` archive whose filename, source metadata, version
-  metadata, inner and outer digests, target, architecture, and native binary
-  output agreed, and the former Beta-only artifact-version gate rejected it.
-  The local candidate now accepts only canonical positive `1.2.0-beta.N` and
-  `1.2.0-rc.N` artifact versions, keeps Stable, Alpha, foreign version lines,
-  zero, and leading-zero sequences fail-closed, and statically locks the
-  unchanged publication workflow's prerelease/non-Latest classification and
-  final tag, six-file, checksum, digest, and release-note rechecks before its
-  sole release-create command. Static verification and current-host native
-  verification pass for the RC fixture. This remains local candidate evidence:
-  RLC-001b still requires independent exact-hash review, privacy review,
-  exact-head public checks, and merge. No exact-RC package version, release
-  note, archive, SBOM, tag, or publication input exists; candidate preparation,
-  security, supply-chain, compatibility, Beta.4 rollback, field, and
-  publication gates remain RED.
+- RLC-001b is merged current truth at `main` commit
+  `7632d86361a7ddc74884d224e6ce5c6706a2ee78` (2026-08-12). Its deterministic
+  RED used an otherwise-valid `1.2.0-rc.1` archive whose filename, source
+  metadata, version metadata, inner and outer digests, target, architecture,
+  and native binary output agreed, and the former Beta-only artifact-version
+  gate rejected it. The merged verifier accepts only canonical positive
+  `1.2.0-beta.N` and `1.2.0-rc.N` artifact versions and keeps Stable, Alpha,
+  foreign version lines, zero, and leading-zero sequences fail-closed. It
+  statically locks the unchanged publication workflow's prerelease/non-Latest
+  classification and final tag, six-file, checksum, digest, and release-note
+  rechecks before its sole release-create command. Static and current-host
+  native RC-fixture verification, independent exact-hash and privacy review,
+  exact-head public checks, and merge passed for this bounded tool only. No
+  exact-RC package version, release note, archive, SBOM, tag, or publication
+  input exists; candidate preparation, security, supply-chain, compatibility,
+  Beta.4 rollback, field, artifact, and publication gates remain RED.
 - Stable, mature, production-ready, anonymity, broad censorship-resistance, and
   exact browser-equivalence claims: not made. Entering Beta does not imply any
   of those claims.
@@ -781,8 +809,9 @@ option when one exists; otherwise it must choose the smallest safe,
 failure-driven option and record the decision and reason. A further owner
 selection or approval is not required. This standing delegation covers placing
 the remaining playbook work into the `ROADMAP.md` queue and its ordinary local,
-public-repository, review, and required public-CI workflow. RLC-001 is merged;
-RLC-001b is therefore authorized as the next bounded v1.2 tooling slice.
+public-repository, review, and required public-CI workflow. RLC-001 and RLC-001b
+are merged; future v1.2 work follows the current `ROADMAP.md` and its exact task
+gates rather than inheriting authorization from either tool slice.
 
 The delegation is decision authority, not evidence. It does not turn a RED or
 UNKNOWN gate green, inherit evidence from another commit or route, waive

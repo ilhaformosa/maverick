@@ -75,8 +75,12 @@ indistinguishability.
 - The server owns TLS/H2 acceptance, authentication gates, fallback, egress
   policy, and target relay.
 - The CLI owns operator commands and the local product smoke.
-- Optional H3, ECH, TUN, experimental cryptography, GUI, and governance tracks
-  are outside the first user pilot.
+- Config-v1 Quinn H3 is retired from the product. Its loopback path remains
+  only as a temporary test oracle until the later Quinn deletion slice. Any
+  future product H3 is a separately qualified quiche implementation reached
+  through complete, runnable, and migratable Product Config v2.
+- ECH, TUN, experimental cryptography, GUI, and governance tracks are outside
+  the first user pilot.
 
 ## Local Verification
 

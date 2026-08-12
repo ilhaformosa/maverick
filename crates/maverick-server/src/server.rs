@@ -234,6 +234,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 }
 
 fn validate_runtime_features(config: &ServerConfig) -> Result<()> {
+    config.validate().map_err(anyhow::Error::from)?;
     #[cfg(not(feature = "h3"))]
     if config.advanced.experimental_h3 {
         bail!("advanced.experimental_h3 requires the maverick-server h3 feature");
@@ -3247,4 +3248,73 @@ async fn handle_metrics_connection(
             .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use maverick_core::config::{
+        FallbackConfig, LogConfig, MaverickServerConfig, Mode, ServerAdvancedConfig,
+        ServerAuthConfig, TlsConfig, UserConfig,
+    };
+
+    fn retired_h3_config(listen: SocketAddr) -> ServerConfig {
+        ServerConfig {
+            version: 1,
+            listen,
+            tls: TlsConfig {
+                cert_path: "missing-retired-h3-cert.pem".into(),
+                key_path: "missing-retired-h3-key.pem".into(),
+            },
+            maverick: MaverickServerConfig {
+                tunnel_path: "/assets/upload".into(),
+                mode_default: Mode::Auto,
+                replay_window_secs: 120,
+                replay_cache_entries_per_credential: 16,
+                replay_cache_max_credentials_per_shard: 16,
+                max_concurrent_flows_per_user: 128,
+            },
+            users: vec![UserConfig {
+                id: "u_server".into(),
+                name: None,
+                secret: SecretString::generate(),
+                enabled: true,
+                rate_limit: None,
+                max_concurrent_flows: None,
+                rotation: None,
+            }],
+            fallback: FallbackConfig::Static {
+                static_dir: "missing-retired-h3-static".into(),
+                index: "index.html".into(),
+            },
+            auth: ServerAuthConfig::default(),
+            dns: None,
+            metrics: None,
+            log: LogConfig::default(),
+            advanced: ServerAdvancedConfig {
+                experimental_h3: true,
+                ..ServerAdvancedConfig::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn server_start_rejects_retired_h3_before_bind_or_file_io() -> Result<()> {
+        let occupied = TcpListener::bind("127.0.0.1:0").await?;
+        let config = retired_h3_config(occupied.local_addr()?);
+
+        let error = match start_server(config).await {
+            Ok(handle) => {
+                handle.shutdown().await?;
+                anyhow::bail!("retired config-v1 H3 unexpectedly started")
+            }
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
+        Ok(())
+    }
 }

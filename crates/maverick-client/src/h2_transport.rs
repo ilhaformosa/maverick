@@ -57,6 +57,7 @@ pub async fn connect(config: &ClientConfig) -> Result<H2TunnelRequestSender> {
 }
 
 pub(crate) async fn connect_with_status(config: &ClientConfig) -> Result<H2Connection> {
+    crate::reject_retired_v1_h3(config)?;
     timeout(
         Duration::from_millis(config.advanced.connect_timeout_ms),
         connect_inner(config),
@@ -349,6 +350,7 @@ where
 }
 
 pub(crate) fn rustls_client_config(config: &ClientConfig) -> Result<rustls::ClientConfig> {
+    crate::reject_retired_v1_h3(config)?;
     let mut roots = RootCertStore::empty();
     if let Some(path) = &config.server.ca_cert {
         let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
@@ -464,11 +466,46 @@ mod ech_api_tests {
 #[cfg(test)]
 mod tcp_socket_tests {
     use super::{
-        enable_outer_tcp_nodelay, observed_outer_tls_group_from_rustls,
-        observed_outer_tls_version_from_rustls, ObservedOuterTlsGroup, ObservedOuterTlsVersion,
+        connect, enable_outer_tcp_nodelay, observed_outer_tls_group_from_rustls,
+        observed_outer_tls_version_from_rustls, rustls_client_config, ObservedOuterTlsGroup,
+        ObservedOuterTlsVersion,
     };
     use anyhow::Result;
+    use maverick_core::config::{
+        ClientAdvancedConfig, ClientServerConfig, LocalConfig, LogConfig, Socks5Config,
+    };
+    use maverick_core::{ClientConfig, Mode, SecretString};
     use tokio::net::{TcpListener, TcpStream};
+
+    fn retired_h3_config() -> ClientConfig {
+        let advanced = ClientAdvancedConfig {
+            experimental_h3: true,
+            ..Default::default()
+        };
+        ClientConfig {
+            version: 1,
+            mode: Mode::Auto,
+            local: LocalConfig {
+                socks5: Socks5Config {
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                },
+                dns: None,
+                http_connect: None,
+            },
+            server: ClientServerConfig {
+                address: "127.0.0.1:1".into(),
+                server_name: "localhost".into(),
+                tunnel_path: "/assets/upload".into(),
+                credential_id: "u_test".into(),
+                secret: SecretString::generate(),
+                ca_cert: Some("missing-retired-h3-ca.pem".into()),
+                cert_pin: None,
+            },
+            auth: Default::default(),
+            log: LogConfig::default(),
+            advanced,
+        }
+    }
 
     #[test]
     fn rustls_protocol_version_maps_to_fixed_observed_outer_tls_class() {
@@ -587,5 +624,22 @@ mod tcp_socket_tests {
 
         assert!(client.nodelay()?);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_h2_entry_rejects_retired_h3_before_tcp_or_ca_file_io() {
+        let config = retired_h3_config();
+        let fixed =
+            "configuration error: advanced.experimental_h3=true is retired for config version 1";
+
+        assert_eq!(
+            rustls_client_config(&config).unwrap_err().to_string(),
+            fixed
+        );
+        let error = match connect(&config).await {
+            Ok(_) => panic!("H2 entry accepted a retired H3 config"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), fixed);
     }
 }

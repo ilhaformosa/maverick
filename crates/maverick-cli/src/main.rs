@@ -2323,6 +2323,12 @@ impl ProfileUri {
             "profile path must start with '/'"
         );
         let mode = parse_mode(&required_profile_query(&url, "mode")?)?;
+        let experimental_h3 = parse_bool_query(&url, "experimental_h3")?.unwrap_or(false);
+        if experimental_h3 {
+            return Err(anyhow::Error::new(maverick_core::Error::Config(
+                "advanced.experimental_h3=true is retired for config version 1".into(),
+            )));
+        }
         let credential_id = optional_profile_query(&url, "credential_id")?;
         if credential_id.as_deref() == Some("") {
             anyhow::bail!("credential_id must not be empty");
@@ -2334,7 +2340,6 @@ impl ProfileUri {
         if let Some(pin) = &cert_pin {
             validate_profile_cert_pin(pin)?;
         }
-        let experimental_h3 = parse_bool_query(&url, "experimental_h3")?.unwrap_or(false);
         let experimental_ech = parse_bool_query(&url, "experimental_ech")?.unwrap_or(false);
         let experimental_tun = parse_bool_query(&url, "experimental_tun")?.unwrap_or(false);
         anyhow::ensure!(
@@ -4707,7 +4712,7 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
         let secret = SecretString::generate();
         let cert_pin = format!("sha256/{}", URL_SAFE_NO_PAD.encode([7_u8; 32]));
         let uri = format!(
-            "maverick://profile/v1?experimental_tun=true&cert_pin={cert_pin}&secret={}&mode=private&path=%2Fassets%2Fupload&experimental_ech=false&credential_id=u_example&name=example.com&experimental_h3=true&server=example.com%3A443",
+            "maverick://profile/v1?experimental_tun=true&cert_pin={cert_pin}&secret={}&mode=private&path=%2Fassets%2Fupload&experimental_ech=false&credential_id=u_example&name=example.com&experimental_h3=false&server=example.com%3A443",
             secret.expose_secret()
         );
 
@@ -4723,9 +4728,21 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
             Some(secret.expose_secret())
         );
         assert_eq!(profile.cert_pin.as_deref(), Some(cert_pin.as_str()));
-        assert!(profile.experimental_h3);
+        assert!(!profile.experimental_h3);
         assert!(!profile.experimental_ech);
         assert!(profile.experimental_tun);
+    }
+
+    #[test]
+    fn profile_uri_rejects_retired_h3_before_secret_materialization() {
+        let uri = "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&experimental_h3=true&credential_id=u_example&secret=mv1_short";
+
+        let error = ProfileUri::parse(uri).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
     }
 
     #[test]
@@ -4781,7 +4798,7 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
     fn profile_uri_materializes_valid_client_config() {
         let secret = SecretString::generate();
         let uri = format!(
-            "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret={}&experimental_h3=true&experimental_tun=true",
+            "maverick://profile/v1?server=example.com%3A443&name=example.com&path=%2Fassets%2Fupload&mode=auto&credential_id=u_example&secret={}&experimental_h3=false&experimental_tun=true",
             secret.expose_secret()
         );
         let cfg = ProfileUri::parse(&uri).unwrap().to_client_config().unwrap();
@@ -4789,7 +4806,7 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
         assert_eq!(cfg.local.socks5.listen.to_string(), "127.0.0.1:1080");
         assert_eq!(cfg.server.credential_id, "u_example");
         assert_eq!(cfg.server.secret.expose_secret(), secret.expose_secret());
-        assert!(cfg.advanced.experimental_h3);
+        assert!(!cfg.advanced.experimental_h3);
         assert!(cfg.advanced.experimental_tun);
     }
 

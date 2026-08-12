@@ -7,7 +7,7 @@ use bytes::Bytes;
 use http::Request;
 use maverick_core::ClientConfig;
 use quinn::crypto::rustls::QuicClientConfig;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 
 pub type H3ClientRequestStream = h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 
@@ -36,14 +36,13 @@ impl Drop for H3RequestSender {
 }
 
 pub async fn connect(config: &ClientConfig) -> Result<H3RequestSender> {
-    timeout(
-        Duration::from_millis(config.advanced.connect_timeout_ms),
-        connect_inner(config),
-    )
-    .await
-    .context("Maverick H3 server connection timed out")?
+    crate::reject_retired_v1_h3(config)?;
+    Err(anyhow::Error::new(maverick_core::Error::Config(
+        "legacy Quinn H3 transport is retired".into(),
+    )))
 }
 
+#[allow(dead_code)] // Retained only until the later Quinn deletion slice.
 async fn connect_inner(config: &ClientConfig) -> Result<H3RequestSender> {
     let server_addr = resolve_server_addr(&config.server.address).await?;
     let mut tls_config = crate::h2_transport::rustls_client_config(config)?;
@@ -80,6 +79,7 @@ async fn connect_inner(config: &ClientConfig) -> Result<H3RequestSender> {
     })
 }
 
+#[allow(dead_code)] // Retained only until the later Quinn deletion slice.
 async fn resolve_server_addr(address: &str) -> Result<SocketAddr> {
     let mut addrs = tokio::net::lookup_host(address)
         .await
@@ -89,6 +89,7 @@ async fn resolve_server_addr(address: &str) -> Result<SocketAddr> {
         .with_context(|| format!("no addresses resolved for {address}"))
 }
 
+#[allow(dead_code)] // Retained only until the later Quinn deletion slice.
 fn bind_addr_for(remote: SocketAddr) -> SocketAddr {
     match remote.ip() {
         IpAddr::V4(addr) if addr.is_loopback() => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -100,8 +101,67 @@ fn bind_addr_for(remote: SocketAddr) -> SocketAddr {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use maverick_core::config::{
+        ClientAdvancedConfig, ClientServerConfig, LocalConfig, LogConfig, Socks5Config,
+    };
+    use maverick_core::{Mode, SecretString};
+
+    fn test_config() -> ClientConfig {
+        ClientConfig {
+            version: 1,
+            mode: Mode::Auto,
+            local: LocalConfig {
+                socks5: Socks5Config {
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                },
+                dns: None,
+                http_connect: None,
+            },
+            server: ClientServerConfig {
+                address: "127.0.0.1".into(),
+                server_name: "localhost".into(),
+                tunnel_path: "/assets/upload".into(),
+                credential_id: "u_test".into(),
+                secret: SecretString::generate(),
+                ca_cert: None,
+                cert_pin: None,
+            },
+            auth: Default::default(),
+            log: LogConfig::default(),
+            advanced: ClientAdvancedConfig::default(),
+        }
+    }
+
     #[test]
     fn h3_feature_stub_is_compiled() {
         assert!(cfg!(feature = "h3"));
+    }
+
+    #[tokio::test]
+    async fn direct_h3_connect_is_retired_even_when_config_flag_is_false() {
+        let error = match connect(&test_config()).await {
+            Ok(_) => panic!("retired direct H3 entry unexpectedly connected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: legacy Quinn H3 transport is retired"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_h3_connect_uses_uniform_true_config_tombstone() {
+        let mut config = test_config();
+        config.advanced.experimental_h3 = true;
+        let error = match connect(&config).await {
+            Ok(_) => panic!("retired direct H3 entry unexpectedly connected"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
     }
 }

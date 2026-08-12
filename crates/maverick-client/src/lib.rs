@@ -33,6 +33,19 @@ use connection_manager::{ClientTunnelPool, H2ConnectionPoolSnapshot, H2PoolShutd
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
+pub(crate) fn retired_v1_h3_error() -> anyhow::Error {
+    anyhow::Error::new(maverick_core::Error::Config(
+        "advanced.experimental_h3=true is retired for config version 1".into(),
+    ))
+}
+
+pub(crate) fn reject_retired_v1_h3(config: &ClientConfig) -> Result<()> {
+    if config.version == 1 && config.advanced.experimental_h3 {
+        return Err(retired_v1_h3_error());
+    }
+    Ok(())
+}
+
 fn h2_pool_shutdown_summary(snapshot: H2PoolShutdownSnapshot) -> String {
     let pool = snapshot.pool;
     format!(
@@ -611,6 +624,21 @@ mod build_gate_tests {
         let err = start_error(config).await;
 
         assert!(err.to_string().contains("local.socks5.listen"));
+    }
+
+    #[tokio::test]
+    async fn retired_v1_h3_is_rejected_before_socks_bind() {
+        let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = test_client_config();
+        config.advanced.experimental_h3 = true;
+        config.local.socks5.listen = occupied.local_addr().unwrap();
+
+        let err = start_error(config).await;
+
+        assert_eq!(
+            err.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
     }
 
     #[tokio::test]

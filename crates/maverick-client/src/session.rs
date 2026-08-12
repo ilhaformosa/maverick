@@ -20,6 +20,7 @@ pub async fn handle_socks_connection(
     config: Arc<ClientConfig>,
     flow_permit: OwnedSemaphorePermit,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(&config)?;
     let tunnel_pool = Arc::new(ClientTunnelPool::new(config));
     let result =
         handle_socks_connection_with_pool(local, Arc::clone(&tunnel_pool), flow_permit).await;
@@ -32,6 +33,7 @@ pub(crate) async fn handle_socks_connection_with_pool(
     tunnel_pool: Arc<ClientTunnelPool>,
     flow_permit: OwnedSemaphorePermit,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(tunnel_pool.config())?;
     let read_timeout = Duration::from_millis(tunnel_pool.config().advanced.connect_timeout_ms);
     let request = match timeout(read_timeout, socks5::read_request(&mut local)).await {
         Ok(Ok(req)) => req,
@@ -81,6 +83,7 @@ pub(crate) async fn handle_local_connect(
     initial_data: Bytes,
     _flow_permit: OwnedSemaphorePermit,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(tunnel_pool.config())?;
     let mut tunnel = match open_tcp_tunnel(&tunnel_pool, target, port).await {
         Ok(tunnel) => tunnel,
         Err(err) => {
@@ -113,6 +116,7 @@ pub(crate) async fn open_tcp_tunnel(
     target: maverick_core::frame::TargetAddr,
     port: u16,
 ) -> Result<ClientTunnel> {
+    crate::reject_retired_v1_h3(tunnel_pool.config())?;
     let mut tunnel = tunnel_pool.open().await?;
     let open = OpenTcpPayload::new(target, port);
     tunnel
@@ -314,7 +318,40 @@ fn _error_frame(code: ErrorCode) -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maverick_core::config::{
+        ClientAdvancedConfig, ClientServerConfig, LocalConfig, LogConfig, Socks5Config,
+    };
+    use maverick_core::{Mode, SecretString};
     use tokio::net::TcpListener;
+
+    fn retired_h3_config() -> ClientConfig {
+        ClientConfig {
+            version: 1,
+            mode: Mode::Auto,
+            local: LocalConfig {
+                socks5: Socks5Config {
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                },
+                dns: None,
+                http_connect: None,
+            },
+            server: ClientServerConfig {
+                address: "127.0.0.1:1".into(),
+                server_name: "localhost".into(),
+                tunnel_path: "/assets/upload".into(),
+                credential_id: "u_socks".into(),
+                secret: SecretString::generate(),
+                ca_cert: None,
+                cert_pin: None,
+            },
+            auth: Default::default(),
+            log: LogConfig::default(),
+            advanced: ClientAdvancedConfig {
+                experimental_h3: true,
+                ..ClientAdvancedConfig::default()
+            },
+        }
+    }
 
     async fn connected_local_write_half() -> Result<(tokio::net::tcp::OwnedWriteHalf, TcpStream)> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -336,6 +373,28 @@ mod tests {
         let mut buf = [0u8; 5];
         peer.read_exact(&mut buf).await?;
         assert_eq!(&buf, b"hello");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn public_socks_helper_rejects_retired_h3_before_local_eof_read() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let peer = TcpStream::connect(addr).await?;
+        let (local, _) = listener.accept().await?;
+        drop(peer);
+        let permit = Arc::new(tokio::sync::Semaphore::new(1))
+            .acquire_owned()
+            .await?;
+
+        let error = handle_socks_connection(local, Arc::new(retired_h3_config()), permit)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         Ok(())
     }
 

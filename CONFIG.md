@@ -237,7 +237,12 @@ value, or raw input fragment.
 Config v2 never mixes with legacy `mode`. T012a does not design a config,
 stored-profile, protocol, frame, or authentication schema bump.
 
-Existing v1 behavior remains unchanged:
+Config-v1 schema and wire compatibility remain unchanged, with one explicit
+runtime retirement: `advanced.experimental_h3=true` is no longer runnable.
+Its fixed root error is
+`advanced.experimental_h3=true is retired for config version 1` (full display:
+`configuration error: advanced.experimental_h3=true is retired for config version 1`).
+Default/explicit `false`, H2 behavior, and H2 bytes are unchanged:
 
 - `Mode` keeps its Serde meanings and wire IDs: `auto` is `0`, `stable` is `1`,
   and `private` is `2`;
@@ -302,16 +307,20 @@ traffic_shaping:
   policy: disabled
 ```
 
-The projection must write `transport.strategy: h2`, not `auto`, so a future
-expansion of Auto to H3 cannot change the preserved v1 behavior. It must not
+The projection must write `transport.strategy: h2`, not `auto`, so any later
+change to Auto eligibility cannot change the preserved v1 behavior. Under the
+current direction Auto remains H2-only. It must not
 write the legacy Mode into this policy document. Existing auth v1 or v2
 selection remains a separate compatibility fact and is not changed by the
 projection.
 
-Stable and Private Mode, complete server migration, H3, WebSocket, mixed
+Stable and Private Mode, complete server migration, WebSocket, mixed
 TrustRoute, enabled shaping, and peer policy confirmation remain distinct typed
 migration blockers. T010b must not collapse them into one generic readiness
 result; this docs-only contract does not freeze their public Rust names.
+`H3Configured` remains a compatibility-only public blocker shape for later
+work. Current config-v1 H3 fails source validation first and projects as
+`InvalidSourceConfig`, so that blocker is not a runnable current path.
 
 The only positive readiness label allowed by this contract is **client policy
 projection ready**. It does not mean that a complete or runnable config-v2
@@ -381,8 +390,9 @@ conclusion.
 only public T010b entry point. It returns a typed policy-only projection or a
 typed, value-free blocker. It first applies canonical config-v1 client
 validation, then checks blockers in this fixed order: legacy Mode, configured
-H3, configured WebSocket, any TLS-terminating front, and enabled traffic
-shaping.
+WebSocket, any TLS-terminating front, and enabled traffic shaping. Raw
+config-v1 H3 fails the first validation step with the fixed retirement error;
+the public `H3Configured` variant remains only for API compatibility.
 
 The successful result exposes only the five-axis `Policy`, the retained legacy
 Mode, and whether a peer confirmed that Mode. For this first subset the retained
@@ -514,6 +524,10 @@ serializer, a caller that truncates a file first, or a downstream writer failure
 while serializing a legal profile can still leave partial or empty output.
 Maverick does not currently provide an atomic stored-profile file API.
 
+The schema-1 `experimental_h3` metadata field and its Serde shape remain
+readable and writable. When it is `true`, `to_client_config` returns the fixed
+config-v1 retirement error before reading any referenced profile secret.
+
 The direct generic Serde behavior of the public nested SDK and core types is a
 separate compatibility surface and is not the stored-profile reader. A future
 stored-profile field requires an explicit stored-schema and reader
@@ -540,6 +554,9 @@ supported extension mechanism, and the old reader did not preserve ignored
 data. Legal v1 fields and field order, canonical serialization order,
 materialization defaults, the secret-omission default, QR and clipboard safety
 rules, the file-permission rule, and the overwrite rule remain unchanged.
+`experimental_h3=false` retains its existing meaning. A `true` value returns
+the fixed config-v1 retirement error before credential, secret, certificate, or
+file materialization. Keeping the URI field does not make H3 runnable.
 
 The outer envelope is exactly the existing `maverick://profile/v1?...` shape.
 A v1 URI carrying a username, password, authority port, or fragment is rejected;
@@ -760,11 +777,10 @@ On a separately prepared Linux server, the server-sent half of all three
 modes' normal H2/TCP carrier uses the host's configured `fq` or `fq_codel` plus
 stock BBR (commonly called BBRv1). Both qdiscs are equally supported, and an
 existing approved selection is preserved. This is an operating-system policy,
-not a YAML mode setting. `stable` always keeps its outer carrier on H2/TCP. If
-experimental H3/QUIC is explicitly enabled in `auto` or `private`, that UDP
-carrier uses its userspace congestion controller rather than Linux TCP BBR; H2
-fallback and the server-sent half of server-to-target TCP connections still use
-the host TCP policy.
+not a YAML mode setting. Config v1 has no H3 host-policy exception:
+`advanced.experimental_h3=true` fails before a QUIC/UDP socket is opened.
+H2/TCP and the server-sent half of server-to-target TCP connections continue to
+use the host TCP policy.
 
 Maverick does not expose transport internals as ordinary user choices. Supported
 default builds and generated client configs use
@@ -776,17 +792,24 @@ evidence exists. `private` mode rejects `rustls_default`.
 
 ## Transport
 
-H2/TLS is mandatory and remains the default. H3/QUIC is experimental and runs
-only when the binary is built with the `h3` feature and both client and server
-set:
+H2/TLS is the only runnable direct config-v1 product carrier. The
+`experimental_h3` field remains present and defaults to `false`, but setting it
+to `true` is retired:
 
 ```yaml
 advanced:
   experimental_h3: true
 ```
 
-If runtime H3 setup fails, the client falls back to H2 and records a short
-cooldown for that server. 0-RTT remains disabled.
+The fixed retirement error is returned before DNS, bind, certificate or secret
+file reads, local reads or writes, fallback, or cooldown work. No H3 attempt,
+H3-to-H2 fallback, or H3 cooldown is created. Direct public
+`h3_transport::connect` is also retired even when a raw config has the flag
+`false`. Quinn code, dependencies, and the `h3` feature remain temporarily only
+for a local loopback test oracle; their deletion is a separate QRET-2 slice.
+Future product H3 may use only the qualified quiche route through a complete,
+runnable, migratable Product Config v2. It cannot re-enable this v1 flag, and
+Auto remains H2-only.
 
 The owner-pilot fronting path is browser-like TLS/H2 to a Cloudflare edge, with
 H2 forwarded to the origin. It is off by default, rejected in `stable` mode,
@@ -887,8 +910,9 @@ sides have end-to-end TLS exporter material, the client requests the
 `FEATURE_TLS_CHANNEL_BINDING` auth flag and both ClientHello and ServerHello
 HMACs bind to that TLS connection. Set `auth.channel_binding.require: true` on
 both client and server only for transports that support this direct TLS
-binding; required channel binding is rejected for experimental H3 and
-TLS-terminating CDN fronting. Fronted H2/WebSocket disables exporter binding
+binding. Config-v1 H3 is rejected by its retirement tombstone before binding
+compatibility is evaluated. Required binding remains separately incompatible
+with TLS-terminating CDN fronting. Fronted H2/WebSocket disables exporter binding
 because the client-edge and edge-origin TLS connections have different
 exporters.
 
@@ -1078,8 +1102,8 @@ authentication work fails. It does not describe end-to-end Maverick TLS,
 origin TLS, destination HTTPS, ECH, post-quantum properties, channel binding, or
 any other security proof.
 
-H3, H3-to-H2 non-pooled fallback, WebSocket, direct non-pooled
-`tunnel::open` H2, and any H2 connection not installed by this pool are outside
+Retired config-v1 H3 creates neither a connection nor a fallback. WebSocket,
+direct non-pooled `tunnel::open` H2, and any H2 connection not installed by this pool are outside
 these counters. All-zero version and group partitions mean only that this
 process installed no pool-managed H2 physical connection; they do not prove
 that the process used no TLS or H2. The summary never includes the server
@@ -1139,11 +1163,11 @@ Server `advanced.max_concurrent_connections` and
 `advanced.max_concurrent_connections_per_source` limit accepted TCP/TLS
 connections globally and per source IP. Server `advanced.pre_auth_max_concurrent`
 limits concurrent unauthenticated handshake and tunnel-sniffing work across
-H2/H3/WebSocket carriers. Server `advanced.fallback_max_concurrent` bounds
+the runnable H2 and WebSocket carriers. Server `advanced.fallback_max_concurrent` bounds
 ordinary static or reverse-proxy fallback work. Server
 `advanced.h2_max_concurrent_streams` advertises the HTTP/2 concurrent stream
-limit per connection and is also used as the experimental H3 bidirectional
-stream cap. `advanced.h2_max_concurrent_reset_streams`,
+limit per connection. The retained Quinn loopback oracle is not a config-v1
+product carrier or a separate concurrency claim. `advanced.h2_max_concurrent_reset_streams`,
 `advanced.h2_max_pending_accept_reset_streams`, and
 `advanced.h2_max_local_error_reset_streams` make HTTP/2 reset-stream defense
 limits explicit instead of relying on library defaults. Server

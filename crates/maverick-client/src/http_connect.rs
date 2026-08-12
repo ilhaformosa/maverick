@@ -23,6 +23,7 @@ pub async fn serve_http_connect(
     flow_limit: Arc<Semaphore>,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(&config)?;
     let tunnel_pool = Arc::new(ClientTunnelPool::new(config));
     let result =
         serve_http_connect_with_pool(listener, Arc::clone(&tunnel_pool), flow_limit, shutdown)
@@ -37,6 +38,7 @@ pub(crate) async fn serve_http_connect_with_pool(
     flow_limit: Arc<Semaphore>,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(tunnel_pool.config())?;
     let mut connection_tasks = JoinSet::new();
     loop {
         tokio::select! {
@@ -180,6 +182,39 @@ fn parse_authority(authority: &str) -> Result<(TargetAddr, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maverick_core::config::{
+        ClientAdvancedConfig, ClientServerConfig, LocalConfig, LogConfig, Socks5Config,
+    };
+    use maverick_core::{Mode, SecretString};
+
+    fn retired_h3_config() -> ClientConfig {
+        ClientConfig {
+            version: 1,
+            mode: Mode::Auto,
+            local: LocalConfig {
+                socks5: Socks5Config {
+                    listen: "127.0.0.1:0".parse().unwrap(),
+                },
+                dns: None,
+                http_connect: None,
+            },
+            server: ClientServerConfig {
+                address: "127.0.0.1:1".into(),
+                server_name: "localhost".into(),
+                tunnel_path: "/assets/upload".into(),
+                credential_id: "u_http".into(),
+                secret: SecretString::generate(),
+                ca_cert: None,
+                cert_pin: None,
+            },
+            auth: Default::default(),
+            log: LogConfig::default(),
+            advanced: ClientAdvancedConfig {
+                experimental_h3: true,
+                ..ClientAdvancedConfig::default()
+            },
+        }
+    }
 
     #[test]
     fn parse_connect_domain_authority() {
@@ -204,5 +239,27 @@ mod tests {
         assert_eq!(target, TargetAddr::Domain("example.com".into()));
         assert_eq!(port, 443);
         assert_eq!(initial_data, Bytes::from_static(b"early-data"));
+    }
+
+    #[tokio::test]
+    async fn public_http_helper_rejects_retired_h3_before_shutdown_or_accept() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        drop(shutdown_tx);
+
+        let error = serve_http_connect(
+            listener,
+            Arc::new(retired_h3_config()),
+            Arc::new(Semaphore::new(1)),
+            shutdown_rx,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
+        Ok(())
     }
 }

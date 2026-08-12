@@ -131,7 +131,9 @@ pub enum V1ClientPolicyProjectionBlocker {
     StableMode,
     /// Private Mode is outside the first policy-only projection.
     PrivateMode,
-    /// Expressing H3 intent is outside the first policy-only projection.
+    /// Compatibility-only legacy classification retained for downstream API
+    /// shape. Canonical v1 validation now retires H3 first, so current callers
+    /// receive [`Self::InvalidSourceConfig`] instead.
     H3Configured,
     /// A WebSocket carrier is outside the first policy-only projection.
     WebSocketConfigured,
@@ -144,10 +146,11 @@ pub enum V1ClientPolicyProjectionBlocker {
 /// Projects the first supported config-v1 Auto/H2 client subset into v2 policy.
 ///
 /// The function always validates `config` first. After successful validation,
-/// blockers are checked in this fixed order: source Mode, configured H3,
-/// configured WebSocket, any TLS-terminating front, then enabled traffic
-/// shaping. Invalid public-constructed configs therefore fail closed before any
-/// narrower classification.
+/// blockers are checked in this fixed order: source Mode, configured
+/// WebSocket, any TLS-terminating front, then enabled traffic shaping. Invalid
+/// public-constructed configs, including retired v1 H3 intent, fail closed
+/// before any narrower classification. The unreachable H3 branch is retained
+/// only for public enum/source compatibility until the later removal slice.
 ///
 /// Success requires local `Mode::Auto`, direct H2-only transport, plain SNI,
 /// and disabled shaping. The returned transport strategy is explicit H2 rather
@@ -1031,24 +1034,33 @@ traffic_shaping:
     }
 
     #[test]
-    fn rejects_modes_and_transport_or_shaping_blockers_in_fixed_order() {
+    fn rejects_retired_h3_as_invalid_source_before_projection_blockers() {
         let mut stable = v1_client(Some("stable"));
         stable.advanced.experimental_h3 = true;
-        stable.validate().unwrap();
+        assert_eq!(
+            stable.validate().unwrap_err().to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         assert_eq!(
             project_v1_client_policy(&stable),
-            Err(V1ClientPolicyProjectionBlocker::StableMode)
+            Err(V1ClientPolicyProjectionBlocker::InvalidSourceConfig)
         );
 
         let mut h3 = v1_client(Some("auto"));
         h3.advanced.experimental_h3 = true;
         h3.advanced.shaping.enabled = true;
-        h3.validate().unwrap();
+        assert_eq!(
+            h3.validate().unwrap_err().to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         assert_eq!(
             project_v1_client_policy(&h3),
-            Err(V1ClientPolicyProjectionBlocker::H3Configured)
+            Err(V1ClientPolicyProjectionBlocker::InvalidSourceConfig)
         );
+    }
 
+    #[test]
+    fn rejects_modes_and_transport_or_shaping_blockers_in_fixed_order() {
         let mut websocket = v1_client(Some("auto"));
         websocket.advanced.stealth.tls_fingerprint = TlsFingerprintMode::RustlsDefault;
         websocket.advanced.stealth.cdn_fronting.enabled = true;

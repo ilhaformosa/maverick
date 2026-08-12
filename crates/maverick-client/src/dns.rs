@@ -21,6 +21,7 @@ pub async fn serve_dns(
     flow_limit: Arc<Semaphore>,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(&config)?;
     let tunnel_pool = Arc::new(ClientTunnelPool::new(config));
     let result = serve_dns_with_pool(socket, Arc::clone(&tunnel_pool), flow_limit, shutdown).await;
     tunnel_pool.shutdown();
@@ -33,6 +34,7 @@ pub(crate) async fn serve_dns_with_pool(
     flow_limit: Arc<Semaphore>,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
+    crate::reject_retired_v1_h3(tunnel_pool.config())?;
     let socket = Arc::new(socket);
     let mut query_tasks = JoinSet::new();
     let mut buf = vec![0u8; MAX_DNS_PACKET_SIZE];
@@ -94,10 +96,12 @@ pub(crate) async fn serve_dns_with_pool(
 }
 
 pub async fn resolve_via_tunnel(config: &ClientConfig, query: Bytes) -> Result<Bytes> {
+    crate::reject_retired_v1_h3(config)?;
     resolve_with_tunnel(tunnel::open(config).await?, query).await
 }
 
 pub(crate) async fn resolve_via_pool(pool: &ClientTunnelPool, query: Bytes) -> Result<Bytes> {
+    crate::reject_retired_v1_h3(pool.config())?;
     resolve_with_tunnel(pool.open().await?, query).await
 }
 
@@ -179,6 +183,30 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         join.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn public_dns_helper_rejects_retired_h3_before_shutdown_or_socket_read() -> Result<()> {
+        let socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        drop(_shutdown_tx);
+        let mut config = test_config();
+        config.advanced.experimental_h3 = true;
+
+        let error = serve_dns(
+            socket,
+            Arc::new(config),
+            Arc::new(Semaphore::new(1)),
+            shutdown_rx,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.experimental_h3=true is retired for config version 1"
+        );
         Ok(())
     }
 }

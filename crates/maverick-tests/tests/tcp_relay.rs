@@ -267,64 +267,6 @@ async fn start_repeating_fallback(body: &'static [u8]) -> Result<SocketAddr> {
     Ok(addr)
 }
 
-#[cfg(feature = "h3")]
-async fn start_body_length_fallback() -> Result<SocketAddr> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                break;
-            };
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                let mut buf = [0u8; 1024];
-                let header_end = loop {
-                    let Ok(n) = stream.read(&mut buf).await else {
-                        return;
-                    };
-                    if n == 0 {
-                        return;
-                    }
-                    request.extend_from_slice(&buf[..n]);
-                    if let Some(position) =
-                        request.windows(4).position(|window| window == b"\r\n\r\n")
-                    {
-                        break position + 4;
-                    }
-                };
-                let headers = String::from_utf8_lossy(&request[..header_end]);
-                let content_length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':').and_then(|(name, value)| {
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().ok())
-                                .flatten()
-                        })
-                    })
-                    .unwrap_or(0);
-                while request.len() < header_end + content_length {
-                    let Ok(n) = stream.read(&mut buf).await else {
-                        return;
-                    };
-                    if n == 0 {
-                        return;
-                    }
-                    request.extend_from_slice(&buf[..n]);
-                }
-                let body = format!("body_length={content_length}");
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: text/plain; charset=utf-8\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            });
-        }
-    });
-    Ok(addr)
-}
-
 async fn start_blocking_fallback(
     body: &'static [u8],
 ) -> Result<(SocketAddr, oneshot::Receiver<()>, oneshot::Sender<()>)> {
@@ -594,9 +536,8 @@ async fn h2_active_tcp_flow_survives_connection_accept_idle_timeout() -> Result<
     Ok(())
 }
 
-#[cfg(not(feature = "h3"))]
 #[tokio::test]
-async fn server_rejects_h3_config_without_h3_feature() -> Result<()> {
+async fn server_rejects_retired_v1_h3_config_with_fixed_error() -> Result<()> {
     let result = MaverickHarness::start_with_options(HarnessOptions {
         experimental_h3: true,
         ..HarnessOptions::default()
@@ -605,11 +546,14 @@ async fn server_rejects_h3_config_without_h3_feature() -> Result<()> {
     let err = match result {
         Ok(fixture) => {
             fixture.shutdown().await?;
-            anyhow::bail!("expected h3 config without h3 feature to fail");
+            anyhow::bail!("expected retired config-v1 H3 to fail");
         }
         Err(err) => err,
     };
-    assert!(err.to_string().contains("h3 feature"));
+    assert_eq!(
+        err.to_string(),
+        "configuration error: advanced.experimental_h3=true is retired for config version 1"
+    );
     Ok(())
 }
 
@@ -1630,199 +1574,31 @@ fn auth_v2_hello(config: &ClientConfig, epoch: u64) -> Result<Vec<u8>> {
 
 #[cfg(feature = "h3")]
 #[tokio::test]
-async fn h3_tcp_relay_roundtrip() -> Result<()> {
-    let fixture = MaverickHarness::start_with_h3().await?;
-    let echo_addr = start_echo_server().await?;
-    let mut socks = socks_connect(fixture.client.local_addr, echo_addr).await?;
-
-    socks.write_all(b"maverick-h3-echo").await?;
-    let mut echoed = [0u8; 16];
-    socks.read_exact(&mut echoed).await?;
-    assert_eq!(&echoed, b"maverick-h3-echo");
-
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_server_side_runtime_padding_tcp_relay_roundtrip() -> Result<()> {
-    let shaping = ShapingConfig {
-        enabled: true,
-        max_padding_bytes_per_frame: 32,
-        max_overhead_ratio: 0.5,
-        max_delay_ms: 1,
-        max_batch_bytes: 128,
-        ..ShapingConfig::default()
+async fn retired_v1_h3_product_entries_return_fixed_error() -> Result<()> {
+    let server_error = match MaverickHarness::start_with_h3().await {
+        Ok(fixture) => {
+            fixture.shutdown().await?;
+            anyhow::bail!("retired config-v1 H3 unexpectedly started a server")
+        }
+        Err(error) => error,
     };
-    let fixture = MaverickHarness::start_with_options(HarnessOptions {
-        experimental_h3: true,
-        server_shaping: Some(shaping),
-        ..HarnessOptions::default()
-    })
-    .await?;
-    let echo_addr = start_echo_server().await?;
-    let mut socks = socks_connect(fixture.client.local_addr, echo_addr).await?;
+    assert_eq!(
+        server_error.to_string(),
+        "configuration error: advanced.experimental_h3=true is retired for config version 1"
+    );
 
-    socks.write_all(b"maverick-h3-server-pad").await?;
-    let mut echoed = [0u8; 22];
-    socks.read_exact(&mut echoed).await?;
-    assert_eq!(&echoed, b"maverick-h3-server-pad");
-
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_bad_auth_returns_fallback_not_protocol_error() -> Result<()> {
-    let fixture = MaverickHarness::start_with_h3().await?;
-    let mut bad = fixture.client_config();
-    bad.advanced.experimental_h3 = true;
-    bad.server.secret = SecretString::generate();
-
-    let body = tunnel_attempt_body(&bad, None).await?;
-    assert_fallback_body(&body);
-
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_reverse_proxy_bad_auth_preserves_available_request_body() -> Result<()> {
-    let fallback_addr = start_body_length_fallback().await?;
-    let fixture = MaverickHarness::start_with_options(HarnessOptions {
-        experimental_h3: true,
-        fallback: Some(FallbackConfig::ReverseProxy {
-            upstream: format!("http://{fallback_addr}"),
-        }),
-        ..HarnessOptions::default()
-    })
-    .await?;
-    let mut bad = fixture.client_config();
-    bad.advanced.experimental_h3 = true;
-    bad.server.secret = SecretString::generate();
-
-    let body = tunnel_attempt_body(&bad, None).await?;
-    let body = String::from_utf8(body.to_vec())?;
-    assert!(body.starts_with("body_length="));
-    assert_ne!(body, "body_length=0");
-
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_malformed_client_hello_returns_fallback_not_protocol_error() -> Result<()> {
-    let fixture = MaverickHarness::start_with_h3().await?;
-    let mut cfg = fixture.client_config();
-    cfg.advanced.experimental_h3 = true;
-
-    let body = tunnel_attempt_body(&cfg, Some(vec![0x00])).await?;
-    assert_fallback_body(&body);
-
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_replayed_client_hello_is_rejected_to_fallback() -> Result<()> {
-    let fixture = MaverickHarness::start_with_h3().await?;
-    let mut cfg = fixture.client_config();
-    cfg.advanced.experimental_h3 = true;
-    let hello = ClientHello::new(
-        cfg.server.credential_id.clone(),
-        &cfg.server.secret,
-        &cfg.server.tunnel_path,
-        cfg.mode,
-        0,
-    )?;
-    let encoded = hello.encode();
-
-    let first = tunnel_attempt_body(&cfg, Some(encoded.clone())).await?;
-    assert!(!String::from_utf8_lossy(&first).contains("Maverick"));
-
-    let second = tunnel_attempt_body(&cfg, Some(encoded)).await?;
-    assert_fallback_body(&second);
-
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_transport_failure_falls_back_to_h2() -> Result<()> {
     let fixture = MaverickHarness::start().await?;
     let mut config = fixture.client_config();
     config.advanced.experimental_h3 = true;
-    config.advanced.connect_timeout_ms = 50;
 
-    let sender = timeout(Duration::from_secs(2), transport::connect(&config)).await??;
-    assert!(matches!(sender, transport::TunnelRequestSender::H2(_)));
-
-    let sender = timeout(Duration::from_secs(2), transport::connect(&config)).await??;
-    assert!(matches!(sender, transport::TunnelRequestSender::H2(_)));
-
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_dns_relay_roundtrip() -> Result<()> {
-    let upstream = start_fake_dns_server().await?;
-    let options = HarnessOptions {
-        dns_upstream: Some(upstream),
-        experimental_h3: true,
-        ..HarnessOptions::default()
+    let error = match transport::connect(&config).await {
+        Ok(_) => anyhow::bail!("retired config-v1 H3 unexpectedly selected a transport"),
+        Err(error) => error,
     };
-    let fixture = MaverickHarness::start_with_options(options).await?;
-    let dns_addr = fixture.client.dns_addr.context("missing DNS listener")?;
-
-    let socket = UdpSocket::bind("127.0.0.1:0").await?;
-    socket.send_to(b"h3-example-query", dns_addr).await?;
-    let mut buf = [0u8; 512];
-    let (len, _) = socket.recv_from(&mut buf).await?;
-    assert_eq!(&buf[..len], b"dns-response:h3-example-query");
-
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_socks5_udp_associate_roundtrip() -> Result<()> {
-    let fixture = MaverickHarness::start_with_h3().await?;
-    let udp_echo_addr = start_udp_echo_server().await?;
-    let mut control = TcpStream::connect(fixture.client.local_addr).await?;
-
-    control.write_all(&[0x05, 1, 0x00]).await?;
-    let mut method_reply = [0u8; 2];
-    control.read_exact(&mut method_reply).await?;
-    assert_eq!(method_reply, [0x05, 0x00]);
-
-    control
-        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-        .await?;
-    let mut associate_reply = [0u8; 10];
-    control.read_exact(&mut associate_reply).await?;
-    assert_eq!(associate_reply[1], 0x00);
-    let udp_port = u16::from_be_bytes([associate_reply[8], associate_reply[9]]);
-    let udp_bind = SocketAddr::from(([127, 0, 0, 1], udp_port));
-
-    let udp = UdpSocket::bind("127.0.0.1:0").await?;
-    let mut datagram = vec![0x00, 0x00, 0x00, 0x01, 127, 0, 0, 1];
-    datagram.extend_from_slice(&udp_echo_addr.port().to_be_bytes());
-    datagram.extend_from_slice(b"h3-udp-echo");
-    udp.send_to(&datagram, udp_bind).await?;
-
-    let mut response = [0u8; 1024];
-    let (len, _) = timeout(Duration::from_secs(5), udp.recv_from(&mut response)).await??;
-    assert_eq!(&response[..4], &[0x00, 0x00, 0x00, 0x01]);
-    assert_eq!(&response[len - 11..len], b"h3-udp-echo");
+    assert_eq!(
+        error.to_string(),
+        "configuration error: advanced.experimental_h3=true is retired for config version 1"
+    );
 
     fixture.shutdown().await?;
     Ok(())
@@ -2334,19 +2110,6 @@ async fn browser_tls_h2_pool_uses_channel_binding() -> Result<()> {
     assert_eq!(snapshot.connections_created, 1);
     assert_eq!(snapshot.reconnects, 0);
 
-    fixture.shutdown().await?;
-    Ok(())
-}
-
-#[cfg(feature = "h3")]
-#[tokio::test]
-async fn h3_concurrent_tcp_relay_roundtrips() -> Result<()> {
-    let fixture = MaverickHarness::start_with_h3().await?;
-    let echo_addr = start_echo_server().await?;
-    run_concurrent_socks_roundtrips(fixture.client.local_addr, echo_addr, "h3").await?;
-    let snapshot = fixture.client.h2_connection_pool_snapshot();
-    assert_eq!(snapshot.connections_created, 0);
-    assert_eq!(snapshot.streams_opened, 0);
     fixture.shutdown().await?;
     Ok(())
 }

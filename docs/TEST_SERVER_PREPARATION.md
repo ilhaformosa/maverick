@@ -215,16 +215,16 @@ stacks:
 - `private` also defaults to H2/TCP and uses the same server-sent policy while
   applying stricter privacy rules.
 
-The exception is explicitly enabled experimental H3/QUIC in `auto` or
-`private`. QUIC uses UDP and its own userspace congestion controller, so Linux
-TCP BBR does not control that carrier. The approved qdisc can still queue
-packets leaving the server. H3 failure falls back to H2, which uses the normal
-TCP policy.
+Config v1 has no H3 exception. `advanced.experimental_h3=true` fails before any
+QUIC/UDP carrier starts, and there is no H3-to-H2 fallback. The retained Quinn
+loopback oracle is not a deployment capability. If a future qualified quiche
+carrier opens through Product Config v2, its host policy must be documented
+separately at that time.
 
 The server-sent half of all three modes' server-to-target TCP connections uses
 the server's TCP congestion-control default. UDP and DNS relay sockets do not
 use TCP BBR, although their outgoing packets still pass through the server's
-queueing layer.
+queueing layer; this is not H3 or native-Datagram evidence.
 
 ## Why This Is a Host Setting
 

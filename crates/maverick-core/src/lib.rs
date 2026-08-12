@@ -1,8 +1,9 @@
 //! Core protocol, configuration, authentication, and framing for Maverick.
 //!
 //! Maverick is an experimental prototype. It uses TLS 1.3 + HTTP/2 for
-//! default transport encryption, optional feature-gated H3/QUIC, and
-//! HMAC-SHA256 for in-channel client authentication.
+//! default transport encryption and HMAC-SHA256 for in-channel client
+//! authentication. The legacy feature-gated Quinn/H3 code remains only as a
+//! temporary test oracle; config-v1 cannot run it.
 
 #![forbid(unsafe_code)]
 

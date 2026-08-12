@@ -160,6 +160,16 @@ Public CI provides quality evidence only. In particular, Linux/GNU-tar checks
 can close a platform-evidence gap, but they are not a product result, user
 result, release result, or publication authorization.
 
+### QRET-1/QRET-2 — tombstone first, delete Quinn separately
+
+QRET-1 keeps the config-v1 field and default `false`, but makes `true` fail
+closed with one fixed pre-I/O error while preserving H2. Quinn remains only as
+a temporary loopback test oracle. QRET-2 separately deletes current-tree Quinn
+product code and dependencies. Neither slice adds quiche, Config v2, wire,
+Auto, fallback, or UDP product work. A quiche product route may begin only after
+its qualification and fork/supply-chain gates pass, through a complete,
+runnable, migratable Product Config v2.
+
 ## Execution Order
 
 1. **Close G-001 through G-004.** Preserve and classify first; never merge the
@@ -173,7 +183,8 @@ result, release result, or publication authorization.
    records the RLC-002 go/no-go decision. This train does not wait for H3;
    tags, releases, field work, and Stable publication remain separate gated
    tasks.
-4. **Rebuild small stacked slices.** Auth core/spec, config convergence, direct
+4. **Complete QRET-1 before QRET-2, and keep QRET-2 separate from quiche
+   adoption. Rebuild small stacked slices.** Auth core/spec, config convergence, direct
    H2 proof, gated quiche foundation/vendor and persistent session, Datagram
    adapters, consumers, and only then standard CONNECT-UDP/QUIC DATAGRAM.
    Remove Quinn product code in its own reversible slice; do not combine that
@@ -200,7 +211,8 @@ result, release result, or publication authorization.
 - No T025g-style scheduling micro-patch, long-term dual H3 product backend,
   permanent policy-only Product Config v2, giant 77-commit merge, or H3 in Auto.
 - No new Quinn H3/UDP implementation, adapter, capture subject, or production
-  D-004 work. Archived Quinn code remains provenance and a semantic oracle only.
+  D-004 work. Before QRET-2, current Quinn code/dependencies are test-only; after
+  QRET-2, immutable archives remain provenance and a semantic oracle only.
 
 ## Failure-Driven Follow-Up
 

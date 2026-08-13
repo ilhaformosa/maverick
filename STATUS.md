@@ -334,6 +334,34 @@ censorship resistance, production readiness, or browser identity.
   RED. P1/P2/P3 disposition remains `UNRESOLVED`; B-002 remains
   **PARTIAL / RED**. No candidate, qualification, Boring, SBOM, upstream,
   runtime, config, Auto, product, release, or network gate advanced.
+- B-002-S3 revised-verifier independent historical replay (2026-08-13): a
+  fresh independent replay maintainer built and froze the revised production
+  entry from exact revision `66cd207ea1c03556906dcbc86eb7f650d21be9d0`
+  (tree `8f26b4fdbc663130ba6d6c570a31efea1f81554b`) for
+  `aarch64-apple-darwin`, with verifier-source SHA-256
+  `2c14f9376394931a300b675af20c67aa5d1bc7cc640bc321208b3739a72544f3`
+  and verifier-binary SHA-256
+  `15269df87ee0f22d24017bee028cc43f0aac2c66b7619cd942d48c9b66ba20ba`.
+  The sole official quiche 0.29.3 cache-archive candidate was a regular file
+  of exactly 453,798 bytes with caller-verified SHA-256
+  `61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d`.
+  From the repository root in a fresh clean isolated worktree, that exact
+  revised binary ran against that exact archive exactly once and returned `0`
+  with zero stdout bytes and zero stderr bytes. This was a new independent
+  execution of the revised verifier, not a retry of the old binary or a
+  replacement of the earlier RED result. No Cargo, rustc, or build script ran
+  after the revised production binary was built; the run was not retried,
+  adjusted, given another input, or debugged. The fixed workspace ended empty,
+  repository pre/post clean and no-write checks passed, the archive and binary
+  hashes did not drift, and the authenticated private `0700` capture was
+  removed by exact-target cleanup.
+  Exit `0` means the verifier's code-fixed initial, P1, P2, P3, final, and
+  curated-closure comparisons all passed. It proves only historical patched-
+  source reconstruction and exact curated-byte accounting. P1/P2/P3
+  disposition remains `UNRESOLVED`; no selected candidate, qualification,
+  adoption, release, Boring/SBOM, upstream, independent-delta-review, runtime,
+  config, Auto, product, or network gate advanced. B-002 remains
+  **PARTIAL / RED**.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

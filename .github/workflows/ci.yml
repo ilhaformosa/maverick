@@ -172,11 +172,95 @@ jobs:
           [[ "$(grep -Ecx 'boring v5\.1\.0' <<<"$graph")" -eq 1 ]]
           [[ "$(grep -Ecx 'boring-sys v5\.1\.0' <<<"$graph")" -eq 1 ]]
           ! grep -Eq '^boring(-sys)? v4\.' <<<"$graph"
+          metadata="$(cargo metadata --locked --format-version 1 \
+            --no-default-features \
+            --features maverick-tests/browser-tls,maverick-tests/quiche-candidate)"
+          log_id='registry+https://github.com/rust-lang/crates.io-index#log@0.4.33'
+          jq -e --arg log_id "$log_id" '
+            (.packages | map(select(.name == "log")) | length == 1) and
+            (.packages | map(select(
+              .name == "log" and .version == "0.4.33" and
+              .source == "registry+https://github.com/rust-lang/crates.io-index" and
+              .id == $log_id
+            )) | length == 1) and
+            (.resolve.nodes | map(select(.id == $log_id)) | length == 1) and
+            ((.resolve.nodes[] | select(.id == $log_id) | .features |
+              index("max_level_debug")) != null) and
+            ([.resolve.nodes[] | select(.id == $log_id) | .features[] |
+              select(contains("trace"))] | length == 0)
+          ' <<<"$metadata" >/dev/null
+          quiche_manifest="$(jq -er '
+            [.packages[] | select(.name == "quiche")] |
+            if length == 1 and .[0].version == "0.29.3" and
+              .[0].source == "registry+https://github.com/rust-lang/crates.io-index" and
+              .[0].id == "registry+https://github.com/rust-lang/crates.io-index#quiche@0.29.3"
+            then .[0].manifest_path
+            else error("quiche package identity mismatch")
+            end
+          ' <<<"$metadata")"
+          quiche_source="${quiche_manifest%/Cargo.toml}"
+          repository_root="$(git rev-parse --show-toplevel)"
+          [[ "$quiche_source" != "$quiche_manifest" ]]
+          case "$quiche_source/" in
+            "$repository_root"/*) exit 1 ;;
+          esac
+          [[ -d "$quiche_source/src/h3" && ! -L "$quiche_source" ]]
+          [[ -f "$quiche_manifest" && ! -L "$quiche_manifest" ]]
+          [[ "$(shasum -a 256 "$quiche_manifest" | awk '{print $1}')" == \
+            '01434a970c9661367b730bb907d461985d2de61e521386ec79bb91a17b24ffd0' ]]
           features="$(cargo tree --locked -p maverick-tests \
             --no-default-features --features browser-tls,quiche-candidate \
             -e features -i quiche@0.29.3 --prefix none)"
           [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$features")" -eq 1 ]]
           ! grep -Fq 'quiche feature' <<<"$features"
+          expected_h3_files="$(printf '%s\n' \
+            src/h3/ffi.rs \
+            src/h3/frame.rs \
+            src/h3/mod.rs \
+            src/h3/qpack/decoder.rs \
+            src/h3/qpack/encoder.rs \
+            src/h3/qpack/mod.rs \
+            src/h3/qpack/static_table.rs \
+            src/h3/stream.rs)"
+          actual_h3_files="$(find "$quiche_source/src/h3" -type f \
+            -name '*.rs' -print | sed "s#^$quiche_source/##" | LC_ALL=C sort)"
+          [[ "$actual_h3_files" == "$expected_h3_files" ]]
+          expected_h3_hashes="$(printf '%s\n' \
+            'd9e96d7a133b985d345f74671e75abe543b63014e45da7ea18c6f183aaae10c1  src/h3/ffi.rs' \
+            'e15907dac76afc70ce3fdee890556a92fb94e14f39220194b44031f3a8d0a410  src/h3/frame.rs' \
+            '9e00d00e09524f785e16793633bcf1f936ce13c5b8e5a73898fc65e7636b15f6  src/h3/mod.rs' \
+            'e3ab2550117decde3f5de1c723ca59d81f07f0f91a3d07567acae59d512f9b1d  src/h3/qpack/decoder.rs' \
+            '068f9d63efc7732887e9123feeb9f1d93471be50b53f1ae656f562f4f681161f  src/h3/qpack/encoder.rs' \
+            'b2037b5485b510d6d1954e41b9ae9312ddae47120f4582b4e9630350bf9ff3a3  src/h3/qpack/mod.rs' \
+            'c907b067cb1b41f68c5f15f777afcf2149ffa0a00b869a5eeabb5baf4c64e9ce  src/h3/qpack/static_table.rs' \
+            'ec992ebe411261b2eb51717fc8e0a92bee928328ff830b5d7be40b86faa9b19e  src/h3/stream.rs')"
+          actual_h3_hashes=""
+          while IFS= read -r h3_file; do
+            h3_hash="$(shasum -a 256 "$quiche_source/$h3_file" | awk '{print $1}')"
+            actual_h3_hashes+="${h3_hash}  ${h3_file}"$'\n'
+          done <<<"$actual_h3_files"
+          actual_h3_hashes="${actual_h3_hashes%$'\n'}"
+          [[ "$actual_h3_hashes" == "$expected_h3_hashes" ]]
+          expected_trace_counts="$(printf '%s\n' \
+            '0  src/h3/ffi.rs' \
+            '0  src/h3/frame.rs' \
+            '15  src/h3/mod.rs' \
+            '6  src/h3/qpack/decoder.rs' \
+            '0  src/h3/qpack/encoder.rs' \
+            '0  src/h3/qpack/mod.rs' \
+            '0  src/h3/qpack/static_table.rs' \
+            '2  src/h3/stream.rs')"
+          actual_trace_counts=""
+          trace_call_count=0
+          while IFS= read -r h3_file; do
+            h3_trace_count="$(grep -E -c \
+              '(^|[^[:alnum:]_])trace!\(' "$quiche_source/$h3_file" || true)"
+            trace_call_count=$((trace_call_count + h3_trace_count))
+            actual_trace_counts+="${h3_trace_count}  ${h3_file}"$'\n'
+          done <<<"$actual_h3_files"
+          actual_trace_counts="${actual_trace_counts%$'\n'}"
+          [[ "$actual_trace_counts" == "$expected_trace_counts" ]]
+          [[ "$trace_call_count" -eq 23 ]]
           default_cli="$(cargo tree --locked -p maverick-cli --prefix none)"
           no_default_cli="$(cargo tree --locked -p maverick-cli \
             --no-default-features --prefix none)"
@@ -257,12 +341,96 @@ jobs:
           [[ "$(grep -Ecx 'boring v5\.1\.0' <<<"$graph")" -eq 1 ]]
           [[ "$(grep -Ecx 'boring-sys v5\.1\.0' <<<"$graph")" -eq 1 ]]
           ! grep -Eq '^boring(-sys)? v4\.' <<<"$graph"
+          metadata="$(cargo metadata --locked --format-version 1 \
+            --no-default-features \
+            --features maverick-tests/browser-tls,maverick-tests/quiche-candidate)"
+          log_id='registry+https://github.com/rust-lang/crates.io-index#log@0.4.33'
+          jq -e --arg log_id "$log_id" '
+            (.packages | map(select(.name == "log")) | length == 1) and
+            (.packages | map(select(
+              .name == "log" and .version == "0.4.33" and
+              .source == "registry+https://github.com/rust-lang/crates.io-index" and
+              .id == $log_id
+            )) | length == 1) and
+            (.resolve.nodes | map(select(.id == $log_id)) | length == 1) and
+            ((.resolve.nodes[] | select(.id == $log_id) | .features |
+              index("max_level_debug")) != null) and
+            ([.resolve.nodes[] | select(.id == $log_id) | .features[] |
+              select(contains("trace"))] | length == 0)
+          ' <<<"$metadata" >/dev/null
+          quiche_manifest="$(jq -er '
+            [.packages[] | select(.name == "quiche")] |
+            if length == 1 and .[0].version == "0.29.3" and
+              .[0].source == "registry+https://github.com/rust-lang/crates.io-index" and
+              .[0].id == "registry+https://github.com/rust-lang/crates.io-index#quiche@0.29.3"
+            then .[0].manifest_path
+            else error("quiche package identity mismatch")
+            end
+          ' <<<"$metadata")"
+          quiche_source="${quiche_manifest%/Cargo.toml}"
+          repository_root="$(git rev-parse --show-toplevel)"
+          [[ "$quiche_source" != "$quiche_manifest" ]]
+          case "$quiche_source/" in
+            "$repository_root"/*) exit 1 ;;
+          esac
+          [[ -d "$quiche_source/src/h3" && ! -L "$quiche_source" ]]
+          [[ -f "$quiche_manifest" && ! -L "$quiche_manifest" ]]
+          [[ "$(shasum -a 256 "$quiche_manifest" | awk '{print $1}')" == \
+            '01434a970c9661367b730bb907d461985d2de61e521386ec79bb91a17b24ffd0' ]]
           features="$(cargo tree --locked -p maverick-tests \
             --no-default-features --features browser-tls,quiche-candidate \
             --target "$MAVERICK_SBOM_TARGET" \
             -e features -i quiche@0.29.3 --prefix none)"
           [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$features")" -eq 1 ]]
           ! grep -Fq 'quiche feature' <<<"$features"
+          expected_h3_files="$(printf '%s\n' \
+            src/h3/ffi.rs \
+            src/h3/frame.rs \
+            src/h3/mod.rs \
+            src/h3/qpack/decoder.rs \
+            src/h3/qpack/encoder.rs \
+            src/h3/qpack/mod.rs \
+            src/h3/qpack/static_table.rs \
+            src/h3/stream.rs)"
+          actual_h3_files="$(find "$quiche_source/src/h3" -type f \
+            -name '*.rs' -print | sed "s#^$quiche_source/##" | LC_ALL=C sort)"
+          [[ "$actual_h3_files" == "$expected_h3_files" ]]
+          expected_h3_hashes="$(printf '%s\n' \
+            'd9e96d7a133b985d345f74671e75abe543b63014e45da7ea18c6f183aaae10c1  src/h3/ffi.rs' \
+            'e15907dac76afc70ce3fdee890556a92fb94e14f39220194b44031f3a8d0a410  src/h3/frame.rs' \
+            '9e00d00e09524f785e16793633bcf1f936ce13c5b8e5a73898fc65e7636b15f6  src/h3/mod.rs' \
+            'e3ab2550117decde3f5de1c723ca59d81f07f0f91a3d07567acae59d512f9b1d  src/h3/qpack/decoder.rs' \
+            '068f9d63efc7732887e9123feeb9f1d93471be50b53f1ae656f562f4f681161f  src/h3/qpack/encoder.rs' \
+            'b2037b5485b510d6d1954e41b9ae9312ddae47120f4582b4e9630350bf9ff3a3  src/h3/qpack/mod.rs' \
+            'c907b067cb1b41f68c5f15f777afcf2149ffa0a00b869a5eeabb5baf4c64e9ce  src/h3/qpack/static_table.rs' \
+            'ec992ebe411261b2eb51717fc8e0a92bee928328ff830b5d7be40b86faa9b19e  src/h3/stream.rs')"
+          actual_h3_hashes=""
+          while IFS= read -r h3_file; do
+            h3_hash="$(shasum -a 256 "$quiche_source/$h3_file" | awk '{print $1}')"
+            actual_h3_hashes+="${h3_hash}  ${h3_file}"$'\n'
+          done <<<"$actual_h3_files"
+          actual_h3_hashes="${actual_h3_hashes%$'\n'}"
+          [[ "$actual_h3_hashes" == "$expected_h3_hashes" ]]
+          expected_trace_counts="$(printf '%s\n' \
+            '0  src/h3/ffi.rs' \
+            '0  src/h3/frame.rs' \
+            '15  src/h3/mod.rs' \
+            '6  src/h3/qpack/decoder.rs' \
+            '0  src/h3/qpack/encoder.rs' \
+            '0  src/h3/qpack/mod.rs' \
+            '0  src/h3/qpack/static_table.rs' \
+            '2  src/h3/stream.rs')"
+          actual_trace_counts=""
+          trace_call_count=0
+          while IFS= read -r h3_file; do
+            h3_trace_count="$(grep -E -c \
+              '(^|[^[:alnum:]_])trace!\(' "$quiche_source/$h3_file" || true)"
+            trace_call_count=$((trace_call_count + h3_trace_count))
+            actual_trace_counts+="${h3_trace_count}  ${h3_file}"$'\n'
+          done <<<"$actual_h3_files"
+          actual_trace_counts="${actual_trace_counts%$'\n'}"
+          [[ "$actual_trace_counts" == "$expected_trace_counts" ]]
+          [[ "$trace_call_count" -eq 23 ]]
           default_cli="$(cargo tree --locked -p maverick-cli \
             --target "$MAVERICK_SBOM_TARGET" --prefix none)"
           no_default_cli="$(cargo tree --locked -p maverick-cli \

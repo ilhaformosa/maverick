@@ -493,6 +493,26 @@ censorship resistance, production readiness, or browser identity.
   makes no disposition. P1/P2/P3 remain `UNRESOLVED`, B-002 remains
   **PARTIAL / RED**, and no runtime, H3, product, release, artifact, or network
   gate advances.
+- B-002-S3-2E P1 candidate policy precision (2026-08-13): one later reviewed slice
+  may add only non-workspace fixture `Cargo.toml`, `Cargo.lock`, `quiche-p1.patch`,
+  `tests/p1.rs` below `crates/maverick-tests/fixtures/quiche-p1-candidate`, and
+  change existing GNU/Linux/Apple candidate steps plus this status. They safely
+  unpack the already-present official `.crate` (453,798 bytes;
+  SHA-256 `61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d`)
+  into repo-external `0700`, verify it, copy the fixture beside it, and run its
+  fixed relative path offline and locked before authenticated cleanup. Registry
+  source and other repository files remain unchanged; root/test Cargo/lock files,
+  current target, vendor, product graphs, SBOMs, and artifacts remain untouched.
+  The two-file patch exposes only `set_reject_peer_push_activity` with exact audit
+  docs and keeps `with_peer_input_logging_suppressed` `pub(super)`. Fixed-bound
+  tests cover five peer-push inputs, both roles, all discriminator fragmentation,
+  fixed `H3_FRAME_UNEXPECTED` (`0x105`)/empty reason, and non-push behavior;
+  omitted and explicit-false setter cases must reproduce the exact pristine
+  outcomes. Neutral PEM stays in `p1.rs`. This one-off fixture is no
+  implementation, disposition, replay, qualification, adoption, framework,
+  receipt, or schema. P2 still needs later authorized hash-fixed unique proof.
+  P1/P2/P3 remain `UNRESOLVED`; B-002 remains **PARTIAL / RED**, and other gates
+  do not advance.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

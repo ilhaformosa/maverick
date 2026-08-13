@@ -172,6 +172,25 @@ every other trace-widening feature absent; ordinary `default` and `std` are not
 forbidden. Existing quiche/qlog/Boring and product isolation cannot change. No
 manifest, lockfile, target, dependency, feature, P1, or P2 change is authorized.
 
+S3-2E permits one later candidate-only P1 slice with complete allowlist
+`.github/workflows/ci.yml`, `STATUS.md`, and `crates/maverick-tests/fixtures/
+quiche-p1-candidate/{Cargo.toml,Cargo.lock,quiche-p1.patch,tests/p1.rs}`. Existing
+GNU/Linux/Apple candidate steps safely unpack only the already-present official
+`.crate` into repo-external `0700`, copy the fixture beside it, and use a fixed
+relative path offline and locked. Authenticated cleanup leaves registry source
+and all files outside the allowlist unchanged. Root/test Cargo files, the current
+target, vendor, `[patch]`, Git/network, private patches, Boring overrides, product
+graphs, SBOMs, and artifacts remain unchanged.
+
+The two-file patch exposes only `set_reject_peer_push_activity` with exact audit
+docs and keeps `with_peer_input_logging_suppressed` `pub(super)`. Fixed-bound
+tests cover five surfaces, both roles, all discriminator fragmentation, fixed
+`H3_FRAME_UNEXPECTED` (`0x105`)/empty reason, non-push behavior, and exact pristine
+outcomes with the setter omitted and explicitly false. This one-off fixture is no
+framework/receipt/schema. PASS is P1 candidate evidence only; P2 needs later
+authorized hash-fixed proof. Dispositions stay `UNRESOLVED`; B-002 stays
+**PARTIAL / RED**.
+
 A focused PASS remains mechanism/evaluation evidence only. P3 stays
 `UNRESOLVED`; product/application and outer-QUIC logging, qlog, real product H3,
 artifacts, replay, and qualification remain missing. P2 must wait for a

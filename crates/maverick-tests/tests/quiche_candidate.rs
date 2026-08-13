@@ -1,6 +1,6 @@
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, Once, OnceLock};
 
 use anyhow::{anyhow, ensure, Context, Result};
@@ -14,6 +14,11 @@ const SERVER_ADDR: &str = "127.0.0.1:41001";
 const MAX_PUMP_ROUNDS: usize = 256;
 const MAX_PACKETS_PER_DIRECTION: usize = 256;
 const MAX_H3_EVENTS: usize = 256;
+const MAX_H3_BODY_BYTES: usize = 64;
+const MAX_H3_HEADER_FIELDS: usize = 16;
+const MAX_H3_HEADER_BYTES: usize = 4_096;
+const MAX_LOG_RECORDS: usize = 4_096;
+const MAX_FORMATS: usize = 8;
 const CLIENT_CONTROL_STREAM: u64 = 2;
 
 static LOGGER: HostileLogger = HostileLogger;
@@ -21,6 +26,8 @@ static LOGGER_INIT: Once = Once::new();
 static LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TRACE_RECORDS: AtomicUsize = AtomicUsize::new(0);
 static DEBUG_RECORDS: AtomicUsize = AtomicUsize::new(0);
+static LOG_RECORDS: AtomicUsize = AtomicUsize::new(0);
+static LOG_BUDGET_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct HostileLogger;
 
@@ -30,6 +37,13 @@ impl Log for HostileLogger {
     }
 
     fn log(&self, record: &Record<'_>) {
+        if LOG_BUDGET_ACTIVE.load(Ordering::SeqCst) {
+            let previous = LOG_RECORDS.fetch_add(1, Ordering::SeqCst);
+            assert!(
+                previous < MAX_LOG_RECORDS,
+                "candidate logger exceeded its fixed record bound"
+            );
+        }
         let _ = record.args().to_string();
         match record.level() {
             Level::Trace => {
@@ -51,8 +65,27 @@ struct CountedDisplay<'a> {
 
 impl fmt::Display for CountedDisplay<'_> {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.formats.fetch_add(1, Ordering::SeqCst);
+        let previous = self.formats.fetch_add(1, Ordering::SeqCst);
+        if previous >= MAX_FORMATS {
+            return Err(fmt::Error);
+        }
         out.write_str("peer-controlled-marker")
+    }
+}
+
+struct LogBudgetGuard;
+
+impl LogBudgetGuard {
+    fn activate() -> Self {
+        LOG_RECORDS.store(0, Ordering::SeqCst);
+        LOG_BUDGET_ACTIVE.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for LogBudgetGuard {
+    fn drop(&mut self) {
+        LOG_BUDGET_ACTIVE.store(false, Ordering::SeqCst);
     }
 }
 
@@ -118,7 +151,8 @@ impl Pair {
             "candidate server handshake incomplete"
         );
 
-        let h3_config = h3::Config::new()?;
+        let mut h3_config = h3::Config::new()?;
+        h3_config.set_max_field_section_size(32_768);
         let client_h3 = h3::Connection::with_transport(&mut client, &h3_config)?;
         let server_h3 = h3::Connection::with_transport(&mut server, &h3_config)?;
         let mut pair = Self {
@@ -142,41 +176,97 @@ impl Pair {
         drain_h3(&mut self.server_h3, &mut self.server)
     }
 
-    fn request_response(&mut self) -> Result<()> {
+    fn logging_surface(&mut self) -> Result<()> {
         let request = [
             Header::new(b":method", b"GET"),
             Header::new(b":scheme", b"https"),
             Header::new(b":authority", b"localhost"),
-            Header::new(b":path", b"/candidate"),
-            Header::new(b"x-maverick-role", b"client"),
+            Header::new(b":path", b"/candidate-logging"),
+            Header::new(b"x-peer-controlled-request", b"client-literal-value"),
         ];
+        ensure_headers_bounded(&request)?;
         let stream_id = self
             .client_h3
-            .send_request(&mut self.client, &request, true)?;
+            .send_request(&mut self.client, &request, false)?;
         ensure!(stream_id == 0, "first candidate request was not stream 0");
         self.advance()?;
         expect_headers(
             &mut self.server_h3,
             &mut self.server,
             stream_id,
-            b"x-maverick-role",
-            b"client",
+            b"x-peer-controlled-request",
+            b"client-literal-value",
+        )?;
+
+        self.client_h3.send_priority_update_for_request(
+            &mut self.client,
+            stream_id,
+            &h3::Priority::new(3, true),
+        )?;
+        self.advance()?;
+        expect_priority_update_then_done(&mut self.server_h3, &mut self.server, stream_id)?;
+
+        let request_body = b"client-peer-controlled-data";
+        ensure!(
+            request_body.len() <= MAX_H3_BODY_BYTES,
+            "candidate request body exceeded its fixed byte bound"
+        );
+        ensure!(
+            self.client_h3
+                .send_body(&mut self.client, stream_id, request_body, true,)?
+                == request_body.len(),
+            "candidate request DATA was only partially buffered"
+        );
+        self.advance()?;
+        expect_body(
+            &mut self.server_h3,
+            &mut self.server,
+            stream_id,
+            request_body,
         )?;
 
         let response = [
             Header::new(b":status", b"200"),
-            Header::new(b"x-maverick-role", b"server"),
+            Header::new(b"x-peer-controlled-response", b"server-literal-value"),
         ];
+        ensure_headers_bounded(&response)?;
         self.server_h3
-            .send_response(&mut self.server, stream_id, &response, true)?;
+            .send_response(&mut self.server, stream_id, &response, false)?;
         self.advance()?;
         expect_headers(
             &mut self.client_h3,
             &mut self.client,
             stream_id,
-            b"x-maverick-role",
-            b"server",
-        )
+            b"x-peer-controlled-response",
+            b"server-literal-value",
+        )?;
+
+        let response_body = b"server-peer-controlled-data";
+        ensure!(
+            response_body.len() <= MAX_H3_BODY_BYTES,
+            "candidate response body exceeded its fixed byte bound"
+        );
+        ensure!(
+            self.server_h3
+                .send_body(&mut self.server, stream_id, response_body, true,)?
+                == response_body.len(),
+            "candidate response DATA was only partially buffered"
+        );
+        self.advance()?;
+        expect_body(
+            &mut self.client_h3,
+            &mut self.client,
+            stream_id,
+            response_body,
+        )?;
+
+        self.server_h3.send_goaway(&mut self.server, stream_id)?;
+        self.advance()?;
+        expect_goaway(&mut self.client_h3, &mut self.client, stream_id)?;
+
+        self.client_h3.send_goaway(&mut self.client, 0)?;
+        self.advance()?;
+        expect_goaway(&mut self.server_h3, &mut self.server, 0)
     }
 
     fn send_fragmented_client_control(&mut self, frame: &[u8]) -> Result<()> {
@@ -285,6 +375,24 @@ fn drain_h3(h3_conn: &mut h3::Connection, transport: &mut quiche::Connection) ->
     Err(anyhow!("candidate H3 drain exceeded its fixed bound"))
 }
 
+fn ensure_headers_bounded(headers: &[Header]) -> Result<()> {
+    ensure!(
+        headers.len() <= MAX_H3_HEADER_FIELDS,
+        "candidate H3 headers exceeded their fixed field bound"
+    );
+    let bytes = headers.iter().try_fold(0_usize, |total, header| {
+        total
+            .checked_add(header.name().len())
+            .and_then(|value| value.checked_add(header.value().len()))
+            .ok_or_else(|| anyhow!("candidate H3 header byte count overflowed"))
+    })?;
+    ensure!(
+        bytes <= MAX_H3_HEADER_BYTES,
+        "candidate H3 headers exceeded their fixed byte bound"
+    );
+    Ok(())
+}
+
 fn expect_headers(
     h3_conn: &mut h3::Connection,
     transport: &mut quiche::Connection,
@@ -296,6 +404,7 @@ fn expect_headers(
         match h3_conn.poll(transport) {
             Ok((stream_id, h3::Event::Headers { list, .. })) => {
                 ensure!(stream_id == expected_stream, "unexpected H3 stream");
+                ensure_headers_bounded(&list)?;
                 ensure!(
                     list.iter().any(|header| {
                         header.name() == marker_name && header.value() == marker_value
@@ -310,6 +419,79 @@ fn expect_headers(
         }
     }
     Err(anyhow!("candidate H3 header wait exceeded its fixed bound"))
+}
+
+fn expect_priority_update_then_done(
+    h3_conn: &mut h3::Connection,
+    transport: &mut quiche::Connection,
+    expected_stream: u64,
+) -> Result<()> {
+    ensure!(
+        matches!(
+            h3_conn.poll(transport),
+            Ok((stream_id, h3::Event::PriorityUpdate)) if stream_id == expected_stream
+        ),
+        "candidate request PRIORITY_UPDATE was absent"
+    );
+    ensure!(
+        matches!(h3_conn.poll(transport), Err(h3::Error::Done)),
+        "candidate request PRIORITY_UPDATE did not drain to Done"
+    );
+    ensure!(
+        h3_conn.take_last_priority_update(expected_stream)? == b"u=3,i",
+        "candidate request PRIORITY_UPDATE value changed"
+    );
+    Ok(())
+}
+
+fn expect_body(
+    h3_conn: &mut h3::Connection,
+    transport: &mut quiche::Connection,
+    expected_stream: u64,
+    expected: &[u8],
+) -> Result<()> {
+    ensure!(
+        expected.len() <= MAX_H3_BODY_BYTES,
+        "candidate expected DATA exceeded its fixed byte bound"
+    );
+    for _ in 0..MAX_H3_EVENTS {
+        match h3_conn.poll(transport) {
+            Ok((stream_id, h3::Event::Data)) => {
+                ensure!(stream_id == expected_stream, "unexpected H3 DATA stream");
+                let mut body = [0_u8; MAX_H3_BODY_BYTES];
+                let received = h3_conn.recv_body(transport, stream_id, &mut body)?;
+                ensure!(received == expected.len(), "unexpected H3 DATA length");
+                ensure!(
+                    body[..received] == *expected,
+                    "candidate H3 DATA bytes changed"
+                );
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(h3::Error::Done) => return Err(anyhow!("expected H3 DATA was absent")),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(anyhow!("candidate H3 DATA wait exceeded its fixed bound"))
+}
+
+fn expect_goaway(
+    h3_conn: &mut h3::Connection,
+    transport: &mut quiche::Connection,
+    expected_id: u64,
+) -> Result<()> {
+    for _ in 0..MAX_H3_EVENTS {
+        match h3_conn.poll(transport) {
+            Ok((id, h3::Event::GoAway)) => {
+                ensure!(id == expected_id, "candidate GOAWAY id changed");
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(h3::Error::Done) => return Err(anyhow!("expected H3 GOAWAY was absent")),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(anyhow!("candidate H3 GOAWAY wait exceeded its fixed bound"))
 }
 
 fn install_hostile_logger() -> &'static Mutex<()> {
@@ -349,19 +531,24 @@ fn h3_frame(frame_type: u64, payload: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn upstream_candidate_links_one_boring_and_runs_basic_h3_without_trace() -> Result<()> {
+fn candidate_h3_logging_surface_is_complete_for_both_roles() -> Result<()> {
     let _serial = install_hostile_logger()
         .lock()
         .map_err(|_| anyhow!("candidate logger lock poisoned"))?;
+    ensure!(
+        log::STATIC_MAX_LEVEL == LevelFilter::Debug,
+        "candidate static log cap was not Debug"
+    );
     TRACE_RECORDS.store(0, Ordering::SeqCst);
     DEBUG_RECORDS.store(0, Ordering::SeqCst);
+    let _log_budget = LogBudgetGuard::activate();
 
     let formats = AtomicUsize::new(0);
     log::trace!("{}", CountedDisplay { formats: &formats });
-    log::debug!("candidate debug marker");
+    log::debug!("{}", CountedDisplay { formats: &formats });
     ensure!(
-        formats.load(Ordering::SeqCst) == 0,
-        "Trace value was formatted"
+        formats.load(Ordering::SeqCst) == 1,
+        "Trace formatting was not eliminated or Debug formatting was absent"
     );
     ensure!(
         TRACE_RECORDS.load(Ordering::SeqCst) == 0,
@@ -374,10 +561,26 @@ fn upstream_candidate_links_one_boring_and_runs_basic_h3_without_trace() -> Resu
 
     let _boring = SslContext::builder(SslMethod::tls())?.build();
     let mut pair = Pair::new()?;
-    pair.request_response()?;
+    ensure!(
+        pair.client_h3.peer_settings_raw() == Some(&[(6, 32_768)][..]),
+        "candidate client did not process the exact server SETTINGS"
+    );
+    ensure!(
+        pair.server_h3.peer_settings_raw() == Some(&[(6, 32_768)][..]),
+        "candidate server did not process the exact client SETTINGS"
+    );
+    pair.logging_surface()?;
     ensure!(
         TRACE_RECORDS.load(Ordering::SeqCst) == 0,
         "real two-role H3 emitted a Trace record"
+    );
+    ensure!(
+        LOG_RECORDS.load(Ordering::SeqCst) <= MAX_LOG_RECORDS,
+        "candidate logger exceeded its fixed record bound"
+    );
+    ensure!(
+        formats.load(Ordering::SeqCst) <= MAX_FORMATS,
+        "candidate formatting exceeded its fixed bound"
     );
     Ok(())
 }

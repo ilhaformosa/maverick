@@ -455,32 +455,36 @@ censorship resistance, production readiness, or browser identity.
   `UNRESOLVED`; B-002 remains **PARTIAL / RED**, with replay, qualification,
   adoption, H3 runtime/config/Auto, product, release, and network gates
   unchanged.
-- B-002-S3-2D candidate-bound P3 logging-surface policy precision (2026-08-13):
-  exactly one later implementation slice may edit only the existing
-  `quiche_candidate` test, the existing GNU/Linux/Apple public-PR candidate
-  steps, and `STATUS.md`. It must reuse the same default-off target, feature,
-  exact dependencies, lockfile, and in-memory QUIC pump; no manifest, lockfile,
-  target, dependency, feature, or product graph change is authorized. The
-  bounded test must assert `log::STATIC_MAX_LEVEL == Debug` and use a hostile
-  logger plus formatting counter and Debug positive control across both H3
-  roles, bidirectional HEADERS with peer-controlled QPACK literals and DATA,
-  SETTINGS/control, request `PRIORITY_UPDATE`, and GOAWAY. The implementation
-  review must bind the exact upstream H3 logging-source surface and call-site
-  count, and every pump, event, byte, log, formatting, and loop resource must
-  have a fixed fail-closed bound. Each existing candidate host step must prove
-  exactly one log 0.4.33, `max_level_debug` present, and `max_level_trace`,
-  `release_max_level_trace`, and every other trace-widening feature absent;
-  ordinary `default` and `std` are not forbidden. Existing quiche/qlog/Boring
-  and product/default/SBOM/artifact isolation checks remain unchanged. This
-  authorizes no P1 or P2 work. P2 must
-  wait for a separately authorized, independently reviewed, hash-fixed rebased
-  P1 candidate; an `E0603` error or an empty pure-upstream helper result is not
-  unique API/visibility and documentation proof. A focused PASS is only
-  candidate-bound P3 mechanism/evaluation evidence. Product/application and
-  outer-QUIC logging, qlog, real product H3, artifacts, replay, and
-  qualification remain missing; P1/P2/P3 remain `UNRESOLVED`, B-002 remains
-  **PARTIAL / RED**, and no runtime, product, release, artifact, or network gate
-  advances.
+- B-002-S3-2D candidate-bound P3 logging-surface evaluation (2026-08-13): the
+  existing default-off candidate target, exact dependencies, lockfile, and
+  product graph are unchanged. Its bounded
+  `candidate_h3_logging_surface_is_complete_for_both_roles` test asserts
+  `log::STATIC_MAX_LEVEL == Debug`; uses one hostile logger, a fixed record
+  budget, a fixed formatting budget, and a Debug positive control to prove
+  Trace arguments disappear before formatting; and keeps every packet-pump,
+  H3-event, header, body, and loop resource under a fixed fail-closed bound.
+  One in-memory pair processes exact peer SETTINGS on both roles, then covers
+  bidirectional HEADERS containing literal peer-controlled values,
+  bidirectional DATA, request `PRIORITY_UPDATE` while stream 0 remains open,
+  and GOAWAY in each direction. The complete four-test candidate target and
+  strict focused Clippy pass locally.
+  The unchanged GNU/Linux and Apple candidate steps now also bind the complete
+  eight-file crates.io quiche 0.29.3 `src/h3` Rust surface by exact file list
+  and SHA-256, require a fixed per-file distribution totaling 23 Trace call
+  sites, and use Cargo metadata to require one exact log 0.4.33 package
+  identity. Its resolved feature node must contain `max_level_debug` and no
+  feature containing `trace`; ordinary
+  `default` and `std` remain allowed. Existing no-quiche-feature, no-qlog,
+  single-Boring-5.1.0, no-Boring-4.x, and product/default/SBOM/artifact
+  isolation checks are unchanged. Those two public-host checks have not yet
+  run for this candidate revision, and independent source-surface review is
+  still required.
+  This is only candidate-bound P3 mechanism/evaluation evidence. It does not
+  cover product/application or outer-QUIC logging, qlog, real product H3,
+  final artifacts, replay, or qualification; it implements no P1/P2 work and
+  makes no disposition. P1/P2/P3 remain `UNRESOLVED`, B-002 remains
+  **PARTIAL / RED**, and no runtime, H3, product, release, artifact, or network
+  gate advances.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

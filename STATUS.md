@@ -424,7 +424,7 @@ censorship resistance, production readiness, or browser identity.
   Apple-arm64 graph contained one Boring/`boring-sys` 5.1.0 closure, no Boring
   4.x, and no quiche feature. Default and no-default `maverick-cli` graphs did
   not contain quiche. Existing product SBOM and artifact verifiers remain
-  unchanged and must still prove no candidate leakage on the public PR head.
+  unchanged.
   The focused public-API test built a fully in-memory QUIC handshake, created
   both H3 roles, exchanged one request and response carrying role markers, and
   initialized a direct Boring 5 context without a typed or raw bridge. Fresh
@@ -439,9 +439,17 @@ censorship resistance, production readiness, or browser identity.
   log cap removes Trace before formatting while still delivering Debug; the
   real two-role exchange delivered no Trace record. That is only the proposed
   P3 mechanism in this candidate target: complete product/application logging,
-  QUIC transport logging, qlog, both public-CI hosts, and final artifact
-  review remain unproved. Focused Apple-arm64 tests and clippy passed locally;
-  GNU/Linux and exact-head public CI have not yet run. P1/P2/P3 remain
+  QUIC transport logging, qlog, and final artifact review remain unproved.
+  Focused Apple-arm64 tests and clippy passed locally. On exact PR head
+  `d8554418af14517d8049448a095d94aca5f2689d` (tree
+  `de4c61e1bbb1b090e4d561e4b4495c2088a44e85`, also the tree of merged `main`
+  commit `c2e499b7a945fbf1fce81abcd901fefa67e88369`), attempt-one `product-ci`
+  GNU/Linux and macOS-SBOM, CodeQL, and supply-chain checks all passed without
+  reruns. The public candidate steps therefore passed on both hosts, and the
+  existing product-only macOS SBOM remained free of candidate packages. This
+  is focused evaluation and product-isolation evidence only, not a P1/P2/P3
+  disposition or the B-002 real-H3 SBOM/final-artifact, qualification,
+  adoption, runtime, product, or release gate. P1/P2/P3 remain
   `UNRESOLVED`; B-002 remains **PARTIAL / RED**, with replay, qualification,
   adoption, H3 runtime/config/Auto, product, release, and network gates
   unchanged.

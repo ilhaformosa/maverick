@@ -300,6 +300,26 @@ censorship resistance, production readiness, or browser identity.
   independent delta review, candidate selection, Boring/SBOM qualification,
   H3 runtime/config/Auto/product, release, or real-network gate advanced.
   B-002 remains **PARTIAL / RED**.
+- B-002-S3-1B independent historical replay (2026-08-13): an independent replay
+  maintainer froze the production-entry verifier at exact revision
+  `d8f58c509871b5e23035f3c47fb643c2546d8824` for
+  `aarch64-apple-darwin`, with verifier-source SHA-256
+  `b8ea3cc83358b4b5d3b061714eea49b5f93e5630a8b3f0312722a6bebab98928`,
+  verifier-binary SHA-256
+  `bf79b04415f4cb3cfece43aa100b39573215e358b71b55ed0baf0735f5dcb6d1`,
+  and caller-verified official-archive SHA-256
+  `61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d`.
+  That exact binary ran against the official archive exactly once and returned
+  `1` with zero stdout bytes and zero stderr bytes. The fixed workspace ended
+  empty, repository pre/post no-write checks passed, and the maintainer's
+  private `0700` capture was removed after exact-target validation. The run was
+  not retried, adjusted, or replaced.
+  This result is **RED**: it does not establish that the fixed initial, P1, P2,
+  P3, and final manifest comparisons all match, and the silent failure was not
+  debugged during this one-shot evidence run. P1/P2/P3 disposition remains
+  `UNRESOLVED`; no candidate, qualification, Boring, SBOM, upstream, runtime,
+  config, Auto, product, release, or network gate advanced. B-002 remains
+  **PARTIAL / RED**.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

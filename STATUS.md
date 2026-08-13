@@ -476,9 +476,17 @@ censorship resistance, production readiness, or browser identity.
   feature containing `trace`; ordinary
   `default` and `std` remain allowed. Existing no-quiche-feature, no-qlog,
   single-Boring-5.1.0, no-Boring-4.x, and product/default/SBOM/artifact
-  isolation checks are unchanged. Those two public-host checks have not yet
-  run for this candidate revision, and independent source-surface review is
-  still required.
+  isolation checks are unchanged. Independent source-surface review found no
+  P0, P1, or P2 finding and confirmed the frozen eight-file, 23-call-site
+  binding. On exact PR #53 source head
+  `442ca5f6690c53f22795bc76b5b07849afd10f87` (tree
+  `63da96cfe88564183926105e105a369a81a067bc`, also the tree of merged `main`
+  commit `019c0eaa1ec9b077a0bbd5e1107eb2116ea86150`), attempt-one CodeQL
+  `Analyze (actions)`, `Analyze (rust)`, and aggregate `CodeQL` checks plus
+  product-ci's `public-pr-gate` and `macos-sbom-gate` all passed without a
+  rerun. Both public candidate-evaluation steps passed, and the existing
+  product archive and SBOM isolation checks passed unchanged. The path-filtered
+  supply-chain workflow did not start and is therefore not counted as GREEN.
   This is only candidate-bound P3 mechanism/evaluation evidence. It does not
   cover product/application or outer-QUIC logging, qlog, real product H3,
   final artifacts, replay, or qualification; it implements no P1/P2 work and

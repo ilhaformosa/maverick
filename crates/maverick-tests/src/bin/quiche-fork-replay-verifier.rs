@@ -2189,6 +2189,11 @@ fn apply_unified_patch_cancelled(
     }
     let text = std::str::from_utf8(patch).map_err(|_| ())?;
     let lines = text.split_inclusive('\n').collect::<Vec<_>>();
+    let body_end = if lines.len() > 1 && lines.last().copied() == Some("\n") {
+        lines.len() - 1
+    } else {
+        lines.len()
+    };
     let allowed = allowlist
         .iter()
         .map(|path| (*path).to_owned())
@@ -2198,6 +2203,10 @@ fn apply_unified_patch_cancelled(
 
     while index < lines.len() {
         check_active(state)?;
+        if index > 0 && index + 1 == lines.len() && lines[index] == "\n" {
+            index += 1;
+            break;
+        }
         let diff = lines.get(index).ok_or(())?.strip_suffix('\n').ok_or(())?;
         let rest = diff.strip_prefix("diff --git a/").ok_or(())?;
         let (raw_left, raw_right) = rest.split_once(" b/").ok_or(())?;
@@ -2245,7 +2254,7 @@ fn apply_unified_patch_cancelled(
             source_cursor = target;
             let mut consumed_old = 0_usize;
             let mut produced_new = 0_usize;
-            while index < lines.len()
+            while index < body_end
                 && !lines[index].starts_with("@@ ")
                 && !lines[index].starts_with("diff --git ")
             {
@@ -2297,7 +2306,7 @@ fn apply_unified_patch_cancelled(
         }
         tree.insert(left.to_owned(), TreeEntry::File(output));
     }
-    if touched == allowed {
+    if index == lines.len() && touched == allowed {
         Ok(())
     } else {
         Err(())
@@ -3045,6 +3054,46 @@ mod tests {
 
         let mut unexpected = parse_ustar(&synthetic_tar()).unwrap();
         assert!(apply_unified_patch(&mut unexpected, SYNTHETIC_PATCH, &["other.txt"]).is_err());
+    }
+
+    #[test]
+    fn patch_accepts_exactly_one_terminal_bare_blank_line() {
+        let _lock = test_lock();
+        let mut tree = parse_ustar(&synthetic_tar()).unwrap();
+        let mut patch = SYNTHETIC_PATCH.to_vec();
+        patch.push(b'\n');
+
+        apply_unified_patch(&mut tree, &patch, SYNTHETIC_PATCH_ALLOWLIST).unwrap();
+        assert_eq!(
+            tree.get("synthetic-0.0.0/src/message.txt"),
+            Some(&TreeEntry::File(b"after\n".to_vec()))
+        );
+    }
+
+    #[test]
+    fn patch_rejects_two_terminal_bare_blank_lines() {
+        let _lock = test_lock();
+        let mut tree = parse_ustar(&synthetic_tar()).unwrap();
+        let mut patch = SYNTHETIC_PATCH.to_vec();
+        patch.extend_from_slice(b"\n\n");
+
+        assert!(apply_unified_patch(&mut tree, &patch, SYNTHETIC_PATCH_ALLOWLIST).is_err());
+    }
+
+    #[test]
+    fn patch_rejects_bare_blank_between_file_header_and_hunk() {
+        let _lock = test_lock();
+        let mut tree = parse_ustar(&synthetic_tar()).unwrap();
+        let patch = String::from_utf8(SYNTHETIC_PATCH.to_vec())
+            .unwrap()
+            .replace(
+                "+++ b/synthetic-0.0.0/src/message.txt\n",
+                "+++ b/synthetic-0.0.0/src/message.txt\n\n",
+            );
+
+        assert!(
+            apply_unified_patch(&mut tree, patch.as_bytes(), SYNTHETIC_PATCH_ALLOWLIST).is_err()
+        );
     }
 
     #[test]

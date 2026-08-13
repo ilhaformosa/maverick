@@ -1,0 +1,226 @@
+diff --git a/src/h3/mod.rs b/src/h3/mod.rs
+--- a/src/h3/mod.rs
++++ b/src/h3/mod.rs
+@@ -584,6 +584,8 @@ pub struct Config {
+     additional_settings: Option<Vec<(u64, u64)>>,
+
+     max_priority_update_size: u64,
++
++    reject_peer_push_activity: bool,
+ }
+
+ impl Config {
+@@ -597,6 +599,7 @@ impl Config {
+             additional_settings: None,
+             max_priority_update_size:
+                 PRIORITY_UPDATE_FRAME_PAYLOAD_MAX_SIZE_DEFAULT,
++            reject_peer_push_activity: false,
+         })
+     }
+
+@@ -702,6 +705,18 @@ impl Config {
+     pub fn set_max_priority_update_size(&mut self, v: u64) {
+         self.max_priority_update_size = v;
+     }
++
++    /// Rejects peer `MAX_PUSH_ID`, `PUSH_PROMISE`, `CANCEL_PUSH`, push-form
++    /// `PRIORITY_UPDATE`, and push-stream activity.
++    ///
++    /// This does not handle `GOAWAY`, request-form `PRIORITY_UPDATE`, QUIC
++    /// Datagrams, or any other pre-authentication HTTP/3 event or state. Those
++    /// boundaries require separate checks by the caller.
++    ///
++    /// The default value is `false`.
++    pub fn set_reject_peer_push_activity(&mut self, enabled: bool) {
++        self.reject_peer_push_activity = enabled;
++    }
+ }
+
+ /// A trait for types with associated string name and value.
+@@ -993,6 +1008,24 @@ fn close_conn_if_critical_stream_finished<F: BufFactory>(
+     Ok(())
+ }
+
++fn reject_peer_push_activity<F: BufFactory, T>(
++    conn: &mut super::Connection<F>,
++) -> Result<T> {
++    conn.close(true, Error::FrameUnexpected.to_wire(), b"")?;
++
++    Err(Error::FrameUnexpected)
++}
++
++fn is_peer_push_activity_frame_type(frame_type: u64) -> bool {
++    matches!(
++        frame_type,
++        frame::MAX_PUSH_FRAME_TYPE_ID |
++            frame::PUSH_PROMISE_FRAME_TYPE_ID |
++            frame::CANCEL_PUSH_FRAME_TYPE_ID |
++            frame::PRIORITY_UPDATE_FRAME_PUSH_TYPE_ID
++    )
++}
++
+ /// An HTTP/3 connection.
+ pub struct Connection {
+     is_server: bool,
+@@ -1028,6 +1061,8 @@ pub struct Connection {
+     peer_goaway_id: Option<u64>,
+
+     max_priority_update_size: u64,
++
++    reject_peer_push_activity: bool,
+ }
+
+ impl Connection {
+@@ -1085,6 +1120,8 @@ impl Connection {
+             peer_goaway_id: None,
+
+             max_priority_update_size: config.max_priority_update_size,
++
++            reject_peer_push_activity: config.reject_peer_push_activity,
+         })
+     }
+
+@@ -1177,6 +1214,9 @@ impl Connection {
+                     .max_field_section_size
+                     .unwrap_or(SETTINGS_MAX_FIELD_SECTION_SIZE_DEFAULT),
+                 self.max_priority_update_size,
++            )
++            .with_peer_input_logging_suppressed(
++                self.reject_peer_push_activity,
+             ),
+         );
+
+@@ -2157,7 +2197,9 @@ impl Connection {
+
+         // Process HTTP/3 data from readable streams.
+         for s in conn.readable() {
+-            trace!("{} stream id {} is readable", conn.trace_id(), s);
++            if !self.reject_peer_push_activity {
++                trace!("{} stream id {} is readable", conn.trace_id(), s);
++            }
+
+             let ev = match self.process_readable_stream(conn, s, true) {
+                 Ok(v) => Some(v),
+@@ -2605,6 +2647,9 @@ impl Connection {
+                     .unwrap_or(SETTINGS_MAX_FIELD_SECTION_SIZE_DEFAULT),
+                 self.max_priority_update_size,
+             )
++            .with_peer_input_logging_suppressed(
++                self.reject_peer_push_activity,
++            )
+         });
+
+         // We need to get a fresh reference to the stream for each
+@@ -2624,6 +2669,12 @@ impl Connection {
+
+                     let ty = stream::Type::deserialize(varint)?;
+
++                    if self.reject_peer_push_activity &&
++                        matches!(ty, stream::Type::Push)
++                    {
++                        return reject_peer_push_activity(conn);
++                    }
++
+                     if let Err(e) = stream.set_ty(ty) {
+                         conn.close(true, e.to_wire(), b"")?;
+                         return Err(e);
+@@ -2762,6 +2813,12 @@ impl Connection {
+                         Err(_) => continue,
+                     };
+
++                    if self.reject_peer_push_activity &&
++                        is_peer_push_activity_frame_type(varint)
++                    {
++                        return reject_peer_push_activity(conn);
++                    }
++
+                     match stream.set_frame_type(varint) {
+                         Err(Error::FrameUnexpected) => {
+                             let msg = format!("Unexpected frame type {varint}");
+@@ -3292,6 +3349,9 @@ impl Connection {
+                             ),
+                             self.max_priority_update_size,
+                         )
++                        .with_peer_input_logging_suppressed(
++                            self.reject_peer_push_activity,
++                        )
+                     });
+
+                 let had_priority_update = stream.has_last_priority_update();
+diff --git a/src/h3/stream.rs b/src/h3/stream.rs
+--- a/src/h3/stream.rs
++++ b/src/h3/stream.rs
+@@ -152,6 +152,9 @@ pub struct Stream {
+     /// Whether the stream was created locally, or by the peer.
+     is_local: bool,
+
++    /// Whether peer-controlled details should be omitted from trace logs.
++    suppress_peer_input_logging: bool,
++
+     /// Whether the stream has been remotely initialized.
+     remote_initialized: bool,
+
+@@ -231,6 +234,8 @@ impl Stream {
+
+             is_local,
+
++            suppress_peer_input_logging: false,
++
+             remote_initialized: false,
+
+             local_initialized: false,
+@@ -260,6 +265,13 @@ impl Stream {
+         self.state
+     }
+
++    pub(super) fn with_peer_input_logging_suppressed(
++        mut self, enabled: bool,
++    ) -> Self {
++        self.suppress_peer_input_logging = enabled;
++        self
++    }
++
+     /// Sets the stream's type and transitions to the next state.
+     pub fn set_ty(&mut self, ty: Type) -> Result<()> {
+         assert_eq!(self.state, State::StreamType);
+@@ -597,12 +609,14 @@ impl Stream {
+                         super::close_conn_critical_stream(conn)?;
+                     }
+
+-                    trace!(
+-                        "{} read {} bytes on stream {}",
+-                        conn.trace_id(),
+-                        read,
+-                        self.id,
+-                    );
++                    if !self.suppress_peer_input_logging {
++                        trace!(
++                            "{} read {} bytes on stream {}",
++                            conn.trace_id(),
++                            read,
++                            self.id,
++                        );
++                    }
+
+                     if read < spare_len {
+                         break;
+@@ -685,11 +699,13 @@ impl Stream {
+             },
+         };
+
+-        trace!(
+-            "{} discarded {} bytes on stream {}",
+-            conn.trace_id(),
+-            read,
+-            self.id,
+-        );
++        if !self.suppress_peer_input_logging {
++            trace!(
++                "{} discarded {} bytes on stream {}",
++                conn.trace_id(),
++                read,
++                self.id,
++            );
++        }
+
+         self.state_off += read;

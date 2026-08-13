@@ -513,6 +513,29 @@ censorship resistance, production readiness, or browser identity.
   receipt, or schema. P2 still needs later authorized hash-fixed unique proof.
   P1/P2/P3 remain `UNRESOLVED`; B-002 remains **PARTIAL / RED**, and other gates
   do not advance.
+- B-002-S3-2F P1 candidate implementation (2026-08-13): the authorized
+  non-workspace fixture now freezes one two-file patch (SHA-256
+  `c1023887ffab818409f69e2b971be1d15e5ded9d232d8e26b8956e4ddfec2a46`).
+  On a private copy of official quiche 0.29.3 it changes the complete source
+  Tree manifest from `dfe405060753b90ef580b4a105a5c0e9cf4bb4f06adc79145f94572f7a4c5851`
+  to `ab0b52cc2f073f563ec57878893cb90885fbbdba230e165490882512a6374b7c`,
+  matching the already reviewed historical P1+P2 stage without a wider helper.
+  The unpatched fixture deterministically fails to compile because the sole
+  public setter is absent. After the patch, local Apple evaluation passes 80
+  strict fragmentation cases, 20 separately isolated omitted/explicit-false
+  pristine cases, and bounded SETTINGS, literal QPACK HEADERS, bidirectional
+  DATA, request priority, reserved-frame, GOAWAY, and Boring 5 smoke controls;
+  strict linting is clean. The fixture has exactly two direct dependencies,
+  its 61 registry lock identities all match the root lock, and it retains one
+  Boring/`boring-sys` 5.1.0 closure with no Boring 4.x or qlog. The existing
+  GNU/Linux and Apple candidate steps now authenticate, safely inspect and
+  extract the fixed official archive in a repository-external `0700` tree,
+  apply only this patch, run offline and locked, and authenticate cleanup while
+  proving repository, root target, registry source, product graph, archive,
+  and SBOM isolation. Public-host exact-head execution is still pending. This
+  is candidate evidence only: it selects no candidate and makes no patch
+  disposition. P1/P2/P3 remain `UNRESOLVED`, B-002 remains **PARTIAL / RED**,
+  and no runtime, H3, product, release, artifact, or network gate advances.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

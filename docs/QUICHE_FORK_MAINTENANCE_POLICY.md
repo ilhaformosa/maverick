@@ -2,7 +2,7 @@
 
 Date: 2026-08-12
 
-Task: B-002-S1; policy precision B-002-S3-2B (2026-08-13)
+Task: B-002-S1; policy precision B-002-S3-2B/S3-2D (2026-08-13)
 
 Status: **document-only policy/SLA evidence; B-002 remains RED**
 
@@ -13,9 +13,10 @@ Maverick can either retain any private quiche patch or prove that an old patch
 is no longer required. It is not a patch registry, an adoption decision, a
 replay result, an upstream report, a security review, or permission to add
 quiche, vendor source, product Cargo dependencies, H3 runtime, or H3 to Auto.
-The test-tool dependency exception for the S2 synthetic verifier and the
-later candidate-test exception are defined narrowly below. Neither is a
-product dependency or adoption exception.
+The test-tool dependency exception for the S2 synthetic verifier, the
+candidate-test exception, and the later candidate-bound P3 logging-surface
+exception are defined narrowly below. None is a product dependency or adoption
+exception.
 
 The owner has selected quiche as Maverick's only intended H3/UDP backend. That
 direction does not make the preserved fork acceptable. Until every gate below
@@ -423,9 +424,11 @@ decision.
 
 - Pin `quiche = "=0.29.3"` with `default-features = false` and no quiche
   feature. Directly pin existing `boring = "=5.1.0"` and locked
-  `log = "=0.4.33"` with only its all-profile `max_level_debug` cap, reusing
-  the exact `boring-sys` 5.1.0 closure. The exact lockfile closure may contain
-  no unrelated upgrade, Boring 4.x, second
+  `log = "=0.4.33"` with default features disabled and `max_level_debug` as
+  the only directly requested feature, reusing the exact `boring-sys` 5.1.0
+  closure. Transitive activation of ordinary `default` and `std` is not a
+  trace-widening feature. The exact lockfile closure may contain no unrelated
+  upgrade, Boring 4.x, second
   `links = "boringssl"` package, Git dependency, quiche path override, vendor
   tree, `[patch]`, private Cargo/TLS patch, or mutable source.
 - Normal preparation and focused build/test may obtain and build only those
@@ -459,6 +462,58 @@ first-party `unsafe`, qlog, any quiche feature, second cryptographic closure,
 new patch, product leak, or replay fetch/build. PASS is focused evaluation
 only: it resolves no P1/P2/P3 disposition and advances no replay,
 qualification, adoption, runtime, H3, product, SBOM/artifact, or release gate.
+
+### S3-2D candidate-bound P3 logging-surface exception
+
+After the candidate-focused slice above is merged, exactly one later,
+separately reviewed implementation slice may extend only that existing
+`quiche-candidate` integration test and its existing GNU/Linux and Apple
+public-PR candidate steps to evaluate the proposed P3 log-cap mechanism. Its
+complete implementation allowlist is
+`crates/maverick-tests/tests/quiche_candidate.rs`,
+`.github/workflows/ci.yml`, and `STATUS.md`. It must reuse the same default-off
+feature, integration-test target, exact dependencies, lockfile, and in-memory
+QUIC pump. It may not edit a manifest or lockfile; add a target, dependency, or
+feature; or change any quiche, qlog, Boring, product, default-workspace, SBOM,
+pilot, release, or artifact graph.
+
+The candidate test must assert that `log::STATIC_MAX_LEVEL` is `Debug` and use
+a hostile global logger plus a formatting counter, with a Debug positive
+control, to prove Trace arguments are removed before formatting. The bounded
+H3 exercise must cover both endpoint roles; bidirectional HEADERS with
+peer-controlled QPACK literal values and bidirectional DATA; SETTINGS and
+control-stream processing; request `PRIORITY_UPDATE`; and GOAWAY, all through
+the existing in-memory packet pump. Packet pumping, event draining, input and
+output bytes, log records, formatting counts, and loop iterations must have
+fixed reviewed bounds and fail closed on exhaustion. The implementation and
+its independent review must bind the claim to the exact reviewed upstream H3
+logging source surface and exact call-site count; this policy edit establishes
+neither value, and mutable discovery or an empty match cannot pass.
+
+Within each of the two existing candidate steps, the feature-graph check must
+prove exactly one `log` 0.4.33 package; `max_level_debug` must be present, while
+`max_level_trace`, `release_max_level_trace`, and every other trace-widening
+feature must be absent. Ordinary `default` and `std` activation is not
+forbidden. The existing no-quiche-feature, no-qlog, single-Boring 5.1.0 closure,
+no-Boring-4.x, and product/default/SBOM/artifact isolation checks remain
+unchanged. No other CI job or step may execute this exception.
+
+PASS proves only this candidate-bound mechanism and evaluation surface. P3
+remains `UNRESOLVED`; product and application logging, outer-QUIC logging,
+qlog, real product H3, final artifacts, replay, and qualification remain
+unproved. P2 cannot be proved before a separately authorized, independently
+reviewed, hash-fixed rebased P1 candidate exists. An `E0603` compiler error or
+proof that pure upstream exposes no wider helper is not the required unique P2
+API/visibility and documentation proof. This exception authorizes no P1 rebase
+or patch and no P2 implementation or proof.
+
+STOP on any allowlist or graph drift, mutable or unbounded surface selection,
+first-party `unsafe` or typed/raw Boring bridge, source or vendor change,
+network or socket use, trace-widening feature, sensitive-value output, product
+leak, P1/P2 implementation, or disposition/adoption claim. Do not create a
+registry, receipt, schema, framework, or coordination layer. Regardless of a
+focused PASS, P1/P2/P3 remain `UNRESOLVED`, B-002 remains **PARTIAL / RED**, and
+no runtime, H3, product, release, artifact, or network gate advances.
 
 ## Security-release, rebase, and upstream SLA
 

@@ -159,6 +159,27 @@ clone/fetch/submodule path stops. Any typed/raw Boring bridge,
 or product/default CLI/SBOM/pilot/release/artifact leak stops. PASS remains
 evaluation only, never disposition, replay, qualification, adoption, or H3.
 
+S3-2D also adds no new queue step. It permits exactly one later slice to change
+only the existing candidate test, the existing GNU/Linux/Apple candidate steps,
+and `STATUS.md`. That slice must exercise the candidate-bound P3 mechanism with
+`STATIC_MAX_LEVEL` fixed at Debug, a hostile logger and formatting counter,
+both H3 roles, bidirectional HEADERS/QPACK literals/DATA, SETTINGS/control,
+request `PRIORITY_UPDATE`, GOAWAY, and the existing in-memory QUIC pump under
+fixed bounds. Its review must bind the exact upstream H3 logging-source surface
+and call-site count. Both host steps must prove exactly one log 0.4.33,
+`max_level_debug` present, and `max_level_trace`, `release_max_level_trace`, and
+every other trace-widening feature absent; ordinary `default` and `std` are not
+forbidden. Existing quiche/qlog/Boring and product isolation cannot change. No
+manifest, lockfile, target, dependency, feature, P1, or P2 change is authorized.
+
+A focused PASS remains mechanism/evaluation evidence only. P3 stays
+`UNRESOLVED`; product/application and outer-QUIC logging, qlog, real product H3,
+artifacts, replay, and qualification remain missing. P2 must wait for a
+separately authorized, hash-fixed rebased P1 candidate: an `E0603` error or an
+empty pure-upstream helper result is not its required unique proof. Any scope,
+graph, source, bound, privacy, product, or claim drift stops; B-002 remains
+**PARTIAL / RED**.
+
 ### Train A contract — v1.2 H2 RC/Stable
 
 **User result.** Keep the better-proven Beta H2 path moving independently

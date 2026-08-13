@@ -418,8 +418,10 @@ censorship resistance, production readiness, or browser identity.
 - B-002-S3-2C candidate-focused evaluation (2026-08-13): unpublished
   `maverick-tests` now has one default-off `quiche-candidate` integration
   target. Its exact optional crates.io pins are quiche 0.29.3 with no quiche
-  feature, Boring 5.1.0, and log 0.4.33 with only `max_level_debug`; the lock
-  delta adds exactly eight packages total: quiche and seven required packages.
+  feature, Boring 5.1.0, and log 0.4.33 with default features disabled and only
+  `max_level_debug` directly requested; transitive ordinary `default` and `std`
+  activation is not a trace-widening feature. The lock delta adds exactly eight
+  packages total: quiche and seven required packages.
   The local focused
   Apple-arm64 graph contained one Boring/`boring-sys` 5.1.0 closure, no Boring
   4.x, and no quiche feature. Default and no-default `maverick-cli` graphs did
@@ -453,6 +455,32 @@ censorship resistance, production readiness, or browser identity.
   `UNRESOLVED`; B-002 remains **PARTIAL / RED**, with replay, qualification,
   adoption, H3 runtime/config/Auto, product, release, and network gates
   unchanged.
+- B-002-S3-2D candidate-bound P3 logging-surface policy precision (2026-08-13):
+  exactly one later implementation slice may edit only the existing
+  `quiche_candidate` test, the existing GNU/Linux/Apple public-PR candidate
+  steps, and `STATUS.md`. It must reuse the same default-off target, feature,
+  exact dependencies, lockfile, and in-memory QUIC pump; no manifest, lockfile,
+  target, dependency, feature, or product graph change is authorized. The
+  bounded test must assert `log::STATIC_MAX_LEVEL == Debug` and use a hostile
+  logger plus formatting counter and Debug positive control across both H3
+  roles, bidirectional HEADERS with peer-controlled QPACK literals and DATA,
+  SETTINGS/control, request `PRIORITY_UPDATE`, and GOAWAY. The implementation
+  review must bind the exact upstream H3 logging-source surface and call-site
+  count, and every pump, event, byte, log, formatting, and loop resource must
+  have a fixed fail-closed bound. Each existing candidate host step must prove
+  exactly one log 0.4.33, `max_level_debug` present, and `max_level_trace`,
+  `release_max_level_trace`, and every other trace-widening feature absent;
+  ordinary `default` and `std` are not forbidden. Existing quiche/qlog/Boring
+  and product/default/SBOM/artifact isolation checks remain unchanged. This
+  authorizes no P1 or P2 work. P2 must
+  wait for a separately authorized, independently reviewed, hash-fixed rebased
+  P1 candidate; an `E0603` error or an empty pure-upstream helper result is not
+  unique API/visibility and documentation proof. A focused PASS is only
+  candidate-bound P3 mechanism/evaluation evidence. Product/application and
+  outer-QUIC logging, qlog, real product H3, artifacts, replay, and
+  qualification remain missing; P1/P2/P3 remain `UNRESOLVED`, B-002 remains
+  **PARTIAL / RED**, and no runtime, product, release, artifact, or network gate
+  advances.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

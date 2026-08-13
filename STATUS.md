@@ -532,10 +532,25 @@ censorship resistance, production readiness, or browser identity.
   extract the fixed official archive in a repository-external `0700` tree,
   apply only this patch, run offline and locked, and authenticate cleanup while
   proving repository, root target, registry source, product graph, archive,
-  and SBOM isolation. Public-host exact-head execution is still pending. This
-  is candidate evidence only: it selects no candidate and makes no patch
-  disposition. P1/P2/P3 remain `UNRESOLVED`, B-002 remains **PARTIAL / RED**,
-  and no runtime, H3, product, release, artifact, or network gate advances.
+  and SBOM isolation. On exact PR #56 source head
+  `59b2747efd5b929492b39cb2adb9abfd5f6ef4a3` (tree
+  `99314ae85f2fc0b6a9354d139b6f4e2344314346`, also the tree of merged `main`
+  commit `0946b12cc6a19be7bcc63b1846de0a7e319f5927`; full-index diff SHA-256
+  `2934afb0674983029b64dd8a307e6e121e3b5608b58806c3abb6ebe1d9a4396c`),
+  the sole valid new-head attempt-one runs passed without rerun or cancellation:
+  product-ci run `31698980549` passed `public-pr-gate` and `macos-sbom-gate`;
+  CodeQL run `31698977613` passed `Analyze (actions)`, `Analyze (rust)`, and
+  aggregate `CodeQL`; and supply-chain run `31698980635` passed
+  `dependency-inventory`. Both public candidate steps therefore passed on
+  GNU/Linux and Apple, including the authenticated official-archive,
+  extraction, patch, offline/locked test, and cleanup checks, while the existing
+  product archive and SBOM isolation checks passed unchanged. The older
+  `cef1bde5c817ca357bbcb0d44cc4a4f05c2a01f8` source-head product-ci failure and
+  skipped macOS job are not counted because that head was replaced; no result
+  from it is credited to the new head. This is candidate evidence only: it
+  selects no candidate and makes no patch disposition. P1/P2/P3 remain
+  `UNRESOLVED`, B-002 remains **PARTIAL / RED**, and no runtime, H3, product,
+  release, artifact, or network gate advances.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

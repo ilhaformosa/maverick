@@ -320,6 +320,20 @@ censorship resistance, production readiness, or browser identity.
   `UNRESOLVED`; no candidate, qualification, Boring, SBOM, upstream, runtime,
   config, Auto, product, release, or network gate advanced. B-002 remains
   **PARTIAL / RED**.
+- B-002-S3-1B bounded diagnosis and parser repair (2026-08-13): without
+  rerunning the production entry or replacing the one-shot result, bounded
+  test-only diagnostics localized the same RED to P1's fifth and final
+  `src/h3/stream.rs` hunk. The hash-fixed P1 patch ends with one legal bare
+  blank line, which the parser had mistaken for a hunk marker and rejected.
+  The minimal parser fix accepts exactly one terminal bare blank line; two
+  terminal blank lines and a bare blank line inside diff/hunk structure remain
+  fail-closed. After the repair, bounded checkpoints passed the official
+  initial-tree and byte-accounting checks, every fixed P1, P2, and P3 stage,
+  and the final curated closure. This is diagnosis and repair evidence only,
+  not a new production historical replay, and it does not rewrite the S3-1B
+  RED. P1/P2/P3 disposition remains `UNRESOLVED`; B-002 remains
+  **PARTIAL / RED**. No candidate, qualification, Boring, SBOM, upstream,
+  runtime, config, Auto, product, release, or network gate advanced.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

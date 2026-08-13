@@ -161,6 +161,30 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binutils clang cmake file ripgrep shellcheck
+      - name: Evaluate the default-off quiche candidate
+        if: steps.scope.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          graph="$(cargo tree --locked -p maverick-tests \
+            --no-default-features --features browser-tls,quiche-candidate \
+            --edges normal,build --prefix none)"
+          [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'boring v5\.1\.0' <<<"$graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'boring-sys v5\.1\.0' <<<"$graph")" -eq 1 ]]
+          ! grep -Eq '^boring(-sys)? v4\.' <<<"$graph"
+          features="$(cargo tree --locked -p maverick-tests \
+            --no-default-features --features browser-tls,quiche-candidate \
+            -e features -i quiche@0.29.3 --prefix none)"
+          [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$features")" -eq 1 ]]
+          ! grep -Fq 'quiche feature' <<<"$features"
+          default_cli="$(cargo tree --locked -p maverick-cli --prefix none)"
+          no_default_cli="$(cargo tree --locked -p maverick-cli \
+            --no-default-features --prefix none)"
+          ! grep -Eq '^quiche v' <<<"$default_cli"
+          ! grep -Eq '^quiche v' <<<"$no_default_cli"
+          cargo test --locked -p maverick-tests --no-default-features \
+            --features browser-tls,quiche-candidate \
+            --test quiche_candidate -- --test-threads=1
       - name: Build the exact-head GNU/Linux pilot archive
         id: pilot
         if: steps.scope.outputs.docs_only != 'true'
@@ -222,6 +246,33 @@ jobs:
           toolchain: 1.97.1
       - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - run: cargo fetch --locked --target "$MAVERICK_SBOM_TARGET"
+      - name: Evaluate the default-off quiche candidate
+        run: |
+          set -euo pipefail
+          graph="$(cargo tree --locked -p maverick-tests \
+            --no-default-features --features browser-tls,quiche-candidate \
+            --target "$MAVERICK_SBOM_TARGET" \
+            --edges normal,build --prefix none)"
+          [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'boring v5\.1\.0' <<<"$graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'boring-sys v5\.1\.0' <<<"$graph")" -eq 1 ]]
+          ! grep -Eq '^boring(-sys)? v4\.' <<<"$graph"
+          features="$(cargo tree --locked -p maverick-tests \
+            --no-default-features --features browser-tls,quiche-candidate \
+            --target "$MAVERICK_SBOM_TARGET" \
+            -e features -i quiche@0.29.3 --prefix none)"
+          [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$features")" -eq 1 ]]
+          ! grep -Fq 'quiche feature' <<<"$features"
+          default_cli="$(cargo tree --locked -p maverick-cli \
+            --target "$MAVERICK_SBOM_TARGET" --prefix none)"
+          no_default_cli="$(cargo tree --locked -p maverick-cli \
+            --no-default-features --target "$MAVERICK_SBOM_TARGET" \
+            --prefix none)"
+          ! grep -Eq '^quiche v' <<<"$default_cli"
+          ! grep -Eq '^quiche v' <<<"$no_default_cli"
+          cargo test --locked -p maverick-tests --no-default-features \
+            --features browser-tls,quiche-candidate \
+            --test quiche_candidate -- --test-threads=1
       - name: Generate and fully verify the exact-head macOS SBOM
         run: |
           set -euo pipefail

@@ -15,10 +15,16 @@ required-features = ["tun-phase2"]
 name = "quiche-fork-replay-verifier"
 path = "src/bin/quiche-fork-replay-verifier.rs"
 
+[[test]]
+name = "quiche_candidate"
+path = "tests/quiche_candidate.rs"
+required-features = ["quiche-candidate"]
+
 [features]
 default = ["browser-tls"]
 browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
 ech = ["maverick-client/ech", "maverick-server/ech"]
+quiche-candidate = ["dep:boring", "dep:log", "dep:quiche"]
 tun-runtime = [
   "dep:etherparse",
   "dep:maverick-tun",
@@ -29,18 +35,21 @@ tun-phase2 = ["tun-runtime", "dep:clap", "dep:libc"]
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
+boring = { version = "=5.1.0", optional = true }
 bytes.workspace = true
 clap = { workspace = true, optional = true }
 etherparse = { version = "=0.20.3", optional = true }
 futures.workspace = true
 h2.workspace = true
 http.workspace = true
+log = { version = "=0.4.33", default-features = false, features = ["max_level_debug"], optional = true }
 flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 maverick-client = { path = "../maverick-client", default-features = false }
 maverick-core = { path = "../maverick-core", default-features = false }
 maverick-server = { path = "../maverick-server" }
 maverick-tun = { path = "../maverick-tun", optional = true }
 rcgen.workspace = true
+quiche = { version = "=0.29.3", default-features = false, optional = true }
 rustls.workspace = true
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 serde.workspace = true

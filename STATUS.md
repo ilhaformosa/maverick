@@ -415,6 +415,36 @@ censorship resistance, production readiness, or browser identity.
   This is policy only, not Cargo/CI, disposition, replay, qualification,
   adoption, or H3 enablement. P1/P2/P3 remain `UNRESOLVED`; B-002 remains
   **PARTIAL / RED**, with product, release, and network gates unchanged.
+- B-002-S3-2C candidate-focused evaluation (2026-08-13): unpublished
+  `maverick-tests` now has one default-off `quiche-candidate` integration
+  target. Its exact optional crates.io pins are quiche 0.29.3 with no quiche
+  feature, Boring 5.1.0, and log 0.4.33 with only `max_level_debug`; the lock
+  delta adds exactly eight packages total: quiche and seven required packages.
+  The local focused
+  Apple-arm64 graph contained one Boring/`boring-sys` 5.1.0 closure, no Boring
+  4.x, and no quiche feature. Default and no-default `maverick-cli` graphs did
+  not contain quiche. Existing product SBOM and artifact verifiers remain
+  unchanged and must still prove no candidate leakage on the public PR head.
+  The focused public-API test built a fully in-memory QUIC handshake, created
+  both H3 roles, exchanged one request and response carrying role markers, and
+  initialized a direct Boring 5 context without a typed or raw bridge. Fresh
+  pairs fragmented valid peer bytes at one-byte boundaries. Pristine upstream
+  accepted or ignored `MAX_PUSH_ID`, `CANCEL_PUSH`, push-form
+  `PRIORITY_UPDATE`, and `PUSH_PROMISE`; it rejected a push stream with fixed
+  `H3_STREAM_CREATION_ERROR` (`0x103`) and a nonempty reason. These are
+  candidate-bound upstream witnesses that preserve P1's need analysis; they
+  are not a P1 fix, a retained patch, or a disposition. P2 still lacks its
+  required unique API/visibility proof and remains unresolved. A hostile
+  logger plus formatting counter proved that this candidate graph's static
+  log cap removes Trace before formatting while still delivering Debug; the
+  real two-role exchange delivered no Trace record. That is only the proposed
+  P3 mechanism in this candidate target: complete product/application logging,
+  QUIC transport logging, qlog, both public-CI hosts, and final artifact
+  review remain unproved. Focused Apple-arm64 tests and clippy passed locally;
+  GNU/Linux and exact-head public CI have not yet run. P1/P2/P3 remain
+  `UNRESOLVED`; B-002 remains **PARTIAL / RED**, with replay, qualification,
+  adoption, H3 runtime/config/Auto, product, release, and network gates
+  unchanged.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

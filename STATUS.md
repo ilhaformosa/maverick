@@ -236,45 +236,70 @@ censorship resistance, production readiness, or browser identity.
   separate Train A exact-candidate H2 impact gate; this slice neither changes H2
   nor exempts it. B-002, quiche adoption, H3 runtime, security, supply-chain,
   product, release, and real-network gates remain RED.
-- B-002-S2 synthetic replay verifier (2026-08-13): the current tree contains
-  one unpublished, non-product `maverick-tests` verifier and fixed synthetic
-  self-tests. Its production entry accepts exactly one absolute,
-  repository-external `.crate`; opens it once through no-follow directory-FD
-  traversal; checks fixed size and hashes; makes and rehashes one private copy;
-  parses one bounded gzip member and a strict ustar subset; applies one exact,
-  fuzz-free patch in memory; and checks fixed initial/final tree manifests plus
-  a fixed, non-quiche Git commit/tree/blob chain. It requires `/usr/bin/git`
-  2.45 or newer for the fixed `--no-lazy-fetch` invocation. It never
-  materializes the reconstructed source tree, invokes Cargo or rustc, executes
-  archive/input code, or uses a network during mechanical replay.
-  The locked `0700` workspace uses no-follow FDs, device/inode identities, one
-  exact private-file ledger, bounded reads, and fail-closed cleanup. These
-  controls detect replacement and unexpected residue, but `0700` is not an
+- B-002-S2 synthetic replay verifier checkpoint (2026-08-13): at that
+  checkpoint, the tree contained one unpublished, non-product `maverick-tests`
+  verifier and fixed synthetic self-tests. Its then-production entry accepted
+  exactly one absolute, repository-external `.crate`; opened it once through
+  no-follow directory-FD traversal; checked fixed size and hashes; made and
+  rehashed one private copy; parsed one bounded gzip member and a strict ustar
+  subset; applied one exact, fuzz-free patch in memory; and checked fixed
+  initial/final tree manifests plus a fixed, non-quiche Git commit/tree/blob
+  chain. It required `/usr/bin/git` 2.45 or newer for the fixed
+  `--no-lazy-fetch` invocation. It did not materialize the reconstructed source
+  tree, invoke Cargo or rustc, execute archive/input code, or use a network
+  during mechanical replay.
+  The locked `0700` workspace used no-follow FDs, device/inode identities, one
+  exact private-file ledger, bounded reads, and fail-closed cleanup. Those
+  controls detected replacement and unexpected residue, but `0700` was not an
   isolation boundary against a hostile process running as the same OS user;
-  that same-UID limitation remains part of the local threat boundary.
-  Catchable signals use only `signal-hook 0.4.4`'s safe high-level flag API and
+  that same-UID limitation remained part of the local threat boundary.
+  Catchable signals used only `signal-hook 0.4.4`'s safe high-level flag API and
   one `SeqCst` `ACTIVE`/`SIGNALLED`/`COMMITTED` atomic. `INT`, `TERM`, and `HUP`
-  register before work; the sole success compare-exchange occurs only after
-  replay, exact cleanup, and prior-umask restoration. Production exits
-  immediately after `COMMITTED`. Deterministic disposable-child tests send each
+  registered before work; the sole success compare-exchange occurred only after
+  replay, exact cleanup, and prior-umask restoration. Production exited
+  immediately after `COMMITTED`. Deterministic disposable-child tests sent each
   signal before final-manifest verification and after cleanup but before that
-  compare-exchange; RED paths safely unregister every returned ID and then exit
-  immediately. Panic, partial-registration rollback, umask, cleanup, and silent
-  production exit tests are also GREEN.
-  The exact tool-only graph pins `rustix 1.1.4`, `flate2 1.1.9`, and
-  `signal-hook 0.4.4` with default features disabled. `signal-hook` is the only
-  new locked package beyond the five reviewed compression packages;
-  its packaged build script is an empty operation for this feature set, and its
-  optional `cc` edge, default `channel`/`iterator`, and extended features are
+  compare-exchange; RED paths safely unregistered every returned ID and then
+  exited immediately. Panic, partial-registration rollback, umask, cleanup, and
+  silent production exit tests were also GREEN.
+  The exact tool-only graph pinned `rustix 1.1.4`, `flate2 1.1.9`, and
+  `signal-hook 0.4.4` with default features disabled. `signal-hook` was the only
+  new locked package beyond the five reviewed compression packages; its
+  packaged build script was an empty operation for this feature set, and its
+  optional `cc` edge, default `channel`/`iterator`, and extended features were
   not activated.
   No existing package was upgraded, and the new `flate2`/`signal-hook`
-  additions do not enter a product binary. This is synthetic mechanism evidence
-  only: no official quiche archive
-  or P1/P2/P3 object was read or replayed, no vendor candidate was selected or
-  qualified, and no Boring/SBOM, independent review, upstream disposition,
-  runtime/config/Auto/product, release, or real-network gate advanced. B-002
-  remains **PARTIAL / RED**; S3 must replace constants in a separate reviewed
-  diff and be executed by an independent maintainer.
+  additions did not enter a product binary. That was synthetic mechanism
+  evidence only: no official quiche archive or P1/P2/P3 object was read or
+  replayed, no vendor candidate was selected or qualified, and no Boring/SBOM,
+  independent review, upstream disposition, runtime/config/Auto/product,
+  release, or real-network gate advanced. B-002 remained **PARTIAL / RED** at
+  the S2 checkpoint.
+- B-002-S3-1A historical replay authoring (2026-08-13): the verifier now fixes
+  the official quiche 0.29.3 archive's exact compressed and expanded sizes and
+  SHA-256 values, upstream revision and license markers; binds the P1/P2, P3,
+  and final repository commit/tree chains; and reads exactly three fixed patch
+  blobs. It models P1 then P2 from the staging `vendor` directory and P3 from
+  the staging root, all at strip level one. P1/P3 require an `index` line, P2
+  forbids one, each patch must touch exactly its fixed allowlist, and every
+  patched stage must match its fixed full-tree manifest and byte total. The
+  production path remains a single historical path accepting exactly one
+  absolute repository-external `.crate`; synthetic fixtures and helpers are
+  test-only, with no mode, profile, or environment constant selector.
+  The same in-memory path also binds the final curated vendor Git tree and
+  checks complete official/common/identical/changed/omitted/vendor-only byte
+  classification, exact counts and totals, the three replay-produced H3 files,
+  and equality with the fixed 68-file, 2,455,232-byte final tree. This is
+  curated byte accounting, not proof of provenance or justification for a
+  curation decision. Focused synthetic, parser, patch, fixed-Git-object,
+  cleanup, signal, build, format, and lint checks are GREEN. The authoring
+  maintainer deliberately did **not** run the official archive through the
+  complete P1 -> P2 -> P3 and final-manifest path; the first formal historical
+  replay is reserved for independent S3-1B, so its outcome remains **UNKNOWN / RED**.
+  No patch disposition, upstream route or exception, clean rebase proof,
+  independent delta review, candidate selection, Boring/SBOM qualification,
+  H3 runtime/config/Auto/product, release, or real-network gate advanced.
+  B-002 remains **PARTIAL / RED**.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

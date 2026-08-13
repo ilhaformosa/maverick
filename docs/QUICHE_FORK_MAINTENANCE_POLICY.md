@@ -2,7 +2,7 @@
 
 Date: 2026-08-12
 
-Task: B-002-S1; policy precision B-002-S3-2B/S3-2D (2026-08-13)
+Task: B-002-S1; policy precision B-002-S3-2B/S3-2D/S3-2E (2026-08-13)
 
 Status: **document-only policy/SLA evidence; B-002 remains RED**
 
@@ -15,8 +15,8 @@ replay result, an upstream report, a security review, or permission to add
 quiche, vendor source, product Cargo dependencies, H3 runtime, or H3 to Auto.
 The test-tool dependency exception for the S2 synthetic verifier, the
 candidate-test exception, and the later candidate-bound P3 logging-surface
-exception are defined narrowly below. None is a product dependency or adoption
-exception.
+and P1 candidate exceptions are defined narrowly below. None is a product
+dependency or adoption exception.
 
 The owner has selected quiche as Maverick's only intended H3/UDP backend. That
 direction does not make the preserved fork acceptable. Until every gate below
@@ -514,6 +514,76 @@ leak, P1/P2 implementation, or disposition/adoption claim. Do not create a
 registry, receipt, schema, framework, or coordination layer. Regardless of a
 focused PASS, P1/P2/P3 remain `UNRESOLVED`, B-002 remains **PARTIAL / RED**, and
 no runtime, H3, product, release, artifact, or network gate advances.
+
+### S3-2E P1 candidate-fixture exception
+
+After S3-2D is merged and recorded, one later reviewed slice may evaluate a rebased
+P1 candidate. Its complete allowlist is `.github/workflows/ci.yml`, `STATUS.md`,
+and `Cargo.toml`, `Cargo.lock`, `quiche-p1.patch`, `tests/p1.rs` below non-workspace
+`crates/maverick-tests/fixtures/quiche-p1-candidate`. Root/test manifests and
+lockfiles, the current target, and every other file are excluded. This one-off
+fixture is no framework, receipt, schema, registry, replay replacement, or product
+package.
+
+Its manifest has an empty `[workspace]` opt-out and exactly two direct
+dependencies: `quiche` at the fixed relative path with default features off and
+no feature, and registry `boring = "=5.1.0"`; no other normal, dev, or build
+dependency is allowed. Every registry entry in its lockfile must match a root-
+lockfile package/version/checksum identity; the only non-registry packages are
+the fixture and fixed sibling quiche path. It preserves the sole Boring/
+`boring-sys` 5.1.0 `links` closure and contains no Boring 4.x, qlog, or second
+`links = "boringssl"` package.
+
+Only existing GNU/Linux/Apple public-PR candidate steps may run it, using the
+already-present official quiche 0.29.3 `.crate` of exactly 453,798 bytes and SHA-256
+`61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d`. Before safe
+extraction, reject absolute/`..` paths and every non-regular-file/non-directory
+entry, including links and devices. Verify the complete official source in a fresh
+repository-external `0700` tree; copy the fixture beside it; keep its manifest
+unchanged with one fixed relative sibling path; apply only `quiche-p1.patch`; and
+run Cargo only `--offline --locked`. A trap authenticates and removes the exact
+workspace and target. Registry/repository source cannot change. Clone, fetch,
+network, vendor, `[patch]`, Git dependency, historical/private or second patch,
+Boring source/build override, product graph, SBOM, release, and artifact paths are
+forbidden.
+
+The patch modifies only quiche `src/h3/mod.rs` and `src/h3/stream.rs`. It adds a
+strict default-false gate and sole public setter `set_reject_peer_push_activity`;
+`with_peer_input_logging_suppressed` is `pub(super)` from the first candidate,
+never historically broad. The setter documentation is exactly:
+
+```rust
+/// Rejects peer `MAX_PUSH_ID`, `PUSH_PROMISE`, `CANCEL_PUSH`, push-form
+/// `PRIORITY_UPDATE`, and push-stream activity.
+///
+/// This does not handle `GOAWAY`, request-form `PRIORITY_UPDATE`, QUIC
+/// Datagrams, or any other pre-authentication HTTP/3 event or state. Those
+/// boundaries require separate checks by the caller.
+///
+/// The default value is `false`.
+```
+
+Both roles produce the same local and peer `H3_FRAME_UNEXPECTED` (`0x105`), via
+quiche `Error::FrameUnexpected`, with empty reason once a full discriminator names
+one of the five surfaces. Frame types stop before payload length/state; push-stream
+type stops before `set_ty`. Fixed bounds cover fixture-controlled packet/event/loop
+counts and input/output buffers/bytes; Cargo has fixed wall-time and authenticated
+target/temp cleanup. For each surface and direction, tests use a valid eight-byte
+non-minimal QUIC varint at all seven split points and byte by byte: no early error,
+immediate error at completion, and no payload/state acceptance. SETTINGS, QPACK,
+request, GOAWAY, reserved-frame, request-priority, HEADERS, and DATA remain
+functional. With the setter omitted and with it explicitly set to `false`, every
+role/direction/surface case must separately reproduce its frozen pristine outcome,
+including legal frame processing, existing role-invalid rejection, and the push-
+stream `0x103` non-empty-reason rejection. No socket, first-party `unsafe`,
+typed/raw Boring bridge, or mutable discovery is allowed. Neutral PEM stays embedded
+in `tests/p1.rs`; another file or credential dependency is a STOP.
+
+PASS is bounded P1 candidate evidence only, not disposition, selected-candidate
+replay, upstream route, delta review, qualification, adoption, product, or release.
+P2 needs a later separately authorized proof against the frozen P1 hash; `E0603`
+alone cannot pass. P1/P2/P3 remain `UNRESOLVED`, B-002 remains **PARTIAL / RED**,
+and no runtime, H3, product, artifact, release, or network gate advances.
 
 ## Security-release, rebase, and upstream SLA
 

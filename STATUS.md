@@ -180,10 +180,11 @@ censorship resistance, production readiness, or browser identity.
   backend-neutral semantic history. This supersedes the conditional B-003
   choice in the convergence ADR without making quiche usable or ready. B-001
   still must qualify quiche against the neutral Chrome reference and the fixed
-  objective matrix, and B-002 remains **RED**: the preserved fork has no
-  passing patch dispositions, required upstream routes or still-valid written
-  cannot-upstream exceptions, clean rebase/replay proof, demonstrated
-  security-update SLA response, or independent delta
+  objective matrix, and B-002 remains **RED**: historical source reconstruction
+  now passes, but the preserved fork has no passing patch dispositions,
+  required upstream routes or still-valid written cannot-upstream exceptions,
+  selected-candidate replay, demonstrated security-update SLA response, or
+  independent delta
   review. No private fork or delta may be restored until the complete fork
   budget passes. A pure-upstream quiche
   candidate may omit all three old private patches only after an evidence-backed
@@ -362,6 +363,43 @@ censorship resistance, production readiness, or browser identity.
   adoption, release, Boring/SBOM, upstream, independent-delta-review, runtime,
   config, Auto, product, or network gate advanced. B-002 remains
   **PARTIAL / RED**.
+- B-002-S3-2A evaluation candidate and non-effective proposal (2026-08-13):
+  candidate-bound testing will use official `quiche` 0.29.3 at upstream commit
+  `09b125d4cfc16e78d73d8382c93926f3aba063d4`, archive SHA-256
+  `61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d`,
+  and license SHA-256
+  `2ef4b5abfce387a83933bda738e72467a79d15c1c17679143ec55011dae66b84`.
+  This is an evaluation-only candidate, not an adoption or selected-candidate
+  result. Its unproven shipping hypothesis uses `default-features = false` with
+  no quiche features enabled and reuses the existing single
+  `boring`/`boring-sys` 5.1.0 closure. This also removes quiche's typed Boring
+  builder bridge; the bounded offline Apple-arm64 probe observed one Boring 5
+  native closure for minimal
+  quiche and Boring initialization, but it did not prove a real handshake,
+  Linux, exact shipping graph, security, SBOM, or artifact. The existing
+  `boring-sys 5.1.0` build script's bundled network-free local Git application
+  of `boring-pq.patch` remains an explicit review surface, not an approval.
+  P1 is **PROPOSED RETAIN / UNRESOLVED** because pristine 0.29.3 lacks an
+  equivalent fail-closed peer-push gate, but only if the final pre-auth design
+  still gives those inputs to quiche and has no complete alternative gate;
+  otherwise it returns to DROP evaluation. P2 is
+  **PROPOSED DROP / UNRESOLVED** because the proposed rebased P1 never exposes
+  the historical wider helper and directly includes the exact public boundary
+  documentation frozen in the audit. P3 is
+  **PROPOSED DROP-FIRST / UNRESOLVED**: the first candidate experiment keeps
+  qlog off and uses the shared `log` crate's all-profile `max_level_debug` cap
+  to remove quiche Trace before peer-controlled values are formatted; failure
+  of the exact feature graph, hostile-logger formatting counter, either H3
+  role, send/receive/control surface, outer-QUIC/qlog boundary, or application-
+  logging review returns P3 to RETAIN-or-stop analysis. These proposals do not
+  start a RETAIN/upstream deadline, contact upstream, add Cargo/vendor/runtime
+  code, or resolve a patch. Selected-candidate replay, candidate-bound tests,
+  dependency/security review, both supported targets, Boring/link/SBOM/final
+  artifact, qualification, and independent delta review remain missing.
+  Needing the disabled typed Boring bridge, a wider P1 helper, a non-unique P2
+  source/rustdoc check, or an E0603-only P2 proof is a stop, not a disposition.
+  P1/P2/P3 remain `UNRESOLVED`; B-002 remains **PARTIAL / RED**, and no B-001,
+  H3 runtime, config, Auto, product, release, or network gate advanced.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

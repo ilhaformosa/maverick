@@ -2,7 +2,7 @@
 
 Date: 2026-08-12
 
-Task: B-002-S1
+Task: B-002-S1; policy precision B-002-S3-2B (2026-08-13)
 
 Status: **document-only policy/SLA evidence; B-002 remains RED**
 
@@ -13,8 +13,9 @@ Maverick can either retain any private quiche patch or prove that an old patch
 is no longer required. It is not a patch registry, an adoption decision, a
 replay result, an upstream report, a security review, or permission to add
 quiche, vendor source, product Cargo dependencies, H3 runtime, or H3 to Auto.
-The one test-tool dependency exception for the S2 synthetic verifier is
-defined narrowly below; it is not a quiche or product dependency exception.
+The test-tool dependency exception for the S2 synthetic verifier and the
+later candidate-test exception are defined narrowly below. Neither is a
+product dependency or adoption exception.
 
 The owner has selected quiche as Maverick's only intended H3/UDP backend. That
 direction does not make the preserved fork acceptable. Until every gate below
@@ -411,6 +412,53 @@ The fixed summary for that run contains only public exact hashes and results,
 never a source archive, patch body, raw log, local path, endpoint, credential,
 account, reviewer-private identifier, or environment detail. It is not stored
 in a new registry or evidence framework.
+
+### S3 candidate-focused Cargo and test boundary
+
+One separately reviewed implementation slice may evaluate the S3-2A proposal
+through exactly one integration-test target in unpublished `maverick-tests`,
+gated by one default-off feature named `quiche-candidate`. This is the only
+candidate-test Cargo exception and is not a selected-candidate or adoption
+decision.
+
+- Pin `quiche = "=0.29.3"` with `default-features = false` and no quiche
+  feature. Directly pin existing `boring = "=5.1.0"` and locked
+  `log = "=0.4.33"` with only its all-profile `max_level_debug` cap, reusing
+  the exact `boring-sys` 5.1.0 closure. The exact lockfile closure may contain
+  no unrelated upgrade, Boring 4.x, second
+  `links = "boringssl"` package, Git dependency, quiche path override, vendor
+  tree, `[patch]`, private Cargo/TLS patch, or mutable source.
+- Normal preparation and focused build/test may obtain and build only those
+  exact locked crates.io packages. Mechanical replay remains separate,
+  byte-only, offline, Cargo-free, and may not fetch or execute build scripts.
+  The inherited crates.io `boring-sys` 5.1.0 build may perform its packaged,
+  network-free local `git init` and `git apply boring-pq.patch` only during
+  candidate build/test. Its exact source, patch, build, and result require
+  dependency-security review. The bundled source must already be present;
+  any clone, fetch, submodule, or other Git-network branch is a STOP. Setting
+  `BORING_BSSL_PATH`, `BORING_BSSL_SOURCE_PATH`,
+  `BORING_BSSL_ASSUME_PATCHED`, or another Boring source/build/patch override
+  is forbidden.
+  If that literal packaged behavior is unacceptable, STOP rather than replace it.
+- The later slice's maximum allowlist is `Cargo.lock`,
+  `crates/maverick-tests/Cargo.toml`, one integration-test source,
+  `.github/workflows/ci.yml`, and `STATUS.md`. The direct pins live in the test
+  manifest, so root `Cargo.toml` is not required; stop for separate review if
+  workspace structure genuinely forces it. Existing public-PR GNU/Linux and
+  Apple jobs may add only the exact focused candidate step. It must not run
+  through `local-harness`, a product build command, `pilot-release`, tag,
+  publish, or artifact step, and candidate packages must remain absent from
+  every product SBOM and artifact those jobs also check.
+
+Exact-graph checks on both hosts must prove no quiche feature, one Boring 5.1.0
+`links` closure, and no Boring 4.x. Default and no-default checks must prove
+quiche absent from product/runtime crates, default workspace CLI, product
+SBOMs, pilot/release builds, and artifacts; lockfile presence is no product-SBOM
+exception. STOP on a disabled typed Boring bridge need, raw `SSL_CTX`/FFI,
+first-party `unsafe`, qlog, any quiche feature, second cryptographic closure,
+new patch, product leak, or replay fetch/build. PASS is focused evaluation
+only: it resolves no P1/P2/P3 disposition and advances no replay,
+qualification, adoption, runtime, H3, product, SBOM/artifact, or release gate.
 
 ## Security-release, rebase, and upstream SLA
 

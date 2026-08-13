@@ -400,6 +400,21 @@ censorship resistance, production readiness, or browser identity.
   source/rustdoc check, or an E0603-only P2 proof is a stop, not a disposition.
   P1/P2/P3 remain `UNRESOLVED`; B-002 remains **PARTIAL / RED**, and no B-001,
   H3 runtime, config, Auto, product, release, or network gate advanced.
+- B-002-S3-2B candidate-test policy precision (2026-08-13): one later slice may
+  add one default-off `maverick-tests` `quiche-candidate` integration target,
+  exact crates.io quiche 0.29.3 with no quiche features, direct exact Boring
+  5.1.0 and locked log 0.4.33 `max_level_debug` pins, the existing single
+  Boring closure, exact lockfile, and focused GNU/Linux/Apple CI. Its
+  maximum allowlist is the lockfile, test manifest, one integration test,
+  `ci.yml`, and `STATUS.md`; root `Cargo.toml` needs separate review if forced.
+  The inherited crates.io `boring-sys` packaged, network-free local Git patch
+  may run only in candidate build/test and requires security review; mechanical
+  replay remains offline and Cargo-free. Typed/raw Boring bridging, first-party
+  `unsafe`, Boring 4.x/second `links`, qlog/quiche features, vendor/private
+  patches, or product/default CLI/SBOM/pilot/release/artifact leakage stops.
+  This is policy only, not Cargo/CI, disposition, replay, qualification,
+  adoption, or H3 enablement. P1/P2/P3 remain `UNRESOLVED`; B-002 remains
+  **PARTIAL / RED**, with product, release, and network gates unchanged.
 - Local correct-credential relay and wrong-credential rejection: covered by
   `./scripts/user-smoke.sh`.
 - Single-binary owner-pilot folder and shareable archive: generated locally by

@@ -123,7 +123,8 @@ current main, S2 may add only the narrow byte-only verifier and synthetic
 self-tests. S3 separately reconstructs historical patched source and accounts
 for curated bytes, then a later narrow run replays the exact selected candidate.
 Executable qualification and independent review remain separate and bind to
-that exact candidate and replay. No slice may fetch source, contact upstream
+that exact candidate and replay. Outside S3-2B's exact-lock crates.io candidate
+preparation, no slice may fetch source; no slice may contact upstream
 implicitly, edit vendor or product/runtime Cargo code, or advance PR-4 merely
 because the preceding document or tool exists. The sole S2 tooling exception
 is one verifier target in the unpublished `maverick-tests` package, exact
@@ -143,6 +144,20 @@ continues with altered signal disposition. It may build and self-test before
 replay, but the already-built mechanical verifier must not invoke Cargo or
 execute input code. Each old patch still needs its own evidence-backed `DROP`
 or complete `RETAIN` result.
+
+S3-2B adds no new queue step; it only permits a later separate default-off
+`maverick-tests` `quiche-candidate` target with exact quiche 0.29.3/no quiche
+features, direct exact Boring 5.1.0 and locked log 0.4.33 pins, the single
+Boring closure, exact lockfile, and focused GNU/Linux/Apple public-PR steps.
+The maximum implementation allowlist is `Cargo.lock`, the
+test manifest, one integration test, `ci.yml`, and `STATUS.md`; root
+`Cargo.toml` is not required and needs separate review if genuinely forced. Exact crates.io
+preparation, including the inherited `boring-sys` packaged local Git
+patch, stays outside Cargo-free mechanical replay; any source override or
+clone/fetch/submodule path stops. Any typed/raw Boring bridge,
+`unsafe`, Boring 4.x/second `links`, qlog/quiche feature, vendor/private patch,
+or product/default CLI/SBOM/pilot/release/artifact leak stops. PASS remains
+evaluation only, never disposition, replay, qualification, adoption, or H3.
 
 ### Train A contract — v1.2 H2 RC/Stable
 

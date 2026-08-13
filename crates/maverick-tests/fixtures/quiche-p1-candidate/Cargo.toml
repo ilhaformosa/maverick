@@ -1,0 +1,15 @@
+[package]
+name = "maverick-quiche-p1-candidate"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+boring = "=5.1.0"
+quiche = { version = "=0.29.3", path = "../quiche-0.29.3", default-features = false }
+
+[[test]]
+name = "p1"
+path = "tests/p1.rs"

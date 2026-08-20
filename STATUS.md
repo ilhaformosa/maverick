@@ -75,7 +75,7 @@ agree on the exact candidate. Stable remains a later decision.
 | Exact RC commit, package version, release note, and candidate scope | **PARTIAL — version, note, and scope pass locally; the candidate commit awaits authorization** |
 | Direct-H2-only route and v1 compatibility matrix | **PARTIAL — 64 Direct-H2 loopback tests pass; exact RC-to-Beta.4 N/N-1 cells remain RED** |
 | Local `user-smoke` and `local-harness` on exact candidate | **LOCAL GREEN — both pass** |
-| Dependency, advisory, license, source, and first-party `unsafe` review | **RED — exact candidate not reviewed** |
+| Dependency, advisory, license, source, and first-party `unsafe` review | **LOCAL GREEN — `h2` is updated to 0.4.16; fresh advisory, license, source, ban, and first-party `unsafe` checks pass; exact-head CI remains pending** |
 | Apple/Linux archives, checksums, native/static verification, and SBOMs | **RED — exact RC artifacts do not exist** |
 | Exact-head public CI and CodeQL | **RED — candidate has not run on public CI** |
 | Independent exact-RC security review; no unresolved Critical/High | **RED — not performed** |

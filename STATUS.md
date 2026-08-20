@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-08-20
+Date: 2026-08-21
 
 This is Maverick's only active current-truth document. It answers what exists,
 what is safe to claim, what is blocked, and what currently needs owner
@@ -19,8 +19,8 @@ playbook preserve detail without becoming parallel status ledgers.
 | H3/UDP product | Disabled; no current H3 product backend or Auto path |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Prepare one exact Direct-H2 `v1.2.0-rc.1` candidate |
-| Stable readiness | **RED**; no exact RC candidate or completed exact-candidate gates yet |
+| Current milestone | Local Direct-H2 `v1.2.0-rc.1` candidate prepared; remote/security/artifact gates next |
+| Stable readiness | **RED**; the local candidate does not yet have complete exact-candidate gates |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
 candidate experiments are quality controls, not product progress by themselves.
@@ -57,7 +57,10 @@ parties. Beta.4 and its field evidence do not automatically qualify a later RC.
 ## Current Milestone: Direct-H2 RC.1
 
 The sole active product milestone is one exact Direct-H2-only
-`v1.2.0-rc.1` candidate. H3, native Datagram, auth v3, Config v2, Auto H3, TUN
+`v1.2.0-rc.1` candidate. Its local package version, lockfiles, release note,
+release binary, Direct-H2 loopback tests, `user-smoke`, and `local-harness` now
+agree and pass. No tag, release, public artifact, deployment, or Stable result
+has been created. H3, native Datagram, auth v3, Config v2, Auto H3, TUN
 migration, and new provider work are not prerequisites and are paused.
 
 The RC may become a prerelease/non-Latest release only after its candidate
@@ -69,12 +72,12 @@ agree on the exact candidate. Stable remains a later decision.
 
 | Gate | State |
 |---|---|
-| Exact RC commit, package version, release note, and candidate scope | **RED — not prepared** |
-| Direct-H2-only route and v1 compatibility matrix | **RED — exact candidate not tested** |
-| Local `user-smoke` and `local-harness` on exact candidate | **RED — candidate does not exist** |
+| Exact RC commit, package version, release note, and candidate scope | **PARTIAL — version, note, and scope pass locally; the candidate commit awaits authorization** |
+| Direct-H2-only route and v1 compatibility matrix | **PARTIAL — 64 Direct-H2 loopback tests pass; exact RC-to-Beta.4 N/N-1 cells remain RED** |
+| Local `user-smoke` and `local-harness` on exact candidate | **LOCAL GREEN — both pass** |
 | Dependency, advisory, license, source, and first-party `unsafe` review | **RED — exact candidate not reviewed** |
 | Apple/Linux archives, checksums, native/static verification, and SBOMs | **RED — exact RC artifacts do not exist** |
-| Exact-head public CI and CodeQL | **RED — exact candidate does not exist** |
+| Exact-head public CI and CodeQL | **RED — candidate has not run on public CI** |
 | Independent exact-RC security review; no unresolved Critical/High | **RED — not performed** |
 | Fresh-origin Direct-H2 field run and 72-hour owner use | **RED — not performed** |
 | Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **RED — not performed** |

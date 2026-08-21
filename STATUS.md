@@ -19,8 +19,8 @@ playbook preserve detail without becoming parallel status ledgers.
 | H3/UDP product | Disabled; no current H3 product backend or Auto path |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Local Direct-H2 `v1.2.0-rc.1` candidate prepared; remote/security/artifact gates next |
-| Stable readiness | **RED**; the local candidate does not yet have complete exact-candidate gates |
+| Current milestone | Direct-H2 `v1.2.0-rc.1` Week 2 qualification: cross-platform artifacts, compatibility, and review |
+| Stable readiness | **RED**; RC publication, field use, and Stable gates remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
 candidate experiments are quality controls, not product progress by themselves.
@@ -57,11 +57,14 @@ parties. Beta.4 and its field evidence do not automatically qualify a later RC.
 ## Current Milestone: Direct-H2 RC.1
 
 The sole active product milestone is one exact Direct-H2-only
-`v1.2.0-rc.1` candidate. Its local package version, lockfiles, release note,
-release binary, Direct-H2 loopback tests, `user-smoke`, and `local-harness` now
-agree and pass. No tag, release, public artifact, deployment, or Stable result
-has been created. H3, native Datagram, auth v3, Config v2, Auto H3, TUN
-migration, and new provider work are not prerequisites and are paused.
+`v1.2.0-rc.1` candidate. Its package version, lockfiles, release note, release
+binary, Direct-H2 loopback tests, `user-smoke`, local harness, dependency
+inventory, and required PR checks agree and pass. Week 2 adds merge-gated
+Apple/Linux candidate artifacts, target-aware SBOMs, and native
+Beta.4-to-RC.1 compatibility and rollback preflights. No tag, release, public
+RC artifact, deployment, or Stable result has been created. H3, native
+Datagram, auth v3, Config v2, Auto H3, TUN migration, and new provider work are
+not prerequisites and are paused.
 
 The RC may become a prerelease/non-Latest release only after its candidate
 scope, versions, release note, local product checks, locked dependency closure,
@@ -72,12 +75,12 @@ agree on the exact candidate. Stable remains a later decision.
 
 | Gate | State |
 |---|---|
-| Exact RC commit, package version, release note, and candidate scope | **PARTIAL — version, note, and scope pass locally; the candidate commit awaits authorization** |
-| Direct-H2-only route and v1 compatibility matrix | **PARTIAL — 64 Direct-H2 loopback tests pass; exact RC-to-Beta.4 N/N-1 cells remain RED** |
+| Exact RC commit, package version, release note, and candidate scope | **PARTIAL — version, note, scope, and merged source agree; the final qualification commit is not yet merged** |
+| Direct-H2-only route and v1 compatibility matrix | **PARTIAL — 64 loopback tests and the native Apple Beta.4-to-RC.1 preflight pass; the merge-gated Linux cell remains pending** |
 | Local `user-smoke` and `local-harness` on exact candidate | **LOCAL GREEN — both pass** |
-| Dependency, advisory, license, source, and first-party `unsafe` review | **LOCAL GREEN — `h2` is updated to 0.4.16; fresh advisory, license, source, ban, and first-party `unsafe` checks pass; exact-head CI remains pending** |
-| Apple/Linux archives, checksums, native/static verification, and SBOMs | **RED — exact RC artifacts do not exist** |
-| Exact-head public CI and CodeQL | **RED — candidate has not run on public CI** |
+| Dependency, advisory, license, source, and first-party `unsafe` review | **GREEN on merged source — `h2` 0.4.16 and fresh advisory, policy, and first-party `unsafe` checks pass; the final qualification head must repeat them** |
+| Apple/Linux archives, checksums, native/static verification, and SBOMs | **PARTIAL — the native Apple preflight passes; both exact qualification artifacts are now required before merge and remain unpublished** |
+| Exact-head public CI and CodeQL | **MERGE-GATED — the prior merged source passed; the qualification PR may merge only after its replacement exact head passes** |
 | Independent exact-RC security review; no unresolved Critical/High | **RED — not performed** |
 | Fresh-origin Direct-H2 field run and 72-hour owner use | **RED — not performed** |
 | Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **RED — not performed** |

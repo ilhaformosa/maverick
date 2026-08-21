@@ -8,29 +8,28 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 readonly MAC_TARGET="aarch64-apple-darwin"
 readonly LINUX_TARGET="x86_64-unknown-linux-gnu"
-readonly BETA1_TAG="v1.2.0-beta.1"
-readonly BETA1_VERSION="${BETA1_TAG#v}"
-readonly BETA1_REVISION="75b2a666f236043c3f3c611a9f2c3de8526c3171"
-readonly BETA2_TAG="v1.2.0-beta.2"
-readonly BETA2_VERSION="${BETA2_TAG#v}"
-readonly BETA2_REVISION="6862a3004ec9c3b1e52fd03f71dc47b771564cc4"
+readonly PREVIOUS_TAG="v1.2.0-beta.4"
+readonly PREVIOUS_VERSION="${PREVIOUS_TAG#v}"
+readonly PREVIOUS_REVISION="5109d89bdddc23a2830eda2c0c56a954d3b214a9"
+readonly CANDIDATE_TAG="v1.2.0-rc.1"
+readonly CANDIDATE_VERSION="${CANDIDATE_TAG#v}"
 readonly MAX_ARCHIVE_BYTES="67108864"
 readonly MAX_TEXT_BYTES="1048576"
 readonly MAX_SMALL_TEXT_BYTES="4096"
 readonly NATIVE_TIMEOUT_SECONDS="12"
-readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
 readonly CLEANUP_MARKER_CONTENT="maverick-n-minus-one-private-root"
 
 private_tmp=""
 selected_target=""
-source_beta1_archive=""
-source_beta1_checksum=""
-source_beta2_archive=""
-source_beta2_checksum=""
-beta1_archive_copy=""
-beta1_checksum_copy=""
-beta2_archive_copy=""
-beta2_checksum_copy=""
+source_previous_archive=""
+source_previous_checksum=""
+source_candidate_archive=""
+source_candidate_checksum=""
+candidate_revision=""
+previous_archive_copy=""
+previous_checksum_copy=""
+candidate_archive_copy=""
+candidate_checksum_copy=""
 snapshot_archive=""
 snapshot_checksum=""
 run_status=0
@@ -97,12 +96,6 @@ sha256_file() {
   printf '%s\n' "$digest"
 }
 
-field_hex() {
-  dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null |
-    od -An -tx1 -v |
-    tr -d ' \n'
-}
-
 snapshot_release() {
   local source_archive="$1"
   local source_checksum="$2"
@@ -110,7 +103,8 @@ snapshot_release() {
   local expected_bytes="$4"
   local expected_archive_sha="$5"
   local expected_checksum_sha="$6"
-  local destination="$7"
+  local expected_checksum_bytes="$7"
+  local destination="$8"
   local checksum_basename
   local expected_checksum
 
@@ -121,7 +115,7 @@ snapshot_release() {
   [[ "${source_checksum##*/}" == "$checksum_basename" ]] || fail
   [[ "$(file_size "$source_archive")" == "$expected_bytes" ]] || fail
   [[ "$expected_bytes" -le "$MAX_ARCHIVE_BYTES" ]] || fail
-  [[ "$(file_size "$source_checksum")" == "$CHECKSUM_BYTES" ]] || fail
+  [[ "$(file_size "$source_checksum")" == "$expected_checksum_bytes" ]] || fail
   [[ "$(sha256_file "$source_archive")" == "$expected_archive_sha" ]] || fail
   [[ "$(sha256_file "$source_checksum")" == "$expected_checksum_sha" ]] || fail
 
@@ -137,7 +131,7 @@ snapshot_release() {
   [[ -f "$snapshot_checksum" && ! -L "$snapshot_checksum" ]] || fail
   [[ "$(file_size "$snapshot_archive")" == "$expected_bytes" ]] || fail
   [[ "$(file_size "$snapshot_archive")" -le "$MAX_ARCHIVE_BYTES" ]] || fail
-  [[ "$(file_size "$snapshot_checksum")" == "$CHECKSUM_BYTES" ]] || fail
+  [[ "$(file_size "$snapshot_checksum")" == "$expected_checksum_bytes" ]] || fail
   [[ "$(sha256_file "$snapshot_archive")" == "$expected_archive_sha" ]] || fail
   [[ "$(sha256_file "$snapshot_checksum")" == "$expected_checksum_sha" ]] || fail
   cmp -s "$source_archive" "$snapshot_archive" || fail
@@ -170,46 +164,6 @@ extract_archive_safely() {
   esac
 }
 
-verify_beta1_archive_shape() {
-  local archive="$1"
-  local expected_names="$private_tmp/beta1-expected-names"
-  local observed_names="$private_tmp/beta1-observed-names"
-  local expected_types="$private_tmp/beta1-expected-types"
-  local observed_types="$private_tmp/beta1-observed-types"
-
-  case "$TARGET" in
-    "$MAC_TARGET")
-      printf '%s\n' \
-        "maverick-pilot/" \
-        "maverick-pilot/LICENSE" \
-        "maverick-pilot/START_HERE.txt" \
-        "maverick-pilot/SOURCE.txt" \
-        "maverick-pilot/maverick" \
-        "maverick-pilot/VERSION.txt" \
-        "maverick-pilot/SHA256SUMS" >"$expected_names"
-      ;;
-    "$LINUX_TARGET")
-      printf '%s\n' \
-        "maverick-pilot/" \
-        "maverick-pilot/SOURCE.txt" \
-        "maverick-pilot/START_HERE.txt" \
-        "maverick-pilot/maverick" \
-        "maverick-pilot/VERSION.txt" \
-        "maverick-pilot/SHA256SUMS" \
-        "maverick-pilot/LICENSE" >"$expected_names"
-      ;;
-    *) fail ;;
-  esac
-  "$tar_tool" -tzf "$archive" >"$observed_names" 2>/dev/null || fail
-  cmp -s "$observed_names" "$expected_names" || fail
-
-  awk '{ type = ($0 ~ /\/$/ ? "d" : "-"); print type " " $0 }' \
-    "$expected_names" >"$expected_types"
-  "$tar_tool" -tvzf "$archive" 2>/dev/null |
-    awk 'NF > 1 { print substr($1, 1, 1) " " $NF }' >"$observed_types" || fail
-  cmp -s "$observed_types" "$expected_types" || fail
-}
-
 verify_payload_shape() {
   local extract_dir="$1"
   local payload_root="$extract_dir/maverick-pilot"
@@ -234,81 +188,6 @@ verify_inner_checksums() {
     printf '%s  %s\n' "$(sha256_file "$payload_root/$inner_name")" "$inner_name"
   done >"$expected_inner"
   cmp -s "$inner_file" "$expected_inner" || fail
-}
-
-verify_beta1_metadata() {
-  local payload_root="$1"
-  local expected_source="$private_tmp/expected-beta1-source"
-  local expected_version="$private_tmp/expected-beta1-version"
-  local binary="$payload_root/maverick"
-  local elf_type
-  local file_description
-  local readelf_header
-  local readelf_tool
-
-  printf '%s\n' \
-    "repository: https://github.com/ilhaformosa/maverick" \
-    "git_revision: $BETA1_REVISION" \
-    "source_state: clean" \
-    "version: $BETA1_VERSION" \
-    "target: $TARGET" >"$expected_source"
-  cmp -s "$expected_source" "$payload_root/SOURCE.txt" || fail
-
-  printf '%s\n' \
-    "maverick $BETA1_VERSION" \
-    "protocol_version: 1" \
-    "$FEATURES_LINE" >"$expected_version"
-  cmp -s "$expected_version" "$payload_root/VERSION.txt" || fail
-
-  file_description="$(file -b "$binary" 2>/dev/null)" || fail
-  case "$TARGET" in
-    "$MAC_TARGET")
-      [[ "$(field_hex "$binary" 0 4)" == "cffaedfe" ]] || fail
-      [[ "$(field_hex "$binary" 4 4)" == "0c000001" ]] || fail
-      [[ "$(field_hex "$binary" 12 4)" == "02000000" ]] || fail
-      [[ "$file_description" == *"Mach-O"* &&
-        "$file_description" == *"arm64"* ]] || fail
-      [[ "$file_description" != *"universal"* &&
-        "$file_description" != *"fat"* ]] || fail
-      ;;
-    "$LINUX_TARGET")
-      [[ "$(field_hex "$binary" 0 7)" == "7f454c46020101" ]] || fail
-      elf_type="$(field_hex "$binary" 16 2)"
-      [[ "$elf_type" == "0200" || "$elf_type" == "0300" ]] || fail
-      [[ "$(field_hex "$binary" 18 2)" == "3e00" ]] || fail
-      [[ "$file_description" == *"ELF"* &&
-        "$file_description" == *"x86-64"* ]] || fail
-      if command -v readelf >/dev/null 2>&1; then
-        readelf_tool="$(command -v readelf 2>/dev/null)" || fail
-      elif command -v greadelf >/dev/null 2>&1; then
-        readelf_tool="$(command -v greadelf 2>/dev/null)" || fail
-      else
-        fail
-      fi
-      readelf_header="$("$readelf_tool" -h "$binary" 2>/dev/null)" || fail
-      printf '%s\n' "$readelf_header" |
-        grep -Eq 'Class:[[:space:]]+ELF64' || fail
-      printf '%s\n' "$readelf_header" |
-        grep -Eq 'Data:[[:space:]]+2.s complement, little endian' || fail
-      printf '%s\n' "$readelf_header" |
-        grep -Eq 'Machine:[[:space:]]+Advanced Micro Devices X86-64' || fail
-      case "$elf_type" in
-        0200)
-          [[ "$file_description" == *"executable"* ]] || fail
-          printf '%s\n' "$readelf_header" |
-            grep -Eq 'Type:[[:space:]]+EXEC[[:space:]]' || fail
-          ;;
-        0300)
-          [[ "$file_description" == *"pie executable"* ]] || fail
-          printf '%s\n' "$readelf_header" |
-            grep -Eq 'Type:[[:space:]]+DYN.*Position-Independent Executable' ||
-            fail
-          ;;
-      esac
-      ;;
-    *) fail ;;
-  esac
-  [[ -x "$binary" ]] || fail
 }
 
 run_bounded() {
@@ -418,7 +297,7 @@ assert_health() {
 }
 
 make_neutral_generated_profile() {
-  local beta1_binary="$1"
+  local previous_binary="$1"
   local profile_dir="$2"
   local private_home="$3"
   local private_runtime="$4"
@@ -430,7 +309,7 @@ make_neutral_generated_profile() {
   mkdir "$profile_dir" >/dev/null 2>&1 || fail
   chmod 0700 "$profile_dir" >/dev/null 2>&1 || fail
   expect_success "$generated_output" "$profile_dir" "$private_home" \
-    "$private_runtime" "$beta1_binary" gen-config
+    "$private_runtime" "$previous_binary" gen-config
   for input_file in client.generated.yaml server.generated.yaml; do
     [[ -f "$profile_dir/$input_file" && ! -L "$profile_dir/$input_file" ]] || fail
     neutral_file="$private_tmp/neutral-$input_file"
@@ -510,7 +389,7 @@ check_config_pair_rejection() {
   done
 }
 
-attempt_beta2_switch() {
+attempt_candidate_switch() {
   local profile_dir="$1"
   local label="$2"
   local kind
@@ -519,8 +398,8 @@ attempt_beta2_switch() {
 
   for kind in client server; do
     output="$private_tmp/${label}-${kind}-switch-preflight"
-    run_bounded "$output" "$profile_dir" "$beta2_home" "$beta2_runtime" \
-      "$beta2_binary" check-config --kind "$kind" -c "$kind.generated.yaml"
+    run_bounded "$output" "$profile_dir" "$candidate_home" "$candidate_runtime" \
+      "$candidate_binary" check-config --kind "$kind" -c "$kind.generated.yaml"
     [[ "$(file_size "$output")" -le "$MAX_TEXT_BYTES" ]] || fail
     case "$run_status" in
       0)
@@ -538,13 +417,13 @@ attempt_beta2_switch() {
     esac
   done
   [[ "$preflight_failed" -eq 0 ]] || return 1
-  write_selector "beta2"
+  write_selector "candidate"
 }
 
 write_selector() {
   local selected="$1"
   case "$selected" in
-    beta1 | beta2) ;;
+    previous | candidate) ;;
     *) fail ;;
   esac
   printf '%s\n' "$selected" >"$selector_file" || fail
@@ -566,17 +445,17 @@ assert_selected_health() {
   [[ "$(wc -l <"$selector_file" 2>/dev/null | tr -d '[:space:]')" == "1" ]] ||
     fail
   case "$selected" in
-    beta1)
-      selected_binary="$beta1_binary"
-      selected_version_file="$beta1_parent/maverick-pilot/VERSION.txt"
-      selected_home="$beta1_home"
-      selected_runtime="$beta1_runtime"
+    previous)
+      selected_binary="$previous_binary"
+      selected_version_file="$previous_parent/maverick-pilot/VERSION.txt"
+      selected_home="$previous_home"
+      selected_runtime="$previous_runtime"
       ;;
-    beta2)
-      selected_binary="$beta2_binary"
-      selected_version_file="$beta2_parent/maverick-pilot/VERSION.txt"
-      selected_home="$beta2_home"
-      selected_runtime="$beta2_runtime"
+    candidate)
+      selected_binary="$candidate_binary"
+      selected_version_file="$candidate_parent/maverick-pilot/VERSION.txt"
+      selected_home="$candidate_home"
+      selected_runtime="$candidate_runtime"
       ;;
     *) fail ;;
   esac
@@ -585,19 +464,19 @@ assert_selected_health() {
 }
 
 verify_inputs_unchanged() {
-  [[ -f "$source_beta1_archive" && ! -L "$source_beta1_archive" ]] || fail
-  [[ -f "$source_beta1_checksum" && ! -L "$source_beta1_checksum" ]] || fail
-  [[ -f "$source_beta2_archive" && ! -L "$source_beta2_archive" ]] || fail
-  [[ -f "$source_beta2_checksum" && ! -L "$source_beta2_checksum" ]] || fail
-  cmp -s "$source_beta1_archive" "$beta1_archive_copy" || fail
-  cmp -s "$source_beta1_checksum" "$beta1_checksum_copy" || fail
-  cmp -s "$source_beta2_archive" "$beta2_archive_copy" || fail
-  cmp -s "$source_beta2_checksum" "$beta2_checksum_copy" || fail
-  [[ "$(sha256_file "$source_beta1_archive")" == "$BETA1_SHA256" ]] || fail
-  [[ "$(sha256_file "$source_beta1_checksum")" == "$BETA1_CHECKSUM_SHA256" ]] ||
+  [[ -f "$source_previous_archive" && ! -L "$source_previous_archive" ]] || fail
+  [[ -f "$source_previous_checksum" && ! -L "$source_previous_checksum" ]] || fail
+  [[ -f "$source_candidate_archive" && ! -L "$source_candidate_archive" ]] || fail
+  [[ -f "$source_candidate_checksum" && ! -L "$source_candidate_checksum" ]] || fail
+  cmp -s "$source_previous_archive" "$previous_archive_copy" || fail
+  cmp -s "$source_previous_checksum" "$previous_checksum_copy" || fail
+  cmp -s "$source_candidate_archive" "$candidate_archive_copy" || fail
+  cmp -s "$source_candidate_checksum" "$candidate_checksum_copy" || fail
+  [[ "$(sha256_file "$source_previous_archive")" == "$PREVIOUS_SHA256" ]] || fail
+  [[ "$(sha256_file "$source_previous_checksum")" == "$PREVIOUS_CHECKSUM_SHA256" ]] ||
     fail
-  [[ "$(sha256_file "$source_beta2_archive")" == "$BETA2_SHA256" ]] || fail
-  [[ "$(sha256_file "$source_beta2_checksum")" == "$BETA2_CHECKSUM_SHA256" ]] ||
+  [[ "$(sha256_file "$source_candidate_archive")" == "$CANDIDATE_SHA256" ]] || fail
+  [[ "$(sha256_file "$source_candidate_checksum")" == "$CANDIDATE_CHECKSUM_SHA256" ]] ||
     fail
 }
 
@@ -608,24 +487,29 @@ while [[ $# -gt 0 ]]; do
       selected_target="$2"
       shift 2
       ;;
-    --beta1-archive)
-      [[ $# -ge 2 && -z "$source_beta1_archive" ]] || fail
-      source_beta1_archive="$2"
+    --previous-archive)
+      [[ $# -ge 2 && -z "$source_previous_archive" ]] || fail
+      source_previous_archive="$2"
       shift 2
       ;;
-    --beta1-checksum)
-      [[ $# -ge 2 && -z "$source_beta1_checksum" ]] || fail
-      source_beta1_checksum="$2"
+    --previous-checksum)
+      [[ $# -ge 2 && -z "$source_previous_checksum" ]] || fail
+      source_previous_checksum="$2"
       shift 2
       ;;
-    --beta2-archive)
-      [[ $# -ge 2 && -z "$source_beta2_archive" ]] || fail
-      source_beta2_archive="$2"
+    --candidate-archive)
+      [[ $# -ge 2 && -z "$source_candidate_archive" ]] || fail
+      source_candidate_archive="$2"
       shift 2
       ;;
-    --beta2-checksum)
-      [[ $# -ge 2 && -z "$source_beta2_checksum" ]] || fail
-      source_beta2_checksum="$2"
+    --candidate-checksum)
+      [[ $# -ge 2 && -z "$source_candidate_checksum" ]] || fail
+      source_candidate_checksum="$2"
+      shift 2
+      ;;
+    --candidate-revision)
+      [[ $# -ge 2 && -z "$candidate_revision" ]] || fail
+      candidate_revision="$2"
       shift 2
       ;;
     *)
@@ -634,8 +518,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$source_beta1_archive" && -n "$source_beta1_checksum" ]] || fail
-[[ -n "$source_beta2_archive" && -n "$source_beta2_checksum" ]] || fail
+[[ -n "$source_previous_archive" && -n "$source_previous_checksum" ]] || fail
+[[ -n "$source_candidate_archive" && -n "$source_candidate_checksum" ]] || fail
+[[ "$candidate_revision" =~ ^[0-9a-f]{40}$ ]] || fail
+readonly candidate_revision
 if [[ -z "$selected_target" ]]; then
   selected_target="$MAC_TARGET"
 fi
@@ -643,33 +529,32 @@ fi
 case "$selected_target" in
   "$MAC_TARGET")
     TARGET="$MAC_TARGET"
-    BETA1_BASENAME="maverick-1.2.0-beta.1-pilot-aarch64-apple-darwin.tar.gz"
-    BETA1_BYTES="5565864"
-    BETA1_SHA256="d44c553c22de52abdb2dfbe4bb7e7bf8d982ce5bdf9cb90f5ae4b8c01d29fc3e"
-    BETA1_CHECKSUM_SHA256="202e4b29c6f46b97b87a52784384a11f6be329412aba934af5ecaf9b9c3db272"
-    BETA2_BASENAME="maverick-1.2.0-beta.2-pilot-aarch64-apple-darwin.tar.gz"
-    BETA2_BYTES="5607172"
-    BETA2_SHA256="e48c87795e534d141c5b563a1da4e36ca485c75542046fdd925c2c8495d9a7f1"
-    BETA2_CHECKSUM_SHA256="71bd02e2b6d31318356f5197ab61eff1db258b7bb2b95fe553a0bedaa0c935e9"
-    CHECKSUM_BYTES="122"
+    PREVIOUS_BASENAME="maverick-1.2.0-beta.4-pilot-aarch64-apple-darwin.tar.gz"
+    PREVIOUS_BYTES="5618718"
+    PREVIOUS_SHA256="d99f6ac6ab7921593b6b58e7e158815a20e09d30412a8be4fb466a9d55cf2ae9"
+    PREVIOUS_CHECKSUM_SHA256="646d4bd0668b79720d69d6a79d2a953fa30a30846677abbc114ec0687040f502"
+    PREVIOUS_CHECKSUM_BYTES="122"
+    CANDIDATE_BASENAME="maverick-1.2.0-rc.1-pilot-aarch64-apple-darwin.tar.gz"
     ;;
   "$LINUX_TARGET")
     TARGET="$LINUX_TARGET"
-    BETA1_BASENAME="maverick-1.2.0-beta.1-pilot-x86_64-unknown-linux-gnu.tar.gz"
-    BETA1_BYTES="6139821"
-    BETA1_SHA256="7867332bcf8cb440b24a7b0569d4e58b554e207a43499ac1cc7e0650dba6b7d5"
-    BETA1_CHECKSUM_SHA256="56aa22b84a8e5272a8bfe21aa0e9d2fb503f1d0f892957018224f87bc291e7ac"
-    BETA2_BASENAME="maverick-1.2.0-beta.2-pilot-x86_64-unknown-linux-gnu.tar.gz"
-    BETA2_BYTES="6185627"
-    BETA2_SHA256="6a9afc7c5b1d024f5d279a683a6bf02a4d99fa3437f477fc018283f05688c24b"
-    BETA2_CHECKSUM_SHA256="291336c4ff54062bcae5dbfc624850a0ea3b8e1b65667c121ea9e3d13000cf47"
-    CHECKSUM_BYTES="126"
+    PREVIOUS_BASENAME="maverick-1.2.0-beta.4-pilot-x86_64-unknown-linux-gnu.tar.gz"
+    PREVIOUS_BYTES="6190314"
+    PREVIOUS_SHA256="4ef82bb9f29c53b037b3500e0b7c07a15fb87ae4ad902f84c2aaf394f1afb6ea"
+    PREVIOUS_CHECKSUM_SHA256="dc2329678c96f2e3a44d8e3b609cf77eafedc7b77f879f3a46a747152a675a80"
+    PREVIOUS_CHECKSUM_BYTES="126"
+    CANDIDATE_BASENAME="maverick-1.2.0-rc.1-pilot-x86_64-unknown-linux-gnu.tar.gz"
     ;;
   *) fail ;;
 esac
-readonly TARGET BETA1_BASENAME BETA1_BYTES BETA1_SHA256
-readonly BETA1_CHECKSUM_SHA256 BETA2_BASENAME BETA2_BYTES BETA2_SHA256
-readonly BETA2_CHECKSUM_SHA256 CHECKSUM_BYTES
+CANDIDATE_BYTES="$(file_size "$source_candidate_archive")"
+CANDIDATE_SHA256="$(sha256_file "$source_candidate_archive")"
+CANDIDATE_CHECKSUM_SHA256="$(sha256_file "$source_candidate_checksum")"
+CANDIDATE_CHECKSUM_BYTES="$(file_size "$source_candidate_checksum")"
+readonly TARGET PREVIOUS_BASENAME PREVIOUS_BYTES PREVIOUS_SHA256
+readonly PREVIOUS_CHECKSUM_SHA256 PREVIOUS_CHECKSUM_BYTES CANDIDATE_BASENAME
+readonly CANDIDATE_BYTES CANDIDATE_SHA256 CANDIDATE_CHECKSUM_SHA256
+readonly CANDIDATE_CHECKSUM_BYTES
 
 host_os="$(uname -s 2>/dev/null)" || fail
 host_cpu="$(uname -m 2>/dev/null)" || fail
@@ -707,85 +592,91 @@ esac
 printf '%s\n' "$CLEANUP_MARKER_CONTENT" >"$private_tmp/.cleanup-marker" || fail
 chmod 0600 "$private_tmp/.cleanup-marker" >/dev/null 2>&1 || fail
 
-snapshot_release "$source_beta1_archive" "$source_beta1_checksum" \
-  "$BETA1_BASENAME" "$BETA1_BYTES" "$BETA1_SHA256" "$BETA1_CHECKSUM_SHA256" \
-  "$private_tmp/input-beta1"
-beta1_archive_copy="$snapshot_archive"
-beta1_checksum_copy="$snapshot_checksum"
-snapshot_release "$source_beta2_archive" "$source_beta2_checksum" \
-  "$BETA2_BASENAME" "$BETA2_BYTES" "$BETA2_SHA256" "$BETA2_CHECKSUM_SHA256" \
-  "$private_tmp/input-beta2"
-beta2_archive_copy="$snapshot_archive"
-beta2_checksum_copy="$snapshot_checksum"
+snapshot_release "$source_previous_archive" "$source_previous_checksum" \
+  "$PREVIOUS_BASENAME" "$PREVIOUS_BYTES" "$PREVIOUS_SHA256" "$PREVIOUS_CHECKSUM_SHA256" \
+  "$PREVIOUS_CHECKSUM_BYTES" \
+  "$private_tmp/input-previous"
+previous_archive_copy="$snapshot_archive"
+previous_checksum_copy="$snapshot_checksum"
+snapshot_release "$source_candidate_archive" "$source_candidate_checksum" \
+  "$CANDIDATE_BASENAME" "$CANDIDATE_BYTES" "$CANDIDATE_SHA256" "$CANDIDATE_CHECKSUM_SHA256" \
+  "$CANDIDATE_CHECKSUM_BYTES" \
+  "$private_tmp/input-candidate"
+candidate_archive_copy="$snapshot_archive"
+candidate_checksum_copy="$snapshot_checksum"
 echo "artifact_identity: PASS"
 
-beta1_parent="$private_tmp/releases/beta1"
-beta2_parent="$private_tmp/releases/beta2"
-mkdir -p "$beta1_parent" "$beta2_parent" >/dev/null 2>&1 || fail
-chmod 0700 "$private_tmp/releases" "$beta1_parent" "$beta2_parent" \
+previous_parent="$private_tmp/releases/previous"
+candidate_parent="$private_tmp/releases/candidate"
+mkdir -p "$previous_parent" "$candidate_parent" >/dev/null 2>&1 || fail
+chmod 0700 "$private_tmp/releases" "$previous_parent" "$candidate_parent" \
   >/dev/null 2>&1 || fail
-
-verify_beta1_archive_shape "$beta1_archive_copy"
-extract_archive_safely "$beta1_archive_copy" "$beta1_parent"
-verify_payload_shape "$beta1_parent"
-verify_inner_checksums "$beta1_parent/maverick-pilot"
-verify_beta1_metadata "$beta1_parent/maverick-pilot"
-chmod 0700 "$beta1_parent/maverick-pilot" \
-  "$beta1_parent/maverick-pilot/maverick" >/dev/null 2>&1 || fail
-chmod 0600 "$beta1_parent/maverick-pilot/LICENSE" \
-  "$beta1_parent/maverick-pilot/SHA256SUMS" \
-  "$beta1_parent/maverick-pilot/SOURCE.txt" \
-  "$beta1_parent/maverick-pilot/START_HERE.txt" \
-  "$beta1_parent/maverick-pilot/VERSION.txt" >/dev/null 2>&1 || fail
-
-mkdir -p "$private_tmp/runtime/beta1/home" "$private_tmp/runtime/beta1/tmp" \
-  "$private_tmp/runtime/beta2/home" "$private_tmp/runtime/beta2/tmp" \
-  >/dev/null 2>&1 || fail
-chmod 0700 "$private_tmp/runtime" "$private_tmp/runtime/beta1" \
-  "$private_tmp/runtime/beta1/home" "$private_tmp/runtime/beta1/tmp" \
-  "$private_tmp/runtime/beta2" "$private_tmp/runtime/beta2/home" \
-  "$private_tmp/runtime/beta2/tmp" >/dev/null 2>&1 || fail
-
-beta1_binary="$beta1_parent/maverick-pilot/maverick"
-beta1_home="$private_tmp/runtime/beta1/home"
-beta1_runtime="$private_tmp/runtime/beta1/tmp"
-beta2_home="$private_tmp/runtime/beta2/home"
-beta2_runtime="$private_tmp/runtime/beta2/tmp"
-assert_health "$beta1_binary" \
-  "$beta1_parent/maverick-pilot/VERSION.txt" "$beta1_home" "$beta1_runtime" \
-  "beta1-artifact"
-echo "beta1_historical_adapter: PASS"
 
 "$repo_root/scripts/verify-pilot-artifact.sh" \
-  --archive "$beta2_archive_copy" \
-  --expected-version "$BETA2_VERSION" \
-  --expected-revision "$BETA2_REVISION" \
+  --archive "$previous_archive_copy" \
+  --expected-version "$PREVIOUS_VERSION" \
+  --expected-revision "$PREVIOUS_REVISION" \
+  --expected-target "$TARGET" \
+  --verification-level native || fail
+extract_archive_safely "$previous_archive_copy" "$previous_parent"
+verify_payload_shape "$previous_parent"
+verify_inner_checksums "$previous_parent/maverick-pilot"
+chmod 0700 "$previous_parent/maverick-pilot" \
+  "$previous_parent/maverick-pilot/maverick" >/dev/null 2>&1 || fail
+chmod 0600 "$previous_parent/maverick-pilot/LICENSE" \
+  "$previous_parent/maverick-pilot/SHA256SUMS" \
+  "$previous_parent/maverick-pilot/SOURCE.txt" \
+  "$previous_parent/maverick-pilot/START_HERE.txt" \
+  "$previous_parent/maverick-pilot/VERSION.txt" >/dev/null 2>&1 || fail
+
+mkdir -p "$private_tmp/runtime/previous/home" "$private_tmp/runtime/previous/tmp" \
+  "$private_tmp/runtime/candidate/home" "$private_tmp/runtime/candidate/tmp" \
+  >/dev/null 2>&1 || fail
+chmod 0700 "$private_tmp/runtime" "$private_tmp/runtime/previous" \
+  "$private_tmp/runtime/previous/home" "$private_tmp/runtime/previous/tmp" \
+  "$private_tmp/runtime/candidate" "$private_tmp/runtime/candidate/home" \
+  "$private_tmp/runtime/candidate/tmp" >/dev/null 2>&1 || fail
+
+previous_binary="$previous_parent/maverick-pilot/maverick"
+previous_home="$private_tmp/runtime/previous/home"
+previous_runtime="$private_tmp/runtime/previous/tmp"
+candidate_home="$private_tmp/runtime/candidate/home"
+candidate_runtime="$private_tmp/runtime/candidate/tmp"
+assert_health "$previous_binary" \
+  "$previous_parent/maverick-pilot/VERSION.txt" "$previous_home" "$previous_runtime" \
+  "previous-artifact"
+echo "previous_artifact_verifier: PASS"
+
+"$repo_root/scripts/verify-pilot-artifact.sh" \
+  --archive "$candidate_archive_copy" \
+  --expected-version "$CANDIDATE_VERSION" \
+  --expected-revision "$candidate_revision" \
   --expected-target "$TARGET" \
   --verification-level native || fail
 
-extract_archive_safely "$beta2_archive_copy" "$beta2_parent"
-verify_payload_shape "$beta2_parent"
-chmod 0700 "$beta2_parent/maverick-pilot" \
-  "$beta2_parent/maverick-pilot/maverick" >/dev/null 2>&1 || fail
-chmod 0600 "$beta2_parent/maverick-pilot/LICENSE" \
-  "$beta2_parent/maverick-pilot/SHA256SUMS" \
-  "$beta2_parent/maverick-pilot/SOURCE.txt" \
-  "$beta2_parent/maverick-pilot/START_HERE.txt" \
-  "$beta2_parent/maverick-pilot/VERSION.txt" >/dev/null 2>&1 || fail
-beta2_binary="$beta2_parent/maverick-pilot/maverick"
-beta1_binary_hash="$(sha256_file "$beta1_binary")"
-beta2_binary_hash="$(sha256_file "$beta2_binary")"
-readonly beta1_binary_hash
-readonly beta2_binary_hash
-echo "beta2_current_verifier: PASS"
+extract_archive_safely "$candidate_archive_copy" "$candidate_parent"
+verify_payload_shape "$candidate_parent"
+chmod 0700 "$candidate_parent/maverick-pilot" \
+  "$candidate_parent/maverick-pilot/maverick" >/dev/null 2>&1 || fail
+chmod 0600 "$candidate_parent/maverick-pilot/LICENSE" \
+  "$candidate_parent/maverick-pilot/SHA256SUMS" \
+  "$candidate_parent/maverick-pilot/SOURCE.txt" \
+  "$candidate_parent/maverick-pilot/START_HERE.txt" \
+  "$candidate_parent/maverick-pilot/VERSION.txt" >/dev/null 2>&1 || fail
+candidate_binary="$candidate_parent/maverick-pilot/maverick"
+previous_binary_hash="$(sha256_file "$previous_binary")"
+candidate_binary_hash="$(sha256_file "$candidate_binary")"
+readonly previous_binary_hash
+readonly candidate_binary_hash
+echo "candidate_current_verifier: PASS"
 
 fixture_root="$private_tmp/fixture"
 profile_dir="$fixture_root/profile"
 backup_dir="$fixture_root/backup"
 mkdir "$fixture_root" >/dev/null 2>&1 || fail
 chmod 0700 "$fixture_root" >/dev/null 2>&1 || fail
-make_neutral_generated_profile "$beta1_binary" "$profile_dir" \
-  "$beta1_home" "$beta1_runtime"
+make_neutral_generated_profile "$previous_binary" "$profile_dir" \
+  "$previous_home" "$previous_runtime"
 copy_profile "$profile_dir" "$backup_dir"
 
 profile_manifest="$profile_dir/profile.sha256"
@@ -802,10 +693,10 @@ chmod 0400 "$profile_dir/client.generated.yaml" \
   "$backup_manifest" >/dev/null 2>&1 || fail
 chmod 0500 "$profile_dir" "$backup_dir" >/dev/null 2>&1 || fail
 
-check_config_pair_success "beta1-known" "$beta1_binary" "$profile_dir" \
-  "$beta1_home" "$beta1_runtime"
-check_config_pair_success "beta2-known" "$beta2_binary" "$profile_dir" \
-  "$beta2_home" "$beta2_runtime"
+check_config_pair_success "previous-known" "$previous_binary" "$profile_dir" \
+  "$previous_home" "$previous_runtime"
+check_config_pair_success "candidate-known" "$candidate_binary" "$profile_dir" \
+  "$candidate_home" "$candidate_runtime"
 echo "known_v1_compatibility: PASS"
 
 unknown_dir="$fixture_root/unknown-root"
@@ -814,11 +705,11 @@ printf '%s\n' "t019c_unknown_root: true" \
   >>"$unknown_dir/client.generated.yaml" || fail
 printf '%s\n' "t019c_unknown_root: true" \
   >>"$unknown_dir/server.generated.yaml" || fail
-check_config_pair_success "beta1-unknown" "$beta1_binary" "$unknown_dir" \
-  "$beta1_home" "$beta1_runtime"
 check_config_pair_rejection "unknown configuration key under <root>" \
-  "beta2-unknown" "$beta2_binary" "$unknown_dir" "$beta2_home" "$beta2_runtime"
-echo "unknown_key_upgrade_preflight: PASS"
+  "previous-unknown" "$previous_binary" "$unknown_dir" "$previous_home" "$previous_runtime"
+check_config_pair_rejection "unknown configuration key under <root>" \
+  "candidate-unknown" "$candidate_binary" "$unknown_dir" "$candidate_home" "$candidate_runtime"
+echo "unknown_key_rejection: PASS"
 
 version2_dir="$fixture_root/version-2"
 copy_profile "$profile_dir" "$version2_dir"
@@ -833,35 +724,35 @@ for kind in client server; do
   cmp -s "$private_tmp/$kind-version-reverted" \
     "$profile_dir/$kind.generated.yaml" || fail
 done
-check_config_pair_rejection "only config version 1 is supported" \
-  "beta1-version2" "$beta1_binary" "$version2_dir" \
-  "$beta1_home" "$beta1_runtime"
-check_config_pair_rejection "only config version 1 is supported" \
-  "beta2-version2" "$beta2_binary" "$version2_dir" \
-  "$beta2_home" "$beta2_runtime"
+check_config_pair_rejection "unsupported configuration version" \
+  "previous-version2" "$previous_binary" "$version2_dir" \
+  "$previous_home" "$previous_runtime"
+check_config_pair_rejection "unsupported configuration version" \
+  "candidate-version2" "$candidate_binary" "$version2_dir" \
+  "$candidate_home" "$candidate_runtime"
 echo "unsupported_version_rejection: PASS"
 
 selector_file="$private_tmp/release-selector"
-write_selector "beta1"
+write_selector "previous"
 
-if attempt_beta2_switch "$unknown_dir" "beta2-injected"; then
+if attempt_candidate_switch "$unknown_dir" "candidate-injected"; then
   fail
 else
   [[ "$?" -eq 1 ]] || fail
 fi
-assert_selected_health "beta1" "beta1-after-fault"
+assert_selected_health "previous" "previous-after-fault"
 echo "injected_preflight_failure: PASS"
 
-assert_health "$beta2_binary" \
-  "$beta2_parent/maverick-pilot/VERSION.txt" "$beta2_home" "$beta2_runtime" \
-  "beta2-preflight"
-attempt_beta2_switch "$profile_dir" "beta2-known" || fail
-assert_selected_health "beta2" "beta2-selected"
-echo "upgrade_to_beta2: PASS"
+assert_health "$candidate_binary" \
+  "$candidate_parent/maverick-pilot/VERSION.txt" "$candidate_home" "$candidate_runtime" \
+  "candidate-preflight"
+attempt_candidate_switch "$profile_dir" "candidate-known" || fail
+assert_selected_health "candidate" "candidate-selected"
+echo "upgrade_to_candidate: PASS"
 
-write_selector "beta1"
-assert_selected_health "beta1" "beta1-rollback"
-echo "rollback_to_beta1: PASS"
+write_selector "previous"
+assert_selected_health "previous" "previous-rollback"
+echo "rollback_to_previous: PASS"
 
 [[ "$(sha256_file "$profile_manifest")" == "$original_profile_hash" ]] || fail
 [[ "$(sha256_file "$backup_manifest")" == "$original_backup_hash" ]] || fail
@@ -873,8 +764,8 @@ cmp -s "$profile_dir/client.generated.yaml" \
   "$backup_dir/client.generated.yaml" || fail
 cmp -s "$profile_dir/server.generated.yaml" \
   "$backup_dir/server.generated.yaml" || fail
-[[ "$(sha256_file "$beta1_binary")" == "$beta1_binary_hash" ]] || fail
-[[ "$(sha256_file "$beta2_binary")" == "$beta2_binary_hash" ]] || fail
+[[ "$(sha256_file "$previous_binary")" == "$previous_binary_hash" ]] || fail
+[[ "$(sha256_file "$candidate_binary")" == "$candidate_binary_hash" ]] || fail
 verify_inputs_unchanged
 echo "fixture_integrity: PASS"
 

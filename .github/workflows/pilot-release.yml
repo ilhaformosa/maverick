@@ -10,12 +10,17 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      qualified_run_id: ${{ steps.qualified.outputs.qualified_run_id }}
+      linux_artifact_id: ${{ steps.qualified.outputs.linux_artifact_id }}
+      mac_artifact_id: ${{ steps.qualified.outputs.mac_artifact_id }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -47,112 +52,107 @@ jobs:
         run: ./scripts/test-cyclonedx-sbom.sh
       - name: Verify local product gates
         run: ./scripts/local-harness.sh
-
-  build:
-    needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: macos-14
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          toolchain: 1.97.1
-      - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
-      - name: Fetch the exact release-target dependency closure
-        run: cargo fetch --locked --target "${{ matrix.target }}"
-      - name: Install Linux build tools
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y binutils clang cmake file ripgrep
-      - name: Build shareable pilot archive
+      - name: Select the unique exact-sha qualification artifacts
+        id: qualified
         env:
-          MAVERICK_PILOT_TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
-          archive="dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
-          ./scripts/build-pilot.sh
-          ./scripts/verify-pilot-artifact.sh \
-            --archive "$archive" \
-            --expected-version "$version" \
-            --expected-revision "$GITHUB_SHA" \
-            --expected-target "$MAVERICK_PILOT_TARGET" \
-            --verification-level native
-          sbom="dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.cdx.json"
-          ./scripts/generate-cyclonedx-sbom.sh \
-            --expected-version "$version" \
-            --expected-revision "$GITHUB_SHA" \
-            --target "$MAVERICK_PILOT_TARGET" \
-            --output "$sbom"
-          ./scripts/verify-cyclonedx-sbom.sh \
-            --sbom "$sbom" \
-            --expected-version "$version" \
-            --expected-revision "$GITHUB_SHA" \
-            --expected-target "$MAVERICK_PILOT_TARGET" \
-            --verification-level full \
-            --source-root .
-      - name: Reverify the exact files approved for upload
-        id: reverified
-        env:
-          MAVERICK_PILOT_TARGET: ${{ matrix.target }}
-        run: |
-          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
-          archive_name="maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
-          sbom_name="maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.cdx.json"
-          staging="$(mktemp -d "$RUNNER_TEMP/maverick-verified.XXXXXX")"
-          chmod 700 "$staging"
-          cp "dist/$archive_name" "$staging/$archive_name"
-          cp "dist/$archive_name.sha256" "$staging/$archive_name.sha256"
-          cp "dist/$sbom_name" "$staging/$sbom_name"
-          chmod 0444 \
-            "$staging/$archive_name" \
-            "$staging/$archive_name.sha256" \
-            "$staging/$sbom_name"
-          test "$(find "$staging" -mindepth 1 -maxdepth 1 -type f ! -type l -print | wc -l)" -eq 3
-          test "$(find "$staging" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 3
-          ./scripts/verify-pilot-artifact.sh \
-            --archive "$staging/$archive_name" \
-            --expected-version "$version" \
-            --expected-revision "$GITHUB_SHA" \
-            --expected-target "$MAVERICK_PILOT_TARGET" \
-            --verification-level static
-          ./scripts/verify-cyclonedx-sbom.sh \
-            --sbom "$staging/$sbom_name" \
-            --expected-version "$version" \
-            --expected-revision "$GITHUB_SHA" \
-            --expected-target "$MAVERICK_PILOT_TARGET" \
-            --verification-level structural \
-            --source-root .
-          chmod 0555 "$staging"
+          set -euo pipefail
+          runs_file="$(mktemp "$RUNNER_TEMP/maverick-runs.XXXXXX")"
+          artifacts_file="$(mktemp "$RUNNER_TEMP/maverick-artifacts.XXXXXX")"
+          select_qualification_run_id() {
+            local runs_path="$1"
+            local expected_sha="$2"
+            jq -er --arg sha "$expected_sha" '
+              [.workflow_runs[] |
+                select(
+                  .name == "product-ci" and
+                  .path == ".github/workflows/ci.yml" and
+                  .head_sha == $sha and
+                  .head_branch == "main" and
+                  .event == "push" and
+                  .status == "completed" and
+                  .conclusion == "success" and
+                  .run_attempt == 1
+                )] |
+              if length == 1 then .[0].id else error("not unique") end
+            ' "$runs_path"
+          }
+          select_qualification_artifact_id() {
+            local artifacts_path="$1"
+            local expected_name="$2"
+            local expected_sha="$3"
+            local expected_run_id="$4"
+            jq -er \
+              --arg expected_name "$expected_name" \
+              --arg sha "$expected_sha" \
+              --argjson run_id "$expected_run_id" '
+                [.artifacts[] |
+                  select(
+                    .name == $expected_name and
+                    .expired == false and
+                    .size_in_bytes > 0 and
+                    (.digest | test("^sha256:[0-9a-f]{64}$")) and
+                    .workflow_run.id == $run_id and
+                    .workflow_run.head_branch == "main" and
+                    .workflow_run.head_sha == $sha
+                  )] |
+                if length == 1 then .[0].id else error("not unique") end
+              ' "$artifacts_path"
+          }
+          gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" \
+            -f branch=main \
+            -f event=push \
+            -f status=success \
+            -F per_page=100 >"$runs_file"
+          run_id="$(
+            select_qualification_run_id "$runs_file" "$GITHUB_SHA"
+          )" || {
+            echo "exact-sha qualification run selection failed" >&2
+            exit 1
+          }
+          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+          gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+            -F per_page=100 >"$artifacts_file"
+          [[ "$(jq -r '.total_count' "$artifacts_file")" -eq 2 ]]
+          linux_artifact_id="$(
+            select_qualification_artifact_id \
+              "$artifacts_file" \
+              rc-candidate-x86_64-unknown-linux-gnu \
+              "$GITHUB_SHA" \
+              "$run_id"
+          )" || {
+            echo "qualified Linux artifact selection failed" >&2
+            exit 1
+          }
+          mac_artifact_id="$(
+            select_qualification_artifact_id \
+              "$artifacts_file" \
+              rc-candidate-aarch64-apple-darwin \
+              "$GITHUB_SHA" \
+              "$run_id"
+          )" || {
+            echo "qualified macOS artifact selection failed" >&2
+            exit 1
+          }
+          [[ "$linux_artifact_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$mac_artifact_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$linux_artifact_id" != "$mac_artifact_id" ]]
           {
-            echo "archive=$staging/$archive_name"
-            echo "checksum=$staging/$archive_name.sha256"
-            echo "sbom=$staging/$sbom_name"
+            echo "qualified_run_id=$run_id"
+            echo "linux_artifact_id=$linux_artifact_id"
+            echo "mac_artifact_id=$mac_artifact_id"
           } >>"$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: pilot-${{ matrix.target }}
-          path: |
-            ${{ steps.reverified.outputs.archive }}
-            ${{ steps.reverified.outputs.checksum }}
-            ${{ steps.reverified.outputs.sbom }}
-          if-no-files-found: error
-          retention-days: 7
 
   publish:
-    needs: build
+    needs: verify
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -160,15 +160,31 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.97.1
+      - run: sudo apt-get update && sudo apt-get install -y binutils file
+      - name: Fetch both release-target dependency closures
+        run: |
+          cargo fetch --locked --target x86_64-unknown-linux-gnu
+          cargo fetch --locked --target aarch64-apple-darwin
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: pilot-x86_64-unknown-linux-gnu
+          artifact-ids: ${{ needs.verify.outputs.linux_artifact_id }}
           path: dist
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify.outputs.qualified_run_id }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: pilot-aarch64-apple-darwin
+          artifact-ids: ${{ needs.verify.outputs.mac_artifact_id }}
           path: dist
-      - name: Statically reverify the exact six files selected for publication
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify.outputs.qualified_run_id }}
+      - name: Fully reverify the exact six qualified files selected for publication
         id: reverified
         run: |
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
@@ -304,14 +320,14 @@ jobs:
             --expected-version "$version" \
             --expected-revision "$GITHUB_SHA" \
             --expected-target x86_64-unknown-linux-gnu \
-            --verification-level structural \
+            --verification-level full \
             --source-root .
           ./scripts/verify-cyclonedx-sbom.sh \
             --sbom "$staging/$mac_sbom_name" \
             --expected-version "$version" \
             --expected-revision "$GITHUB_SHA" \
             --expected-target aarch64-apple-darwin \
-            --verification-level structural \
+            --verification-level full \
             --source-root .
           linux_sha="$(sha256sum "$staging/$linux_name" | awk '{print $1}')"
           linux_checksum_sha="$(sha256sum "$staging/$linux_name.sha256" | awk '{print $1}')"

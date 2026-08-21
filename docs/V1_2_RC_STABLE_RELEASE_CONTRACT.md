@@ -174,8 +174,9 @@ exercise must run natively on Apple Silicon macOS for
 `aarch64-apple-darwin` and on x86-64 Linux for
 `x86_64-unknown-linux-gnu`; one platform's static inspection does not replace
 the other platform's native exercise. The current
-`scripts/test-n-minus-one-release-drill.sh` is fixed to Beta.1/Beta.2 and
-therefore closes neither RC-to-Beta.4 rollback cell.
+`scripts/test-n-minus-one-release-drill.sh` is fixed to Beta.4 as the rollback
+partner and accepts only an exact RC candidate identity. A platform cell closes
+only when that exact candidate passes the native drill and independent review.
 
 ### 6. Publication
 

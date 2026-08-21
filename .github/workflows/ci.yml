@@ -745,6 +745,9 @@ jobs:
           [[ "$(shasum -a 256 "$candidate_archive" | awk '{print $1}')" == \
             61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d ]]
           cmp "$candidate_archive" "$candidate_archive_copy"
+      - name: Run the local product harness
+        if: steps.scope.outputs.docs_only != 'true'
+        run: ./scripts/local-harness.sh
       - name: Build the exact-head GNU/Linux pilot archive
         id: pilot
         if: steps.scope.outputs.docs_only != 'true'
@@ -823,9 +826,6 @@ jobs:
             --candidate-archive "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
             --candidate-checksum "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256" \
             --candidate-revision "$MAVERICK_PILOT_REVISION"
-      - name: Run the local product harness
-        if: steps.scope.outputs.docs_only != 'true'
-        run: ./scripts/local-harness.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.scope.outputs.docs_only != 'true'
         with:

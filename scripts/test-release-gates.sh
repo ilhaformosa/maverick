@@ -18,7 +18,7 @@ readonly TEST_RELEASE_NOTE_VERSION="1.2.0-beta.3"
 readonly TEST_REVISION="1111111111111111111111111111111111111111"
 readonly TEST_MARKER="SYNTH_PRIVATE_MARKER_DO_NOT_ECHO"
 readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
-readonly PILOT_RELEASE_WORKFLOW_SHA256="cf60b57afe553b6a23404853def0a0824f4a985808bc52139113cbdec6f122b7"
+readonly PILOT_RELEASE_WORKFLOW_SHA256="1cde3cbff49bcc976713bfec53acd5434f0f5af6a6bd63033805ab61707f27c7"
 readonly PILOT_RELEASE_PUBLISH_STEP_SHA256="e5578640dc3066f3e18fc33f9a628cedd8fd1440a1805bef679f76e61c03280c"
 
 cleanup() {
@@ -570,7 +570,7 @@ expect_release_note_fail() {
   fi
 }
 
-extract_release_note_function() {
+extract_workflow_function() {
   local function_name="$1"
   local destination="$2"
   local function_block
@@ -637,17 +637,90 @@ release_note_verifier="$test_root/verify-release-note.sh"
 : >"$release_note_verifier"
 for function_name in \
   snapshot_release_note verify_release_note release_note_sha256 \
-  release_note_digest_matches; do
-  extract_release_note_function "$function_name" "$release_note_verifier"
+  release_note_digest_matches select_qualification_run_id \
+  select_qualification_artifact_id; do
+  extract_workflow_function "$function_name" "$release_note_verifier"
 done
 [[ -s "$release_note_verifier" ]] || fail_test
 # shellcheck source=/dev/null
 source "$release_note_verifier"
 for function_name in \
   snapshot_release_note verify_release_note release_note_sha256 \
-  release_note_digest_matches; do
+  release_note_digest_matches select_qualification_run_id \
+  select_qualification_artifact_id; do
   type "$function_name" >/dev/null 2>&1 || fail_test
 done
+
+qualification_runs="$test_root/qualification-runs.json"
+cat >"$qualification_runs" <<JSON
+{"workflow_runs":[
+  {"id":101,"name":"product-ci","path":".github/workflows/ci.yml","head_sha":"$TEST_REVISION","head_branch":"main","event":"push","status":"completed","conclusion":"success","run_attempt":1},
+  {"id":102,"name":"product-ci","path":".github/workflows/ci.yml","head_sha":"$TEST_REVISION","head_branch":"main","event":"pull_request","status":"completed","conclusion":"success","run_attempt":1},
+  {"id":103,"name":"product-ci","path":".github/workflows/ci.yml","head_sha":"2222222222222222222222222222222222222222","head_branch":"main","event":"push","status":"completed","conclusion":"success","run_attempt":1}
+]}
+JSON
+trace_test qualification-run-selects-one-exact-main-push
+[[ "$(select_qualification_run_id "$qualification_runs" "$TEST_REVISION")" == 101 ]] ||
+  fail_test
+qualification_duplicate_runs="$test_root/qualification-duplicate-runs.json"
+jq '.workflow_runs += [(.workflow_runs[0] | .id = 104)]' \
+  "$qualification_runs" >"$qualification_duplicate_runs"
+trace_test qualification-run-rejects-duplicate
+if select_qualification_run_id \
+  "$qualification_duplicate_runs" "$TEST_REVISION" >/dev/null 2>&1; then
+  fail_test
+fi
+qualification_rerun="$test_root/qualification-rerun.json"
+jq '.workflow_runs = [(.workflow_runs[0] | .run_attempt = 2)]' \
+  "$qualification_runs" >"$qualification_rerun"
+trace_test qualification-run-rejects-rerun
+if select_qualification_run_id \
+  "$qualification_rerun" "$TEST_REVISION" >/dev/null 2>&1; then
+  fail_test
+fi
+
+qualification_artifacts="$test_root/qualification-artifacts.json"
+cat >"$qualification_artifacts" <<JSON
+{"total_count":2,"artifacts":[
+  {"id":201,"name":"rc-candidate-x86_64-unknown-linux-gnu","expired":false,"size_in_bytes":123,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","workflow_run":{"id":101,"head_branch":"main","head_sha":"$TEST_REVISION"}},
+  {"id":202,"name":"rc-candidate-aarch64-apple-darwin","expired":false,"size_in_bytes":456,"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","workflow_run":{"id":101,"head_branch":"main","head_sha":"$TEST_REVISION"}}
+]}
+JSON
+trace_test qualification-artifacts-select-exact-run
+[[ "$(select_qualification_artifact_id \
+  "$qualification_artifacts" rc-candidate-x86_64-unknown-linux-gnu \
+  "$TEST_REVISION" 101)" == 201 ]] || fail_test
+[[ "$(select_qualification_artifact_id \
+  "$qualification_artifacts" rc-candidate-aarch64-apple-darwin \
+  "$TEST_REVISION" 101)" == 202 ]] || fail_test
+qualification_expired="$test_root/qualification-expired.json"
+jq '.artifacts[0].expired = true' \
+  "$qualification_artifacts" >"$qualification_expired"
+trace_test qualification-artifact-rejects-expired
+if select_qualification_artifact_id \
+  "$qualification_expired" rc-candidate-x86_64-unknown-linux-gnu \
+  "$TEST_REVISION" 101 >/dev/null 2>&1; then
+  fail_test
+fi
+qualification_wrong_run="$test_root/qualification-wrong-run.json"
+jq '.artifacts[0].workflow_run.id = 999' \
+  "$qualification_artifacts" >"$qualification_wrong_run"
+trace_test qualification-artifact-rejects-wrong-run
+if select_qualification_artifact_id \
+  "$qualification_wrong_run" rc-candidate-x86_64-unknown-linux-gnu \
+  "$TEST_REVISION" 101 >/dev/null 2>&1; then
+  fail_test
+fi
+qualification_duplicate_artifact="$test_root/qualification-duplicate-artifact.json"
+jq '.artifacts += [(.artifacts[0] | .id = 203)] | .total_count = 3' \
+  "$qualification_artifacts" >"$qualification_duplicate_artifact"
+trace_test qualification-artifact-rejects-duplicate
+if select_qualification_artifact_id \
+  "$qualification_duplicate_artifact" rc-candidate-x86_64-unknown-linux-gnu \
+  "$TEST_REVISION" 101 >/dev/null 2>&1; then
+  fail_test
+fi
+
 grep -F "notes_source=\"docs/releases/v\${version}.md\"" "$release_workflow" \
   >/dev/null || fail_test
 snapshot_call_pattern="snapshot_release_note \"\$notes_source\" \"\$version\" \"\$notes_file\""
@@ -675,6 +748,18 @@ notes_file_line="$(exact_line_in "$release_workflow" "$notes_file_pattern")"
 [[ "$verification_call_line" -lt "$digest_call_line" ]] || fail_test
 [[ "$publish_step_line" -lt "$release_create_line" ]] || fail_test
 [[ "$release_create_line" -lt "$notes_file_line" ]] || fail_test
+[[ "$(grep -Fc './scripts/build-pilot.sh' "$release_workflow")" -eq 0 ]] ||
+  fail_test
+[[ "$(grep -Fc './scripts/generate-cyclonedx-sbom.sh' "$release_workflow")" -eq 0 ]] ||
+  fail_test
+[[ "$(grep -Fc '          gh api --method GET' "$release_workflow")" -eq 2 ]] ||
+  fail_test
+[[ "$(grep -Fc '          artifact-ids:' "$release_workflow")" -eq 2 ]] ||
+  fail_test
+[[ "$(grep -Fc "          run-id: \${{ needs.verify.outputs.qualified_run_id }}" \
+  "$release_workflow")" -eq 2 ]] || fail_test
+[[ "$(grep -Fc '            --verification-level full' \
+  "$release_workflow")" -eq 2 ]] || fail_test
 workflow_contract_matches "$release_workflow" || fail_test
 publish_block="$test_root/publish-workflow-block"
 sed -n "${publish_step_line},\$p" "$release_workflow" >"$publish_block"
@@ -735,7 +820,7 @@ expected_release_command='          if ! release_note_digest_matches "$NOTES_FIL
   fail_test
 [[ "$(grep -Fc -- "--latest" "$release_workflow")" -eq 1 ]] ||
   fail_test
-[[ "$(grep -Ec -- '(^|[[:space:]])gh([[:space:]]|$)' "$release_workflow")" -eq 1 ]] ||
+[[ "$(grep -Ec -- '(^|[[:space:]])gh([[:space:]]|$)' "$release_workflow")" -eq 3 ]] ||
   fail_test
 release_command_block="$test_root/release-command-block"
 printf '%s\n' "$actual_release_command" >"$release_command_block"

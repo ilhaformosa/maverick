@@ -13,14 +13,14 @@ playbook preserve detail without becoming parallel status ledgers.
 | Area | Current truth |
 |---|---|
 | Development stage | **Beta**; experimental and not production-ready |
-| Published release | Immutable `v1.2.0-beta.4` until the authorized `v1.2.0-rc.1` workflow succeeds; then RC.1 is the current prerelease and remains non-Latest |
+| Published release | Immutable `v1.2.0-rc.1` prerelease; not Latest; Beta.4 remains the fixed rollback partner |
 | Supported product route | Direct browser-like TLS 1.3 + HTTP/2 |
 | Provider-fronted route | Implemented and Beta; not part of the first Stable support claim |
 | H3/UDP product | Disabled; no current H3 product backend or Auto path |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Direct-H2 `v1.2.0-rc.1` publication: **GO** for exact commit `cf89428`; GitHub tag/Release state determines completion |
-| Stable readiness | **RED**; RC publication, field use, and Stable gates remain incomplete |
+| Current milestone | Week 3 owner install, ordinary use, 72-hour observation, and field rollback of exact `v1.2.0-rc.1` |
+| Stable readiness | **RED**; exact-RC field use and later Stable gates remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
 candidate experiments are quality controls, not product progress by themselves.
@@ -64,16 +64,17 @@ independent exact-byte security review pass with no Critical, High, or lower
 finding. The earlier High release-integrity issue is closed: publication now
 downloads the reviewed main-run artifacts instead of rebuilding different
 bytes. The explicit RC.1 publication decision is **GO** for this commit and
-these bytes only, as a prerelease that is not Latest. The immutable GitHub tag
-and Release records determine whether publication has completed; until they
-exist, Beta.4 remains the public prerelease. No deployment, field result, or
-Stable result follows. H3, native Datagram, auth v3, Config v2, Auto H3, TUN
-migration, and new provider work remain paused.
+these bytes only, as a prerelease that is not Latest. Attempt-1 release run
+`32487704448` published immutable GitHub Release `v1.2.0-rc.1`; its six public
+assets are byte-for-byte identical to the independently reviewed files. Week 2
+is complete. No deployment, field result, or Stable result follows. H3, native
+Datagram, auth v3, Config v2, Auto H3, TUN migration, and new provider work
+remain paused.
 
-The RC may become a prerelease/non-Latest release only after its candidate
-scope, versions, release note, local product checks, locked dependency closure,
-supported-target artifacts, SBOMs, required public CI, and independent review
-agree on the exact candidate. Stable remains a later decision.
+The RC was published only after its candidate scope, versions, release note,
+local product checks, locked dependency closure, supported-target artifacts,
+SBOMs, required public CI, and independent review agreed on the exact
+candidate. Stable remains a later decision after Week 3 field evidence.
 
 ### RC/Stable Gate Board
 
@@ -88,7 +89,7 @@ agree on the exact candidate. Stable remains a later decision.
 | Independent exact-RC security review; no unresolved Critical/High | **GREEN — P0/P1/P2 are all zero; the earlier High exact-byte publication finding is closed** |
 | Fresh-origin Direct-H2 field run and 72-hour owner use | **RED — not performed** |
 | Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **GREEN for qualification — both exact-candidate drills pass; owner field rollback remains later** |
-| RC.1 prerelease/non-Latest publication | **GO — only exact `cf89428` and its six independently reviewed files are authorized** |
+| RC.1 prerelease/non-Latest publication | **GREEN — immutable Release `v1.2.0-rc.1` was published by attempt-1 run `32487704448`; the six public assets match the reviewed bytes** |
 | Stable publication and Latest classification | **BLOCKED** |
 
 The full release safety contract remains
@@ -187,12 +188,13 @@ now-green exact gates above, authorizes only the recorded RC.1
 prerelease/non-Latest publication. It does not authorize a different candidate,
 Stable/Latest, a provider resource, or a field task.
 
-No owner action is needed for local RC preparation. Later the owner must
-participate in the exact-RC ordinary-use/72-hour field task and any personal or
-legal attestation. If a new paid/provider resource is actually required, the
-exact team, resource, region, lifetime, cost cap, and cleanup must be confirmed
-before creation or modification. Full-access provider tokens stay in macOS
-Keychain and are never printed or stored in repository configuration.
+No owner action was needed for local RC preparation and publication. The owner
+is now needed for the exact-RC install, ordinary-use/72-hour field task, field
+rollback experience, and any personal or legal attestation. If a new
+paid/provider resource is actually required, the exact team, resource, region,
+lifetime, cost cap, and cleanup must be confirmed before creation or
+modification. Full-access provider tokens stay in macOS Keychain and are never
+printed or stored in repository configuration.
 
 ## Evidence and History
 

@@ -161,6 +161,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y binutils clang cmake file ripgrep shellcheck
+      - name: Install the SBOM generator
+        if: steps.scope.outputs.docs_only != 'true'
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - name: Evaluate the default-off quiche candidate
         if: steps.scope.outputs.docs_only != 'true'
         run: |
@@ -780,17 +783,68 @@ jobs:
             --expected-revision "$MAVERICK_PILOT_REVISION" \
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level native
+      - name: Generate and fully verify the GNU/Linux candidate SBOM
+        if: steps.scope.outputs.docs_only != 'true'
+        env:
+          MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          sbom="dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.cdx.json"
+          ./scripts/generate-cyclonedx-sbom.sh \
+            --expected-version "$version" \
+            --expected-revision "$MAVERICK_PILOT_REVISION" \
+            --target "$MAVERICK_PILOT_TARGET" \
+            --output "$sbom"
+          ./scripts/verify-cyclonedx-sbom.sh \
+            --sbom "$sbom" \
+            --expected-version "$version" \
+            --expected-revision "$MAVERICK_PILOT_REVISION" \
+            --expected-target "$MAVERICK_PILOT_TARGET" \
+            --verification-level full \
+            --source-root .
+      - name: Exercise RC.1 upgrade and Beta.4 rollback on GNU/Linux
+        if: steps.scope.outputs.docs_only != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          previous_dir="$(mktemp -d "$RUNNER_TEMP/maverick-beta4.XXXXXX")"
+          chmod 0700 "$previous_dir"
+          gh release download v1.2.0-beta.4 --dir "$previous_dir" \
+            --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
+            --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256"
+          ./scripts/test-n-minus-one-release-drill.sh \
+            --target "$MAVERICK_PILOT_TARGET" \
+            --previous-archive "$previous_dir/maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
+            --previous-checksum "$previous_dir/maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256" \
+            --candidate-archive "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
+            --candidate-checksum "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256" \
+            --candidate-revision "$MAVERICK_PILOT_REVISION"
       - name: Run the local product harness
         if: steps.scope.outputs.docs_only != 'true'
         run: ./scripts/local-harness.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.scope.outputs.docs_only != 'true'
+        with:
+          name: rc-candidate-x86_64-unknown-linux-gnu
+          path: |
+            dist/maverick-1.2.0-rc.1-pilot-x86_64-unknown-linux-gnu.tar.gz
+            dist/maverick-1.2.0-rc.1-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256
+            dist/maverick-1.2.0-rc.1-pilot-x86_64-unknown-linux-gnu.cdx.json
+          if-no-files-found: error
+          retention-days: 7
 
   macos-sbom-gate:
     needs: public-pr-gate
     if: ${{ needs.public-pr-gate.outputs.docs_only != 'true' }}
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      MAVERICK_PILOT_TARGET: aarch64-apple-darwin
       MAVERICK_SBOM_TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -1387,7 +1441,7 @@ jobs:
           [[ "$(shasum -a 256 "$candidate_archive" | awk '{print $1}')" == \
             61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d ]]
           cmp "$candidate_archive" "$candidate_archive_copy"
-      - name: Generate and fully verify the exact-head macOS SBOM
+      - name: Build and verify exact-head macOS candidate artifacts
         run: |
           set -euo pipefail
           actual_revision="$(git rev-parse HEAD)"
@@ -1396,24 +1450,15 @@ jobs:
             exit 1
           fi
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
-          private_output=""
-          cleanup() {
-            case "$private_output" in
-              "$RUNNER_TEMP"/maverick-sbom-ci.*)
-                [[ ! -d "$private_output" ]] ||
-                  find "$private_output" -depth -delete >/dev/null 2>&1 || true
-                ;;
-            esac
-          }
-          trap cleanup EXIT
-          private_output="$(
-            mktemp -d "$RUNNER_TEMP/maverick-sbom-ci.XXXXXX" 2>/dev/null
-          )" || {
-            echo "macOS SBOM gate failed" >&2
-            exit 1
-          }
-          chmod 0700 "$private_output"
-          sbom="$private_output/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.cdx.json"
+          archive="dist/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.tar.gz"
+          ./scripts/build-pilot.sh
+          ./scripts/verify-pilot-artifact.sh \
+            --archive "$archive" \
+            --expected-version "$version" \
+            --expected-revision "$actual_revision" \
+            --expected-target "$MAVERICK_SBOM_TARGET" \
+            --verification-level native
+          sbom="dist/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.cdx.json"
           ./scripts/generate-cyclonedx-sbom.sh \
             --expected-version "$version" \
             --expected-revision "$actual_revision" \
@@ -1426,3 +1471,31 @@ jobs:
             --expected-target "$MAVERICK_SBOM_TARGET" \
             --verification-level full \
             --source-root .
+      - name: Exercise RC.1 upgrade and Beta.4 rollback on macOS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          actual_revision="$(git rev-parse HEAD)"
+          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          previous_dir="$(mktemp -d "$RUNNER_TEMP/maverick-beta4.XXXXXX")"
+          chmod 0700 "$previous_dir"
+          gh release download v1.2.0-beta.4 --dir "$previous_dir" \
+            --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz" \
+            --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz.sha256"
+          ./scripts/test-n-minus-one-release-drill.sh \
+            --target "$MAVERICK_SBOM_TARGET" \
+            --previous-archive "$previous_dir/maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz" \
+            --previous-checksum "$previous_dir/maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz.sha256" \
+            --candidate-archive "dist/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.tar.gz" \
+            --candidate-checksum "dist/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.tar.gz.sha256" \
+            --candidate-revision "$actual_revision"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rc-candidate-aarch64-apple-darwin
+          path: |
+            dist/maverick-1.2.0-rc.1-pilot-aarch64-apple-darwin.tar.gz
+            dist/maverick-1.2.0-rc.1-pilot-aarch64-apple-darwin.tar.gz.sha256
+            dist/maverick-1.2.0-rc.1-pilot-aarch64-apple-darwin.cdx.json
+          if-no-files-found: error
+          retention-days: 7

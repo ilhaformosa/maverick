@@ -13,13 +13,13 @@ playbook preserve detail without becoming parallel status ledgers.
 | Area | Current truth |
 |---|---|
 | Development stage | **Beta**; experimental and not production-ready |
-| Published release | Immutable `v1.2.0-beta.4` prerelease |
+| Published release | Immutable `v1.2.0-beta.4` until the authorized `v1.2.0-rc.1` workflow succeeds; then RC.1 is the current prerelease and remains non-Latest |
 | Supported product route | Direct browser-like TLS 1.3 + HTTP/2 |
 | Provider-fronted route | Implemented and Beta; not part of the first Stable support claim |
 | H3/UDP product | Disabled; no current H3 product backend or Auto path |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Direct-H2 `v1.2.0-rc.1` Week 2 qualification: repair the exact-artifact publication gate, then repeat independent review |
+| Current milestone | Direct-H2 `v1.2.0-rc.1` publication: **GO** for exact commit `cf89428`; GitHub tag/Release state determines completion |
 | Stable readiness | **RED**; RC publication, field use, and Stable gates remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
@@ -56,18 +56,19 @@ parties. Beta.4 and its field evidence do not automatically qualify a later RC.
 
 ## Current Milestone: Direct-H2 RC.1
 
-The sole active product milestone is one exact Direct-H2-only
-`v1.2.0-rc.1` candidate. The first Week 2 qualification change was merged and
-its Apple/Linux CI artifacts, SBOMs, native Beta.4-to-RC.1 compatibility, and
-rollback preflights passed. Independent review then found one unresolved High
-release-integrity issue: a future tag run would rebuild and publish different
-artifact bytes instead of publishing the reviewed main-run bytes. That finding
-invalidates the RC go/no-go but does not invalidate the underlying Direct-H2
-product checks. The active replacement keeps the product scope unchanged and
-makes publication consume the unique successful attempt-1 main-run artifacts
-for the exact tag SHA. No tag, release, public RC artifact, deployment, or
-Stable result has been created. H3, native Datagram, auth v3, Config v2, Auto
-H3, TUN migration, and new provider work are not prerequisites and are paused.
+The sole active product milestone is exact Direct-H2-only candidate
+`cf89428e7c7ff885b765374ef21833ddd822e411` for `v1.2.0-rc.1`. Local product
+gates, fresh dependency policy, attempt-1 CodeQL/product/supply-chain checks,
+Apple/Linux archives and SBOMs, native Beta.4-to-RC.1-to-Beta.4 drills, and an
+independent exact-byte security review pass with no Critical, High, or lower
+finding. The earlier High release-integrity issue is closed: publication now
+downloads the reviewed main-run artifacts instead of rebuilding different
+bytes. The explicit RC.1 publication decision is **GO** for this commit and
+these bytes only, as a prerelease that is not Latest. The immutable GitHub tag
+and Release records determine whether publication has completed; until they
+exist, Beta.4 remains the public prerelease. No deployment, field result, or
+Stable result follows. H3, native Datagram, auth v3, Config v2, Auto H3, TUN
+migration, and new provider work remain paused.
 
 The RC may become a prerelease/non-Latest release only after its candidate
 scope, versions, release note, local product checks, locked dependency closure,
@@ -78,15 +79,16 @@ agree on the exact candidate. Stable remains a later decision.
 
 | Gate | State |
 |---|---|
-| Exact RC commit, package version, release note, and candidate scope | **PARTIAL — version, note, and Direct-H2 scope agree; the publication-gate replacement is not yet merged** |
-| Direct-H2-only route and v1 compatibility matrix | **GREEN on the superseded candidate — 64 loopback tests and native Apple/Linux Beta.4-to-RC.1 preflights passed; the replacement exact head must repeat them** |
-| Local `user-smoke` and `local-harness` on exact candidate | **LOCAL GREEN — both pass on the replacement working tree; the committed exact head must preserve this result** |
-| Dependency, advisory, license, source, and first-party `unsafe` review | **LOCAL GREEN — `h2` 0.4.16 and fresh advisory, policy, license, source, and first-party `unsafe` checks pass on the replacement working tree; exact-head CI must repeat them** |
-| Apple/Linux archives, checksums, native/static verification, and SBOMs | **RED for release — both superseded-candidate bundles passed, but the replacement needs new exact-head bundles** |
-| Exact-head public CI and CodeQL | **MERGE-GATED — the superseded candidate passed; the replacement PR may merge only after its exact head passes attempt 1** |
-| Independent exact-RC security review; no unresolved Critical/High | **RED — one High release-integrity finding is open until the replacement diff and new exact artifacts are independently reverified** |
+| Exact RC commit, package version, release note, and candidate scope | **GREEN — `cf89428`, version/note `1.2.0-rc.1`, and Direct-H2-only scope agree** |
+| Direct-H2-only route and v1 compatibility matrix | **GREEN — 64 loopback tests and native Apple/Linux Beta.4-to-RC.1 preflights pass on the exact candidate** |
+| Local `user-smoke` and `local-harness` on exact candidate | **GREEN** |
+| Dependency, advisory, license, source, and first-party `unsafe` review | **GREEN — `h2` 0.4.16; fresh checks pass for 299 locked dependencies** |
+| Apple/Linux archives, checksums, native/static verification, and SBOMs | **GREEN — exact run `32484952095`, artifact IDs `9447915168` and `9448107911`, both non-expired and independently reverified** |
+| Exact-head public CI and CodeQL | **GREEN — attempt-1 runs `32484951717`, `32484952095`, and `32485010025` pass for `cf89428` without rerun or cancellation** |
+| Independent exact-RC security review; no unresolved Critical/High | **GREEN — P0/P1/P2 are all zero; the earlier High exact-byte publication finding is closed** |
 | Fresh-origin Direct-H2 field run and 72-hour owner use | **RED — not performed** |
-| Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **REPEAT REQUIRED — both platforms passed for the superseded candidate; the replacement exact artifacts must repeat** |
+| Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **GREEN for qualification — both exact-candidate drills pass; owner field rollback remains later** |
+| RC.1 prerelease/non-Latest publication | **GO — only exact `cf89428` and its six independently reviewed files are authorized** |
 | Stable publication and Latest classification | **BLOCKED** |
 
 The full release safety contract remains
@@ -179,8 +181,11 @@ of policy, evidence, and truth-update PRs.
 
 The owner has delegated ordinary technical prioritization and repository-local
 execution to Codex. That delegation does not turn missing evidence green or
-authorize network-setting changes, spending, publication, destructive actions,
-or personal attestations.
+authorize network-setting changes, spending, destructive actions, or personal
+attestations. The owner's instruction to execute Week 2, combined with the
+now-green exact gates above, authorizes only the recorded RC.1
+prerelease/non-Latest publication. It does not authorize a different candidate,
+Stable/Latest, a provider resource, or a field task.
 
 No owner action is needed for local RC preparation. Later the owner must
 participate in the exact-RC ordinary-use/72-hour field task and any personal or

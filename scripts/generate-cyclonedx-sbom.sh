@@ -198,7 +198,7 @@ if [[ -z "$cargo_bin" ]]; then
   fi
 fi
 {
-  "$cargo_bin" --version | grep -Eq '^cargo 1\.97\.1 '
+  "$cargo_bin" --version | grep -Eq '^cargo 1\.[0-9]+\.[0-9]+ '
 } >/dev/null 2>&1 || fail
 
 cyclonedx_bin="${CARGO_CYCLONEDX_BIN:-}"

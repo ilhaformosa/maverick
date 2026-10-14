@@ -317,11 +317,11 @@ impl Counters {
     }
 
     fn remove_tracked_bytes(&self, bytes: usize) {
-        let _ = self.tracked_buffered_bytes.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |value| Some(value.saturating_sub(bytes)),
-        );
+        let _ =
+            self.tracked_buffered_bytes
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    Some(value.saturating_sub(bytes))
+                });
     }
 
     fn set_actor_buffered_bytes(&self, bytes: usize) {
@@ -926,11 +926,12 @@ async fn packet_writer_task(
         counters.packets_sent.fetch_add(1, Ordering::Relaxed);
     }
     while egress.try_recv().is_ok() {
-        let _ = counters.egress_queue_depth.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |value| Some(value.saturating_sub(1)),
-        );
+        let _ =
+            counters
+                .egress_queue_depth
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    Some(value.saturating_sub(1))
+                });
     }
 }
 

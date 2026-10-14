@@ -18,7 +18,7 @@ readonly TEST_RELEASE_NOTE_VERSION="1.2.0-beta.3"
 readonly TEST_REVISION="1111111111111111111111111111111111111111"
 readonly TEST_MARKER="SYNTH_PRIVATE_MARKER_DO_NOT_ECHO"
 readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
-readonly PILOT_RELEASE_WORKFLOW_SHA256="1cde3cbff49bcc976713bfec53acd5434f0f5af6a6bd63033805ab61707f27c7"
+readonly PILOT_RELEASE_WORKFLOW_SHA256="76e9f0b1c6f83ecacbfb66e3f00c7daa6df6a6d333710d911f0fcfb74f6d89e6"
 readonly PILOT_RELEASE_PUBLISH_STEP_SHA256="e5578640dc3066f3e18fc33f9a628cedd8fd1440a1805bef679f76e61c03280c"
 
 cleanup() {

@@ -54,11 +54,9 @@ fn decode_hex(input: &str) -> Vec<u8> {
     let input = input.trim();
     assert_eq!(input.len() % 2, 0, "hex length must be even");
     let mut out = Vec::with_capacity(input.len() / 2);
-    let mut chars = input.as_bytes().chunks_exact(2);
-    for pair in &mut chars {
-        let high = hex_value(pair[0]);
-        let low = hex_value(pair[1]);
-        out.push((high << 4) | low);
+    let (pairs, _) = input.as_bytes().as_chunks::<2>();
+    for &[high, low] in pairs {
+        out.push((hex_value(high) << 4) | hex_value(low));
     }
     out
 }

@@ -134,7 +134,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         if: steps.scope.outputs.docs_only != 'true'
         with:
-          toolchain: 1.97.1
+          toolchain: stable
           components: rustfmt, clippy
       - name: Check the supported no-default build
         if: steps.scope.outputs.docs_only != 'true'
@@ -854,7 +854,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.97.1
+          toolchain: stable
       - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - run: cargo fetch --locked --target "$MAVERICK_SBOM_TARGET"
       - name: Evaluate the default-off quiche candidate

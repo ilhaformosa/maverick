@@ -26,7 +26,7 @@ multiple-versions = "allow"
 wildcards = "allow"
 allow-wildcard-paths = true
 deny = [
-    { crate = "serde_yaml", reason = "unmaintained; use serde_yaml_ng or a maintained parser instead" },
+    { crate = "serde_yaml", reason = "unmaintained; use the safe-Rust serde-saphyr parser instead" },
 ]
 
 [sources]

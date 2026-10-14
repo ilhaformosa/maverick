@@ -303,7 +303,7 @@ fi
 
 linux_components="$(jq '.components | length' "$linux_first")"
 mac_components="$(jq '.components | length' "$mac_first")"
-[[ "$linux_components" == 177 && "$mac_components" == 176 ]] || fail
+[[ "$linux_components" == 185 && "$mac_components" == 183 ]] || fail
 jq -r '.components[] | "\(.name)@\(.version)"' "$linux_first" | sort -u \
   >"$private_tmp/linux-components"
 jq -r '.components[] | "\(.name)@\(.version)"' "$mac_first" | sort -u \
@@ -311,7 +311,7 @@ jq -r '.components[] | "\(.name)@\(.version)"' "$mac_first" | sort -u \
 target_delta="$(
   comm -3 "$private_tmp/linux-components" "$private_tmp/mac-components"
 )"
-[[ "$target_delta" == "linux-raw-sys@0.12.1" ]] || fail
+[[ "$target_delta" == $'core_detect@1.0.0\nlinux-raw-sys@0.12.1' ]] || fail
 
 fixture_path=""
 make_fixture() {

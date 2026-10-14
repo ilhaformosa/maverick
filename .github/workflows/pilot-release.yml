@@ -40,7 +40,7 @@ jobs:
             --main-ref origin/main
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.97.1
+          toolchain: stable
           components: rustfmt, clippy
       - run: sudo apt-get update && sudo apt-get install -y binutils clang cmake file ripgrep shellcheck
       - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
@@ -162,7 +162,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.97.1
+          toolchain: stable
       - run: sudo apt-get update && sudo apt-get install -y binutils file
       - name: Fetch both release-target dependency closures
         run: |

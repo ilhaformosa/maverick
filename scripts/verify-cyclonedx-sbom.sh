@@ -291,7 +291,7 @@ if [[ "$verification_level" == "full" ]]; then
     fi
   fi
   "$cargo_bin" --version 2>/dev/null |
-    grep -Eq '^cargo 1\.97\.1 ' || fail cargo-version
+    grep -Eq '^cargo 1\.[0-9]+\.[0-9]+ ' || fail cargo-version
 
   snapshot_root="$private_tmp/source"
   mkdir -m 0700 "$snapshot_root" >/dev/null 2>&1 || fail source

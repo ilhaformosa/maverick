@@ -816,9 +816,18 @@ jobs:
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
           previous_dir="$(mktemp -d "$RUNNER_TEMP/maverick-beta4.XXXXXX")"
           chmod 0700 "$previous_dir"
-          gh release download v1.2.0-beta.4 --dir "$previous_dir" \
-            --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
-            --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256"
+          # The download is the only network step; retry transient GitHub
+          # errors. The drill verifies the archive against its checksum.
+          for attempt in 1 2 3; do
+            if gh release download v1.2.0-beta.4 --dir "$previous_dir" --clobber \
+              --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
+              --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256"; then
+              break
+            fi
+            [[ "$attempt" -lt 3 ]] || exit 1
+            echo "::warning::Beta.4 download attempt $attempt failed; retrying"
+            sleep $((attempt * 10))
+          done
           ./scripts/test-n-minus-one-release-drill.sh \
             --target "$MAVERICK_PILOT_TARGET" \
             --previous-archive "$previous_dir/maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
@@ -1480,9 +1489,18 @@ jobs:
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
           previous_dir="$(mktemp -d "$RUNNER_TEMP/maverick-beta4.XXXXXX")"
           chmod 0700 "$previous_dir"
-          gh release download v1.2.0-beta.4 --dir "$previous_dir" \
-            --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz" \
-            --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz.sha256"
+          # The download is the only network step; retry transient GitHub
+          # errors. The drill verifies the archive against its checksum.
+          for attempt in 1 2 3; do
+            if gh release download v1.2.0-beta.4 --dir "$previous_dir" --clobber \
+              --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz" \
+              --pattern "maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz.sha256"; then
+              break
+            fi
+            [[ "$attempt" -lt 3 ]] || exit 1
+            echo "::warning::Beta.4 download attempt $attempt failed; retrying"
+            sleep $((attempt * 10))
+          done
           ./scripts/test-n-minus-one-release-drill.sh \
             --target "$MAVERICK_SBOM_TARGET" \
             --previous-archive "$previous_dir/maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz" \

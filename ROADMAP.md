@@ -83,6 +83,11 @@ default, and no real-network claim.
 - Paid audit, provenance/attestation, signing, and reproducible-build work for
   an exact release candidate when those controls are actually needed.
 
+- Remove the duplicate `product-ci` run on pushes to `main`: main requires
+  up-to-date PRs and squash merges, so the PR run already tests the merged
+  tree. Only together with enforcing branch protection for administrators
+  and a weekly scheduled `product-ci` run (deferred by the owner, 2026-10-14).
+
 ## Explicitly Stopped
 
 - Phase 3 recovery or a renamed replacement.

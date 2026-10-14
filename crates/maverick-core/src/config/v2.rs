@@ -9,7 +9,10 @@
 use serde::de::IgnoredAny;
 use serde::Deserialize;
 
-use super::{config_version, ClientConfig, ConfigVersion, Mode};
+use super::{
+    probe_config_version, with_yaml_deserializer, ClientConfig, ConfigVersion,
+    ConfigVersionFailure, Mode,
+};
 use crate::{Error, Result};
 
 const INVALID_DOCUMENT_MESSAGE: &str = "invalid config v2 policy document";
@@ -32,15 +35,22 @@ pub struct Policy {
 impl Policy {
     /// Parses and validates one strict config-v2 policy YAML document.
     pub fn from_yaml_str(input: &str) -> Result<Self> {
-        match config_version(input).map_err(|_| rejection(PolicyRejection::InvalidDocument))? {
-            ConfigVersion::V2 => {}
-            ConfigVersion::V1 | ConfigVersion::Unsupported => {
+        match probe_config_version(input) {
+            Ok(ConfigVersion::V2) => {}
+            Ok(ConfigVersion::V1 | ConfigVersion::Unsupported) => {
                 return Err(rejection(PolicyRejection::UnsupportedVersion));
+            }
+            Err(ConfigVersionFailure::DuplicateKey(_)) => {
+                return Err(rejection(PolicyRejection::InvalidPolicy));
+            }
+            Err(ConfigVersionFailure::InvalidMetadata) => {
+                return Err(rejection(PolicyRejection::InvalidDocument));
             }
         }
 
-        let wire = PolicyWire::deserialize(serde_yaml_ng::Deserializer::from_str(input))
-            .map_err(|_| rejection(PolicyRejection::InvalidPolicy))?;
+        let wire =
+            with_yaml_deserializer(input, |deserializer| PolicyWire::deserialize(deserializer))
+                .map_err(|_| rejection(PolicyRejection::InvalidPolicy))?;
         validate_wire(wire).map_err(rejection)
     }
 
@@ -356,7 +366,10 @@ fn deserialize_front<'de, D>(deserializer: D) -> std::result::Result<FrontWireFi
 where
     D: serde::Deserializer<'de>,
 {
-    FrontWire::deserialize(deserializer).map(FrontWireField::Present)
+    // An explicit null is malformed, not an empty front.
+    Option::<FrontWire>::deserialize(deserializer)?
+        .map(FrontWireField::Present)
+        .ok_or_else(|| serde::de::Error::custom("invalid front"))
 }
 
 #[derive(Deserialize)]

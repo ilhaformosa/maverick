@@ -486,6 +486,36 @@ Adding a future field requires an explicit, versioned compatibility decision.
 Stored-profile serialization is a separate boundary; this contract makes no
 claim about stored-profile JSON.
 
+### YAML parsing rules
+
+All config readers use the safe-Rust `serde-saphyr` parser with one shared
+setting set. It reads one document and follows these rules:
+
+- Any repeated mapping key fails with a fixed `duplicate configuration key`
+  error that gives the line and column but not the key. A repeated root
+  `version` key remains invalid version metadata.
+- Anchors and aliases resolve. A `<<` merge key is an ordinary key, so a
+  canonical reader rejects it as unknown.
+- Tags do not change a field's type. `!!binary` is not decoded into a string
+  field, a `!!str` scalar is not accepted as a number, and other local tags are
+  ignored.
+- Booleans are `true` or `false` in any letter case. YAML 1.1 forms such as
+  `yes`, `no`, `on`, and `off` are rejected.
+- Integers accept decimal, `+`, `0x`, `0o`, and `_` separators. Leading-zero
+  legacy octal, floats, exponents, negative values for unsigned fields, and
+  overflow are rejected.
+- A scalar is read by the field's type, so a quoted `"5000"` or `"true"` is
+  accepted for a number or boolean field.
+- An empty value or `null` for a section reads as `{}` and for a list reads as
+  `[]`; for every defaulted section this equals omitting it. A string field
+  does not accept an empty value or `null`.
+- Parse errors give the line and column and never quote source lines.
+
+These rules replaced `serde_yaml_ng` on 2026-10-14. Compared with it, quoted
+numbers and booleans, `_` digit separators, any-case booleans, and empty or
+`null` sections and lists are now accepted. Tagged scalars of another type and
+empty or `null` string fields are now rejected.
+
 ## Stored client-profile JSON
 
 The SDK fully understands and supports two usable stored-profile

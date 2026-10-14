@@ -2670,7 +2670,8 @@ fn migration_report(kind: &str, input: &str) -> Result<Vec<String>> {
 }
 
 fn migration_defaults(input: &str, fields: &[&str]) -> Result<Vec<String>> {
-    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(input)?;
+    let options = serde_saphyr::options! { with_snippet: false };
+    let value: serde_json::Value = serde_saphyr::from_str_with_options(input, options)?;
     Ok(fields
         .iter()
         .filter(|field| !yaml_has_path(&value, field))
@@ -2700,7 +2701,7 @@ fn migration_defaults(input: &str, fields: &[&str]) -> Result<Vec<String>> {
         .collect())
 }
 
-fn yaml_has_path(value: &serde_yaml_ng::Value, path: &str) -> bool {
+fn yaml_has_path(value: &serde_json::Value, path: &str) -> bool {
     let mut current = value;
     for segment in path.split('.') {
         let Some(next) = current.get(segment) else {

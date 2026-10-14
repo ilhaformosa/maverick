@@ -246,10 +246,35 @@ impl<'de> Visitor<'de> for ConfigVersionValueVisitor {
     }
 }
 
+enum ConfigVersionFailure {
+    InvalidMetadata,
+    /// A key other than `version` is repeated. The parser reports duplicates
+    /// while reading, so the version probe sees them before the strict reader.
+    DuplicateKey(serde_saphyr::Error),
+}
+
+fn probe_config_version(input: &str) -> std::result::Result<ConfigVersion, ConfigVersionFailure> {
+    with_yaml_deserializer(input, |deserializer| {
+        ConfigVersionDocument::deserialize(deserializer)
+    })
+    .map(|document| document.0)
+    .map_err(|error| match error {
+        serde_saphyr::Error::DuplicateMappingKey { ref key, .. }
+            if key.as_deref() != Some("version") =>
+        {
+            ConfigVersionFailure::DuplicateKey(error)
+        }
+        _ => ConfigVersionFailure::InvalidMetadata,
+    })
+}
+
 fn config_version(input: &str) -> Result<ConfigVersion> {
-    ConfigVersionDocument::deserialize(serde_yaml_ng::Deserializer::from_str(input))
-        .map(|document| document.0)
-        .map_err(|_| Error::Config("invalid configuration version metadata".into()))
+    probe_config_version(input).map_err(|failure| match failure {
+        ConfigVersionFailure::InvalidMetadata => {
+            Error::Config("invalid configuration version metadata".into())
+        }
+        ConfigVersionFailure::DuplicateKey(error) => error.into(),
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -828,6 +853,31 @@ impl ServerConfig {
     }
 }
 
+/// Runs `f` against a YAML deserializer configured for every config reader.
+///
+/// Duplicate keys are errors, only `true`/`false` are booleans, `<<` is an
+/// ordinary key (so the canonical readers reject it as unknown), `!!binary` is
+/// not decoded into strings, and errors never quote source lines. CONFIG.md
+/// lists the resulting rules.
+pub(crate) fn with_yaml_deserializer<'de, T, F>(
+    input: &'de str,
+    f: F,
+) -> std::result::Result<T, serde_saphyr::Error>
+where
+    F: for<'e> FnOnce(
+        serde_saphyr::Deserializer<'de, 'e>,
+    ) -> std::result::Result<T, serde_saphyr::Error>,
+{
+    let options = serde_saphyr::options! {
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        strict_booleans: true,
+        ignore_binary_tag_for_string: true,
+        with_snippet: false,
+    };
+    serde_saphyr::with_deserializer_from_str_with_options(input, options, f)
+}
+
 fn from_versioned_yaml_str_rejecting_unknown_fields<'de, T>(input: &'de str) -> Result<T>
 where
     T: Deserialize<'de>,
@@ -845,10 +895,12 @@ where
     T: Deserialize<'de>,
 {
     let mut first_unknown_parent = None;
-    let value = serde_ignored::deserialize(serde_yaml_ng::Deserializer::from_str(input), |path| {
-        if first_unknown_parent.is_none() {
-            first_unknown_parent = Some(safe_unknown_parent_location(&path));
-        }
+    let value = with_yaml_deserializer(input, |deserializer| {
+        serde_ignored::deserialize(deserializer, |path| {
+            if first_unknown_parent.is_none() {
+                first_unknown_parent = Some(safe_unknown_parent_location(&path));
+            }
+        })
     })?;
     if let Some(location) = first_unknown_parent {
         return Err(Error::Config(format!(
@@ -2137,7 +2189,7 @@ advanced:
         let secret = SecretString::generate();
         let cfg = client_config_with_server(client_server_config("u_abc123", secret.clone()));
 
-        let rendered = serde_yaml_ng::to_string(&cfg).unwrap();
+        let rendered = serde_json::to_string(&cfg).unwrap();
 
         assert!(rendered.contains("[REDACTED]"));
         assert!(!rendered.contains(secret.expose_secret()));
@@ -2365,16 +2417,16 @@ service:
         let private_marker = "PRIVATE_MARKER_DO_NOT_ECHO";
         let long_suffix = "L".repeat(2_048);
         let malicious_key = format!("{private_marker}\n\u{1b}[31m{long_suffix}");
-        let mut document: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str(&canonical_client_yaml(&secret)).unwrap();
-        document["auth"]["channel_binding"]
-            .as_mapping_mut()
-            .unwrap()
-            .insert(
-                serde_yaml_ng::Value::String(malicious_key),
-                serde_yaml_ng::Value::String("private-field-value".into()),
-            );
-        let input = serde_yaml_ng::to_string(&document).unwrap();
+        // The key is longer than YAML's 1024-character implicit-key limit, so
+        // it needs the explicit `?` form; a JSON string is a valid YAML
+        // double-quoted scalar.
+        let input = canonical_client_yaml(&secret).replace(
+            "    require: false\n",
+            &format!(
+                "    require: false\n    ? {}\n    : \"private-field-value\"\n",
+                serde_json::to_string(&malicious_key).unwrap()
+            ),
+        );
 
         let err = ClientConfig::from_yaml_str(&input).unwrap_err();
         let rendered = err.to_string();
@@ -2481,13 +2533,265 @@ service:
         assert!(ServerConfig::from_yaml_str(&server_nested).is_err());
     }
 
+    fn client_yaml_error(input: &str) -> String {
+        ClientConfig::from_yaml_str(input).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn shipped_example_configs_parse_with_a_real_secret() {
+        let secret = SecretString::generate();
+        let read_example = |name: &str| {
+            let path = format!("{}/../../config/{name}", env!("CARGO_MANIFEST_DIR"));
+            std::fs::read_to_string(path).unwrap().replace(
+                "mv1_REPLACE_WITH_OUTPUT_FROM_MAVERICK_GEN_USER",
+                secret.expose_secret(),
+            )
+        };
+
+        let client = ClientConfig::from_yaml_str(&read_example("client.example.yaml")).unwrap();
+        assert_eq!(client.server.credential_id, "u_example");
+        assert!(client.local.dns.is_none());
+        assert!(client.auth.channel_binding.enabled);
+
+        let server = ServerConfig::from_yaml_str(&read_example("server.example.yaml")).unwrap();
+        assert_eq!(server.users[0].id, "u_example");
+        assert!(server.users[0].rate_limit.is_none());
+        assert!(matches!(server.fallback, FallbackConfig::Static { .. }));
+    }
+
+    #[test]
+    fn yaml_duplicate_key_errors_report_location_without_the_key() {
+        let secret = SecretString::generate();
+        let private_marker = "PRIVATE_DUPLICATE_MARKER";
+        let root = format!(
+            "{}{private_marker}: 1\n{private_marker}: 2\n",
+            canonical_client_yaml(&secret)
+        );
+        let nested = canonical_client_yaml(&secret).replace(
+            "    require: false\n",
+            &format!("    require: false\n    {private_marker}: 1\n    {private_marker}: 2\n"),
+        );
+        for input in [root, nested] {
+            let rendered = client_yaml_error(&input);
+            assert!(
+                rendered.starts_with("configuration error: duplicate configuration key at line "),
+                "{rendered}"
+            );
+            assert!(!rendered.contains(private_marker));
+        }
+
+        let known = canonical_client_yaml(&secret).replace("mode: auto", "mode: auto\nmode: auto");
+        assert_eq!(
+            client_yaml_error(&known),
+            "configuration error: duplicate configuration key at line 4, column 1"
+        );
+    }
+
+    #[test]
+    fn yaml_aliases_resolve_but_merge_keys_are_unknown_keys() {
+        let secret = SecretString::generate();
+        let aliased = canonical_client_yaml(&secret)
+            .replace("    require: false", "    require: &flag false")
+            .replace(
+                "    allow_experimental: false",
+                "    allow_experimental: *flag",
+            );
+        let config = ClientConfig::from_yaml_str(&aliased).unwrap();
+        assert!(!config.advanced.crypto.allow_experimental);
+
+        let merged = canonical_client_yaml(&secret).replace(
+            "  channel_binding:\n",
+            "  channel_binding:\n    <<: {enabled: true}\n",
+        );
+        assert_eq!(
+            client_yaml_error(&merged),
+            "configuration error: unknown configuration key under auth.channel_binding"
+        );
+    }
+
+    #[test]
+    fn yaml_tags_do_not_change_field_types() {
+        let secret = SecretString::generate();
+        let base = canonical_client_yaml(&secret);
+
+        let binary = base.replace(
+            "  credential_id: \"u_example\"",
+            "  credential_id: !!binary dV9leGFtcGxl",
+        );
+        assert_eq!(
+            ClientConfig::from_yaml_str(&binary)
+                .unwrap()
+                .server
+                .credential_id,
+            "dV9leGFtcGxl"
+        );
+
+        let local_tag = base.replace(
+            "  server_name: \"example.invalid\"",
+            "  server_name: !host \"example.invalid\"",
+        );
+        assert_eq!(
+            ClientConfig::from_yaml_str(&local_tag)
+                .unwrap()
+                .server
+                .server_name,
+            "example.invalid"
+        );
+
+        let string_tagged_number = base.replace(
+            "advanced:\n",
+            "advanced:\n  connect_timeout_ms: !!str 5000\n",
+        );
+        assert!(ClientConfig::from_yaml_str(&string_tagged_number).is_err());
+    }
+
+    #[test]
+    fn yaml_booleans_are_only_true_or_false() {
+        let secret = SecretString::generate();
+        let base = canonical_client_yaml(&secret);
+        let with_require =
+            |value: &str| base.replace("    require: false", &format!("    require: {value}"));
+
+        for value in ["yes", "no", "on", "off", "y", "1", "~"] {
+            assert!(
+                ClientConfig::from_yaml_str(&with_require(value)).is_err(),
+                "{value}"
+            );
+        }
+        // Spelling is case-insensitive, and a quoted literal is read by the
+        // field type, as serde-saphyr does for every scalar.
+        for (value, expected) in [
+            ("true", true),
+            ("True", true),
+            ("FALSE", false),
+            ("\"true\"", true),
+        ] {
+            let config = ClientConfig::from_yaml_str(&with_require(value)).unwrap();
+            assert_eq!(config.auth.channel_binding.require, expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn yaml_integers_reject_legacy_octal_floats_and_overflow() {
+        let secret = SecretString::generate();
+        let base = canonical_client_yaml(&secret);
+        let with_timeout = |value: &str| {
+            base.replace(
+                "advanced:\n",
+                &format!("advanced:\n  connect_timeout_ms: {value}\n"),
+            )
+        };
+
+        for value in ["5000", "+5000", "0x1388", "5_000", "\"5000\""] {
+            let config = ClientConfig::from_yaml_str(&with_timeout(value)).unwrap();
+            assert_eq!(config.advanced.connect_timeout_ms, 5000, "{value}");
+        }
+        for value in [
+            "05000",
+            "5000.0",
+            "5e3",
+            "-1",
+            ".inf",
+            "18446744073709551616",
+            "~",
+        ] {
+            assert!(
+                ClientConfig::from_yaml_str(&with_timeout(value)).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn yaml_null_sections_and_lists_read_as_empty_but_strings_are_not_nullable() {
+        let secret = SecretString::generate();
+        let base = canonical_client_yaml(&secret);
+
+        for value in ["", " ~", " null", " {}"] {
+            let config = ClientConfig::from_yaml_str(&format!("{base}log:{value}\n")).unwrap();
+            assert_eq!(config.log.level, default_log_level(), "{value:?}");
+            assert!(config.log.redact, "{value:?}");
+        }
+
+        let null_suites = base.replace(
+            "    offered_suites:\n      - \"tls13\"\n",
+            "    offered_suites: ~\n",
+        );
+        assert_eq!(
+            client_yaml_error(&null_suites),
+            "configuration error: advanced.crypto.offered_suites must not be empty"
+        );
+
+        for value in ["~", ""] {
+            let null_name = base.replace(
+                "  server_name: \"example.invalid\"",
+                &format!("  server_name: {value}"),
+            );
+            assert!(
+                ClientConfig::from_yaml_str(&null_name).is_err(),
+                "{value:?}"
+            );
+        }
+    }
+
+    fn assert_empty_section_matches_omitted_section<T>()
+    where
+        T: Default + Serialize + for<'de> Deserialize<'de>,
+    {
+        let omitted = serde_json::to_value(T::default()).unwrap();
+        for input in ["{}", "~"] {
+            let parsed: T =
+                with_yaml_deserializer(input, |deserializer| T::deserialize(deserializer)).unwrap();
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap(),
+                omitted,
+                "{} from {input:?}",
+                std::any::type_name::<T>()
+            );
+        }
+    }
+
+    #[test]
+    fn yaml_empty_or_null_defaulted_sections_match_omitted_sections() {
+        assert_empty_section_matches_omitted_section::<AuthChannelBindingConfig>();
+        assert_empty_section_matches_omitted_section::<AuthV2Config>();
+        assert_empty_section_matches_omitted_section::<CdnFrontingConfig>();
+        assert_empty_section_matches_omitted_section::<ClientAdvancedConfig>();
+        assert_empty_section_matches_omitted_section::<ClientAuthConfig>();
+        assert_empty_section_matches_omitted_section::<ClientCredentialRotationConfig>();
+        assert_empty_section_matches_omitted_section::<CryptoPolicyConfig>();
+        assert_empty_section_matches_omitted_section::<LogConfig>();
+        assert_empty_section_matches_omitted_section::<ServerAdvancedConfig>();
+        assert_empty_section_matches_omitted_section::<ServerAuthConfig>();
+        assert_empty_section_matches_omitted_section::<ServerEgressPolicyConfig>();
+        assert_empty_section_matches_omitted_section::<ShapingConfig>();
+        assert_empty_section_matches_omitted_section::<StealthConfig>();
+    }
+
+    #[test]
+    fn yaml_value_errors_do_not_quote_the_input() {
+        let secret = SecretString::generate();
+        let private_marker = "PRIVATE_VALUE_MARKER";
+        let input = canonical_client_yaml(&secret).replace(
+            "advanced:\n",
+            &format!("advanced:\n  connect_timeout_ms: {private_marker}\n"),
+        );
+
+        let rendered = client_yaml_error(&input);
+        assert!(rendered.starts_with("yaml parse error: "), "{rendered}");
+        assert!(rendered.contains("line "));
+        assert!(!rendered.contains(private_marker));
+        assert!(!rendered.contains(secret.expose_secret()));
+        assert!(!rendered.contains('\n'));
+    }
+
     #[test]
     fn direct_generic_serde_remains_permissive_for_unknown_config_keys() {
         let secret = SecretString::generate();
         let input = canonical_client_yaml(&secret)
             .replace("    require: false", "    require: false\n    requre: true");
 
-        let config: ClientConfig = serde_yaml_ng::from_str(&input).unwrap();
+        let config: ClientConfig = serde_saphyr::from_str(&input).unwrap();
         assert!(!config.auth.channel_binding.require);
     }
 
@@ -2495,14 +2799,20 @@ service:
     fn direct_generic_serde_version_behavior_remains_separate_from_canonical_readers() {
         let secret = SecretString::generate();
         let client_input = canonical_client_yaml(&secret).replace("version: 1", "version: 2");
-        let client: ClientConfig = serde_yaml_ng::from_str(&client_input).unwrap();
+        let client: ClientConfig = serde_saphyr::from_str(&client_input).unwrap();
         assert_eq!(client.version, 2);
         assert!(client.validate().is_err());
 
         let server_input = canonical_server_yaml(&secret).replace("version: 1", "version: 2");
-        let server: ServerConfig = serde_yaml_ng::from_str(&server_input).unwrap();
+        let server: ServerConfig = serde_saphyr::from_str(&server_input).unwrap();
         assert_eq!(server.version, 2);
         assert!(server.validate().is_err());
+    }
+
+    fn yaml_fallback_error(input: &str) -> String {
+        serde_saphyr::from_str::<FallbackConfig>(input)
+            .unwrap_err()
+            .to_string()
     }
 
     #[test]
@@ -2510,19 +2820,15 @@ service:
         let private_marker = "PRIVATE_FALLBACK_MARKER_DO_NOT_ECHO";
         let long_suffix = "L".repeat(2_048);
         let malicious_key = format!("{private_marker}\n\u{1b}[31m{long_suffix}");
-        let mut document = serde_yaml_ng::Mapping::new();
-        document.insert("type".into(), "static".into());
-        document.insert("static_dir".into(), "./public".into());
-        document.insert("index".into(), "index.html".into());
-        document.insert(
-            serde_yaml_ng::Value::String(malicious_key.clone()),
-            serde_yaml_ng::Value::String("private-value".into()),
-        );
-        let input = serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(document)).unwrap();
+        let input = serde_json::json!({
+            "type": "static",
+            "static_dir": "./public",
+            "index": "index.html",
+            &malicious_key: "private-value",
+        })
+        .to_string();
 
-        let yaml_error = serde_yaml_ng::from_str::<FallbackConfig>(&input)
-            .unwrap_err()
-            .to_string();
+        let yaml_error = yaml_fallback_error(&input);
         assert!(yaml_error.contains("invalid fallback configuration"));
         assert!(!yaml_error.contains(private_marker));
         assert!(!yaml_error.contains(&long_suffix));
@@ -2546,18 +2852,14 @@ service:
     fn direct_generic_serde_rejects_unknown_reverse_proxy_fallback_keys_without_echo() {
         let private_marker = "PRIVATE_REVERSE_PROXY_MARKER_DO_NOT_ECHO";
         let malicious_key = format!("{private_marker}\n\u{1b}[31m");
-        let mut document = serde_yaml_ng::Mapping::new();
-        document.insert("type".into(), "reverse_proxy".into());
-        document.insert("upstream".into(), "http://127.0.0.1:8080".into());
-        document.insert(
-            serde_yaml_ng::Value::String(malicious_key.clone()),
-            serde_yaml_ng::Value::String("private-value".into()),
-        );
-        let input = serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(document)).unwrap();
+        let input = serde_json::json!({
+            "type": "reverse_proxy",
+            "upstream": "http://127.0.0.1:8080",
+            &malicious_key: "private-value",
+        })
+        .to_string();
 
-        let yaml_error = serde_yaml_ng::from_str::<FallbackConfig>(&input)
-            .unwrap_err()
-            .to_string();
+        let yaml_error = yaml_fallback_error(&input);
         assert_eq!(yaml_error, "invalid fallback configuration");
         assert!(!yaml_error.contains(private_marker));
         assert!(!yaml_error.contains("private-value"));
@@ -2576,7 +2878,7 @@ service:
 
     #[test]
     fn direct_generic_serde_accepts_both_legal_fallback_variants() {
-        let static_fallback: FallbackConfig = serde_yaml_ng::from_str(
+        let static_fallback: FallbackConfig = serde_saphyr::from_str(
             r#"
 type: "static"
 static_dir: "./public"
@@ -2596,7 +2898,7 @@ static_dir: "./public"
             })
         );
 
-        let reverse_proxy_fallback: FallbackConfig = serde_yaml_ng::from_str(
+        let reverse_proxy_fallback: FallbackConfig = serde_saphyr::from_str(
             r#"
 type: "reverse_proxy"
 upstream: "http://127.0.0.1:8080"

@@ -11,7 +11,7 @@ readonly LINUX_TARGET="x86_64-unknown-linux-gnu"
 readonly PREVIOUS_TAG="v1.2.0-beta.4"
 readonly PREVIOUS_VERSION="${PREVIOUS_TAG#v}"
 readonly PREVIOUS_REVISION="5109d89bdddc23a2830eda2c0c56a954d3b214a9"
-readonly CANDIDATE_TAG="v1.2.0-rc.1"
+readonly CANDIDATE_TAG="v1.2.0-rc.2"
 readonly CANDIDATE_VERSION="${CANDIDATE_TAG#v}"
 readonly MAX_ARCHIVE_BYTES="67108864"
 readonly MAX_TEXT_BYTES="1048576"
@@ -534,7 +534,7 @@ case "$selected_target" in
     PREVIOUS_SHA256="d99f6ac6ab7921593b6b58e7e158815a20e09d30412a8be4fb466a9d55cf2ae9"
     PREVIOUS_CHECKSUM_SHA256="646d4bd0668b79720d69d6a79d2a953fa30a30846677abbc114ec0687040f502"
     PREVIOUS_CHECKSUM_BYTES="122"
-    CANDIDATE_BASENAME="maverick-1.2.0-rc.1-pilot-aarch64-apple-darwin.tar.gz"
+    CANDIDATE_BASENAME="maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.tar.gz"
     ;;
   "$LINUX_TARGET")
     TARGET="$LINUX_TARGET"
@@ -543,7 +543,7 @@ case "$selected_target" in
     PREVIOUS_SHA256="4ef82bb9f29c53b037b3500e0b7c07a15fb87ae4ad902f84c2aaf394f1afb6ea"
     PREVIOUS_CHECKSUM_SHA256="dc2329678c96f2e3a44d8e3b609cf77eafedc7b77f879f3a46a747152a675a80"
     PREVIOUS_CHECKSUM_BYTES="126"
-    CANDIDATE_BASENAME="maverick-1.2.0-rc.1-pilot-x86_64-unknown-linux-gnu.tar.gz"
+    CANDIDATE_BASENAME="maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.tar.gz"
     ;;
   *) fail ;;
 esac

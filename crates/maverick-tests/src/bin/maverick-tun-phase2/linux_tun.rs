@@ -56,8 +56,12 @@ impl TunEndpoint {
             ));
         }
 
+        // SAFETY: AsyncFd takes ownership of this open File. The endpoint keeps
+        // it private and only borrows it for reads/writes; it never replaces or
+        // manually closes the descriptor, which stays valid until deregistration.
+        let file = unsafe { AsyncFd::register(file) }?;
         Ok(Self {
-            file: AsyncFd::new(file)?,
+            file,
             name: actual_name,
         })
     }

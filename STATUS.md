@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-08-21
+Date: 2026-10-27
 
 This is Maverick's only active current-truth document. It answers what exists,
 what is safe to claim, what is blocked, and what currently needs owner
@@ -14,13 +14,14 @@ playbook preserve detail without becoming parallel status ledgers.
 |---|---|
 | Development stage | **Beta**; experimental and not production-ready |
 | Published release | Immutable `v1.2.0-rc.1` prerelease; not Latest; Beta.4 remains the fixed rollback partner |
+| Unreleased dependency maintenance | RC.2 contains dependency and browser-TLS decompression fixes; published RC.1 is unchanged |
 | Supported product route | Direct browser-like TLS 1.3 + HTTP/2 |
 | Provider-fronted route | Implemented and Beta; not part of the first Stable support claim |
 | H3/UDP product | Disabled; no current H3 product backend or Auto path |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Week 3 owner install, ordinary use, 72-hour observation, and field rollback of exact `v1.2.0-rc.1` |
-| Stable readiness | **RED**; exact-RC field use and later Stable gates remain incomplete |
+| Current milestone | Qualify and publish Direct-H2 `v1.2.0-rc.2` as a security-maintenance prerelease |
+| Stable readiness | **RED**; RC.2 qualification and exact-RC field use remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
 candidate experiments are quality controls, not product progress by themselves.
@@ -36,7 +37,7 @@ candidate experiments are quality controls, not product progress by themselves.
   is not native ECH or provider-independent privacy. The provider terminates
   TLS and can observe authentication information and tunnel traffic.
 - The older WebSocket carrier remains a compatibility path.
-- `v1.2.0-beta.4` is the current public prerelease and fixed rollback partner.
+- `v1.2.0-beta.4` is the earlier public prerelease and fixed rollback partner.
   Its Apple Silicon and x86-64 Linux archives, checksums, and target-aware SBOMs
   were published and independently reverified.
 - The owner completed a fresh-origin install and an owner-only real-network
@@ -54,42 +55,69 @@ fingerprint equivalence, provider independence, native ECH, native QUIC
 Datagram support, broad censorship resistance, or safe use by at-risk third
 parties. Beta.4 and its field evidence do not automatically qualify a later RC.
 
-## Current Milestone: Direct-H2 RC.1
+## Unreleased Dependency Security Maintenance
 
-The sole active product milestone is exact Direct-H2-only candidate
-`cf89428e7c7ff885b765374ef21833ddd822e411` for `v1.2.0-rc.1`. Local product
-gates, fresh dependency policy, attempt-1 CodeQL/product/supply-chain checks,
-Apple/Linux archives and SBOMs, native Beta.4-to-RC.1-to-Beta.4 drills, and an
-independent exact-byte security review pass with no Critical, High, or lower
-finding. The earlier High release-integrity issue is closed: publication now
-downloads the reviewed main-run artifacts instead of rebuilding different
-bytes. The explicit RC.1 publication decision is **GO** for this commit and
-these bytes only, as a prerelease that is not Latest. Attempt-1 release run
-`32487704448` published immutable GitHub Release `v1.2.0-rc.1`; its six public
-assets are byte-for-byte identical to the independently reviewed files. Week 2
-is complete. No deployment, field result, or Stable result follows. H3, native
-Datagram, auth v3, Config v2, Auto H3, TUN migration, and new provider work
-remain paused.
+The current source resolves RUSTSEC-2026-0346 through RUSTSEC-2026-0349,
+RUSTSEC-2026-0381, RUSTSEC-2026-0382, and the RUSTSEC-2026-0386 soundness warning
+with rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.10, and Tokio
+1.53.3. Direct dependency minimums exclude the older affected versions;
+rustls-webpki is fixed in the product lockfile. Auxiliary lockfiles contain
+none of these dependencies. No advisory is ignored or suppressed.
 
-The RC was published only after its candidate scope, versions, release note,
-local product checks, locked dependency closure, supported-target artifacts,
-SBOMs, required public CI, and independent review agreed on the exact
-candidate. Stable remains a later decision after Week 3 field evidence.
+The default browser TLS certificate decompressor also had the large-window
+behavior described by RUSTSEC-2026-0348. It now uses strict RFC 7932 decoding,
+retains the caller's output bound, and rejects incomplete or trailing data.
+Four focused regression tests pass; the large-window rejection test failed
+against the old callback. The Linux-only TUN test harness uses Tokio's explicit
+registration API with the existing owned-file lifetime preserved.
+
+`security-dependency-inventory.sh`, `user-smoke.sh`, `local-harness.sh`, and the
+supported no-default CLI/SDK/test-target build pass locally. The modified Linux
+registration module passes a Linux-target Clippy check; no TUN device was run.
+The complete no-default relay suite now passes 62 of 62 tests. The private-mode
+success test is restricted to its required browser-TLS build, and both build
+variants explicitly test rejection of a private client using the rustls
+fingerprint. The configuration safety rule is unchanged; CI now runs the
+complete no-default relay suite instead of only two selected tests.
+
+These are source-level maintenance results, not a new release or field result.
+The immutable public RC.1 artifacts do not contain these fixes. The owner has
+authorized completing the compatibility fix, repository integration, and the
+subsequent release work autonomously. This does not authorize a field task,
+provider resource, spending, or changes to this machine's network settings.
+
+## Current Milestone: Direct-H2 RC.2
+
+The sole active product milestone is a Direct-H2-only `v1.2.0-rc.2` candidate
+containing the maintenance above and the configuration-parser changes merged
+after RC.1. The immutable RC.1 release remains historical evidence for its own
+commit and bytes; it cannot qualify the changed RC.2 source or dependencies.
+H3, native Datagram, auth v3, runnable Config v2, Auto H3, TUN migration, and
+new provider work remain paused.
+
+RC.2 publication is conditional on one exact reviewed commit, passing local
+and public checks, reviewed Apple/Linux artifacts and SBOMs, and native
+Beta.4-to-RC.2-to-Beta.4 drills. The release workflow must publish the qualified
+main-run files without rebuilding them. An explicit final go/no-go must bind
+the selected commit and files before the annotated tag is pushed. Stable
+remains a later decision after exact-RC field evidence.
 
 ### RC/Stable Gate Board
 
+This board concerns RC.2 only. RC.1's prior qualification is not carried over.
+
 | Gate | State |
 |---|---|
-| Exact RC commit, package version, release note, and candidate scope | **GREEN — `cf89428`, version/note `1.2.0-rc.1`, and Direct-H2-only scope agree** |
-| Direct-H2-only route and v1 compatibility matrix | **GREEN — 64 loopback tests and native Apple/Linux Beta.4-to-RC.1 preflights pass on the exact candidate** |
-| Local `user-smoke` and `local-harness` on exact candidate | **GREEN** |
-| Dependency, advisory, license, source, and first-party `unsafe` review | **GREEN — `h2` 0.4.16; fresh checks pass for 299 locked dependencies** |
-| Apple/Linux archives, checksums, native/static verification, and SBOMs | **GREEN — exact run `32484952095`, artifact IDs `9447915168` and `9448107911`, both non-expired and independently reverified** |
-| Exact-head public CI and CodeQL | **GREEN — attempt-1 runs `32484951717`, `32484952095`, and `32485010025` pass for `cf89428` without rerun or cancellation** |
-| Independent exact-RC security review; no unresolved Critical/High | **GREEN — P0/P1/P2 are all zero; the earlier High exact-byte publication finding is closed** |
+| Exact RC commit, package version, release note, and candidate scope | **PENDING — RC.2 version, note, and Direct-H2 scope prepared; final commit not yet frozen** |
+| Direct-H2-only route and v1 compatibility matrix | **GREEN locally — 65 default and 62 rustls relay tests pass; native artifact drills remain separately required** |
+| Local `user-smoke` and `local-harness` on exact candidate | **GREEN on the RC.2 candidate source** |
+| Dependency, advisory, license, source, and first-party `unsafe` review | **GREEN locally — fresh advisory/policy checks pass for 307 locked dependencies with no advisory exceptions** |
+| Apple/Linux archives, checksums, native/static verification, and SBOMs | **PENDING** |
+| Exact-head public CI and CodeQL | **PENDING** |
+| Independent exact-RC security review; no unresolved Critical/High | **PENDING** |
 | Fresh-origin Direct-H2 field run and 72-hour owner use | **RED — not performed** |
-| Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **GREEN for qualification — both exact-candidate drills pass; owner field rollback remains later** |
-| RC.1 prerelease/non-Latest publication | **GREEN — immutable Release `v1.2.0-rc.1` was published by attempt-1 run `32487704448`; the six public assets match the reviewed bytes** |
+| Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **PENDING — both exact-RC.2 qualification drills and owner field rollback remain incomplete** |
+| RC.2 prerelease/non-Latest publication | **PENDING — no final go/no-go recorded** |
 | Stable publication and Latest classification | **BLOCKED** |
 
 The full release safety contract remains
@@ -183,10 +211,13 @@ of policy, evidence, and truth-update PRs.
 The owner has delegated ordinary technical prioritization and repository-local
 execution to Codex. That delegation does not turn missing evidence green or
 authorize network-setting changes, spending, destructive actions, or personal
-attestations. The owner's instruction to execute Week 2, combined with the
-now-green exact gates above, authorizes only the recorded RC.1
-prerelease/non-Latest publication. It does not authorize a different candidate,
-Stable/Latest, a provider resource, or a field task.
+attestations. The owner's latest instruction delegates completion of the
+security fixes, compatibility-test repair, commits, pushes, integration, and
+release decisions.
+Codex has selected RC.2 as the narrowly scoped maintenance candidate. That
+authorization permits prerelease/non-Latest publication only after the exact
+candidate gates pass and the final go/no-go is recorded. It does not authorize
+Stable/Latest, a provider resource, spending, or a field task.
 
 No owner action was needed for local RC preparation and publication. The owner
 is now needed for the exact-RC install, ordinary-use/72-hour field task, field

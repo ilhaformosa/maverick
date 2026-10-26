@@ -2,7 +2,7 @@
 
 Status: fast iteration
 
-Date: 2026-08-20
+Date: 2026-10-27
 
 `STATUS.md` says what is true now. This file says what we do now, next, and
 later. Git commits, pull requests, Actions runs, releases, and archived
@@ -20,7 +20,7 @@ documents preserve history; Maverick does not need another planning framework.
 - If a task runs for three days without a runnable result, needs more than
   three prerequisites, or creates more process than product, shrink or defer it.
 
-## Now — Direct-H2 `v1.2.0-rc.1`
+## Now — Direct-H2 `v1.2.0-rc.2` security maintenance
 
 **User result:** a real prerelease candidate that a technical owner can install,
 use, inspect, and roll back without enabling H3 or changing the published v1
@@ -30,16 +30,17 @@ protocol/config/profile formats.
 Beta. H3, native Datagram, auth v3, Config v2, Auto H3, TUN migration, new
 provider work, and broad refactoring are not prerequisites.
 
-1. Prepare one exact RC commit, package version, release note, and Direct-H2
-   scope. Do not publish it yet.
+1. Prepare one exact RC.2 commit, package version, release note, and Direct-H2
+   scope with the dependency and certificate-decompression fixes. Keep the
+   immutable RC.1 release unchanged.
 2. Run focused compatibility and product checks, then `user-smoke` and
    `local-harness` on that exact candidate.
 3. Close the exact candidate's dependency/security review, supported-target
    archives, checksums, native/static verification, SBOMs, public CI, and
    independent review.
-4. Make one explicit go/no-go decision. If green, publish RC.1 as a
-   prerelease/non-Latest release. If red, fix only the failing gate and produce
-   RC.2 when needed.
+4. Make one explicit go/no-go decision for the reviewed commit and artifacts.
+   If green, publish RC.2 as a prerelease/non-Latest release. If red, fix only
+   the failing gate before publication.
 5. Run the owner field/rollback check. Stable is considered only after the RC
    field and rollback gates pass.
 
@@ -51,7 +52,7 @@ The complete release gate reference remains
 | Timebox | Intended visible result |
 |---|---|
 | Week 1 | Exact Direct-H2 RC candidate exists and passes local product gates |
-| Week 2 | Required review, public CI, artifacts, checksums, and SBOMs close; publish RC.1 only if green |
+| Week 2 | Required review, public CI, artifacts, checksums, and SBOMs close; publish the exact RC only if green |
 | Week 3 | Owner installs, uses, observes, and tests rollback of the exact RC |
 | Week 4 | Promote to Stable only if every Stable gate is green; otherwise ship a narrowly fixed RC.2 or keep Beta |
 

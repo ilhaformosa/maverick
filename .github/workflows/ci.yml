@@ -142,7 +142,7 @@ jobs:
           cargo check --locked
           -p maverick-cli -p maverick-sdk -p maverick-tests
           --all-targets --no-default-features
-      - name: Test config-v1 H3 retirement and the H2 fallback oracle
+      - name: Test the complete supported rustls relay matrix
         if: steps.scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
@@ -152,10 +152,10 @@ jobs:
             <<<"${retirement_tests}"
           grep -Fqx 'bad_auth_reverse_proxy_fallback_preserves_path_query_and_available_body: test' \
             <<<"${retirement_tests}"
+          grep -Fqx 'auth_v2_private_client_rejects_rustls_fingerprint: test' \
+            <<<"${retirement_tests}"
           cargo test --locked -p maverick-tests --no-default-features \
-            --test tcp_relay server_rejects_retired_v1_h3_config_with_fixed_error -- --exact
-          cargo test --locked -p maverick-tests --no-default-features \
-            --test tcp_relay bad_auth_reverse_proxy_fallback_preserves_path_query_and_available_body -- --exact
+            --test tcp_relay
       - name: Install Linux build and verification tools
         if: steps.scope.outputs.docs_only != 'true'
         run: |
@@ -806,7 +806,7 @@ jobs:
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level full \
             --source-root .
-      - name: Exercise RC.1 upgrade and Beta.4 rollback on GNU/Linux
+      - name: Exercise RC.2 upgrade and Beta.4 rollback on GNU/Linux
         if: steps.scope.outputs.docs_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -840,9 +840,9 @@ jobs:
         with:
           name: rc-candidate-x86_64-unknown-linux-gnu
           path: |
-            dist/maverick-1.2.0-rc.1-pilot-x86_64-unknown-linux-gnu.tar.gz
-            dist/maverick-1.2.0-rc.1-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256
-            dist/maverick-1.2.0-rc.1-pilot-x86_64-unknown-linux-gnu.cdx.json
+            dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.tar.gz
+            dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256
+            dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.cdx.json
           if-no-files-found: error
           retention-days: 7
 
@@ -1480,7 +1480,7 @@ jobs:
             --expected-target "$MAVERICK_SBOM_TARGET" \
             --verification-level full \
             --source-root .
-      - name: Exercise RC.1 upgrade and Beta.4 rollback on macOS
+      - name: Exercise RC.2 upgrade and Beta.4 rollback on macOS
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -1512,8 +1512,8 @@ jobs:
         with:
           name: rc-candidate-aarch64-apple-darwin
           path: |
-            dist/maverick-1.2.0-rc.1-pilot-aarch64-apple-darwin.tar.gz
-            dist/maverick-1.2.0-rc.1-pilot-aarch64-apple-darwin.tar.gz.sha256
-            dist/maverick-1.2.0-rc.1-pilot-aarch64-apple-darwin.cdx.json
+            dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.tar.gz
+            dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.tar.gz.sha256
+            dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.cdx.json
           if-no-files-found: error
           retention-days: 7

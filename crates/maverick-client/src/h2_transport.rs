@@ -154,7 +154,7 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
         .context("enable browser TLS certificate compression")?;
     builder.set_grease_enabled(true);
     builder.set_permute_extensions(true);
-    builder.set_verify(SslVerifyMode::PEER);
+    builder.set_verify_callback(SslVerifyMode::PEER, crate::tls_distrust::verify);
     if let Some(path) = &config.server.ca_cert {
         builder
             .set_ca_file(path)
@@ -266,7 +266,40 @@ impl CertificateCompressor for BrotliCertificateDecompressor {
     where
         W: std::io::Write,
     {
-        brotli::BrotliDecompress(&mut std::io::Cursor::new(input), output)
+        use brotli::{BrotliDecompressStream, BrotliResult, BrotliState, HeapAlloc};
+
+        // Certificate compression uses RFC 7932 Brotli, not the large-window
+        // extension. An output limit alone does not bound the decoder's window.
+        let mut state = BrotliState::new_strict(
+            HeapAlloc::default(),
+            HeapAlloc::default(),
+            HeapAlloc::default(),
+        );
+        let (mut available_in, mut input_offset, mut total_out) = (input.len(), 0, 0);
+        let mut buffer = [0; 4096];
+        loop {
+            let (mut available_out, mut output_offset) = (buffer.len(), 0);
+            let result = BrotliDecompressStream(
+                &mut available_in,
+                &mut input_offset,
+                input,
+                &mut available_out,
+                &mut output_offset,
+                &mut buffer,
+                &mut total_out,
+                &mut state,
+            );
+            match result {
+                BrotliResult::ResultSuccess if available_in == 0 => {
+                    output.write_all(&buffer[..output_offset])?;
+                    return Ok(());
+                }
+                BrotliResult::NeedsMoreOutput if output_offset > 0 => {
+                    output.write_all(&buffer[..output_offset])?;
+                }
+                _ => return Err(std::io::ErrorKind::InvalidData.into()),
+            }
+        }
     }
 }
 
@@ -460,6 +493,76 @@ mod ech_api_tests {
         let _ = std::any::type_name::<rustls::pki_types::EchConfigListBytes<'static>>();
         let _with_ech =
             rustls::ConfigBuilder::<rustls::ClientConfig, rustls::WantsVersions>::with_ech;
+    }
+}
+
+#[cfg(all(test, feature = "browser-tls"))]
+mod certificate_compression_tests {
+    use super::BrotliCertificateDecompressor;
+    use boring::ssl::CertificateCompressor;
+    use std::io::{ErrorKind, Write};
+
+    fn compress(input: &[u8], window_bits: u32) -> Vec<u8> {
+        let mut compressed = Vec::new();
+        {
+            let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 4, window_bits);
+            writer.write_all(input).unwrap();
+        }
+        compressed
+    }
+
+    #[test]
+    fn brotli_certificate_decompression_rejects_large_window() {
+        // Includes upstream RUSTSEC-2026-0348 input [0x11, 0xd0]: empty
+        // non-RFC streams exercise the extension without a large allocation.
+        for window_bits in 10..=30 {
+            let error = BrotliCertificateDecompressor
+                .decompress(&[0x11, 0xc0 | window_bits], &mut Vec::new())
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
+    fn brotli_certificate_decompression_roundtrips_standard_streams() {
+        for size in [0, 16, 4096, 4097, 16384] {
+            let original: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+            for window_bits in [22, 24] {
+                let mut decoded = Vec::new();
+                BrotliCertificateDecompressor
+                    .decompress(&compress(&original, window_bits), &mut decoded)
+                    .unwrap();
+                assert_eq!(decoded, original);
+            }
+        }
+    }
+
+    #[test]
+    fn brotli_certificate_decompression_rejects_truncated_and_trailing_data() {
+        let compressed = compress(&vec![42; 8192], 22);
+        let mut trailing = compressed.clone();
+        trailing.push(0);
+        let mut concatenated = compressed.clone();
+        concatenated.extend_from_slice(&compressed);
+        for invalid in [
+            &compressed[..compressed.len() - 1],
+            trailing.as_slice(),
+            concatenated.as_slice(),
+        ] {
+            assert!(BrotliCertificateDecompressor
+                .decompress(invalid, &mut Vec::new())
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn brotli_certificate_decompression_preserves_output_bound() {
+        let compressed = compress(&vec![42; 8192], 22);
+        let mut output = [0; 4096];
+        let error = BrotliCertificateDecompressor
+            .decompress(&compressed, &mut output.as_mut_slice())
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::WriteZero);
     }
 }
 

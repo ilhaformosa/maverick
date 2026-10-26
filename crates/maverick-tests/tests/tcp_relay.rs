@@ -11,7 +11,6 @@ use maverick_client::{
     connection_manager::H2ConnectionPoolSnapshot, transport, udp::UdpAssociation,
 };
 use maverick_core::auth::{ClientHello, ClientHelloV2};
-#[cfg(feature = "browser-tls")]
 use maverick_core::config::TlsFingerprintMode;
 use maverick_core::config::{
     AuthV2Config, ClientAuthConfig, ClientConfig, ClientCredentialRotationConfig,
@@ -611,6 +610,7 @@ async fn auth_v1_stable_client_private_server_legacy_unconfirmed_policy_echo() -
     Ok(())
 }
 
+#[cfg(feature = "browser-tls")]
 #[tokio::test]
 async fn auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo() -> Result<()> {
     // Auth v2 authenticates the client's mode but does not confirm it matches the
@@ -631,6 +631,33 @@ async fn auth_v2_private_client_stable_server_legacy_unconfirmed_policy_echo() -
     .await?;
 
     fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_v2_private_client_rejects_rustls_fingerprint() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        auth_v2_epoch: Some(202607),
+        server_mode: Mode::Stable,
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let mut config = fixture.client_config();
+    config.mode = Mode::Private;
+    config.advanced.stealth.tls_fingerprint = TlsFingerprintMode::RustlsDefault;
+
+    let result = maverick_client::start_client(config).await;
+    fixture.shutdown().await?;
+    match result {
+        Err(error) => assert_eq!(
+            error.to_string(),
+            "configuration error: advanced.stealth.tls_fingerprint=rustls_default is not allowed in private mode"
+        ),
+        Ok(client) => {
+            client.shutdown().await?;
+            anyhow::bail!("private client unexpectedly accepted the rustls fingerprint");
+        }
+    }
     Ok(())
 }
 

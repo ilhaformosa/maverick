@@ -303,7 +303,8 @@ fi
 
 linux_components="$(jq '.components | length' "$linux_first")"
 mac_components="$(jq '.components | length' "$mac_first")"
-[[ "$linux_components" == 185 && "$mac_components" == 183 ]] || fail
+# Direct webpki-roots 1.x replaces the old 0.26 re-export-only package.
+[[ "$linux_components" == 184 && "$mac_components" == 182 ]] || fail
 jq -r '.components[] | "\(.name)@\(.version)"' "$linux_first" | sort -u \
   >"$private_tmp/linux-components"
 jq -r '.components[] | "\(.name)@\(.version)"' "$mac_first" | sort -u \

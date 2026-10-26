@@ -8,6 +8,8 @@ pub mod h2_transport;
 pub mod http_connect;
 pub mod session;
 pub mod socks5;
+#[cfg(feature = "browser-tls")]
+mod tls_distrust;
 pub mod transport;
 #[cfg(feature = "tun-runtime")]
 mod tun_runtime;

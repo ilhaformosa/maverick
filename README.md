@@ -38,6 +38,21 @@ For the complete local code gate:
 ./scripts/local-harness.sh
 ```
 
+Run the opt-in local quiche/H3 experiment:
+
+```sh
+cargo run --locked -p maverick-tests --no-default-features \
+  --features quiche-candidate --bin backend-capture-lab -- quiche-loopback
+```
+
+This developer command generates temporary local credentials, validates the
+server certificate and hostname, exchanges one H3 request/response over real
+loopback UDP, and closes both connections. It uses OS-assigned ports, fixed
+packet/body limits, and a five-second network deadline; it accepts no external
+address. Temporary credentials and sockets are released on return. It does
+not enable H3 in the product or complete backend qualification. The existing
+`backend-capture-lab preflight` reports the separate qualification state.
+
 Build the first owner-pilot folder and shareable archive:
 
 ```sh

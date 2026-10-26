@@ -20,7 +20,7 @@ playbook preserve detail without becoming parallel status ledgers.
 | H3/UDP product | Disabled; no current H3 product backend or Auto path |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | RC.2 release complete; owner field validation deferred; next autonomous work is the bounded local quiche experiment |
+| Current milestone | RC.2 release complete; bounded local quiche/H3 experiment runnable; owner field validation deferred |
 | Stable readiness | **RED / owner-deferred**; exact-RC field use and owner rollback remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
@@ -187,11 +187,31 @@ supported-target product closure/SBOM/final artifact evidence, security-update
 response proof, and independent final-delta review. No private quiche patch or
 runtime may enter the product until the applicable fork budget passes.
 
-RC.2 publication is complete and owner field work is deferred. The next
-autonomous task is the existing short, product-shaped local quiche experiment:
-one certificate-validated TLS connection and H3 request/response over loopback
-UDP, using the single Boring 5 closure and bounded resources. It does not
-qualify H3 for the product or resume the old policy/evidence PR sequence.
+### Bounded local quiche experiment
+
+`backend-capture-lab quiche-loopback`, built with the default-off
+`quiche-candidate` feature, now makes a certificate- and hostname-validated
+connection and exchanges one complete H3 POST/response over real loopback UDP.
+The bodies contain 25 request bytes and 26 response bytes. Both endpoints use
+OS-assigned ports, fixed packet/stream/body limits, and a five-second network
+deadline. The server receives the clean H3 close before both connections,
+sockets, and temporary owner-only credentials are released.
+
+Four focused tests pass locally: the valid exchange, wrong trust anchor,
+wrong hostname, and expired deadline. They check socket and temporary-file
+release on success and failure. The existing in-memory candidate tests remain
+separate. The executable uses pristine quiche 0.29.3 and the existing single
+Boring 5.1.0 closure, without a private patch or dependency change. Both native
+CI jobs run the focused tests and executable. The normal CLI still has no
+quiche dependency; an ordinary lab build rejects this command before setup.
+
+The bounded transport experiment is runnable; **product adoption remains
+NO-GO**. It does not implement Maverick authentication/exporter binding,
+browser TLS configuration, a public carrier, CONNECT, Datagram, or the
+missing B-001/B-002 qualification. P1/P2/P3 are still unresolved. The next
+development decision is whether the product-required TLS/exporter integration
+can use a maintained single-Boring-5 upstream route. This experiment does not
+approve a private TLS bridge or resume the old policy/evidence PR sequence.
 
 ## Execution Model
 
@@ -245,7 +265,7 @@ Stable/Latest, a provider resource, spending, or a field task.
 Local RC preparation and publication are complete. The owner has explicitly
 deferred the exact-RC install, ordinary-use/72-hour field task, and field
 rollback experience. Autonomous work may continue on the bounded local
-experiment; resuming field use still requires the owner and a named authorized
+development; resuming field use still requires the owner and a named authorized
 environment. Personal or legal attestations remain the owner's responsibility. If a new
 paid/provider resource is actually required, the exact team, resource, region,
 lifetime, cost cap, and cleanup must be confirmed before creation or

@@ -272,6 +272,14 @@ jobs:
           cargo test --locked -p maverick-tests --no-default-features \
             --features browser-tls,quiche-candidate \
             --test quiche_candidate -- --test-threads=1
+          cargo clippy --locked -p maverick-tests --no-default-features \
+            --features browser-tls,quiche-candidate \
+            --bin backend-capture-lab -- -D warnings
+          cargo test --locked -p maverick-tests --no-default-features \
+            --features browser-tls,quiche-candidate --bin backend-capture-lab
+          cargo run --locked -p maverick-tests --no-default-features \
+            --features browser-tls,quiche-candidate \
+            --bin backend-capture-lab -- quiche-loopback
           candidate_stat_identity() {
             case "$(uname -s)" in
               Darwin) stat -f '%d:%i:%u:%Lp' "$1" ;;
@@ -977,6 +985,14 @@ jobs:
           cargo test --locked -p maverick-tests --no-default-features \
             --features browser-tls,quiche-candidate \
             --test quiche_candidate -- --test-threads=1
+          cargo clippy --locked -p maverick-tests --no-default-features \
+            --features browser-tls,quiche-candidate \
+            --bin backend-capture-lab -- -D warnings
+          cargo test --locked -p maverick-tests --no-default-features \
+            --features browser-tls,quiche-candidate --bin backend-capture-lab
+          cargo run --locked -p maverick-tests --no-default-features \
+            --features browser-tls,quiche-candidate \
+            --bin backend-capture-lab -- quiche-loopback
           candidate_stat_identity() {
             case "$(uname -s)" in
               Darwin) stat -f '%d:%i:%u:%Lp' "$1" ;;

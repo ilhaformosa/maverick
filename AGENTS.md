@@ -1,69 +1,49 @@
 # Maverick Agent Guide
 
-Maverick is an experimental Rust privacy proxy. Keep changes local, small, and
-verifiable. Do not rebuild the former coordination system.
+## Highest-priority rule
 
-## Non-Negotiable Safety Boundary
+This rule takes precedence over all other guidance in this document.
 
-Do not change this machine's system proxy, DNS, route table, firewall, VPN,
-interfaces, or other network-service settings. Local tests and demos use
-`127.0.0.1` plus OS-assigned ephemeral ports. A real-network pilot requires a
-separately named owner-controlled environment and explicit authorization.
+> Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
 
-When Codex creates an authorized Maverick test origin through a provider API,
-inspect its public IPv4 address before configuring or deploying it. If the
-first octet is `64`, delete that exact newly created resource by provider ID
-and create a replacement within the same approved team, region, specification,
-time, and total-spend boundary. Never point DNS at or deploy Maverick to the
-rejected origin. Stop and ask the owner if a non-`64` address cannot be obtained
-within the approved boundary. This automatic rejection does not apply to a
-server that the owner says they are creating manually.
+## Project
 
-## Product Map
+Maverick is an experimental Rust privacy proxy. Product code and Rust
+integration tests live under `crates/`.
 
-- `crates/maverick-core`: config, auth, frames, replay, padding, metrics.
-- `crates/maverick-client`: local listeners, TLS/H2 transport, relay session.
-- `crates/maverick-server`: TLS/H2 acceptor, auth gate, fallback, relay policy.
-- `crates/maverick-cli`: operator commands and local product smoke.
-- `crates/maverick-sdk`: embedded API.
-- `crates/maverick-tests`: Rust loopback integration coverage.
-- `STATUS.md`: the only active current-truth document.
-- `ROADMAP.md`: the user-first execution order.
-- `docs/archive/` and `scripts/archive/`: provenance only.
+- `STATUS.md`: current product state and authorization.
+- `ROADMAP.md`: execution order.
+- `docs/archive/` and `scripts/archive/`: historical reference, not active work.
 
-## Progress Rule
+## Working approach
 
-Use `STATUS.md` as the only definition of current product truth, progress,
-audit status, and authorization. Do not promote tests, hashes, safe rejection,
-or tooling into product results.
+- Solve the current problem with the smallest clear implementation.
+- Reuse existing code and tools. Add abstractions, dependencies, retries,
+  fallbacks, or extra validation only for a concrete requirement or observed
+  problem.
+- Keep changes focused on the requested outcome. Avoid unrelated refactors
+  and new coordination frameworks.
+- Make routine technical decisions within the user's existing authorization.
+- Keep `scripts/user-smoke.sh` short and readable.
+- Update `STATUS.md` when product state changes and `ROADMAP.md` when execution
+  order changes. Do not routinely update archived documents.
 
-Do not restart Phase 3, add a successor certification framework, or create new
-receipt, seal, registry, watchdog, evidence-schema, or Python coordination
-layers.
+## Verification
 
-## Default Verification
+Test the behavior that changed.
 
-Run:
+- Use `./scripts/user-smoke.sh` for end-to-end product changes.
+- Use `./scripts/local-harness.sh` for cross-component or security-sensitive
+  changes.
+- For documentation-only changes, review the diff; runtime tests are unnecessary.
+- Do not repeat passing checks without relevant changes or failures.
 
-```sh
-./scripts/user-smoke.sh
-./scripts/local-harness.sh
-```
+## Practical boundaries
 
-Both commands must remain local-only.
-
-## Development Rules
-
-- Preserve the project name `Maverick`.
-- Preserve honest Beta/non-production claim boundaries.
-- Keep generated credentials and real endpoints out of git.
-- Prefer Rust product tests over new orchestration tools.
-- Keep `scripts/user-smoke.sh` under 200 lines and understandable in one read.
-- Update `STATUS.md` when current product truth changes.
-- Update `ROADMAP.md` only when execution order changes.
-- Do not maintain consistency inside archived documents.
-
-Before a commit, inspect staged changes, the message, and generated artifacts
-for private identity, infrastructure, account, location, credential, hostname,
-address, local-path, or environment strings. Replace any such material with
-neutral placeholders.
+- Do not change this Mac's network settings. Local tests use `127.0.0.1`
+  and OS-assigned ephemeral ports.
+- Real-network trials require a named owner-controlled environment and
+  explicit user authorization.
+- Keep credentials and private infrastructure details out of git. Preserve
+  authorized attribution.
+- Preserve the Maverick name and accurate Beta/non-production claims.

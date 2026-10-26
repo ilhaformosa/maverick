@@ -20,56 +20,38 @@ documents preserve history; Maverick does not need another planning framework.
 - If a task runs for three days without a runnable result, needs more than
   three prerequisites, or creates more process than product, shrink or defer it.
 
-## Now — Direct-H2 `v1.2.0-rc.2` security maintenance
+## Completed — Direct-H2 `v1.2.0-rc.2`
 
-**User result:** a real prerelease candidate that a technical owner can install,
-use, inspect, and roll back without enabling H3 or changing the published v1
-protocol/config/profile formats.
+RC.2 is published as an immutable prerelease/non-Latest release. The exact
+candidate passed local checks, independent source/file review, public CI,
+Apple/Linux artifact and SBOM verification, and native Beta.4 rollback drills.
+The public files match the reviewed qualification artifacts.
 
-**Scope:** Direct browser-like TLS 1.3 + HTTP/2 only. Provider-fronted H2 remains
-Beta. H3, native Datagram, auth v3, Config v2, Auto H3, TUN migration, new
-provider work, and broad refactoring are not prerequisites.
+## Deferred by Owner — RC.2 field validation and Stable
 
-1. Prepare one exact RC.2 commit, package version, release note, and Direct-H2
-   scope with the dependency and certificate-decompression fixes. Keep the
-   immutable RC.1 release unchanged.
-2. Run focused compatibility and product checks, then `user-smoke` and
-   `local-harness` on that exact candidate.
-3. Close the exact candidate's dependency/security review, supported-target
-   archives, checksums, native/static verification, SBOMs, public CI, and
-   independent review.
-4. Make one explicit go/no-go decision for the reviewed commit and artifacts.
-   If green, publish RC.2 as a prerelease/non-Latest release. If red, fix only
-   the failing gate before publication.
-5. Run the owner field/rollback check. Stable is considered only after the RC
-   field and rollback gates pass.
+The owner deferred field validation on 2026-10-27. Installation in a named
+owner-controlled environment, 72 hours of ordinary use, and owner field
+rollback remain incomplete. Stable cannot proceed on automated evidence alone.
+A future gate-changing product fix requires another RC rather than changing
+RC.2. The fixed rollback partner remains Beta.4.
 
-The complete release gate reference remains
-`docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`. It does not create another work queue.
+The release-policy reference remains
+`docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`.
 
-## Four-Week Direction
+## Now — One Small Local H3 Go/No-Go
 
-| Timebox | Intended visible result |
-|---|---|
-| Week 1 | Exact Direct-H2 RC candidate exists and passes local product gates |
-| Week 2 | Required review, public CI, artifacts, checksums, and SBOMs close; publish the exact RC only if green |
-| Week 3 | Owner installs, uses, observes, and tests rollback of the exact RC |
-| Week 4 | Promote to Stable only if every Stable gate is green; otherwise ship a narrowly fixed RC.2 or keep Beta |
+With RC.2 released and field work deferred, allow at most three to five working
+days for one product-shaped quiche experiment: one certificate-validated local
+client/server connection, one H3 request/response over real loopback UDP, the
+single Boring 5 closure, bounded resources, no product default, and no
+real-network claim. Existing in-memory candidate tests are supporting evidence,
+not this runnable result.
 
-This table is enough for weekly control: at the start of each week, take the
-first incomplete result; at the end, update the corresponding truth in
-`STATUS.md`. Do not invent subprojects to make a red result look busy.
-
-## Next — One Small H3 Go/No-Go
-
-After the RC milestone, allow at most three to five working days for one
-product-shaped quiche experiment: one local client/server connection, one H3
-request/response, the single Boring 5 closure, bounded resources, no product
-default, and no real-network claim.
-
-- Reuse the completed B-001/B-002 candidate work only where it directly helps
-  this runnable slice.
-- Resolve old P1/P2/P3 patch questions inside the selected candidate decision,
+- Reuse completed B-001/B-002 work only where it directly helps this slice.
+- Use the selected upstream candidate without creating a second backend or
+  silently adopting a private patch. Keep product adoption blocked until its
+  applicable qualification and fork-budget requirements pass.
+- Resolve P1/P2/P3 patch questions inside the selected candidate decision,
   not through another chain of policy, evidence, and truth-only PRs.
 - If the slice cannot produce a maintainable runnable result inside the
   timebox, keep H3 disabled and park it for at least 90 days. Do not revive
@@ -101,7 +83,6 @@ default, and no real-network claim.
 
 ## Owner Participation
 
-No owner action is needed while Codex prepares and verifies the local RC
-candidate. The owner becomes necessary for the ordinary-use/72-hour field
-observation, rollback experience, personal/legal attestations, publication
-approval where explicitly required, and any paid or provider resource decision.
+No owner action is needed for the bounded loopback-only experiment. Owner
+field observation and rollback are deferred. Personal/legal attestations and
+any paid or provider resource decision still require the owner.

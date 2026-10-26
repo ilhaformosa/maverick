@@ -53,6 +53,19 @@ address. Temporary credentials and sockets are released on return. It does
 not enable H3 in the product or complete backend qualification. The existing
 `backend-capture-lab preflight` reports the separate qualification state.
 
+To check the existing TLS settings and authentication v1/v2 through quiche's
+upstream Boring integration, run the isolated test package:
+
+```sh
+cargo test --locked \
+  --manifest-path crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
+```
+
+It reuses the loopback driver, client TLS settings, and core authentication
+code. Its own lockfile keeps evaluation dependencies separate from the
+shipping H2 client. Current results and remaining product work are in
+`STATUS.md`.
+
 Build the first owner-pilot folder and shareable archive:
 
 ```sh

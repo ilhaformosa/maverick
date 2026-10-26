@@ -9,6 +9,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/**/Cargo.toml"
+      - "crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.lock"
       - "deny.toml"
       - "rust-toolchain.toml"
       - "scripts/generate-cyclonedx-sbom.sh"

@@ -20,7 +20,7 @@ playbook preserve detail without becoming parallel status ledgers.
 | H3/UDP product | Disabled; no current H3 product backend or Auto path |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | RC.2 release complete; bounded local quiche/H3 experiment runnable; owner field validation deferred |
+| Current milestone | Upstream H3 TLS/authentication integration verified locally; owner field validation deferred |
 | Stable readiness | **RED / owner-deferred**; exact-RC field use and owner rollback remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
@@ -205,13 +205,37 @@ Boring 5.1.0 closure, without a private patch or dependency change. Both native
 CI jobs run the focused tests and executable. The normal CLI still has no
 quiche dependency; an ordinary lab build rejects this command before setup.
 
-The bounded transport experiment is runnable; **product adoption remains
-NO-GO**. It does not implement Maverick authentication/exporter binding,
-browser TLS configuration, a public carrier, CONNECT, Datagram, or the
-missing B-001/B-002 qualification. P1/P2/P3 are still unresolved. The next
-development decision is whether the product-required TLS/exporter integration
-can use a maintained single-Boring-5 upstream route. This experiment does not
-approve a private TLS bridge or resume the old policy/evidence PR sequence.
+### Upstream TLS and authentication integration
+
+The isolated `crates/maverick-tests/fixtures/quiche-tls-auth` package verifies
+the maintained upstream TLS API with quiche 0.30.0, boring 5.2.0, and one
+boring-sys 5.3.0 native dependency. It uses `with_boring_ssl_ctx_builder` and
+`SslRef` directly, with no private TLS bridge, Cargo patch, or first-party
+unsafe code. Its own lockfile leaves the shipping H2 dependencies and the
+earlier 0.29.3 candidate unchanged.
+
+The fixture compiles the actual client TLS settings and certificate distrust
+callback, and reuses the existing UDP loopback driver. The H2 settings and
+strict Brotli decoder were moved into a private shared module without changing
+their values or behavior. Both endpoints derive the existing TLS exporter
+binding and exchange the existing authentication v1/v2 Hello encodings over
+H3. Valid authentication succeeds; wrong credentials, either peer omitting
+required binding, and client or server authentication bound to another TLS
+connection are rejected.
+Untrusted certificates, wrong hostnames, and a rejecting verification callback
+also fail the handshake.
+
+All 21 fixture tests and its Clippy check pass locally. The fixture dependency
+graph passes advisory, license, source, and dependency-policy checks, and both
+native CI jobs include it. This resolves the upstream TLS API feasibility
+question. It does not implement the full server credential lookup, replay,
+rotation/admission policy, frame relay, or a product H3 carrier. Browser
+fingerprint equivalence is not established by these tests.
+
+**Product adoption remains NO-GO.** B-001/B-002 and P1/P2/P3 are still
+unresolved. The next implementation slice is one local authenticated H3
+carrier using the real product gates and relay, with one reviewed Boring 5
+closure before any shipping dependency change. Field work remains deferred.
 
 ## Execution Model
 

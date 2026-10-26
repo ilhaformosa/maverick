@@ -45,24 +45,23 @@ and H3 request/response over real loopback UDP, with one Boring 5 closure and
 bounded resources. Identity-rejection, deadline, and cleanup tests accompany
 the executable. This completes the small runnable slice, not H3 adoption.
 
-## Next — Product TLS Integration Feasibility
+## Completed — Upstream TLS and Authentication Feasibility
 
-Before implementing an H3 carrier, decide whether the product's required
-browser TLS settings and authentication/exporter binding can use a maintained
-upstream integration with one Boring 5 closure. Use the runnable loopback slice
-to test the answer. Do not assume native-symbol coexistence supplies the
-disabled typed Boring bridge or the product's security policy.
+The isolated upstream test package runs the shared client TLS settings and
+authentication v1/v2 over loopback H3 through the official Boring integration.
+The shipping H2 dependency graph is unchanged. This proves a usable TLS API
+route and authentication binding, not a product carrier or browser equivalence.
 
-- Reuse completed B-001/B-002 work only where it directly helps this slice.
-- Use the selected upstream candidate without creating a second backend or
-  silently adopting a private patch. Keep product adoption blocked until its
-  applicable qualification and fork-budget requirements pass.
-- Resolve P1/P2/P3 patch questions inside the selected candidate decision,
-  not through another chain of policy, evidence, and truth-only PRs.
-- Limit this next feasibility decision to three to five working days. If it
-  cannot produce a maintainable route within that timebox, keep H3 disabled
-  and park it for at least 90 days. Do not revive Quinn or create a second
-  backend.
+## Next — One Local Authenticated H3 Carrier
+
+Connect one loopback H3 tunnel to the actual server authentication/admission
+path and existing frame relay. Reuse the verified upstream TLS route and keep
+the product default unchanged. Before changing shipping dependencies, verify
+one shared Boring 5 closure and H2 compatibility.
+
+Resolve P1/P2/P3 against that concrete carrier design and the selected upstream
+candidate. Keep adoption blocked until its applicable qualification and fork
+budget pass; do not turn this into a separate policy or evidence PR sequence.
 
 ## Later, Only After Observed Need
 

@@ -27,11 +27,11 @@ pub struct Report {
     pub datagrams_sent: usize,
 }
 
-struct Endpoint {
+pub(super) struct Endpoint {
     socket: UdpSocket,
     address: SocketAddr,
     peer: SocketAddr,
-    conn: quiche::Connection,
+    pub(super) conn: quiche::Connection,
     sent: usize,
     received: usize,
 }
@@ -95,9 +95,9 @@ impl Endpoint {
     }
 }
 
-struct Pair {
-    client: Endpoint,
-    server: Endpoint,
+pub(super) struct Pair {
+    pub(super) client: Endpoint,
+    pub(super) server: Endpoint,
     fixture: TempDir,
     deadline: Instant,
     rounds: usize,
@@ -130,6 +130,15 @@ impl Pair {
         let mut server_config = transport_config()?;
         server_config.load_cert_chain_from_pem_file(path_text(&cert_path)?)?;
         server_config.load_priv_key_from_pem_file(path_text(&key_path)?)?;
+        Self::with_configs(fixture, hostname, client_config, server_config)
+    }
+
+    pub(super) fn with_configs(
+        fixture: TempDir,
+        hostname: &str,
+        mut client_config: quiche::Config,
+        mut server_config: quiche::Config,
+    ) -> Result<Self> {
         let client_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
         let server_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
         client_socket.set_nonblocking(true)?;
@@ -189,7 +198,7 @@ impl Pair {
         Ok(())
     }
 
-    fn handshake(&mut self) -> Result<()> {
+    pub(super) fn handshake(&mut self) -> Result<()> {
         while !self.client.conn.is_established() || !self.server.conn.is_established() {
             self.advance()?;
             ensure!(
@@ -209,13 +218,13 @@ impl Pair {
         Ok(())
     }
 
-    fn receive(
+    pub(super) fn receive(
         &mut self,
         h3: &mut h3::Connection,
         at_server: bool,
         expected_headers: &[Header],
         expected_body: &[u8],
-    ) -> Result<()> {
+    ) -> Result<Vec<u8>> {
         let mut headers_seen = false;
         let mut body = Vec::new();
         let mut events = 0;
@@ -270,7 +279,7 @@ impl Pair {
                             headers_seen && body == expected_body,
                             "incomplete H3 message"
                         );
-                        return Ok(());
+                        return Ok(body);
                     }
                     _ => bail!("unexpected H3 event"),
                 }
@@ -278,7 +287,7 @@ impl Pair {
         }
     }
 
-    fn shutdown(mut self) -> Result<usize> {
+    pub(super) fn shutdown(mut self) -> Result<usize> {
         self.client.conn.close(true, 0x100, b"")?; // H3_NO_ERROR
         while !self.client.conn.is_closed() || !self.server.conn.is_closed() {
             self.advance()?;
@@ -302,7 +311,7 @@ impl Pair {
     }
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -322,7 +331,10 @@ fn path_text(path: &Path) -> Result<&str> {
 }
 
 fn transport_config() -> Result<quiche::Config> {
-    let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
+    configure_transport(quiche::Config::new(quiche::PROTOCOL_VERSION)?)
+}
+
+pub(super) fn configure_transport(mut config: quiche::Config) -> Result<quiche::Config> {
     config.set_application_protos(h3::APPLICATION_PROTOCOL)?;
     config.set_max_idle_timeout(1_000);
     config.set_max_recv_udp_payload_size(MAX_UDP);

@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "browser-tls")]
+mod browser_tls;
 pub mod connection_manager;
 pub mod dns;
 pub mod h2_transport;

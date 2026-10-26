@@ -71,6 +71,15 @@ Four focused regression tests pass; the large-window rejection test failed
 against the old callback. The Linux-only TUN test harness uses Tokio's explicit
 registration API with the existing owned-file lifetime preserved.
 
+Browser TLS also applies the eight compromised public keys from the locked
+WebPKI distrust set to its verified certificate chain, including trusted
+anchors and leaf certificates. Existing CA, signature, validity, and hostname
+failures remain failures; platform and custom trust stores are not modified.
+Version detection and migration preview no longer reject non-finite-looking
+text before a declared string field is read. Numeric/version validation and
+finite resource-ratio checks remain enforced. The release note records the
+other YAML acceptance changes introduced since RC.1.
+
 `security-dependency-inventory.sh`, `user-smoke.sh`, `local-harness.sh`, and the
 supported no-default CLI/SDK/test-target build pass locally. The modified Linux
 registration module passes a Linux-target Clippy check; no TUN device was run.

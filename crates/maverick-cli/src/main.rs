@@ -2670,7 +2670,11 @@ fn migration_report(kind: &str, input: &str) -> Result<Vec<String>> {
 }
 
 fn migration_defaults(input: &str, fields: &[&str]) -> Result<Vec<String>> {
-    let options = serde_saphyr::options! { with_snippet: false };
+    // Canonical typed validation already ran; this pass only inspects keys.
+    let options = serde_saphyr::options! {
+        with_snippet: false,
+        reject_non_finite_typeless_float: false,
+    };
     let value: serde_json::Value = serde_saphyr::from_str_with_options(input, options)?;
     Ok(fields
         .iter()
@@ -4140,6 +4144,26 @@ server:
         assert!(report.contains(&"auth.rotation.auto_switch=false".to_owned()));
         assert!(report.contains(&"auth.rotation.next=null".to_owned()));
         assert!(!report.iter().any(|line| line.contains("mv1_")));
+    }
+
+    #[test]
+    fn migration_report_accepts_non_finite_text_in_string_fields() {
+        let secret = SecretString::generate();
+        for credential in [
+            ".nan", ".NaN", ".inf", "-.inf", "1e999", "\".inf\"", "ordinary",
+        ] {
+            let input = format!(
+                "version: 1\nmode: auto\nlocal:\n  socks5:\n    listen: \"127.0.0.1:1080\"\nserver:\n  address: \"example.com:443\"\n  server_name: \"example.com\"\n  tunnel_path: \"/assets/upload\"\n  credential_id: {credential}\n  secret: \"{}\"\nauth:\n  v2:\n    enabled: false\n",
+                secret.expose_secret()
+            );
+            ClientConfig::from_yaml_str(&input).expect("valid typed string configuration");
+            let report = migration_report("client", &input).expect("migration presence check");
+            assert!(report.contains(&"advanced.experimental_h3=false".to_owned()));
+            assert!(!report.contains(&"auth.v2.enabled=false".to_owned()));
+            assert!(!report
+                .iter()
+                .any(|line| line.contains(secret.expose_secret())));
+        }
     }
 
     #[test]

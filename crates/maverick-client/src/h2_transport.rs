@@ -154,7 +154,7 @@ async fn connect_browser_mimic_inner(config: &ClientConfig) -> Result<H2Connecti
         .context("enable browser TLS certificate compression")?;
     builder.set_grease_enabled(true);
     builder.set_permute_extensions(true);
-    builder.set_verify(SslVerifyMode::PEER);
+    builder.set_verify_callback(SslVerifyMode::PEER, crate::tls_distrust::verify);
     if let Some(path) = &config.server.ca_cert {
         builder
             .set_ca_file(path)

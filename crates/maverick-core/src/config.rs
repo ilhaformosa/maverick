@@ -873,6 +873,9 @@ where
         merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
         strict_booleans: true,
         ignore_binary_tag_for_string: true,
+        // The version probe skips other fields through IgnoredAny. Do not
+        // reject string-shaped values before their declared type is read.
+        reject_non_finite_typeless_float: false,
         with_snippet: false,
     };
     serde_saphyr::with_deserializer_from_str_with_options(input, options, f)
@@ -2692,6 +2695,9 @@ service:
             "5e3",
             "-1",
             ".inf",
+            ".nan",
+            "-.inf",
+            "1e999",
             "18446744073709551616",
             "~",
         ] {

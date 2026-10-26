@@ -38,14 +38,20 @@ RC.2. The fixed rollback partner remains Beta.4.
 The release-policy reference remains
 `docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`.
 
-## Now — One Small Local H3 Go/No-Go
+## Completed — One Small Local H3 Experiment
 
-With RC.2 released and field work deferred, allow at most three to five working
-days for one product-shaped quiche experiment: one certificate-validated local
-client/server connection, one H3 request/response over real loopback UDP, the
-single Boring 5 closure, bounded resources, no product default, and no
-real-network claim. Existing in-memory candidate tests are supporting evidence,
-not this runnable result.
+The opt-in lab command now performs one certificate-validated local connection
+and H3 request/response over real loopback UDP, with one Boring 5 closure and
+bounded resources. Identity-rejection, deadline, and cleanup tests accompany
+the executable. This completes the small runnable slice, not H3 adoption.
+
+## Next — Product TLS Integration Feasibility
+
+Before implementing an H3 carrier, decide whether the product's required
+browser TLS settings and authentication/exporter binding can use a maintained
+upstream integration with one Boring 5 closure. Use the runnable loopback slice
+to test the answer. Do not assume native-symbol coexistence supplies the
+disabled typed Boring bridge or the product's security policy.
 
 - Reuse completed B-001/B-002 work only where it directly helps this slice.
 - Use the selected upstream candidate without creating a second backend or
@@ -53,9 +59,10 @@ not this runnable result.
   applicable qualification and fork-budget requirements pass.
 - Resolve P1/P2/P3 patch questions inside the selected candidate decision,
   not through another chain of policy, evidence, and truth-only PRs.
-- If the slice cannot produce a maintainable runnable result inside the
-  timebox, keep H3 disabled and park it for at least 90 days. Do not revive
-  Quinn or create a second backend.
+- Limit this next feasibility decision to three to five working days. If it
+  cannot produce a maintainable route within that timebox, keep H3 disabled
+  and park it for at least 90 days. Do not revive Quinn or create a second
+  backend.
 
 ## Later, Only After Observed Need
 

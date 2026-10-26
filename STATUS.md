@@ -13,15 +13,15 @@ playbook preserve detail without becoming parallel status ledgers.
 | Area | Current truth |
 |---|---|
 | Development stage | **Beta**; experimental and not production-ready |
-| Published release | Immutable `v1.2.0-rc.1` prerelease; not Latest; Beta.4 remains the fixed rollback partner |
-| Unreleased dependency maintenance | RC.2 contains dependency and browser-TLS decompression fixes; published RC.1 is unchanged |
+| Published release | Immutable `v1.2.0-rc.2` prerelease; not Latest; Beta.4 remains the fixed rollback partner |
+| Dependency maintenance | Included in published RC.2; earlier immutable releases remain unchanged |
 | Supported product route | Direct browser-like TLS 1.3 + HTTP/2 |
 | Provider-fronted route | Implemented and Beta; not part of the first Stable support claim |
 | H3/UDP product | Disabled; no current H3 product backend or Auto path |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Qualify and publish Direct-H2 `v1.2.0-rc.2` as a security-maintenance prerelease |
-| Stable readiness | **RED**; RC.2 qualification and exact-RC field use remain incomplete |
+| Current milestone | RC.2 release complete; owner field validation deferred; next autonomous work is the bounded local quiche experiment |
+| Stable readiness | **RED / owner-deferred**; exact-RC field use and owner rollback remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
 candidate experiments are quality controls, not product progress by themselves.
@@ -55,7 +55,7 @@ fingerprint equivalence, provider independence, native ECH, native QUIC
 Datagram support, broad censorship resistance, or safe use by at-risk third
 parties. Beta.4 and its field evidence do not automatically qualify a later RC.
 
-## Unreleased Dependency Security Maintenance
+## RC.2 Dependency Security Maintenance
 
 The current source resolves RUSTSEC-2026-0346 through RUSTSEC-2026-0349,
 RUSTSEC-2026-0381, RUSTSEC-2026-0382, and the RUSTSEC-2026-0386 soundness warning
@@ -89,27 +89,39 @@ variants explicitly test rejection of a private client using the rustls
 fingerprint. The configuration safety rule is unchanged; CI now runs the
 complete no-default relay suite instead of only two selected tests.
 
-These are source-level maintenance results, not a new release or field result.
-The immutable public RC.1 artifacts do not contain these fixes. The owner has
+These fixes are included in the immutable public RC.2 artifacts. Earlier
+releases do not acquire the fixes retroactively. No field or Stable result
+follows from publication. The owner has
 authorized completing the compatibility fix, repository integration, and the
 subsequent release work autonomously. This does not authorize a field task,
 provider resource, spending, or changes to this machine's network settings.
 
-## Current Milestone: Direct-H2 RC.2
+## Completed Release: Direct-H2 RC.2
 
-The sole active product milestone is a Direct-H2-only `v1.2.0-rc.2` candidate
-containing the maintenance above and the configuration-parser changes merged
-after RC.1. The immutable RC.1 release remains historical evidence for its own
+The Direct-H2-only `v1.2.0-rc.2` prerelease is published, containing the
+maintenance above and the configuration-parser changes merged after RC.1. The immutable RC.1 release remains historical evidence for its own
 commit and bytes; it cannot qualify the changed RC.2 source or dependencies.
-H3, native Datagram, auth v3, runnable Config v2, Auto H3, TUN migration, and
-new provider work remain paused.
+H3 product adoption, native Datagram, auth v3, runnable Config v2, Auto H3,
+TUN migration, and new provider work remain paused.
 
-RC.2 publication is conditional on one exact reviewed commit, passing local
-and public checks, reviewed Apple/Linux artifacts and SBOMs, and native
-Beta.4-to-RC.2-to-Beta.4 drills. The release workflow must publish the qualified
-main-run files without rebuilding them. An explicit final go/no-go must bind
-the selected commit and files before the annotated tag is pushed. Stable
-remains a later decision after exact-RC field evidence.
+RC.2 passed its local/public checks, independent source/file review,
+Apple/Linux artifact and SBOM verification, and native Beta.4 rollback drills.
+The recorded publication decision was **GO** for commit
+`966d29966d05287bc2eef6401c6297582db605f6` and the six files from attempt-1
+main qualification run `40364048961` only. Linux artifact `12669763505` has
+ZIP SHA-256 `d66104ddca1cd978c70b28d53eb1934747b7dda9fa57e66f3d64083b485276ee`;
+macOS artifact `12669659863` has ZIP SHA-256
+`f7e096a840642fcdfc7e15e5dd70111a8945d3ab4ca192ad4e6e00172d8c0d1b`.
+The source note and exact files were independently reviewed, and downloaded
+copies were reverified locally. Only the release-page CONFIG link was changed
+from relative to the same destination at the immutable RC.2 tag; the reviewed
+source note and all artifact bytes are unchanged.
+Attempt-1 release run `40369570802` published immutable Release
+`v1.2.0-rc.2` as prerelease/non-Latest. All six public files were downloaded
+and matched the independently reviewed files byte for byte. The description
+link normalization was read back and verified as the only description change.
+The owner explicitly deferred field validation on 2026-10-27. Stable therefore
+remains blocked; no deployment or field result is claimed.
 
 ### RC/Stable Gate Board
 
@@ -117,16 +129,16 @@ This board concerns RC.2 only. RC.1's prior qualification is not carried over.
 
 | Gate | State |
 |---|---|
-| Exact RC commit, package version, release note, and candidate scope | **PENDING — RC.2 version, note, and Direct-H2 scope prepared; final commit not yet frozen** |
-| Direct-H2-only route and v1 compatibility matrix | **GREEN locally — 65 default and 62 rustls relay tests pass; native artifact drills remain separately required** |
+| Exact RC commit, package version, release note, and candidate scope | **GREEN — `966d299`, package/note `1.2.0-rc.2`, and Direct-H2 scope agree** |
+| Direct-H2-only route and v1 compatibility matrix | **GREEN — 65 default and 62 rustls relay tests plus both native artifact drills pass** |
 | Local `user-smoke` and `local-harness` on exact candidate | **GREEN on the RC.2 candidate source** |
 | Dependency, advisory, license, source, and first-party `unsafe` review | **GREEN locally — fresh advisory/policy checks pass for 307 locked dependencies with no advisory exceptions** |
-| Apple/Linux archives, checksums, native/static verification, and SBOMs | **PENDING** |
-| Exact-head public CI and CodeQL | **PENDING** |
-| Independent exact-RC security review; no unresolved Critical/High | **PENDING** |
-| Fresh-origin Direct-H2 field run and 72-hour owner use | **RED — not performed** |
-| Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **PENDING — both exact-RC.2 qualification drills and owner field rollback remain incomplete** |
-| RC.2 prerelease/non-Latest publication | **PENDING — no final go/no-go recorded** |
+| Apple/Linux archives, checksums, native/static verification, and SBOMs | **GREEN — exact main-run artifacts above; independent file checks pass; runtime SBOMs contain 184 Linux / 182 macOS components** |
+| Exact-head public CI and CodeQL | **GREEN — attempt-1 main runs `40364048961` and `40364047199`; PR supply-chain run `40360237756` and fresh local main inventory also pass** |
+| Independent exact-RC security review; no unresolved Critical/High | **GREEN — exact-source and exact-file review approved; all reported candidate issues closed** |
+| Fresh-origin Direct-H2 field run and 72-hour owner use | **DEFERRED by owner on 2026-10-27 — not performed** |
+| Native RC-to-Beta.4 rollback on Apple Silicon and x86-64 Linux | **GREEN for qualification — native Apple/Linux RC.2 drills pass; owner field rollback is deferred** |
+| RC.2 prerelease/non-Latest publication | **GREEN — immutable RC.2 published by run `40369570802`; all six public assets match the reviewed bytes** |
 | Stable publication and Latest classification | **BLOCKED** |
 
 The full release safety contract remains
@@ -152,7 +164,7 @@ roadmap.
   while deliberately rejecting Stable. They do not create an RC candidate or
   authorize publication.
 
-## Paused Research and Candidate Evidence
+## Incomplete Backend Qualification
 
 ### B-001 — quiche qualification
 
@@ -175,9 +187,11 @@ supported-target product closure/SBOM/final artifact evidence, security-update
 response proof, and independent final-delta review. No private quiche patch or
 runtime may enter the product until the applicable fork budget passes.
 
-This work is paused during the Direct-H2 RC milestone. It will resume only as a
-short, product-shaped go/no-go experiment, not by continuing the old sequence
-of policy, evidence, and truth-update PRs.
+RC.2 publication is complete and owner field work is deferred. The next
+autonomous task is the existing short, product-shaped local quiche experiment:
+one certificate-validated TLS connection and H3 request/response over loopback
+UDP, using the single Boring 5 closure and bounded resources. It does not
+qualify H3 for the product or resume the old policy/evidence PR sequence.
 
 ## Execution Model
 
@@ -228,9 +242,11 @@ authorization permits prerelease/non-Latest publication only after the exact
 candidate gates pass and the final go/no-go is recorded. It does not authorize
 Stable/Latest, a provider resource, spending, or a field task.
 
-No owner action was needed for local RC preparation and publication. The owner
-is now needed for the exact-RC install, ordinary-use/72-hour field task, field
-rollback experience, and any personal or legal attestation. If a new
+Local RC preparation and publication are complete. The owner has explicitly
+deferred the exact-RC install, ordinary-use/72-hour field task, and field
+rollback experience. Autonomous work may continue on the bounded local
+experiment; resuming field use still requires the owner and a named authorized
+environment. Personal or legal attestations remain the owner's responsibility. If a new
 paid/provider resource is actually required, the exact team, resource, region,
 lifetime, cost cap, and cleanup must be confirmed before creation or
 modification. Full-access provider tokens stay in macOS Keychain and are never

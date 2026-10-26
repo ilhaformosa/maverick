@@ -1,0 +1,23 @@
+[package]
+name = "maverick-quiche-tls-auth"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+boring = "=5.2.0"
+brotli = "8.0"
+log = { version = "=0.4.33", default-features = false, features = ["max_level_debug"] }
+maverick-core = { path = "../../../maverick-core", default-features = false }
+quiche = { version = "=0.30.0", default-features = false, features = ["boringssl-boring-crate"] }
+rcgen = "0.13"
+sha2 = "0.10"
+tempfile = "3"
+
+[[test]]
+name = "tls_auth"
+path = "tests/tls_auth.rs"

@@ -81,10 +81,10 @@ pub struct ExperimentalTrackDescriptor {
 pub const EXPERIMENTAL_TRACK_REGISTRY: &[ExperimentalTrackDescriptor] = &[
     ExperimentalTrackDescriptor {
         track: ExperimentalTrackId::H3QuicCarrier,
-        title: "Retired config-v1 H3/QUIC carrier slot",
-        status: ExperimentalTrackStatus::DisabledRegistryEntry,
-        build_gate: None,
-        runtime_gate: Some("advanced.experimental_h3"),
+        title: "Explicit quiche H3/TCP carrier",
+        status: ExperimentalTrackStatus::RuntimeExperimental,
+        build_gate: Some("experimental-h3"),
+        runtime_gate: Some("advanced.quiche_h3"),
         default_enabled: false,
         requires_external_test_host: false,
         no_default_security_claim: true,
@@ -277,23 +277,13 @@ mod tests {
     }
 
     #[test]
-    fn retired_h3_is_not_listed_as_a_runtime_track() {
-        let runtime_tracks: Vec<_> = experimental_track_registry()
-            .iter()
-            .filter(|descriptor| {
-                descriptor.status == ExperimentalTrackStatus::RuntimeExperimental
-                    && !descriptor.requires_external_test_host
-            })
-            .map(|descriptor| descriptor.track)
-            .collect();
-        assert!(runtime_tracks.is_empty());
-        let retired_h3 = experimental_track_descriptor(ExperimentalTrackId::H3QuicCarrier);
-        assert_eq!(
-            retired_h3.status,
-            ExperimentalTrackStatus::DisabledRegistryEntry
-        );
-        assert_eq!(retired_h3.build_gate, None);
-        assert_eq!(retired_h3.runtime_gate, Some("advanced.experimental_h3"));
+    fn quiche_h3_lists_its_new_default_off_gates() {
+        let h3 = experimental_track_descriptor(ExperimentalTrackId::H3QuicCarrier);
+        assert_eq!(h3.status, ExperimentalTrackStatus::RuntimeExperimental);
+        assert_eq!(h3.build_gate, Some("experimental-h3"));
+        assert_eq!(h3.runtime_gate, Some("advanced.quiche_h3"));
+        assert!(!h3.default_enabled);
+        assert!(!h3.requires_external_test_host);
     }
 
     #[test]

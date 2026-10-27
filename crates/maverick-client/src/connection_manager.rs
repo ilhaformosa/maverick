@@ -78,7 +78,7 @@ impl ClientTunnelPool {
         match transport::default_transport_kind(&self.config) {
             TransportKind::H2 => self.open_h2().await,
             TransportKind::CloudflareWs => tunnel::open(&self.config).await,
-            TransportKind::H3 => anyhow::bail!("H3 transport implementation is unavailable"),
+            TransportKind::H3 => tunnel::open(&self.config).await,
         }
     }
 

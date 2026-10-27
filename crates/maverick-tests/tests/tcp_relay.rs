@@ -185,8 +185,8 @@ async fn h2_request_shape(
                 body: body.freeze(),
             })
         }
-        transport::TunnelRequestSender::CloudflareWs(_) => {
-            anyhow::bail!("h2_request_shape does not support websocket carrier")
+        _ => {
+            anyhow::bail!("h2_request_shape requires the H2 carrier")
         }
     }
 }

@@ -40,7 +40,7 @@ preferred pilot path.
 
 ## CDN-Fronted H2 Pilot Path
 
-The primary field candidate carries the same browser-like client TLS/H2 path to
+The historical provider-fronted Beta path carries the browser-like client TLS/H2 path to
 a Cloudflare edge and forwards H2 to the origin. Both configs must explicitly
 enable `cdn_fronting`, select `carrier: h2`, and acknowledge the
 TLS-terminating provider. The provider can observe tunnel content.
@@ -60,12 +60,25 @@ real-network pilot. General browsing was smooth, but video playback, large-image
 loading, and weak-network completion behavior exposed open usability problems.
 `STATUS.md` is authoritative for the result and claim boundary.
 
+## Explicit H3 TCP Path
+
+An H3-enabled build and `advanced.quiche_h3: true` select the new carrier. Each
+TCP flow uses one QUIC connection and one H3 request; no pool, native Datagram,
+automatic fallback or provider-fronted H3 is installed. Server UDP acceptance
+uses bounded packet queues and existing global, per-source and pre-auth limits.
+After verified TLS, existing Maverick authentication and egress policy run.
+The default build and configuration continue to select H2.
+
+The first Stable candidate remains Direct H2. H3 field use and performance
+claims need their own evidence; the current owner authorization remains local.
+
 ## Unauthenticated Requests
 
-Requests without valid Maverick authentication receive configured static or
+H2 requests without valid Maverick authentication receive configured static or
 reverse-proxy fallback behavior. They must not receive protocol-specific error
 details. This reduces obvious active-probe signals but does not prove perfect
-indistinguishability.
+indistinguishability. H3 rejects and closes unauthenticated sessions without
+serving the H2 fallback.
 
 ## Boundaries
 
@@ -75,11 +88,17 @@ indistinguishability.
 - The server owns TLS/H2 acceptance, authentication gates, fallback, egress
   policy, and target relay.
 - The CLI owns operator commands and the local product smoke.
+- The optional `maverick-quiche` crate owns UDP/QUIC acceptance, TLS export,
+  single-request H3 framing and connection cleanup. Client/server session layers
+  retain authentication and target policy. Existing loopback tests use the same
+  driver as the configured product path.
 - Config-v1 Quinn H3 is retired from the product. QRET-2 removes its code,
   feature, dependencies, and loopback oracle from the current source tree;
   immutable Git and archived material preserve provenance. Any future product
-  H3 is a separately qualified quiche implementation reached through complete,
-  runnable, and migratable Product Config v2.
+  H3 uses the separately implemented quiche carrier, an optional build feature,
+  and the new default-off `advanced.quiche_h3` field. The ordinary client/server
+  commands reuse v1 endpoints, credentials and certificate settings; Config v2
+  remains a separate future policy/migration project.
 - ECH, TUN, experimental cryptography, GUI, and governance tracks are outside
   the first user pilot.
 

@@ -244,6 +244,10 @@ fn record_h2_runtime_failure<T>(tunnel: &H2ClientTunnel, result: &Result<T>) {
 
 pub async fn open(config: &ClientConfig) -> Result<ClientTunnel> {
     match transport::connect(config).await? {
+        #[cfg(feature = "experimental-h3")]
+        TunnelRequestSender::H3(connection) => {
+            crate::h3::open(config, connection.channel, connection.binding).await
+        }
         TunnelRequestSender::H2(sender) => open_h2(config, sender, None).await,
         TunnelRequestSender::CloudflareWs(connection) => {
             open_cloudflare_ws(config, *connection).await

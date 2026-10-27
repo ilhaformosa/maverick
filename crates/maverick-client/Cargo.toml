@@ -7,7 +7,7 @@ repository.workspace = true
 
 [features]
 default = ["browser-tls"]
-experimental-h3 = ["maverick-core/experimental-h3"]
+experimental-h3 = ["maverick-core/experimental-h3", "browser-tls", "dep:maverick-quiche"]
 browser-tls = [
   "maverick-core/browser-tls",
   "dep:boring",
@@ -27,6 +27,7 @@ futures.workspace = true
 h2.workspace = true
 http.workspace = true
 maverick-core = { path = "../maverick-core", default-features = false }
+maverick-quiche = { path = "../maverick-quiche", optional = true }
 maverick-tun = { path = "../maverick-tun", optional = true }
 rustls.workspace = true
 sha2.workspace = true

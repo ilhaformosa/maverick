@@ -304,6 +304,27 @@ impl ClientConfig {
             return Err(Error::Config("only config version 1 is supported".into()));
         }
         reject_retired_v1_h3(self.advanced.experimental_h3)?;
+        validate_quiche_h3(
+            self.advanced.quiche_h3,
+            self.advanced.tls_terminating_fronting_enabled(),
+        )?;
+        if self.advanced.quiche_h3 {
+            if self.advanced.stealth.tls_fingerprint != TlsFingerprintMode::BrowserMimic {
+                return Err(Error::Config(
+                    "advanced.quiche_h3 requires the browser_mimic TLS profile".into(),
+                ));
+            }
+            if self.local.dns.as_ref().is_some_and(|dns| dns.enabled) {
+                return Err(Error::Config(
+                    "advanced.quiche_h3 does not support the local DNS listener".into(),
+                ));
+            }
+            if self.advanced.experimental_tun {
+                return Err(Error::Config(
+                    "advanced.quiche_h3 does not support TUN".into(),
+                ));
+            }
+        }
         self.log.validate()?;
         self.server.secret.validate()?;
         if self.server.tunnel_path.is_empty() || !self.server.tunnel_path.starts_with('/') {
@@ -732,6 +753,10 @@ impl ServerConfig {
             return Err(Error::Config("only config version 1 is supported".into()));
         }
         reject_retired_v1_h3(self.advanced.experimental_h3)?;
+        validate_quiche_h3(
+            self.advanced.quiche_h3,
+            self.advanced.tls_terminating_fronting_enabled(),
+        )?;
         self.log.validate()?;
         if self.maverick.tunnel_path.is_empty() || !self.maverick.tunnel_path.starts_with('/') {
             return Err(Error::Config(
@@ -1235,6 +1260,8 @@ pub struct ClientAdvancedConfig {
     pub allow_non_loopback_listeners: bool,
     #[serde(default)]
     pub experimental_h3: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub quiche_h3: bool,
     #[serde(default)]
     pub experimental_cloudflare_ws: bool,
     #[serde(default)]
@@ -1259,6 +1286,7 @@ impl Default for ClientAdvancedConfig {
             stealth: default_client_stealth(),
             allow_non_loopback_listeners: false,
             experimental_h3: false,
+            quiche_h3: false,
             experimental_cloudflare_ws: false,
             experimental_ech: false,
             experimental_tun: false,
@@ -1373,6 +1401,8 @@ pub struct ServerAdvancedConfig {
     pub egress: ServerEgressPolicyConfig,
     #[serde(default)]
     pub experimental_h3: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub quiche_h3: bool,
     #[serde(default)]
     pub experimental_cloudflare_ws: bool,
     #[serde(default)]
@@ -1404,6 +1434,7 @@ impl Default for ServerAdvancedConfig {
             stealth: StealthConfig::default(),
             egress: ServerEgressPolicyConfig::default(),
             experimental_h3: false,
+            quiche_h3: false,
             experimental_cloudflare_ws: false,
             experimental_ech: false,
             crypto: CryptoPolicyConfig::default(),
@@ -2032,6 +2063,27 @@ fn reject_retired_v1_h3(enabled: bool) -> Result<()> {
     Ok(())
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn validate_quiche_h3(enabled: bool, fronting: bool) -> Result<()> {
+    if !enabled {
+        return Ok(());
+    }
+    if !cfg!(feature = "experimental-h3") {
+        return Err(Error::Config(
+            "advanced.quiche_h3 requires the experimental-h3 build feature".into(),
+        ));
+    }
+    if fronting {
+        return Err(Error::Config(
+            "advanced.quiche_h3 does not support TLS-terminating CDN fronting or WebSocket".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2178,6 +2230,138 @@ advanced:
 "#,
             secret.expose_secret()
         )
+    }
+
+    #[test]
+    fn quiche_h3_is_disabled_for_existing_and_explicit_false_configs() {
+        let secret = SecretString::generate();
+        for explicit in [false, true] {
+            let client = canonical_client_yaml(&secret);
+            let server = canonical_server_yaml(&secret);
+            let add_false = |input: String| {
+                if explicit {
+                    input.replace("advanced:\n", "advanced:\n  quiche_h3: false\n")
+                } else {
+                    input
+                }
+            };
+            assert!(
+                !ClientConfig::from_yaml_str(&add_false(client))
+                    .unwrap()
+                    .advanced
+                    .quiche_h3
+            );
+            assert!(
+                !ServerConfig::from_yaml_str(&add_false(server))
+                    .unwrap()
+                    .advanced
+                    .quiche_h3
+            );
+        }
+    }
+
+    #[test]
+    fn retired_h3_stays_rejected_when_quiche_h3_is_also_enabled() {
+        let mut client =
+            client_config_with_server(client_server_config("u_test", SecretString::generate()));
+        let mut server = server_config_with_user("u_test", "/assets/upload");
+        client.advanced.experimental_h3 = true;
+        client.advanced.quiche_h3 = true;
+        server.advanced.experimental_h3 = true;
+        server.advanced.quiche_h3 = true;
+        for error in [client.validate(), server.validate()] {
+            assert_eq!(
+                error.unwrap_err().to_string(),
+                "configuration error: advanced.experimental_h3=true is retired for config version 1"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "experimental-h3"))]
+    #[test]
+    fn quiche_h3_config_requires_the_build_feature() {
+        let secret = SecretString::generate();
+        let client =
+            canonical_client_yaml(&secret).replace("advanced:\n", "advanced:\n  quiche_h3: true\n");
+        let server =
+            canonical_server_yaml(&secret).replace("advanced:\n", "advanced:\n  quiche_h3: true\n");
+        for error in [
+            ClientConfig::from_yaml_str(&client).unwrap_err(),
+            ServerConfig::from_yaml_str(&server).unwrap_err(),
+        ] {
+            assert_eq!(
+                error.to_string(),
+                "configuration error: advanced.quiche_h3 requires the experimental-h3 build feature"
+            );
+        }
+    }
+
+    #[cfg(feature = "experimental-h3")]
+    #[test]
+    fn quiche_h3_rejects_fronting_and_unsupported_client_capabilities() {
+        let mut client =
+            client_config_with_server(client_server_config("u_test", SecretString::generate()));
+        client.advanced.quiche_h3 = true;
+        client.advanced.stealth.tls_fingerprint = TlsFingerprintMode::BrowserMimic;
+        let mut server = server_config_with_user("u_test", "/assets/upload");
+        server.advanced.quiche_h3 = true;
+        for websocket in [false, true] {
+            client.advanced.experimental_cloudflare_ws = websocket;
+            client.advanced.stealth.cdn_fronting.enabled = !websocket;
+            server.advanced.experimental_cloudflare_ws = websocket;
+            server.advanced.stealth.cdn_fronting.enabled = !websocket;
+            for error in [client.validate(), server.validate()] {
+                assert_eq!(
+                    error.unwrap_err().to_string(),
+                    "configuration error: advanced.quiche_h3 does not support TLS-terminating CDN fronting or WebSocket"
+                );
+            }
+        }
+        client.advanced.experimental_cloudflare_ws = false;
+        client.local.dns = Some(ClientDnsConfig {
+            enabled: true,
+            listen: Some("127.0.0.1:0".parse().unwrap()),
+        });
+        assert_eq!(
+            client.validate().unwrap_err().to_string(),
+            "configuration error: advanced.quiche_h3 does not support the local DNS listener"
+        );
+        client.local.dns = None;
+        client.advanced.experimental_tun = true;
+        assert_eq!(
+            client.validate().unwrap_err().to_string(),
+            "configuration error: advanced.quiche_h3 does not support TUN"
+        );
+        client.advanced.experimental_tun = false;
+        client.advanced.stealth.tls_fingerprint = TlsFingerprintMode::RustlsDefault;
+        assert_eq!(
+            client.validate().unwrap_err().to_string(),
+            "configuration error: advanced.quiche_h3 requires the browser_mimic TLS profile"
+        );
+    }
+
+    #[cfg(feature = "experimental-h3")]
+    #[test]
+    fn quiche_h3_accepts_direct_server_and_supported_client_configuration() {
+        let mut server = server_config_with_user("u_test", "/assets/upload");
+        server.advanced.quiche_h3 = true;
+        server.auth.channel_binding.require = true;
+        server.validate().unwrap();
+        if browser_tls_profile_supported() {
+            let mut client =
+                client_config_with_server(client_server_config("u_test", SecretString::generate()));
+            client.advanced.quiche_h3 = true;
+            client.auth.channel_binding.require = true;
+            client.local.dns = Some(ClientDnsConfig {
+                enabled: false,
+                listen: None,
+            });
+            client.local.http_connect = Some(HttpConnectConfig {
+                enabled: true,
+                listen: Some("127.0.0.1:0".parse().unwrap()),
+            });
+            client.validate().unwrap();
+        }
     }
 
     #[test]

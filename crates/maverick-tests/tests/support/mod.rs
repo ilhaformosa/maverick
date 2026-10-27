@@ -523,8 +523,8 @@ pub async fn tunnel_attempt_body_at(
             decode_optional_server_hello(&response, &body)?;
             Ok(body.freeze())
         }
-        transport::TunnelRequestSender::CloudflareWs(_) => {
-            anyhow::bail!("tunnel_attempt_body does not support websocket carrier")
+        _ => {
+            anyhow::bail!("tunnel_attempt_body requires the H2 carrier")
         }
     }
 }

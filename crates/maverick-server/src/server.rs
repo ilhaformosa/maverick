@@ -198,6 +198,10 @@ impl ServerHandle {
 pub async fn start_server(config: ServerConfig) -> Result<ServerHandle> {
     config.validate().map_err(anyhow::Error::from)?;
     validate_runtime_features(&config)?;
+    #[cfg(feature = "experimental-h3")]
+    if config.advanced.quiche_h3 {
+        return h3::start(config).await;
+    }
     let listener = TcpListener::bind(config.listen).await?;
     let local_addr = listener.local_addr()?;
     let metrics_listener = bind_metrics_listener(&config).await?;
@@ -219,6 +223,17 @@ pub async fn start_server(config: ServerConfig) -> Result<ServerHandle> {
 pub async fn run_server(config: ServerConfig) -> Result<()> {
     config.validate().map_err(anyhow::Error::from)?;
     validate_runtime_features(&config)?;
+    #[cfg(feature = "experimental-h3")]
+    if config.advanced.quiche_h3 {
+        let handle = h3::start(config).await?;
+        info!(listen = %handle.local_addr, "Maverick H3 server listening");
+        let ServerHandle {
+            shutdown: _keep_alive,
+            join,
+            ..
+        } = handle;
+        return join.await?;
+    }
     let listener = TcpListener::bind(config.listen).await?;
     let metrics_listener = bind_metrics_listener(&config).await?;
     info!(listen = %listener.local_addr()?, "Maverick server listening");
@@ -231,6 +246,11 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
 fn validate_runtime_features(config: &ServerConfig) -> Result<()> {
     config.validate().map_err(anyhow::Error::from)?;
+    #[cfg(not(feature = "experimental-h3"))]
+    anyhow::ensure!(
+        !config.advanced.quiche_h3,
+        "advanced.quiche_h3 requires the experimental-h3 build feature"
+    );
     Ok(())
 }
 

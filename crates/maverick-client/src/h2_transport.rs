@@ -336,7 +336,7 @@ pub(crate) fn rustls_client_config(config: &ClientConfig) -> Result<rustls::Clie
     }
 }
 
-fn parse_cert_pin(pin: &str) -> Result<[u8; 32]> {
+pub(crate) fn parse_cert_pin(pin: &str) -> Result<[u8; 32]> {
     let encoded = pin
         .strip_prefix("sha256/")
         .context("cert_pin must use sha256/<base64url-no-pad>")?;

@@ -766,6 +766,7 @@ dependencies = [
  "h2",
  "http",
  "maverick-core",
+ "maverick-quiche",
  "rustls",
  "sha2",
  "subtle",
@@ -799,6 +800,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "maverick-quiche"
+version = "1.2.0-rc.2"
+dependencies = [
+ "anyhow",
+ "boring",
+ "bytes",
+ "log",
+ "maverick-core",
+ "quiche",
+ "rand",
+ "tokio",
+]
+
+[[package]]
 name = "maverick-quiche-tls-auth"
 version = "0.0.0"
 dependencies = [
@@ -809,6 +824,7 @@ dependencies = [
  "log",
  "maverick-client",
  "maverick-core",
+ "maverick-quiche",
  "maverick-server",
  "quiche",
  "rcgen",
@@ -822,6 +838,7 @@ name = "maverick-server"
 version = "1.2.0-rc.2"
 dependencies = [
  "anyhow",
+ "boring",
  "bytes",
  "futures",
  "h2",
@@ -830,6 +847,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "maverick-core",
+ "maverick-quiche",
  "rustls",
  "time",
  "tokio",

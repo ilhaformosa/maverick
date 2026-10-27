@@ -180,7 +180,7 @@ pub fn project_v1_client_policy(
         Mode::Stable => return Err(V1ClientPolicyProjectionBlocker::StableMode),
         Mode::Private => return Err(V1ClientPolicyProjectionBlocker::PrivateMode),
     }
-    if config.advanced.experimental_h3 {
+    if config.advanced.experimental_h3 || config.advanced.quiche_h3 {
         return Err(V1ClientPolicyProjectionBlocker::H3Configured);
     }
     if config.advanced.cloudflare_ws_enabled() {
@@ -1069,6 +1069,25 @@ traffic_shaping:
         assert_eq!(
             project_v1_client_policy(&h3),
             Err(V1ClientPolicyProjectionBlocker::InvalidSourceConfig)
+        );
+    }
+
+    #[cfg(all(
+        feature = "experimental-h3",
+        feature = "browser-tls",
+        any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )
+    ))]
+    #[test]
+    fn explicit_quiche_h3_is_not_projected_as_h2() {
+        let mut config = v1_client(Some("auto"));
+        config.advanced.quiche_h3 = true;
+        config.validate().unwrap();
+        assert_eq!(
+            project_v1_client_policy(&config),
+            Err(V1ClientPolicyProjectionBlocker::H3Configured)
         );
     }
 

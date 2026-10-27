@@ -202,8 +202,12 @@ where
     let (mut local_read, mut local_write) = tokio::io::split(local);
     let mut local_buf = vec![0u8; 16 * 1024];
     let mut local_eof = false;
+    let mut remote_eof = false;
 
     loop {
+        if local_eof && remote_eof {
+            return Ok(RelayClose::Graceful);
+        }
         if local_eof {
             tokio::select! {
                 _ = tokio::time::sleep(idle_timeout) => break,
@@ -252,9 +256,20 @@ where
                         .await?;
                 }
             }
-            remote_frame = tunnel.read_next_frame() => {
+            remote_frame = tunnel.read_next_frame(), if !remote_eof => {
                 match remote_frame? {
                     Some(frame) => {
+                        if matches!(&tunnel, ClientTunnel::H2(_))
+                            && frame.flow_id == FLOW_ID
+                            && frame.frame_type == FrameType::TcpFin
+                        {
+                            // The response FIN ends downloads only. The peer
+                            // can still be reading our request/upload.
+                            local_write.shutdown().await?;
+                            tunnel.finish_response().await?;
+                            remote_eof = true;
+                            continue;
+                        }
                         let finish_response = response_frame_is_complete(frame.frame_type);
                         if let Some(close) =
                             handle_remote_frame(frame, &mut local_write, idle_timeout).await?

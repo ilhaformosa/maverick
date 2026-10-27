@@ -113,6 +113,52 @@ rollback drills. Relevant local commands remain `scripts/user-smoke.sh`,
 `scripts/local-harness.sh`, the H3 fixture tests, and
 `cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product`.
 
+## Local H2/H3 Comparison
+
+On 2026-10-28, release-mode ordinary CLI processes were compared on one macOS
+arm64 host with Rust 1.99.0. Both paths used equivalent TLS/auth v2 settings,
+verified certificates/pins, SOCKS TCP and the same payload checks. A start
+marker prevents the target from pre-buffering downloads during SOCKS setup.
+Each bulk result is the median of three 8 MiB transfers per direction; duplex
+throughput adds both directions. The following ranges cover two final runs.
+
+| Observation | H2 | Explicit H3 |
+|---|---:|---:|
+| Subsequent connection p50 | 0.264–0.303 ms | 0.791–0.819 ms |
+| Subsequent connection p95 | 0.466–0.524 ms | 1.177–1.246 ms |
+| Upload | 1778–2006 MiB/s | 134–150 MiB/s |
+| Download | 1350–1492 MiB/s | 135–137 MiB/s |
+| Duplex, aggregate | 1295–1325 MiB/s | 139–140 MiB/s |
+
+H2 reuses its existing TLS connection; H3 still creates one per flow. These
+numbers describe the current implementations on loopback, not intrinsic
+protocol limits, Linux performance or an H3 advantage on real networks.
+
+The comparison exposed H2 truncating an upload when the target sent its FIN
+first. Client and server now keep the upload open after the response ends,
+while still validating gRPC trailers. A deterministic regression waits for the
+target FIN before uploading 512 KiB; both carriers also cover 4 MiB uploads,
+downloads and simultaneous traffic in the normal CLI test run.
+
+For H3, raising stream receive credit from 8 to 64 KiB and connection credit
+from 64 to 128 KiB improved the controlled download/duplex measurements by
+25–33%; upload improvement varied from 7–20%. The old-window control used the
+same corrected H2 code and measurement method. Credit remains bounded; no new
+configuration knobs, connection pool or automatic carrier choice were added.
+
+Each final run also completed 30 seconds of eight-way traffic, with a 100 ms
+pause between batches, eight interrupted flows and successful subsequent
+transfers. Both runs had zero transfer errors: 4336 sustained H2 flows and
+3584 sustained H3 flows in total. This is bounded local evidence, not a soak
+test or proof of leak freedom. The initial unpaced test exhausted local TCP
+ephemeral ports; the measurement now reuses its target listener and bounds
+offered load without changing host settings or product admission limits.
+
+CI runs the deterministic half-close and bounded concurrent/recovery cases
+on both native platforms. The manual timing comparison is explicitly opt-in
+and has no speed thresholds. All existing checks remain; H3 is still default-off
+and field validation remains deferred.
+
 ## CI and Security Alert Maintenance
 
 [PR #75](https://github.com/ilhaformosa/maverick/pull/75) runs Linux and macOS in

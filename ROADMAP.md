@@ -22,23 +22,29 @@ The local H3 work established verified TLS, real authentication/TCP forwarding,
 independent directions, half-close, resource cleanup and upstream control/logging
 boundaries. Those foundations are reused by the configured carrier.
 
-## Current — Configured H3 TCP in Ordinary Client and Server Commands
+## Completed — Configured H3 TCP in Ordinary Client and Server Commands
 
 The bounded integration uses `advanced.quiche_h3`, default false, plus the
 optional `experimental-h3` build feature. It reuses runnable config v1 and
 ordinary commands; it does not revive the retired H3 flag or require the whole
-future Config v2 migration project. Include real dialing/listening, certificate
-loading, the shared Boring dependency graph, existing authentication and egress
-policy, and separate-process loopback tests. Preserve the H2 default and both
-native platform checks. Field use remains deferred.
+future Config v2 migration project. Real dialing/listening, certificate loading,
+the shared Boring dependency graph, existing authentication/egress policy and
+separate-process loopback tests are implemented. H2 remains the default and
+both native platforms are checked. Field use remains deferred.
 
-## Next — Measure the Integrated Path Before Adding Complexity
+## Current — Local H2/H3 Comparison and Observed Corrections
 
-Use controlled local H2/H3 comparisons to identify concrete connection,
-concurrency, resource-use or interruption problems. Add connection reuse or
-other performance work only when measured behavior requires it. No automatic
-carrier switching, speculative scheduler or new coordination framework is a
-prerequisite for the explicit TCP path.
+The release-mode CLI comparison and bounded CI stability test cover connection
+setup, bulk transfers, concurrency and interrupted-flow recovery. Correct the
+observed H2 target-first half-close truncation and retain only repeatable H3
+receive-window improvements. Record measured scope and limits in `STATUS.md`.
+
+## Next — Longer Local Sessions and Resource Measurements
+
+Use the same configured path to examine longer sessions and resource use before
+expanding transport behavior. Connection reuse needs a concrete workload and
+benefit; local throughput alone does not justify automatic carrier switching,
+new scheduling machinery or a browser/network performance claim.
 
 ## Deferred — Field Validation and Stable
 

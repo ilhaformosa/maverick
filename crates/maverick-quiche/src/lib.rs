@@ -266,16 +266,18 @@ fn transport_config(tls: SslContextBuilder, limits: Limits) -> Result<quiche::Co
     config.set_max_idle_timeout(limits.idle_timeout.as_millis().min(u128::from(u64::MAX)) as u64);
     config.set_max_recv_udp_payload_size(MAX_UDP);
     config.set_max_send_udp_payload_size(MAX_UDP);
-    config.set_initial_max_data(65_536);
-    config.set_initial_max_stream_data_bidi_local(8_192);
-    config.set_initial_max_stream_data_bidi_remote(8_192);
+    // One default Maverick frame of stream credit avoids the measured 8 KiB
+    // flow-control bottleneck. Keep total receive credit bounded at 128 KiB.
+    config.set_initial_max_data(131_072);
+    config.set_initial_max_stream_data_bidi_local(65_536);
+    config.set_initial_max_stream_data_bidi_remote(65_536);
     config.set_initial_max_stream_data_uni(4_096);
-    config.set_max_connection_window(65_536);
-    config.set_max_stream_window(8_192);
+    config.set_max_connection_window(131_072);
+    config.set_max_stream_window(65_536);
     config.set_initial_max_streams_bidi(1);
     config.set_initial_max_streams_uni(3);
     config.set_disable_active_migration(true);
-    // Retain the tested transport settings; performance tuning is separate.
+    // The driver does not yet schedule quiche SendInfo pacing deadlines.
     config.enable_pacing(false);
     Ok(config)
 }

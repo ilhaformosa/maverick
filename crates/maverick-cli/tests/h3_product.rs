@@ -10,8 +10,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -19,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const SERVER_READY: &str = "Maverick H3 server listening";
+const H2_SERVER_READY: &str = "Maverick server listening";
 const SOCKS_READY: &str = "Maverick SOCKS5 client listening";
 const HTTP_READY: &str = "Maverick HTTP CONNECT client listening";
 
@@ -50,7 +52,7 @@ impl Cli {
             // Consume logs without retaining or printing credentials, paths, or
             // diagnostics. Only readiness addresses leave this thread.
             for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
-                for marker in [SERVER_READY, SOCKS_READY, HTTP_READY] {
+                for marker in [SERVER_READY, H2_SERVER_READY, SOCKS_READY, HTTP_READY] {
                     if !line.contains(marker) {
                         continue;
                     }
@@ -110,6 +112,8 @@ struct Fixture {
     directory: TempDir,
     secret: SecretString,
     pin: String,
+    h3: bool,
+    connections: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,6 +127,10 @@ enum Fault {
 
 impl Fixture {
     fn new() -> Result<Self> {
+        Self::for_transport(true, 2)
+    }
+
+    fn for_transport(h3: bool, connections: usize) -> Result<Self> {
         let directory = TempDir::new()?;
         let mut ca = CertificateParams::new(Vec::<String>::new())?;
         ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -142,6 +150,8 @@ impl Fixture {
         Ok(Self {
             directory,
             secret: SecretString::generate(),
+            h3,
+            connections,
             pin: format!(
                 "sha256/{}",
                 URL_SAFE_NO_PAD.encode(Sha256::digest(cert.der()))
@@ -151,8 +161,10 @@ impl Fixture {
 
     fn server_config(&self, v2: bool) -> Result<()> {
         let input = format!(
-            "version: 1\nlisten: '127.0.0.1:0'\ntls:\n  cert_path: cert.pem\n  key_path: key.pem\nmaverick:\n  tunnel_path: /local-h3\nusers:\n  - id: local-test-user\n    secret: '{}'\nfallback:\n  type: static\n  static_dir: public\nauth:\n  channel_binding:\n    enabled: true\n    require: true\n  v2:\n    enabled: {v2}\n    require: {v2}\n    accepted_epochs: [202607]\nadvanced:\n  quiche_h3: true\n  max_concurrent_connections: 2\n  max_concurrent_connections_per_source: 2\n  pre_auth_max_concurrent: 2\n  handshake_timeout_ms: 5000\n  idle_timeout_secs: 10\n  egress:\n    allow_loopback: true\n",
-            self.secret.expose_secret()
+            "version: 1\nlisten: '127.0.0.1:0'\ntls:\n  cert_path: cert.pem\n  key_path: key.pem\nmaverick:\n  tunnel_path: /local-h3\nusers:\n  - id: local-test-user\n    secret: '{}'\nfallback:\n  type: static\n  static_dir: public\nauth:\n  channel_binding:\n    enabled: true\n    require: true\n  v2:\n    enabled: {v2}\n    require: {v2}\n    accepted_epochs: [202607]\nadvanced:\n  quiche_h3: {h3}\n  max_concurrent_connections: {connections}\n  max_concurrent_connections_per_source: {connections}\n  pre_auth_max_concurrent: {connections}\n  handshake_timeout_ms: 5000\n  idle_timeout_secs: 10\n  egress:\n    allow_loopback: true\n",
+            self.secret.expose_secret(),
+            h3 = self.h3,
+            connections = self.connections,
         );
         private_file(self.directory.path(), "server.yaml", input)
     }
@@ -179,8 +191,9 @@ impl Fixture {
             self.pin.clone()
         };
         let input = format!(
-            "version: 1\nlocal:\n  socks5:\n    listen: '127.0.0.1:0'\n  http_connect:\n    enabled: true\n    listen: '127.0.0.1:0'\nserver:\n  address: '{server}'\n  server_name: {hostname}\n  tunnel_path: /local-h3\n  credential_id: local-test-user\n  secret: '{}'\n  ca_cert: {ca}\n  cert_pin: '{pin}'\nauth:\n  channel_binding:\n    enabled: true\n    require: true\n  v2:\n    enabled: {v2}\n  rotation:\n    active_epoch: '202607'\nadvanced:\n  quiche_h3: true\n  connect_timeout_ms: 5000\n  idle_timeout_secs: 10\n  stealth:\n    tls_fingerprint: browser_mimic\n",
-            secret.expose_secret()
+            "version: 1\nlocal:\n  socks5:\n    listen: '127.0.0.1:0'\n  http_connect:\n    enabled: true\n    listen: '127.0.0.1:0'\nserver:\n  address: '{server}'\n  server_name: {hostname}\n  tunnel_path: /local-h3\n  credential_id: local-test-user\n  secret: '{}'\n  ca_cert: {ca}\n  cert_pin: '{pin}'\nauth:\n  channel_binding:\n    enabled: true\n    require: true\n  v2:\n    enabled: {v2}\n  rotation:\n    active_epoch: '202607'\nadvanced:\n  quiche_h3: {h3}\n  connect_timeout_ms: 5000\n  idle_timeout_secs: 10\n  stealth:\n    tls_fingerprint: browser_mimic\n",
+            secret.expose_secret(),
+            h3 = self.h3,
         );
         private_file(self.directory.path(), name, input)
     }
@@ -353,4 +366,232 @@ async fn configured_cli_processes_forward_tcp_and_reject_invalid_authentication_
     })
     .await
     .context("configured H3 CLI process test timed out")?
+}
+
+// Both carriers use the same CLI binary, equivalent TLS/auth v2 settings and
+// payload checks. H2 retains its normal pool and H3 its one-connection-per-flow
+// behavior: this compares the currently shipped paths, not protocol limits.
+async fn start_pair(fixture: &Fixture) -> Result<(Cli, Cli, SocketAddr)> {
+    fixture.server_config(true)?;
+    let mut server = Cli::start(fixture.directory.path(), "server", "server.yaml")?;
+    let address = server
+        .ready(if fixture.h3 {
+            SERVER_READY
+        } else {
+            H2_SERVER_READY
+        })
+        .await?;
+    fixture.client_config("client.yaml", address, true, Fault::None)?;
+    let mut client = Cli::start(fixture.directory.path(), "client", "client.yaml")?;
+    let socks = client.ready(SOCKS_READY).await?;
+    client.ready(HTTP_READY).await?;
+    Ok((server, client, socks))
+}
+
+async fn send_payload(mut send: tokio::net::tcp::OwnedWriteHalf, bytes: usize) -> Result<()> {
+    let block = [0x5a; 16 * 1024];
+    let mut remaining = bytes;
+    while remaining > 0 {
+        let len = remaining.min(block.len());
+        send.write_all(&block[..len]).await?;
+        remaining -= len;
+    }
+    send.shutdown().await?;
+    Ok(())
+}
+
+async fn receive_payload(mut recv: tokio::net::tcp::OwnedReadHalf, bytes: usize) -> Result<()> {
+    let mut block = [0; 16 * 1024];
+    let mut received = 0;
+    loop {
+        let len = recv.read(&mut block).await?;
+        if len == 0 {
+            break;
+        }
+        ensure!(
+            block[..len].iter().all(|b| *b == 0x5a),
+            "payload corruption"
+        );
+        received += len;
+        ensure!(received <= bytes, "unexpected extra payload");
+    }
+    ensure!(received == bytes, "payload truncated: {received}/{bytes}");
+    Ok(())
+}
+
+async fn transfer(stream: TcpStream, send: usize, receive: usize) -> Result<()> {
+    let (recv, writer) = stream.into_split();
+    tokio::try_join!(send_payload(writer, send), receive_payload(recv, receive))?;
+    Ok(())
+}
+
+async fn measured_flow(
+    proxy: SocketAddr,
+    target: &TcpListener,
+    upload: usize,
+    download: usize,
+) -> Result<(f64, f64)> {
+    timeout(Duration::from_secs(30), async {
+        let address = target.local_addr()?;
+        let started = Instant::now();
+        let origin = async {
+            let mut stream = target.accept().await?.0;
+            ensure!(stream.read_u8().await? == 1, "missing transfer start");
+            transfer(stream, download, upload)
+                .await
+                .context("target transfer")
+        };
+        let request = async {
+            let (mut stream, status) = socks_connect(proxy, address).await?;
+            ensure!(status == 0, "measured SOCKS connection rejected");
+            let connect_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let data_started = Instant::now();
+            // Do not let the target pre-buffer downloads during SOCKS setup.
+            stream.write_all(&[1]).await?;
+            transfer(stream, upload, download)
+                .await
+                .context("proxy transfer")?;
+            Ok::<_, anyhow::Error>((connect_ms, data_started.elapsed().as_secs_f64()))
+        };
+        let (_, sample) = tokio::try_join!(origin, request)?;
+        Ok(sample)
+    })
+    .await
+    .context("measured flow timed out")?
+}
+
+async fn flow_batch(
+    proxy: SocketAddr,
+    target: &Arc<TcpListener>,
+    count: usize,
+    bytes: usize,
+) -> Result<()> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..count {
+        let target = Arc::clone(target);
+        tasks.spawn(async move { measured_flow(proxy, &target, bytes, bytes).await });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result??;
+    }
+    Ok(())
+}
+
+async fn interrupt_flows(proxy: SocketAddr, count: usize) -> Result<()> {
+    for _ in 0..count {
+        let target = TcpListener::bind("127.0.0.1:0").await?;
+        let (mut stream, status) = socks_connect(proxy, target.local_addr()?).await?;
+        ensure!(status == 0, "interruption setup rejected");
+        let (mut peer, _) = target.accept().await?;
+        stream.write_all(b"partial upload").await?;
+        let mut bytes = [0; 14];
+        peer.read_exact(&mut bytes).await?;
+        // Target disappears while the local client still holds the flow.
+        drop(peer);
+        let mut rest = Vec::new();
+        let _ = timeout(Duration::from_secs(3), stream.read_to_end(&mut rest))
+            .await
+            .context("interrupted flow did not finish")?;
+    }
+    Ok(())
+}
+
+async fn upload_after_target_fin(proxy: SocketAddr) -> Result<()> {
+    let target = TcpListener::bind("127.0.0.1:0").await?;
+    let (mut stream, status) = socks_connect(proxy, target.local_addr()?).await?;
+    ensure!(status == 0, "half-close setup rejected");
+    let (mut peer, _) = target.accept().await?;
+    peer.shutdown().await?;
+    let mut byte = [0];
+    ensure!(
+        stream.read(&mut byte).await? == 0,
+        "target FIN not forwarded"
+    );
+    // Wait for the target FIN before starting the upload: this deterministically
+    // reproduces the former H2 truncation instead of relying on scheduling.
+    tokio::try_join!(
+        transfer(stream, 512 * 1024, 0),
+        transfer(peer, 0, 512 * 1024)
+    )?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_carriers_survive_repeated_concurrent_and_interrupted_flows() -> Result<()> {
+    timeout(Duration::from_secs(90), async {
+        for h3 in [false, true] {
+            let fixture = Fixture::for_transport(h3, 16)?;
+            let (_server, _client, proxy) = start_pair(&fixture).await?;
+            let target = Arc::new(TcpListener::bind("127.0.0.1:0").await?);
+            upload_after_target_fin(proxy).await?;
+            // Target FIN before upload completion must not truncate the upload.
+            for (upload, download) in [
+                (4 * 1024 * 1024, 0),
+                (0, 4 * 1024 * 1024),
+                (4 * 1024 * 1024, 4 * 1024 * 1024),
+            ] {
+                measured_flow(proxy, &target, upload, download).await?;
+            }
+            for _ in 0..8 {
+                flow_batch(proxy, &target, 8, 64 * 1024).await?;
+            }
+            interrupt_flows(proxy, 8).await?;
+            flow_batch(proxy, &target, 8, 256 * 1024).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("carrier stability test timed out")?
+}
+
+fn percentile(samples: &[f64], percent: usize) -> f64 {
+    let mut ordered = samples.to_vec();
+    ordered.sort_by(f64::total_cmp);
+    ordered[(ordered.len() * percent).div_ceil(100).saturating_sub(1)]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "manual release-mode loopback comparison; timings are not CI thresholds"]
+async fn compare_h2_h3_loopback() -> Result<()> {
+    ensure!(!cfg!(debug_assertions), "run comparison with --release");
+    timeout(Duration::from_secs(300), async {
+        for h3 in [false, true] {
+            let carrier = if h3 { "h3" } else { "h2" };
+            println!("comparison starting carrier={carrier}");
+            let fixture = Fixture::for_transport(h3, 32)?;
+            let (_server, _client, proxy) = start_pair(&fixture).await?;
+            let target = Arc::new(TcpListener::bind("127.0.0.1:0").await?);
+            let (cold, _) = measured_flow(proxy, &target, 1024, 1024).await?;
+            let mut connects = Vec::new();
+            for _ in 0..100 {
+                connects.push(measured_flow(proxy, &target, 1024, 1024).await?.0);
+            }
+            println!("comparison carrier={carrier} cold_connect_ms={cold:.3} connect_p50_ms={:.3} connect_p95_ms={:.3}", percentile(&connects, 50), percentile(&connects, 95));
+            for (direction, upload, download) in [
+                ("upload", 8 * 1024 * 1024, 0),
+                ("download", 0, 8 * 1024 * 1024),
+                ("duplex", 8 * 1024 * 1024, 8 * 1024 * 1024),
+            ] {
+                let mut speeds = Vec::new();
+                for _ in 0..3 {
+                    let (_, seconds) = measured_flow(proxy, &target, upload, download).await?;
+                    speeds.push((upload + download) as f64 / (1024.0 * 1024.0) / seconds);
+                }
+                println!("comparison carrier={carrier} direction={direction} median_mib_s={:.3}", percentile(&speeds, 50));
+            }
+            let started = Instant::now();
+            let mut completed = 0;
+            while started.elapsed() < Duration::from_secs(30) {
+                flow_batch(proxy, &target, 8, 64 * 1024).await.with_context(|| format!("{carrier} sustained after {completed} successful flows"))?;
+                completed += 8;
+                // Bound offered load below the existing replay-cache budget.
+                // Reuse one target listener instead of exhausting ephemeral ports.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            interrupt_flows(proxy, 8).await?;
+            flow_batch(proxy, &target, 8, 256 * 1024).await?;
+            println!("comparison carrier={carrier} sustained_seconds={:.3} concurrency=8 batch_pause_ms=100 completed={completed} interrupted=8 recovery=passed", started.elapsed().as_secs_f64());
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await.context("local comparison timed out")?
 }

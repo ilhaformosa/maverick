@@ -20,7 +20,7 @@ playbook preserve detail without becoming parallel status ledgers.
 | H3/UDP product | Default-off; local authenticated H3/TCP proxy experiment only; no CLI/Auto H3 path or native Datagram |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Local SOCKS → H3 → authenticated server → TCP forwarding implemented; owner field validation deferred |
+| Current milestone | Local H3 TCP lifecycle verified: independent directions, half-close, activity timeout, GOAWAY, and disconnect cleanup; field validation deferred |
 | Stable readiness | **RED / owner-deferred**; exact-RC field use and owner rollback remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
@@ -235,16 +235,31 @@ The isolated package now has an explicit `proxy` feature and an executable
 the actual Maverick server credential lookup, authentication v1/v2, replay
 cache, connection/admission limits, per-user flow policy, and target connector.
 The client reuses its normal credential selection, Hello validation, OpenTcp,
-and SOCKS relay. The server's optional H3 session handles TCP frames with the
+and SOCKS parsing. Its opt-in H3 relay drives upload and download independently. The server's optional H3 session handles TCP frames with the
 existing egress policy, rate limiter, padding, and cover-traffic settings.
 
 One H3 request carries one TCP flow. Bounded frame channels and partial H3
-writes permit transfers larger than the 8 KiB stream window. Eleven focused
-tests include 512 KiB each way for auth v1 and v2, a response after client
-half-close, credential and disabled-user rejection, epoch and required-binding
-checks, shared replay detection, per-user concurrent-flow rejection, and egress
-rejection before contacting the origin. The local executable exercises both
-positive flows. TLS fixtures and sockets are released when the run ends.
+writes permit transfers larger than the 8 KiB stream window. Seventeen proxy
+tests cover 512 KiB each way for auth v1/v2, both half-close orders, simultaneous
+upload/download, credential and policy rejection, replay, flow limits, and
+cleanup after the transport disconnects. A later connection reuses the freed
+flow slot. The executable runs both half-close orders and simultaneous traffic
+for both authentication versions.
+
+Three concrete lifecycle failures were reproduced and fixed before formal
+integration: server-first FIN previously truncated the remaining upload;
+per-direction read timeouts killed an active download; and a valid server
+GOAWAY rejected the already accepted request. Client receive now progresses
+while send is blocked, and send progresses while the local download sink is
+blocked. The idle timer tracks activity in either direction; existing stalled
+write limits remain. Four focused client tests cover these behaviors, reset
+cancellation, and rejecting H3 EOF without a Maverick TCP FIN.
+
+The driver follows [RFC 9114 section 5.2](https://www.rfc-editor.org/rfc/rfc9114.html#section-5.2)
+for its single request: a server GOAWAY above stream 0 lets the accepted flow
+finish; GOAWAY 0 rejects it. It neither opens another request on that connection
+nor retries the application flow. This addresses the observed GOAWAY part of
+the caller-side control handling, not all historical P1/P2/P3 requirements.
 
 Integration also exposed a client negotiation mismatch: `channel_binding.require`
 was not enforced on the received ServerHello. The shared client handshake now
@@ -257,7 +272,8 @@ Boring integration and one native Boring dependency. The shipping dependency
 versions, CLI transport selector, config-v1 H3 rejection, and default H2 route
 remain unchanged. Both native CI jobs run the proxy tests and smoke.
 
-Local verification passes: the 32 isolated TLS/proxy tests, executable smoke,
+Local verification covers the 38 isolated TLS/proxy tests, four opt-in client
+relay tests, executable smoke,
 workspace Clippy with and without the opt-in endpoints, `local-harness`
 (including the H2 product smoke), the 62-test rustls relay suite, and dependency
 advisory/license/source checks. Three pre-existing workspace tests remain

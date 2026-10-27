@@ -63,6 +63,23 @@ impl Drop for Transport {
 }
 
 pub async fn connect(path: &str, max_frame_size: usize) -> Result<LocalConnection> {
+    connect_inner(path, max_frame_size, None).await
+}
+
+/// Sends a real server GOAWAY before processing the local request.
+pub async fn connect_with_server_goaway(
+    path: &str,
+    max_frame_size: usize,
+    id: u64,
+) -> Result<LocalConnection> {
+    connect_inner(path, max_frame_size, Some(id)).await
+}
+
+async fn connect_inner(
+    path: &str,
+    max_frame_size: usize,
+    goaway: Option<u64>,
+) -> Result<LocalConnection> {
     let (mut client, mut server, fixture, client_binding, server_binding) =
         tokio::task::spawn_blocking(|| {
             let mut pair = tls::pair(tls::Peer::Valid)?;
@@ -76,7 +93,10 @@ pub async fn connect(path: &str, max_frame_size: usize) -> Result<LocalConnectio
     let mut config = h3::Config::new()?;
     config.set_max_field_section_size(4096);
     let mut client_h3 = h3::Connection::with_transport(&mut client.conn, &config)?;
-    let server_h3 = h3::Connection::with_transport(&mut server.conn, &config)?;
+    let mut server_h3 = h3::Connection::with_transport(&mut server.conn, &config)?;
+    if let Some(id) = goaway {
+        server_h3.send_goaway(&mut server.conn, id)?;
+    }
     let stream = client_h3.send_request(
         &mut client.conn,
         &[
@@ -186,6 +206,16 @@ impl Driver {
                     Err(h3::Error::Done) => break,
                     Err(error) => return Err(error.into()),
                 };
+                if matches!(event, h3::Event::GoAway) {
+                    // RFC 9114 section 5.2: server IDs at/below our sole request
+                    // reject it. A higher ID lets stream 0 finish; client IDs
+                    // refer only to pushes, which this carrier never creates.
+                    ensure!(
+                        self.server || stream > 0,
+                        "server rejected H3 request with GOAWAY"
+                    );
+                    continue;
+                }
                 ensure!(stream == 0, "unexpected H3 stream");
                 match event {
                     h3::Event::Headers { list, .. } => {

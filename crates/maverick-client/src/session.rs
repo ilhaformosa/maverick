@@ -183,12 +183,18 @@ pub(crate) enum RelayClose {
 
 pub(crate) async fn relay_stream_and_tunnel<S>(
     local: S,
-    mut tunnel: ClientTunnel,
+    tunnel: ClientTunnel,
     idle_timeout: Duration,
 ) -> Result<RelayClose>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    #[cfg(feature = "experimental-h3")]
+    let tunnel = match tunnel {
+        ClientTunnel::H3(tunnel) => return tunnel.relay(local, idle_timeout).await,
+        other => other,
+    };
+    let mut tunnel = tunnel;
     let (mut local_read, mut local_write) = tokio::io::split(local);
     let mut local_buf = vec![0u8; 16 * 1024];
     let mut local_eof = false;
@@ -298,7 +304,7 @@ where
     }
 }
 
-async fn write_all_with_idle_timeout<W>(
+pub(crate) async fn write_all_with_idle_timeout<W>(
     writer: &mut W,
     mut bytes: &[u8],
     idle_timeout: Duration,

@@ -339,17 +339,18 @@ pub async fn relay_target_and_tunnel(
     let (mut target_read, mut target_write) = target.into_split();
     let mut target_buf = vec![0u8; 16 * 1024];
     let mut client_eof = false;
+    let mut target_eof = false;
+    let mut response_ended = false;
     let mut pending_send: Option<PendingH2Send> = None;
 
     loop {
+        if client_eof && response_ended {
+            break;
+        }
         let desired_capacity = pending_send
             .as_ref()
             .and_then(|pending| pending.frames.front())
             .map_or(0, Bytes::len);
-        let closing = pending_send
-            .as_ref()
-            .is_some_and(|pending| pending.end_stream);
-
         tokio::select! {
             _ = tokio::time::sleep(policy.idle_timeout) => {
                 if pending_send.is_some() {
@@ -381,16 +382,17 @@ pub async fn relay_target_and_tunnel(
                         // outer gRPC response with trailers, never DATA
                         // END_STREAM.
                         send_grpc_ok_trailers(&mut send_stream)?;
-                        break;
+                        response_ended = true;
                     }
                 }
             }
 
             target_read_result = target_read.read(&mut target_buf),
-                if pending_send.is_none() =>
+                if pending_send.is_none() && !target_eof =>
             {
                 let n = target_read_result?;
                 if n == 0 {
+                    target_eof = true;
                     pending_send = Some(prepare_frame_with_padding(
                         Frame::new(FrameType::TcpFin, 0, flow_id, Bytes::new()),
                         max_frame_size,
@@ -413,7 +415,7 @@ pub async fn relay_target_and_tunnel(
             }
 
             tunnel_frame = read_next_frame(&mut recv_stream, &mut recv_buf, max_frame_size),
-                if !client_eof && !closing =>
+                if !client_eof =>
             {
                 if pending_send.is_some() {
                     send_stream.reserve_capacity(0);

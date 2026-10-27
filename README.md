@@ -53,6 +53,19 @@ fronting, DNS/TUN and UDP associations; the retired `experimental_h3` flag stays
 rejected. See [configuration](CONFIG.md) for the exact scope. This is a Beta
 source capability, not a change to the immutable published RC.2 files.
 
+For a manual local H2/H3 comparison using optimized binaries:
+
+```sh
+cargo test --locked --release -p maverick-cli --features experimental-h3 \
+  --test h3_product compare_h2_h3_loopback -- --ignored --nocapture
+```
+
+This measures connection setup and verified bulk transfers, then checks
+30 seconds of bounded concurrent traffic and recovery after interrupted flows.
+Run it without other builds or tests competing for CPU. Timing is diagnostic;
+CI runs the bounded correctness/stability cases without speed thresholds.
+See `STATUS.md` for observations and their limits.
+
 The following developer laboratories retain focused reference checks.
 
 Run the opt-in local quiche/H3 experiment:

@@ -159,6 +159,49 @@ on both native platforms. The manual timing comparison is explicitly opt-in
 and has no speed thresholds. All existing checks remain; H3 is still default-off
 and field validation remains deferred.
 
+## Longer Local Stability and Resource Observation
+
+The 2026-10-28 release-mode run completed in 1316.76 seconds on one macOS arm64
+host. H2 ran three 100-second reference phases; H3 ran three 300-second phases.
+Each phase kept eight bidirectional flows active, sending a 64 KiB block per
+direction every 100 ms, while four short flows per second exercised connection
+turnover. Actual byte counts were checked in both directions. H2 transferred
+2.93 GiB over long flows plus 1200 short flows; H3 transferred 8.79 GiB over long
+flows plus 3600 short flows. Cancellation, target interruption, active-client
+termination and restart recovery all passed without unexpected transfer errors.
+
+Resource observations use cumulative process CPU time differences, RSS and
+numeric file-descriptor counts. CPU percentages treat one fully used core as
+100%; the client and server are measured separately. Restarted clients begin
+new counters. The following ranges cover the three phases of each carrier.
+
+| Observation, client / server | H2 | H3 |
+|---|---|---|
+| Average CPU during load | 3.6–3.8% / 3.4–3.6% | 22.0–23.1% / 52.1–61.0% |
+| RSS after 15 seconds idle | 13.2–13.9 / 12.6–13.3 MiB | 16.8–17.5 / 16.7–17.1 MiB |
+| File descriptors after idle | 11 / 11 | 11 / 11 |
+
+Active flow counts returned to zero after each phase. H2 retains a
+connection-level admission permit while its pooled TLS connection is alive;
+that is expected rather than a leaked unauthenticated request. After the idle
+interval both carriers returned to zero active connections and baseline file
+descriptor counts. RSS grew modestly across phases; the observations do not
+establish a memory leak or prove leak freedom. They are periodic samples, not
+instantaneous peaks. The long run was isolated from local builds and profiling.
+
+H3's CPU cost under this workload remains substantially higher than H2's.
+A separate three-second stack sample showed UDP send/receive paths prominently
+among non-wait locations. It identifies a follow-up profiling target; it does
+not establish CPU attribution or a specific implementation defect. No transport
+redesign or host-network tuning was introduced on that evidence.
+
+The ordinary H3 server now reports its enabled local metrics listener address,
+matching H2 and allowing the existing metrics to be observed with ephemeral
+ports. A normal CLI regression keeps traffic alive beyond the configured idle
+timeout, checks admission release and verifies recovery after terminating an
+active H3 client. The long resource run is manual; CI has no RSS/CPU thresholds.
+H3 remains default-off, and field validation remains deferred.
+
 ## CI and Security Alert Maintenance
 
 [PR #75](https://github.com/ilhaformosa/maverick/pull/75) runs Linux and macOS in

@@ -23,6 +23,10 @@ const SERVER_READY: &str = "Maverick H3 server listening";
 const H2_SERVER_READY: &str = "Maverick server listening";
 const SOCKS_READY: &str = "Maverick SOCKS5 client listening";
 const HTTP_READY: &str = "Maverick HTTP CONNECT client listening";
+const METRICS_READY: &str = "Maverick local metrics listening";
+
+#[path = "support/h3_soak.rs"]
+mod soak;
 
 struct Cli {
     child: Child,
@@ -52,7 +56,13 @@ impl Cli {
             // Consume logs without retaining or printing credentials, paths, or
             // diagnostics. Only readiness addresses leave this thread.
             for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
-                for marker in [SERVER_READY, H2_SERVER_READY, SOCKS_READY, HTTP_READY] {
+                for marker in [
+                    SERVER_READY,
+                    H2_SERVER_READY,
+                    SOCKS_READY,
+                    HTTP_READY,
+                    METRICS_READY,
+                ] {
                     if !line.contains(marker) {
                         continue;
                     }

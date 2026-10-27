@@ -76,9 +76,10 @@ cargo run --locked \
 
 This opt-in executable creates local SOCKS, QUIC, and TCP-origin sockets on
 `127.0.0.1` with OS-assigned ports. Authentication v1 and v2 each transfer
-512 KiB in both directions, including a reply after the client closes its
-sending side. Add `--features proxy` to the test command above to also check
-real server credential, replay, flow-limit, and egress rejection. The normal
+512 KiB in both directions with client-first and server-first half-close,
+and simultaneous upload/download. Add `--features proxy` to the test command
+above to also check credentials, replay, flow limits, egress, active-download
+timeouts, GOAWAY, and disconnect cleanup. The normal
 CLI and Auto selector still use their existing transports; H3 is default-off,
 TCP-only, and not available for deployment or field use.
 

@@ -274,3 +274,135 @@ async fn concurrent_flow_limit_is_shared_across_h3_connections() -> anyhow::Resu
     })
     .await?
 }
+
+#[tokio::test]
+async fn server_half_close_preserves_remaining_upload() -> anyhow::Result<()> {
+    for v2 in [false, true] {
+        assert_eq!(
+            smoke::run_with_mode(v2, smoke::TransferMode::ServerFirst).await?,
+            smoke::PAYLOAD_SIZE
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn simultaneous_large_upload_and_download() -> anyhow::Result<()> {
+    for v2 in [false, true] {
+        assert_eq!(
+            smoke::run_with_mode(v2, smoke::TransferMode::Simultaneous).await?,
+            smoke::PAYLOAD_SIZE
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_download_survives_longer_than_idle_timeout() -> anyhow::Result<()> {
+    assert_eq!(
+        smoke::run_with_mode(true, smoke::TransferMode::SlowDownload).await?,
+        smoke::PAYLOAD_SIZE
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goaway_preserves_the_accepted_tcp_flow() -> anyhow::Result<()> {
+    assert_eq!(
+        smoke::run_with_mode(true, smoke::TransferMode::GoAway).await?,
+        smoke::PAYLOAD_SIZE
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goaway_rejecting_current_request_is_reported() -> anyhow::Result<()> {
+    use std::time::Duration;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut connection =
+            proxy::connect_with_server_goaway(smoke::PATH, smoke::MAX_FRAME, 0).await?;
+        assert!(connection.client.read(smoke::MAX_FRAME).await.is_err());
+        let result = connection.transport.shutdown().await.unwrap_err();
+        assert!(result.to_string().contains("GOAWAY"));
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn transport_disconnect_releases_target_and_flow_slot() -> anyhow::Result<()> {
+    use maverick_core::{
+        frame::{OpenTcpPayload, TargetAddr},
+        Frame, FrameType,
+    };
+    use std::{net::Ipv4Addr, time::Duration};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let first = proxy::connect(smoke::PATH, smoke::MAX_FRAME).await?;
+        let (client, mut config) = smoke::configs(&first, true)?;
+        config.users[0].max_concurrent_flows = Some(1);
+        let server = maverick_server::h3::Server::new(config)?;
+        let origin = TcpListener::bind("127.0.0.1:0").await?;
+        let payload = OpenTcpPayload::new(
+            TargetAddr::Ipv4(Ipv4Addr::LOCALHOST),
+            origin.local_addr()?.port(),
+        )
+        .encode()?;
+        // The same one-slot server must accept a later connection after the first transport vanishes.
+        for (connection, disconnect) in [
+            (first, true),
+            (proxy::connect(smoke::PATH, smoke::MAX_FRAME).await?, false),
+        ] {
+            let server = server.clone();
+            let task = tokio::spawn(async move {
+                server
+                    .serve(
+                        connection.server,
+                        connection.client_addr,
+                        smoke::PATH,
+                        connection.server_binding,
+                    )
+                    .await
+            });
+            let mut tunnel =
+                maverick_client::h3::open(&client, connection.client, connection.client_binding)
+                    .await?;
+            tunnel
+                .send_frame(Frame::new(FrameType::OpenTcp, 0, 1, payload.clone()), false)
+                .await?;
+            assert_eq!(
+                tunnel.read_next_frame().await?.unwrap().frame_type,
+                FrameType::WindowUpdate
+            );
+            let (mut target, _) = origin.accept().await?;
+            if disconnect {
+                connection.transport.shutdown().await?;
+                assert!(task.await?.is_err());
+                assert!(tunnel.read_next_frame().await.is_err());
+                let mut received = Vec::new();
+                target.read_to_end(&mut received).await?;
+                assert!(received.is_empty());
+            } else {
+                tunnel
+                    .send_frame(
+                        Frame::new(FrameType::TcpFin, 0, 1, bytes::Bytes::new()),
+                        true,
+                    )
+                    .await?;
+                target.shutdown().await?;
+                assert_eq!(
+                    tunnel.read_next_frame().await?.unwrap().frame_type,
+                    FrameType::TcpFin
+                );
+                assert!(tunnel.read_next_frame().await?.is_none());
+                task.await??;
+                connection.transport.shutdown().await?;
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}

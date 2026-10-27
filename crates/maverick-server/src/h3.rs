@@ -216,15 +216,13 @@ async fn relay_tcp(
         outbound,
         mut inbound,
     } = tunnel;
+    let (activity, mut progress) = tokio::sync::watch::channel(());
     let upstream = async {
         loop {
-            let frame = timeout(
-                policy.idle_timeout,
-                h3_channel::read_frame(&mut inbound, max),
-            )
-            .await
-            .context("H3 request idle timeout")??
-            .context("H3 request ended without TCP FIN")?;
+            let frame = h3_channel::read_frame(&mut inbound, max)
+                .await?
+                .context("H3 request ended without TCP FIN")?;
+            activity.send_replace(());
             if frame.flow_id != flow_id {
                 continue;
             }
@@ -249,9 +247,8 @@ async fn relay_tcp(
     let downstream = async {
         let mut buf = vec![0; (16 * 1024).min(max)];
         loop {
-            let count = timeout(policy.idle_timeout, read.read(&mut buf))
-                .await
-                .context("target relay read timed out")??;
+            let count = read.read(&mut buf).await?;
+            activity.send_replace(());
             if count == 0 {
                 send(
                     &outbound,
@@ -281,6 +278,17 @@ async fn relay_tcp(
             .await?;
         }
     };
-    tokio::try_join!(upstream, downstream)?;
-    Ok(())
+    let relay = async {
+        tokio::try_join!(upstream, downstream)?;
+        Ok(())
+    };
+    tokio::pin!(relay);
+    loop {
+        tokio::select! {
+            result = &mut relay => return result,
+            changed = timeout(policy.idle_timeout, progress.changed()) => {
+                changed.context("H3 relay idle timeout")??;
+            }
+        }
+    }
 }

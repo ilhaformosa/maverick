@@ -66,7 +66,7 @@ impl ClientTunnel {
             Self::H2(tunnel) => tunnel.max_frame_size,
             Self::CloudflareWs(tunnel) => tunnel.max_frame_size,
             #[cfg(feature = "experimental-h3")]
-            Self::H3(tunnel) => tunnel.max_frame_size,
+            Self::H3(tunnel) => tunnel.max_frame_size(),
         }
     }
 
@@ -167,7 +167,7 @@ impl ClientTunnel {
             }
             Self::CloudflareWs(tunnel) => read_next_ws_frame(tunnel).await,
             #[cfg(feature = "experimental-h3")]
-            Self::H3(tunnel) => Ok(tunnel.channel.read(tunnel.max_frame_size).await?),
+            Self::H3(tunnel) => tunnel.read_next_frame().await,
         }
     }
 

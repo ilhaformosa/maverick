@@ -82,15 +82,36 @@ pub async fn socks_connect(stream: &mut TcpStream, target: SocketAddr) -> Result
     Ok(reply[1])
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum TransferMode {
+    ClientFirst,
+    ServerFirst,
+    Simultaneous,
+    SlowDownload,
+    GoAway,
+}
+
 pub async fn run(v2: bool) -> Result<usize> {
-    tokio::time::timeout(Duration::from_secs(15), transfer(v2))
+    run_with_mode(v2, TransferMode::ClientFirst).await
+}
+
+pub async fn run_with_mode(v2: bool, mode: TransferMode) -> Result<usize> {
+    tokio::time::timeout(Duration::from_secs(15), transfer(v2, mode))
         .await
         .context("local H3 proxy smoke timed out")?
 }
 
-async fn transfer(v2: bool) -> Result<usize> {
-    let connection = proxy::connect(PATH, MAX_FRAME).await?;
-    let (client, server) = configs(&connection, v2)?;
+async fn transfer(v2: bool, mode: TransferMode) -> Result<usize> {
+    let connection = if matches!(mode, TransferMode::GoAway) {
+        proxy::connect_with_server_goaway(PATH, MAX_FRAME, 4).await?
+    } else {
+        proxy::connect(PATH, MAX_FRAME).await?
+    };
+    let (mut client, mut server) = configs(&connection, v2)?;
+    if matches!(mode, TransferMode::SlowDownload) {
+        client.advanced.idle_timeout_secs = 1;
+        server.advanced.idle_timeout_secs = 1;
+    }
     let server = maverick_server::h3::Server::new(server)?;
     let origin = TcpListener::bind("127.0.0.1:0").await?;
     let target = origin.local_addr()?;
@@ -100,12 +121,25 @@ async fn transfer(v2: bool) -> Result<usize> {
     let expected = payload.clone();
     let origin_task = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await?;
-        let mut received = Vec::new();
-        stream.read_to_end(&mut received).await?;
+        let response: Vec<_> = expected.iter().rev().copied().collect();
+        let send_first = match mode {
+            TransferMode::ClientFirst | TransferMode::GoAway => Some(false),
+            TransferMode::ServerFirst | TransferMode::SlowDownload => Some(true),
+            TransferMode::Simultaneous => None,
+        };
+        let received = if matches!(mode, TransferMode::SlowDownload) {
+            for chunk in response.chunks(32 * 1024) {
+                stream.write_all(chunk).await?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            stream.shutdown().await?;
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await?;
+            received
+        } else {
+            exchange(&mut stream, &response, send_first).await?
+        };
         ensure!(received == expected, "upstream payload differs");
-        received.reverse();
-        stream.write_all(&received).await?;
-        stream.shutdown().await?;
         Ok::<_, anyhow::Error>(())
     });
     let server_task = tokio::spawn(async move {
@@ -133,10 +167,12 @@ async fn transfer(v2: bool) -> Result<usize> {
         socks_connect(&mut stream, target).await? == 0,
         "SOCKS CONNECT failed"
     );
-    stream.write_all(&payload).await?;
-    stream.shutdown().await?;
-    let mut received = Vec::new();
-    stream.read_to_end(&mut received).await?;
+    let send_first = match mode {
+        TransferMode::ClientFirst | TransferMode::GoAway => Some(true),
+        TransferMode::ServerFirst | TransferMode::SlowDownload => Some(false),
+        TransferMode::Simultaneous => None,
+    };
+    let received = exchange(&mut stream, &payload, send_first).await?;
     ensure!(
         received.iter().eq(payload.iter().rev()),
         "downstream payload differs"
@@ -146,4 +182,35 @@ async fn transfer(v2: bool) -> Result<usize> {
     server_task.await??;
     connection.transport.shutdown().await?;
     Ok(received.len())
+}
+
+async fn exchange(
+    stream: &mut TcpStream,
+    payload: &[u8],
+    send_first: Option<bool>,
+) -> Result<Vec<u8>> {
+    let mut received = Vec::new();
+    match send_first {
+        Some(true) => {
+            stream.write_all(payload).await?;
+            stream.shutdown().await?;
+            stream.read_to_end(&mut received).await?;
+        }
+        Some(false) => {
+            stream.read_to_end(&mut received).await?;
+            stream.write_all(payload).await?;
+            stream.shutdown().await?;
+        }
+        None => {
+            let (mut reader, mut writer) = stream.split();
+            tokio::try_join!(
+                async {
+                    writer.write_all(payload).await?;
+                    writer.shutdown().await
+                },
+                async { reader.read_to_end(&mut received).await }
+            )?;
+        }
+    }
+    Ok(received)
 }

@@ -60,10 +60,19 @@ carry 512 KiB in both directions and preserve client half-close. Negative tests
 cover credentials, binding, epochs, replay, concurrent-flow limits, and egress.
 The shipping H2 graph and default route remain unchanged.
 
+## Completed — H3 TCP Lifecycle Before Integration
+
+Both directions now progress independently, either side may half-close first,
+and activity in one direction keeps the connection alive. The local tests
+reproduce and fix server-first upload truncation, false download idle timeouts,
+and rejecting a valid GOAWAY. Reset/EOF behavior and flow-slot release after
+disconnect are covered without changing the default H2 path.
+
 ## Next — Decide the Upstream Carrier's Adoption Gaps
 
-Use this working local TCP carrier to resolve the relevant P1/P2/P3 behavior
-and remaining platform/dependency requirements. Keep the next implementation
+Use this working local TCP carrier to resolve the remaining P1/P2/P3 behavior
+and platform/dependency requirements. GOAWAY handling is covered; strict peer-push
+policy and the selected upstream logging surface still need a concrete disposition. Keep the next implementation
 small and driven by an observed gap. Before moving quiche into shipping
 packages, verify one shared Boring closure and H2 compatibility. H3 remains
 default-off; field use is still deferred.

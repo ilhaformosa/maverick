@@ -74,10 +74,11 @@ claims need their own evidence; the current owner authorization remains local.
 
 ## Unauthenticated Requests
 
-Requests without valid Maverick authentication receive configured static or
+H2 requests without valid Maverick authentication receive configured static or
 reverse-proxy fallback behavior. They must not receive protocol-specific error
 details. This reduces obvious active-probe signals but does not prove perfect
-indistinguishability.
+indistinguishability. H3 rejects and closes unauthenticated sessions without
+serving the H2 fallback.
 
 ## Boundaries
 

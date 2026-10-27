@@ -206,7 +206,8 @@ evidence exists. `private` mode rejects `rustls_default`.
 
 ## Transport
 
-H2/TLS is the only runnable direct config-v1 product carrier. The
+H2/TLS is the default direct config-v1 product carrier; the explicit quiche H3
+opt-in is described below. The
 `experimental_h3` field remains present and defaults to `false`, but setting it
 to `true` is retired:
 
@@ -270,8 +271,9 @@ advanced:
 
 The older `carrier: web_socket` path remains available with
 `tls_fingerprint: rustls_default`; `experimental_cloudflare_ws: true` is its
-legacy selector. Browser mimicry is supported only by the H2 carrier. The
-normal direct transport remains H2/TLS while fronting is disabled. Loopback
+legacy selector. WebSocket does not support the browser-like TLS profile.
+Explicit quiche H3 reuses the TLS settings without claiming browser equivalence.
+The default direct transport remains H2/TLS while fronting is disabled. Loopback
 coverage alone does not prove that a real provider configuration accepts
 sustained bidirectional H2. The first owner pilot exercised the path through a
 real provider and network; `STATUS.md` records the bounded success and open

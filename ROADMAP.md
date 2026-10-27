@@ -32,19 +32,26 @@ the shared Boring dependency graph, existing authentication/egress policy and
 separate-process loopback tests are implemented. H2 remains the default and
 both native platforms are checked. Field use remains deferred.
 
-## Current — Local H2/H3 Comparison and Observed Corrections
+## Completed — Local H2/H3 Comparison and Observed Corrections
 
 The release-mode CLI comparison and bounded CI stability test cover connection
-setup, bulk transfers, concurrency and interrupted-flow recovery. Correct the
-observed H2 target-first half-close truncation and retain only repeatable H3
-receive-window improvements. Record measured scope and limits in `STATUS.md`.
+setup, bulk transfers, concurrency and interrupted-flow recovery. The observed
+H2 target-first half-close truncation was corrected, and the repeatable H3
+receive-window improvement retained. Scope and limits are recorded in `STATUS.md`.
 
-## Next — Longer Local Sessions and Resource Measurements
+## Current — Longer Local Sessions and Resource Measurements
 
-Use the same configured path to examine longer sessions and resource use before
-expanding transport behavior. Connection reuse needs a concrete workload and
-benefit; local throughput alone does not justify automatic carrier switching,
-new scheduling machinery or a browser/network performance claim.
+Use the same configured path for repeated sustained/churn load, idle periods,
+local cancellation and client-process recovery. Observe CPU time, resident
+memory, file descriptors and the existing server metrics before expanding
+transport behavior. H2's pooled-connection admission and H3's per-flow admission
+must be interpreted separately. Short CI cases cover lifecycle correctness;
+long resource measurements remain explicit local runs.
+
+Connection reuse needs a concrete workload and benefit; local throughput alone
+does not justify automatic carrier switching, new scheduling machinery or a
+browser/network performance claim. Changes to development tooling should first
+remove duplicate preparation and keep existing checks intact.
 
 ## Deferred — Field Validation and Stable
 

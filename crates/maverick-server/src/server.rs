@@ -227,6 +227,9 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     if config.advanced.quiche_h3 {
         let handle = h3::start(config).await?;
         info!(listen = %handle.local_addr, "Maverick H3 server listening");
+        if let Some(address) = handle.metrics_addr {
+            info!(listen = %address, "Maverick local metrics listening");
+        }
         let ServerHandle {
             shutdown: _keep_alive,
             join,

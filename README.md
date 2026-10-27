@@ -66,6 +66,25 @@ Run it without other builds or tests competing for CPU. Timing is diagnostic;
 CI runs the bounded correctness/stability cases without speed thresholds.
 See `STATUS.md` for observations and their limits.
 
+For longer local stability and process-resource measurements:
+
+```sh
+MAVERICK_SOAK_SECONDS=300 cargo test --locked --release -p maverick-cli \
+  --features experimental-h3 --test h3_product \
+  soak::long_running_carrier_resources -- --ignored --nocapture
+```
+
+The default runs three 100-second H2 reference phases and three 300-second H3
+phases, each with eight sustained bidirectional flows and four short flows per
+second. Idle intervals, cancellation, active-client exit and restart bring the
+total to about 22 minutes. Use `MAVERICK_SOAK_SECONDS=10` for a short preflight.
+The manual sampler requires `ps` and `lsof` and records only numeric CPU time,
+resident memory, descriptor counts and existing server metrics. Compare CPU
+time differences over elapsed time, and restart the counter after a process
+restart. Memory samples are not peaks, and retained allocator capacity or H2
+pool connections alone do not establish a leak. CI checks the same lifecycle
+with a short active run and no platform-dependent resource thresholds.
+
 The following developer laboratories retain focused reference checks.
 
 Run the opt-in local quiche/H3 experiment:

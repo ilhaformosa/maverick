@@ -66,6 +66,22 @@ code. Its own lockfile keeps evaluation dependencies separate from the
 shipping H2 client. Current results and remaining product work are in
 `STATUS.md`.
 
+Run the local SOCKS-to-H3-to-TCP proxy smoke with actual server authentication:
+
+```sh
+cargo run --locked \
+  --manifest-path crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml \
+  --features proxy --bin h3-proxy-smoke
+```
+
+This opt-in executable creates local SOCKS, QUIC, and TCP-origin sockets on
+`127.0.0.1` with OS-assigned ports. Authentication v1 and v2 each transfer
+512 KiB in both directions, including a reply after the client closes its
+sending side. Add `--features proxy` to the test command above to also check
+real server credential, replay, flow-limit, and egress rejection. The normal
+CLI and Auto selector still use their existing transports; H3 is default-off,
+TCP-only, and not available for deployment or field use.
+
 Build the first owner-pilot folder and shareable archive:
 
 ```sh

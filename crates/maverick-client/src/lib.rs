@@ -7,6 +7,8 @@ mod browser_tls;
 pub mod connection_manager;
 pub mod dns;
 pub mod h2_transport;
+#[cfg(feature = "experimental-h3")]
+pub mod h3;
 pub mod http_connect;
 pub mod session;
 pub mod socks5;

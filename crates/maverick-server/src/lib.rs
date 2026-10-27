@@ -11,4 +11,6 @@ pub mod users;
 
 mod runtime_metrics;
 
+#[cfg(feature = "experimental-h3")]
+pub use server::h3;
 pub use server::{run_server, start_server, ServerHandle};

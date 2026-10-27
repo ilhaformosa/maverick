@@ -17,10 +17,10 @@ playbook preserve detail without becoming parallel status ledgers.
 | Dependency maintenance | Included in published RC.2; earlier immutable releases remain unchanged |
 | Supported product route | Direct browser-like TLS 1.3 + HTTP/2 |
 | Provider-fronted route | Implemented and Beta; not part of the first Stable support claim |
-| H3/UDP product | Disabled; no current H3 product backend or Auto path |
+| H3/UDP product | Default-off; local authenticated H3/TCP proxy experiment only; no CLI/Auto H3 path or native Datagram |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Upstream H3 TLS/authentication integration verified locally; owner field validation deferred |
+| Current milestone | Local SOCKS → H3 → authenticated server → TCP forwarding implemented; owner field validation deferred |
 | Stable readiness | **RED / owner-deferred**; exact-RC field use and owner rollback remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
@@ -61,8 +61,8 @@ The current source resolves RUSTSEC-2026-0346 through RUSTSEC-2026-0349,
 RUSTSEC-2026-0381, RUSTSEC-2026-0382, and the RUSTSEC-2026-0386 soundness warning
 with rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.10, and Tokio
 1.53.3. Direct dependency minimums exclude the older affected versions;
-rustls-webpki is fixed in the product lockfile. Auxiliary lockfiles contain
-none of these dependencies. No advisory is ignored or suppressed.
+rustls-webpki is fixed in the product lockfile. The isolated H3 proxy fixture also resolves fixed versions of these
+dependencies. No advisory is ignored or suppressed.
 
 The default browser TLS certificate decompressor also had the large-window
 behavior described by RUSTSEC-2026-0348. It now uses strict RFC 7932 decoding,
@@ -225,17 +225,48 @@ connection are rejected.
 Untrusted certificates, wrong hostnames, and a rejecting verification callback
 also fail the handshake.
 
-All 21 fixture tests and its Clippy check pass locally. The fixture dependency
-graph passes advisory, license, source, and dependency-policy checks, and both
-native CI jobs include it. This resolves the upstream TLS API feasibility
-question. It does not implement the full server credential lookup, replay,
-rotation/admission policy, frame relay, or a product H3 carrier. Browser
-fingerprint equivalence is not established by these tests.
+The original 21 TLS/authentication tests remain covered. Browser fingerprint
+equivalence is not established by these tests.
 
-**Product adoption remains NO-GO.** B-001/B-002 and P1/P2/P3 are still
-unresolved. The next implementation slice is one local authenticated H3
-carrier using the real product gates and relay, with one reviewed Boring 5
-closure before any shipping dependency change. Field work remains deferred.
+### Local authenticated H3 TCP proxy
+
+The isolated package now has an explicit `proxy` feature and an executable
+`h3-proxy-smoke`. It connects a real local SOCKS5 client through H3 over UDP to
+the actual Maverick server credential lookup, authentication v1/v2, replay
+cache, connection/admission limits, per-user flow policy, and target connector.
+The client reuses its normal credential selection, Hello validation, OpenTcp,
+and SOCKS relay. The server's optional H3 session handles TCP frames with the
+existing egress policy, rate limiter, padding, and cover-traffic settings.
+
+One H3 request carries one TCP flow. Bounded frame channels and partial H3
+writes permit transfers larger than the 8 KiB stream window. Eleven focused
+tests include 512 KiB each way for auth v1 and v2, a response after client
+half-close, credential and disabled-user rejection, epoch and required-binding
+checks, shared replay detection, per-user concurrent-flow rejection, and egress
+rejection before contacting the origin. The local executable exercises both
+positive flows. TLS fixtures and sockets are released when the run ends.
+
+Integration also exposed a client negotiation mismatch: `channel_binding.require`
+was not enforced on the received ServerHello. The shared client handshake now
+rejects an unbound reply when binding is required, for both authentication
+versions; optional binding remains compatible. This applies to H2/WS as well.
+
+All new endpoints require the default-off `experimental-h3` Cargo feature.
+The actual quiche driver remains in the isolated package, using the upstream
+Boring integration and one native Boring dependency. The shipping dependency
+versions, CLI transport selector, config-v1 H3 rejection, and default H2 route
+remain unchanged. Both native CI jobs run the proxy tests and smoke.
+
+Local verification passes: the 32 isolated TLS/proxy tests, executable smoke,
+workspace Clippy with and without the opt-in endpoints, `local-harness`
+(including the H2 product smoke), the 62-test rustls relay suite, and dependency
+advisory/license/source checks. Three pre-existing workspace tests remain
+explicitly ignored; no new test is ignored.
+
+**Product adoption remains NO-GO.** This is a working local TCP proxy slice,
+not a deployable H3 listener, multiplexed connection pool, UDP carrier, Auto
+route, or public release. B-001/B-002 and P1/P2/P3 still need dispositions for
+the concrete upstream carrier before adoption. Field work remains deferred.
 
 ## Execution Model
 

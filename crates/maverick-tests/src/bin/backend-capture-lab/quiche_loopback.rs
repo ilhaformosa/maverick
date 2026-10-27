@@ -28,9 +28,9 @@ pub struct Report {
 }
 
 pub(super) struct Endpoint {
-    socket: UdpSocket,
-    address: SocketAddr,
-    peer: SocketAddr,
+    pub(super) socket: UdpSocket,
+    pub(super) address: SocketAddr,
+    pub(super) peer: SocketAddr,
     pub(super) conn: quiche::Connection,
     sent: usize,
     received: usize,
@@ -287,6 +287,10 @@ impl Pair {
         }
     }
 
+    pub(super) fn into_parts(self) -> (Endpoint, Endpoint, TempDir) {
+        (self.client, self.server, self.fixture)
+    }
+
     pub(super) fn shutdown(mut self) -> Result<usize> {
         self.client.conn.close(true, 0x100, b"")?; // H3_NO_ERROR
         while !self.client.conn.is_closed() || !self.server.conn.is_closed() {
@@ -302,9 +306,10 @@ impl Pair {
         let sent = self.client.sent + self.server.sent;
         // Close temporary files explicitly so a cleanup failure is reported.
         // All error exits also release sockets/connections and the TempDir via RAII.
-        drop(self.client);
-        drop(self.server);
-        self.fixture
+        let (client, server, fixture) = self.into_parts();
+        drop(client);
+        drop(server);
+        fixture
             .close()
             .context("remove temporary certificate directory")?;
         Ok(sent)

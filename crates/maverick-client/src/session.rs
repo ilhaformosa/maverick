@@ -117,7 +117,15 @@ pub(crate) async fn open_tcp_tunnel(
     port: u16,
 ) -> Result<ClientTunnel> {
     crate::reject_retired_v1_h3(tunnel_pool.config())?;
-    let mut tunnel = tunnel_pool.open().await?;
+    let tunnel = tunnel_pool.open().await?;
+    open_tcp_on_tunnel(tunnel, target, port).await
+}
+
+pub(crate) async fn open_tcp_on_tunnel(
+    mut tunnel: ClientTunnel,
+    target: maverick_core::frame::TargetAddr,
+    port: u16,
+) -> Result<ClientTunnel> {
     let open = OpenTcpPayload::new(target, port);
     tunnel
         .send_frame(

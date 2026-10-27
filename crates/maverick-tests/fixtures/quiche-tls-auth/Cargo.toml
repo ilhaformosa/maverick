@@ -7,6 +7,10 @@ publish = false
 
 [workspace]
 
+[features]
+default = []
+proxy = ["dep:bytes", "dep:tokio", "dep:maverick-client", "dep:maverick-server", "maverick-core/experimental-h3"]
+
 [dependencies]
 anyhow = "1"
 boring = "=5.2.0"
@@ -17,6 +21,23 @@ quiche = { version = "=0.30.0", default-features = false, features = ["boringssl
 rcgen = "0.13"
 sha2 = "0.10"
 tempfile = "3"
+bytes = { version = "1", optional = true }
+tokio = { version = "1.53.3", features = ["full"], optional = true }
+maverick-client = { path = "../../../maverick-client", default-features = false, features = ["browser-tls", "experimental-h3"], optional = true }
+maverick-server = { path = "../../../maverick-server", features = ["experimental-h3"], optional = true }
+
+[lib]
+test = false
+
+[[bin]]
+name = "h3-proxy-smoke"
+path = "src/main.rs"
+required-features = ["proxy"]
+
+[[test]]
+name = "proxy"
+path = "tests/proxy.rs"
+required-features = ["proxy"]
 
 [[test]]
 name = "tls_auth"

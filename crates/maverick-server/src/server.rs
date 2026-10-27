@@ -58,6 +58,10 @@ const MAX_FALLBACK_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 const REPLAY_CACHE_SHARDS: usize = 16;
 const METRICS_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[cfg(feature = "experimental-h3")]
+#[path = "h3.rs"]
+pub mod h3;
+
 fn server_padding(state: &ServerState) -> RuntimePadding {
     RuntimePadding::from_config(
         state.config.maverick.mode_default,
@@ -394,13 +398,7 @@ impl WsCallback for WebSocketPathValidator {
     }
 }
 
-async fn serve(
-    listener: TcpListener,
-    metrics_listener: Option<TcpListener>,
-    config: ServerConfig,
-    mut shutdown: oneshot::Receiver<()>,
-) -> Result<()> {
-    let acceptor = h2_acceptor::acceptor(&config)?;
+fn server_state(config: ServerConfig) -> Result<ServerState> {
     let metrics = Arc::new(ServerRuntimeMetrics::default());
     let policies = Arc::new(ServerPolicies::from_config(&config));
     let connection_limits = Arc::new(ConnectionLimitTracker::new(
@@ -409,7 +407,7 @@ async fn serve(
     ));
     let pre_auth_admission = Arc::new(Semaphore::new(pre_auth_admission_limit(&config)));
     let fallback_admission = Arc::new(Semaphore::new(fallback_admission_limit(&config)));
-    let state = ServerState {
+    Ok(ServerState {
         replay: Arc::new(replay_caches(&config)),
         users: Arc::new(UserStore::new(&config.users)?),
         fallback: FallbackHandler::from_config(&config.fallback),
@@ -421,7 +419,18 @@ async fn serve(
         auth_failures: Arc::new(Mutex::new(AuthFailureTracker::default())),
         dummy_auth_secret: SecretString::generate(),
         config: Arc::new(config),
-    };
+    })
+}
+
+async fn serve(
+    listener: TcpListener,
+    metrics_listener: Option<TcpListener>,
+    config: ServerConfig,
+    mut shutdown: oneshot::Receiver<()>,
+) -> Result<()> {
+    let acceptor = h2_acceptor::acceptor(&config)?;
+    let state = server_state(config)?;
+    let metrics = Arc::clone(&state.metrics);
     let (metrics_shutdown_tx, metrics_join) = if let Some(listener) = metrics_listener {
         let (tx, rx) = oneshot::channel();
         let join = tokio::spawn(serve_metrics(listener, Arc::clone(&metrics), rx));
@@ -767,6 +776,30 @@ impl AuthenticatedClientHello<'_> {
     }
 }
 
+async fn authenticate_tunnel_frame<'a>(
+    frame: &Frame,
+    state: &'a ServerState,
+    now_unix: i64,
+    channel_binding: Option<TlsChannelBinding>,
+) -> Option<AuthenticatedClientHello<'a>> {
+    if frame.frame_type != FrameType::ClientHello {
+        return None;
+    }
+    let authenticated =
+        authenticate_client_hello(&frame.payload, state, now_unix, channel_binding)?;
+    replay_shard(state, &authenticated.replay_key)
+        .lock()
+        .await
+        .check_and_insert(
+            &authenticated.replay_key,
+            authenticated.client_nonce(),
+            authenticated.timestamp_unix(),
+            now_unix,
+        )
+        .ok()?;
+    Some(authenticated)
+}
+
 fn authenticate_client_hello<'a>(
     payload: &[u8],
     state: &'a ServerState,
@@ -959,7 +992,7 @@ async fn handle_tunnel(
     let now_unix = current_unix();
     let authenticated = match first_frame {
         Ok(Some(frame)) if frame.frame_type == FrameType::ClientHello => {
-            match authenticate_client_hello(&frame.payload, &state, now_unix, channel_binding) {
+            match authenticate_tunnel_frame(&frame, &state, now_unix, channel_binding).await {
                 Some(authenticated) => authenticated,
                 None => {
                     info!("unauthenticated tunnel-like request rejected");
@@ -990,30 +1023,6 @@ async fn handle_tunnel(
             .await;
         }
     };
-    {
-        let mut replay = replay_shard(&state, &authenticated.replay_key).lock().await;
-        if replay
-            .check_and_insert(
-                &authenticated.replay_key,
-                authenticated.client_nonce(),
-                authenticated.timestamp_unix(),
-                now_unix,
-            )
-            .is_err()
-        {
-            info!("unauthenticated tunnel-like request rejected");
-            return reject_tunnel_to_fallback(
-                respond,
-                &state,
-                peer,
-                &method,
-                &path,
-                &fallback_headers,
-                fallback_body,
-            )
-            .await;
-        }
-    }
     info!(
         user = %redact_id(&authenticated.credential.user.id),
         credential_state = authenticated.credential.state.as_str(),
@@ -1280,7 +1289,7 @@ where
     let now_unix = current_unix();
     let authenticated = match first_frame {
         Ok(Some(frame)) if frame.frame_type == FrameType::ClientHello => {
-            match authenticate_client_hello(&frame.payload, &state, now_unix, channel_binding) {
+            match authenticate_tunnel_frame(&frame, &state, now_unix, channel_binding).await {
                 Some(authenticated) => authenticated,
                 None => {
                     info!("unauthenticated websocket tunnel request rejected");
@@ -1295,22 +1304,6 @@ where
             return Ok(());
         }
     };
-    {
-        let mut replay = replay_shard(&state, &authenticated.replay_key).lock().await;
-        if replay
-            .check_and_insert(
-                &authenticated.replay_key,
-                authenticated.client_nonce(),
-                authenticated.timestamp_unix(),
-                now_unix,
-            )
-            .is_err()
-        {
-            info!("unauthenticated websocket tunnel request rejected");
-            reject_ws_auth_failure(&mut ws, &state, peer).await;
-            return Ok(());
-        }
-    }
     info!(
         user = %redact_id(&authenticated.credential.user.id),
         credential_state = authenticated.credential.state.as_str(),

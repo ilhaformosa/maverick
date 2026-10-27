@@ -35,6 +35,8 @@ impl std::error::Error for H2SendStalled {}
 pub enum ClientTunnel {
     H2(Box<H2ClientTunnel>),
     CloudflareWs(Box<WsClientTunnel>),
+    #[cfg(feature = "experimental-h3")]
+    H3(Box<crate::h3::H3ClientTunnel>),
 }
 
 pub struct H2ClientTunnel {
@@ -63,12 +65,16 @@ impl ClientTunnel {
         match self {
             Self::H2(tunnel) => tunnel.max_frame_size,
             Self::CloudflareWs(tunnel) => tunnel.max_frame_size,
+            #[cfg(feature = "experimental-h3")]
+            Self::H3(tunnel) => tunnel.max_frame_size,
         }
     }
 
     pub async fn send_frame(&mut self, frame: Frame, end_stream: bool) -> Result<()> {
         let max_frame_size = self.max_frame_size();
         match self {
+            #[cfg(feature = "experimental-h3")]
+            Self::H3(tunnel) => tunnel.send_frame(frame, end_stream).await,
             Self::H2(tunnel) => {
                 let result: Result<()> = async {
                     let frames =
@@ -160,6 +166,8 @@ impl ClientTunnel {
                 result
             }
             Self::CloudflareWs(tunnel) => read_next_ws_frame(tunnel).await,
+            #[cfg(feature = "experimental-h3")]
+            Self::H3(tunnel) => Ok(tunnel.channel.read(tunnel.max_frame_size).await?),
         }
     }
 
@@ -191,6 +199,8 @@ impl ClientTunnel {
                 result
             }
             Self::CloudflareWs(_) => Ok(()),
+            #[cfg(feature = "experimental-h3")]
+            Self::H3(tunnel) => tunnel.finish_response().await,
         }
     }
 }
@@ -358,14 +368,18 @@ enum ClientHandshakeMessage {
     V2(ClientHelloV2),
 }
 
-struct ClientHandshake {
+pub(crate) struct ClientHandshake {
     message: ClientHandshakeMessage,
     secret: SecretString,
     channel_binding: Option<TlsChannelBinding>,
+    require_binding: bool,
 }
 
 impl ClientHandshake {
-    fn new(config: &ClientConfig, channel_binding: Option<TlsChannelBinding>) -> Result<Self> {
+    pub(crate) fn new(
+        config: &ClientConfig,
+        channel_binding: Option<TlsChannelBinding>,
+    ) -> Result<Self> {
         let credential = select_client_credential_at_unix(
             &config.server,
             &config.auth.rotation,
@@ -393,6 +407,7 @@ impl ClientHandshake {
                 )?),
                 secret: credential.secret.clone(),
                 channel_binding,
+                require_binding: config.auth.channel_binding.require,
             });
         }
 
@@ -407,22 +422,25 @@ impl ClientHandshake {
             )?),
             secret: credential.secret.clone(),
             channel_binding,
+            require_binding: config.auth.channel_binding.require,
         })
     }
 
-    fn encode(&self) -> Result<Vec<u8>> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>> {
         match &self.message {
             ClientHandshakeMessage::V1(hello) => Ok(hello.encode()),
             ClientHandshakeMessage::V2(hello) => Ok(hello.encode()?),
         }
     }
 
-    fn verify_server_hello(&self, payload: &[u8]) -> Result<u32> {
+    pub(crate) fn verify_server_hello(&self, payload: &[u8]) -> Result<u32> {
         match &self.message {
             ClientHandshakeMessage::V1(hello) => {
                 let server_hello = ServerHello::decode(payload)?;
                 if server_hello.protocol_version_selected != PROTOCOL_VERSION
                     || server_hello.max_concurrent_flows == 0
+                    || (self.require_binding
+                        && server_hello.feature_flags_selected & FEATURE_TLS_CHANNEL_BINDING == 0)
                     || has_unrequested_feature_flags(
                         server_hello.feature_flags_selected,
                         hello.feature_flags,
@@ -446,6 +464,8 @@ impl ClientHandshake {
                     || server_hello.selected_epoch != hello.auth_epoch
                     || server_hello.max_concurrent_flows == 0
                     || server_hello.rotation_window_secs == 0
+                    || (self.require_binding
+                        && server_hello.feature_flags_selected & FEATURE_TLS_CHANNEL_BINDING == 0)
                     || has_unrequested_feature_flags(
                         server_hello.feature_flags_selected,
                         hello.feature_flags,
@@ -497,7 +517,7 @@ fn has_unrequested_feature_flags(selected: u64, requested: u64) -> bool {
     selected & !requested != 0
 }
 
-async fn prepare_outgoing_frames(
+pub(crate) async fn prepare_outgoing_frames(
     frame: Frame,
     batcher: &mut RuntimeBatcher,
     padding: &RuntimePadding,
@@ -695,7 +715,7 @@ async fn read_next_ws_frame(tunnel: &mut WsClientTunnel) -> Result<Option<Frame>
     }
 }
 
-fn validate_negotiated_max_frame_size(value: u32) -> Result<usize> {
+pub(crate) fn validate_negotiated_max_frame_size(value: u32) -> Result<usize> {
     let value = value as usize;
     if value < DEFAULT_MAX_FRAME_SIZE {
         bail!("server negotiated max_frame_size below the client minimum");
@@ -1322,6 +1342,43 @@ mod tests {
         )?;
 
         assert!(hello.verify_server_hello(&wrong_epoch.encode()?).is_err());
+        Ok(())
+    }
+    #[test]
+    fn required_binding_rejects_unbound_server_hello() -> Result<()> {
+        for v2 in [false, true] {
+            for required in [false, true] {
+                let secret = SecretString::generate();
+                let mut config = client_config(secret.clone());
+                config.auth.channel_binding.require = required;
+                config.auth.v2.enabled = v2;
+                if v2 {
+                    config.auth.rotation.active_epoch = Some("202607".into());
+                }
+                let hello = ClientHandshake::new(&config, Some(TlsChannelBinding::new([7; 32])))?;
+                let reply = match &hello.message {
+                    ClientHandshakeMessage::V1(client) => ServerHello::new(
+                        &secret,
+                        &client.client_nonce,
+                        DEFAULT_MAX_FRAME_SIZE as u32,
+                        1,
+                        0,
+                    )?
+                    .encode(),
+                    ClientHandshakeMessage::V2(client) => ServerHelloV2::new(
+                        &secret,
+                        client.auth_epoch,
+                        &client.client_nonce,
+                        DEFAULT_MAX_FRAME_SIZE as u32,
+                        1,
+                        0,
+                        120,
+                    )?
+                    .encode()?,
+                };
+                assert_eq!(hello.verify_server_hello(&reply).is_err(), required);
+            }
+        }
         Ok(())
     }
 }

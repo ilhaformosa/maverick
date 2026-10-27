@@ -52,16 +52,21 @@ authentication v1/v2 over loopback H3 through the official Boring integration.
 The shipping H2 dependency graph is unchanged. This proves a usable TLS API
 route and authentication binding, not a product carrier or browser equivalence.
 
-## Next — One Local Authenticated H3 Carrier
+## Completed — One Local Authenticated H3 TCP Carrier
 
-Connect one loopback H3 tunnel to the actual server authentication/admission
-path and existing frame relay. Reuse the verified upstream TLS route and keep
-the product default unchanged. Before changing shipping dependencies, verify
-one shared Boring 5 closure and H2 compatibility.
+The opt-in local executable connects SOCKS5 through real H3 to the server's
+credential/replay/admission checks and TCP egress. Authentication v1/v2 each
+carry 512 KiB in both directions and preserve client half-close. Negative tests
+cover credentials, binding, epochs, replay, concurrent-flow limits, and egress.
+The shipping H2 graph and default route remain unchanged.
 
-Resolve P1/P2/P3 against that concrete carrier design and the selected upstream
-candidate. Keep adoption blocked until its applicable qualification and fork
-budget pass; do not turn this into a separate policy or evidence PR sequence.
+## Next — Decide the Upstream Carrier's Adoption Gaps
+
+Use this working local TCP carrier to resolve the relevant P1/P2/P3 behavior
+and remaining platform/dependency requirements. Keep the next implementation
+small and driven by an observed gap. Before moving quiche into shipping
+packages, verify one shared Boring closure and H2 compatibility. H3 remains
+default-off; field use is still deferred.
 
 ## Later, Only After Observed Need
 

@@ -137,6 +137,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
+      CARGO_INCREMENTAL: "0"
       MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       MAVERICK_PILOT_TARGET: x86_64-unknown-linux-gnu
     steps:
@@ -149,17 +150,28 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - name: Identify Rust compiler for dependency cache
+        id: compiler
+        run: echo "key=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - name: Restore Rust dependencies and build tools
         id: rust-cache
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          # Save trusted main builds for subsequent PRs; still run every check.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: pilot-${{ hashFiles('scripts/build-pilot.sh') }}
-          # target also contains the existing pilot-artifact dependency build.
-          workspaces: |
-            . -> target
-            crates/maverick-tests/fixtures/quiche-tls-auth -> target
+          # Include pilot-artifact dependencies, but rebuild first-party outputs.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+            crates/maverick-tests/fixtures/quiche-tls-auth/target
+            !**/incremental/**
+            !**/target/**/maverick*
+            !**/target/**/libmaverick*
+          key: product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
+          restore-keys: |
+            product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
       - name: Check the supported no-default build
         run: >-
           cargo check --locked
@@ -889,6 +901,22 @@ jobs:
             dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.cdx.json
           if-no-files-found: error
           retention-days: 7
+      - name: Save successful main dependency cache
+        if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+            crates/maverick-tests/fixtures/quiche-tls-auth/target
+            !**/incremental/**
+            !**/target/**/maverick*
+            !**/target/**/libmaverick*
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Record cache result
         if: always()
         env:
@@ -902,6 +930,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 30
     env:
+      CARGO_INCREMENTAL: "0"
       MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       MAVERICK_PILOT_TARGET: aarch64-apple-darwin
       MAVERICK_SBOM_TARGET: aarch64-apple-darwin
@@ -914,17 +943,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
+      - name: Identify Rust compiler for dependency cache
+        id: compiler
+        run: echo "key=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - name: Restore Rust dependencies and build tools
         id: rust-cache
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          # Save trusted main builds for subsequent PRs; still run every check.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: pilot-${{ hashFiles('scripts/build-pilot.sh') }}
-          # target also contains the existing pilot-artifact dependency build.
-          workspaces: |
-            . -> target
-            crates/maverick-tests/fixtures/quiche-tls-auth -> target
+          # Include pilot-artifact dependencies, but rebuild first-party outputs.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+            crates/maverick-tests/fixtures/quiche-tls-auth/target
+            !**/incremental/**
+            !**/target/**/maverick*
+            !**/target/**/libmaverick*
+          key: product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
+          restore-keys: |
+            product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
       - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - run: cargo fetch --locked --target "$MAVERICK_SBOM_TARGET"
       - name: Verify upstream H3 authentication and local TCP proxy
@@ -1610,6 +1650,22 @@ jobs:
             dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.cdx.json
           if-no-files-found: error
           retention-days: 7
+      - name: Save successful main dependency cache
+        if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+            crates/maverick-tests/fixtures/quiche-tls-auth/target
+            !**/incremental/**
+            !**/target/**/maverick*
+            !**/target/**/libmaverick*
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Record cache result
         if: always()
         env:

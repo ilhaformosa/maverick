@@ -83,6 +83,13 @@ timeouts, GOAWAY, and disconnect cleanup. The normal
 CLI and Auto selector still use their existing transports; H3 is default-off,
 TCP-only, and not available for deployment or field use.
 
+The isolated tests also exercise the selected upstream library's push/control
+behavior and logging cap. Request-priority hints preserve valid flows; ignored
+push metadata never becomes proxy data, and actual pushed streams are rejected.
+This does not claim full upstream push-ID conformance. Debug and release tests
+check H3/QPACK logging with verbose host loggers; see `STATUS.md` for the exact
+P1/P2/P3 decisions and remaining integration work.
+
 Build the first owner-pilot folder and shareable archive:
 
 ```sh

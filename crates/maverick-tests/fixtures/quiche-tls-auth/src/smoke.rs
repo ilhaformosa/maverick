@@ -96,16 +96,28 @@ pub async fn run(v2: bool) -> Result<usize> {
 }
 
 pub async fn run_with_mode(v2: bool, mode: TransferMode) -> Result<usize> {
-    tokio::time::timeout(Duration::from_secs(15), transfer(v2, mode))
-        .await
-        .context("local H3 proxy smoke timed out")?
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        transfer(v2, mode, proxy::PeerInput::None),
+    )
+    .await
+    .context("local H3 proxy smoke timed out")?
 }
 
-async fn transfer(v2: bool, mode: TransferMode) -> Result<usize> {
+pub async fn run_with_peer_input(v2: bool, peer: proxy::PeerInput) -> Result<usize> {
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        transfer(v2, TransferMode::ClientFirst, peer),
+    )
+    .await
+    .context("local H3 peer-input smoke timed out")?
+}
+
+async fn transfer(v2: bool, mode: TransferMode, peer: proxy::PeerInput) -> Result<usize> {
     let connection = if matches!(mode, TransferMode::GoAway) {
         proxy::connect_with_server_goaway(PATH, MAX_FRAME, 4).await?
     } else {
-        proxy::connect(PATH, MAX_FRAME).await?
+        proxy::connect_with_peer_input(PATH, MAX_FRAME, peer).await?
     };
     let (mut client, mut server) = configs(&connection, v2)?;
     if matches!(mode, TransferMode::SlowDownload) {

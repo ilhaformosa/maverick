@@ -42,3 +42,12 @@ required-features = ["proxy"]
 [[test]]
 name = "tls_auth"
 path = "tests/tls_auth.rs"
+
+[[test]]
+name = "upstream_behavior"
+path = "../../tests/quiche_candidate.rs"
+
+[[test]]
+name = "proxy_logging"
+path = "tests/proxy_logging.rs"
+required-features = ["proxy"]

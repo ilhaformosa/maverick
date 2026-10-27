@@ -62,43 +62,51 @@ impl Drop for Transport {
     }
 }
 
-pub async fn connect(path: &str, max_frame_size: usize) -> Result<LocalConnection> {
-    connect_inner(path, max_frame_size, None).await
+/// Synthetic peer behavior for the isolated local test package.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum PeerInput {
+    #[default]
+    None,
+    ServerGoAway(u64),
+    ClientPriority,
+    ClientPushControls,
+    ServerPushPromise,
 }
 
-/// Sends a real server GOAWAY before processing the local request.
+pub async fn connect(path: &str, max_frame_size: usize) -> Result<LocalConnection> {
+    connect_with_peer_input(path, max_frame_size, PeerInput::None).await
+}
+
 pub async fn connect_with_server_goaway(
     path: &str,
     max_frame_size: usize,
     id: u64,
 ) -> Result<LocalConnection> {
-    connect_inner(path, max_frame_size, Some(id)).await
+    connect_with_peer_input(path, max_frame_size, PeerInput::ServerGoAway(id)).await
 }
 
-async fn connect_inner(
+pub async fn connect_with_peer_input(
     path: &str,
     max_frame_size: usize,
-    goaway: Option<u64>,
+    peer_input: PeerInput,
 ) -> Result<LocalConnection> {
-    let (mut client, mut server, fixture, client_binding, server_binding) =
-        tokio::task::spawn_blocking(|| {
-            let mut pair = tls::pair(tls::Peer::Valid)?;
-            pair.handshake()?;
-            let client_binding = tls::binding(&mut pair.client.conn)?;
-            let server_binding = tls::binding(&mut pair.server.conn)?;
-            let (client, server, fixture) = pair.into_parts();
-            Ok::<_, anyhow::Error>((client, server, fixture, client_binding, server_binding))
-        })
-        .await??;
+    let (mut pair, client_binding, server_binding) = tokio::task::spawn_blocking(|| {
+        let mut pair = tls::pair(tls::Peer::Valid)?;
+        pair.handshake()?;
+        let client_binding = tls::binding(&mut pair.client.conn)?;
+        let server_binding = tls::binding(&mut pair.server.conn)?;
+        Ok::<_, anyhow::Error>((pair, client_binding, server_binding))
+    })
+    .await??;
     let mut config = h3::Config::new()?;
     config.set_max_field_section_size(4096);
-    let mut client_h3 = h3::Connection::with_transport(&mut client.conn, &config)?;
-    let mut server_h3 = h3::Connection::with_transport(&mut server.conn, &config)?;
-    if let Some(id) = goaway {
-        server_h3.send_goaway(&mut server.conn, id)?;
+    let mut client_h3 = h3::Connection::with_transport(&mut pair.client.conn, &config)?;
+    let mut server_h3 = h3::Connection::with_transport(&mut pair.server.conn, &config)?;
+    if let PeerInput::ServerGoAway(id) = peer_input {
+        server_h3.send_goaway(&mut pair.server.conn, id)?;
     }
     let stream = client_h3.send_request(
-        &mut client.conn,
+        &mut pair.client.conn,
         &[
             Header::new(b":method", b"POST"),
             Header::new(b":scheme", b"https"),
@@ -109,6 +117,41 @@ async fn connect_inner(
         false,
     )?;
     ensure!(stream == 0, "unexpected first H3 stream");
+    match peer_input {
+        PeerInput::ClientPriority => client_h3.send_priority_update_for_request(
+            &mut pair.client.conn,
+            0,
+            &h3::Priority::new(3, true),
+        )?,
+        PeerInput::ClientPushControls => {
+            // MAX_PUSH_ID(1), CANCEL_PUSH(1), push-form PRIORITY_UPDATE(3, u=3).
+            let frames = [
+                0x0d, 1, 1, 0x03, 1, 1, 0x80, 0x0f, 0x07, 1, 4, 3, b'u', b'=', b'3',
+            ];
+            ensure!(
+                pair.client.conn.stream_send(2, &frames, false)? == frames.len(),
+                "partial synthetic control write"
+            );
+        }
+        PeerInput::ServerPushPromise => {
+            // QUIC must first see request stream 0 before the server can write it.
+            pair = tokio::task::spawn_blocking(move || {
+                while !pair.server.conn.stream_readable(0) {
+                    pair.advance()?;
+                }
+                // PUSH_PROMISE(1), QPACK prefix and static :method GET.
+                let frame = [5, 4, 1, 0, 0, 0xd1];
+                ensure!(
+                    pair.server.conn.stream_send(0, &frame, false)? == frame.len(),
+                    "partial synthetic promise write"
+                );
+                Ok::<_, anyhow::Error>(pair)
+            })
+            .await??;
+        }
+        _ => {}
+    }
+    let (client, server, fixture) = pair.into_parts();
     let client_addr = client.address;
     let server_addr = server.address;
     let cert_path = fixture.path().join("cert.pem");
@@ -236,6 +279,12 @@ impl Driver {
                             );
                         }
                         headers = true;
+                    }
+                    h3::Event::PriorityUpdate => {
+                        ensure!(self.server, "unexpected server priority update");
+                        // There is only one request to schedule. Consume the hint
+                        // without treating it as a Maverick frame or authorization.
+                        self.h3.take_last_priority_update(stream)?;
                     }
                     h3::Event::Data => body_readable = true,
                     h3::Event::Finished => end_in = true,

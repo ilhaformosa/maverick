@@ -20,7 +20,7 @@ playbook preserve detail without becoming parallel status ledgers.
 | H3/UDP product | Default-off; local authenticated H3/TCP proxy experiment only; no CLI/Auto H3 path or native Datagram |
 | Future H3 direction | quiche only, subject to later qualification; Quinn product code is retired |
 | Protocol/config/profile schema | Version `1`; existing authentication and frame wire formats unchanged |
-| Current milestone | Local H3 TCP lifecycle verified: independent directions, half-close, activity timeout, GOAWAY, and disconnect cleanup; field validation deferred |
+| Current milestone | Selected upstream push/logging decisions verified; request-priority interoperability fixed; explicit client/server integration remains next |
 | Stable readiness | **RED / owner-deferred**; exact-RC field use and owner rollback remain incomplete |
 
 Progress means a real user-visible result. Tests, hashes, policy documents, and
@@ -175,17 +175,29 @@ or supply-chain comparison exists. A failed qualification leaves H3 disabled.
 
 ### B-002 — old quiche patch dispositions
 
-**PARTIAL / RED.** Historical source reconstruction, the byte-only verifier,
-the candidate dependency boundary, Linux/macOS candidate tests, logging tests,
-and one narrow peer-push patch candidate were completed. They are candidate
-evidence only.
+The historical 0.29.3 patch experiments remain reference tests. Their source
+reconstruction and test results are not a requirement to ship a private fork.
+The selected upstream 0.30.0 TCP carrier now has these concrete dispositions:
 
-P1, P2, and P3 remain `UNRESOLVED`. Missing work includes selected-candidate
-dispositions, replay, upstream route or a still-valid exception where
-required, exact product-shaped qualification, shared-Boring security review,
-supported-target product closure/SBOM/final artifact evidence, security-update
-response proof, and independent final-delta review. No private quiche patch or
-runtime may enter the product until the applicable fork budget passes.
+| Item | Decision for the current single-request TCP carrier |
+|---|---|
+| P1: reject every peer-push control frame | Do not carry the private patch. No push is advertised or generated, pushed streams are rejected by upstream, and ignored control/promise metadata never becomes a Maverick application frame or creates a target connection. Keep these boundaries under test. |
+| P2: caller handling outside the old push gate | Handle GOAWAY according to the current request ID; consume ordinary request-priority hints without treating them as authentication or aborting the flow. Other application streams and native Datagram remain unsupported. |
+| P3: per-connection H3 trace suppression | Do not carry the private patch. Use the existing process-wide compile-time Debug cap for `log`, keep qlog disabled, and verify H3/QPACK silence with verbose host loggers in debug and release builds. |
+
+This is an application-boundary decision, not a claim of full HTTP/3
+conformance. quiche 0.30.0 still ignores some push control frames and
+PUSH_PROMISE instead of enforcing all [RFC 9114 push-ID checks](https://www.rfc-editor.org/rfc/rfc9114.html#section-7.2.5).
+The tests preserve that known upstream behavior explicitly. The current
+carrier has no push consumer, promise-triggered requests, or pushed content
+cache; adding any of those changes this decision. No new parser or private
+fork was introduced solely to reject otherwise inert metadata.
+
+The logging cap applies to the whole `log` facade, not one connection. It
+retains Debug diagnostics but removes Trace formatting; ordinary runtime log
+filters cannot raise that compiled cap. This choice must be preserved or
+reviewed when integrating the driver into another executable/SDK. It is not
+an exhaustive audit of every dependency or logging mechanism.
 
 ### Bounded local quiche experiment
 
@@ -235,11 +247,12 @@ The isolated package now has an explicit `proxy` feature and an executable
 the actual Maverick server credential lookup, authentication v1/v2, replay
 cache, connection/admission limits, per-user flow policy, and target connector.
 The client reuses its normal credential selection, Hello validation, OpenTcp,
-and SOCKS parsing. Its opt-in H3 relay drives upload and download independently. The server's optional H3 session handles TCP frames with the
+and SOCKS parsing. Its opt-in H3 relay drives upload and download independently.
+The server's optional H3 session handles TCP frames with the
 existing egress policy, rate limiter, padding, and cover-traffic settings.
 
 One H3 request carries one TCP flow. Bounded frame channels and partial H3
-writes permit transfers larger than the 8 KiB stream window. Seventeen proxy
+writes permit transfers larger than the 8 KiB stream window. Twenty-one proxy
 tests cover 512 KiB each way for auth v1/v2, both half-close orders, simultaneous
 upload/download, credential and policy rejection, replay, flow limits, and
 cleanup after the transport disconnects. A later connection reuses the freed
@@ -259,7 +272,9 @@ The driver follows [RFC 9114 section 5.2](https://www.rfc-editor.org/rfc/rfc9114
 for its single request: a server GOAWAY above stream 0 lets the accepted flow
 finish; GOAWAY 0 rejects it. It neither opens another request on that connection
 nor retries the application flow. This addresses the observed GOAWAY part of
-the caller-side control handling, not all historical P1/P2/P3 requirements.
+the caller-side control handling. Ordinary request-priority hints are now
+consumed as metadata: a regression test first reproduced the prior connection
+abort and now completes authenticated forwarding.
 
 Integration also exposed a client negotiation mismatch: `channel_binding.require`
 was not enforced on the received ServerHello. The shared client handshake now
@@ -272,17 +287,27 @@ Boring integration and one native Boring dependency. The shipping dependency
 versions, CLI transport selector, config-v1 H3 rejection, and default H2 route
 remain unchanged. Both native CI jobs run the proxy tests and smoke.
 
-Local verification covers the 38 isolated TLS/proxy tests, four opt-in client
-relay tests, executable smoke,
-workspace Clippy with and without the opt-in endpoints, `local-harness`
+Local verification includes 47 isolated tests: 21 TCP proxy tests, 21 TLS/auth
+checks, four shared upstream behavior tests, and a real-proxy logging test.
+The same shared test source runs against the historical 0.29.3 candidate
+and selected 0.30.0; the logging assertions now reject any H3/QPACK log record.
+Verbose-logger checks also run in release mode. Synthetic control inputs are
+confined to the loopback fixture; real proxy logging tests inspect metadata
+only and never format authentication or traffic arguments.
+
+The existing checks also cover four opt-in client relay tests, executable
+smoke, workspace Clippy with and without the opt-in endpoints, `local-harness`
 (including the H2 product smoke), the 62-test rustls relay suite, and dependency
 advisory/license/source checks. Three pre-existing workspace tests remain
 explicitly ignored; no new test is ignored.
 
 **Product adoption remains NO-GO.** This is a working local TCP proxy slice,
 not a deployable H3 listener, multiplexed connection pool, UDP carrier, Auto
-route, or public release. B-001/B-002 and P1/P2/P3 still need dispositions for
-the concrete upstream carrier before adoption. Field work remains deferred.
+route, or public release. The P1/P2/P3 decisions above unblock the next local
+integration slice; they do not complete B-001 or qualify shipping artifacts.
+Explicit client/server configuration, the shipping Boring dependency graph,
+and platform/release verification for that integrated path remain unfinished.
+Field work remains deferred.
 
 ## Execution Model
 

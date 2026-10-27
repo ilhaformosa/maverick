@@ -34,7 +34,7 @@ On the direct path, Maverick is intended to provide:
 - authenticated tunnel access using high-entropy credentials;
 - replay resistance for captured authentication messages;
 - browser-like client TLS/H2 behavior on supported default builds;
-- fallback content instead of Maverick-specific unauthenticated errors;
+- on H2, fallback content instead of Maverick-specific unauthenticated errors;
 - bounded parsers, flows, timeouts, and pre-auth work;
 - redaction of credentials and payloads from ordinary logs;
 - server egress defaults that reject common private and local address ranges.
@@ -45,6 +45,13 @@ one encrypted connection from the client to Cloudflare and another from
 Cloudflare to the origin. It is not end-to-end encrypted against Cloudflare:
 the provider can observe Maverick authentication and tunnel payload before
 forwarding it.
+
+The explicit quiche H3/TCP source path uses the same credential and target
+policy, verified certificates and TLS exporter binding. It is local-validated
+only, default-off and not part of published RC.2. Unknown H3 requests and failed
+authentication close the connection; H2 fallback-content behavior and browser
+fingerprint observations do not transfer to H3. It does not support provider
+fronting, native Datagram or automatic carrier fallback.
 
 ## Explicit Non-Claims
 

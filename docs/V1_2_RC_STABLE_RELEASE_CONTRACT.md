@@ -1,6 +1,6 @@
 # Maverick v1.2 RC/Stable Release Contract
 
-Status: owner-approved policy; implementation and release gates remain closed
+Status: owner-approved release policy; current completion state is in STATUS.md
 
 Decision date: 2026-08-12
 
@@ -63,23 +63,12 @@ RLC-001 is merged at `main` commit
 Beta and RC while continuing to reject Stable. This completed only the bounded
 tag-verifier slice and did not authorize an RC tag.
 
-Authorized **RLC-001b** is the next smallest local tooling slice. It must make
-the artifact verifier accept only canonical positive Beta and RC versions
-while Stable stays a tested rejection. Its fixtures must prove the archive
-filename, source and version metadata, inner and outer checksums, architecture,
-and native binary version all agree; RC must pass static inspection and native
-verification on the current matching host. Static tests must also lock the
-unchanged workflow's sole `gh release create` to prerelease/non-Latest and prove
-that final tag, exact six-file, checksum, digest, and release-note rechecks occur
-before creation. RLC-001b must not change the workflow or create a release.
-
-RLC-001b still does not make the complete RC publication pipeline ready. No
-exact-RC package version, release note, archive, SBOM, tag, or publication input
-exists. A later separately queued exact-RC candidate-preparation slice must
-close those RED gates before any RC tag is created. Stable classification stays
-fail-closed until one exact RC completes every gate in this contract and Codex
-records a go/no-go decision for **RLC-002**, which implements and tests the
-Stable row. No tooling slice by itself authorizes a tag.
+The historical RLC-001/RLC-001b tooling and RC preparation steps have been
+completed. They are not new prerequisites or a separate active work queue.
+RC.2 is published as an immutable prerelease; `STATUS.md` links its exact source
+and evidence. Stable remains deferred until the current candidate satisfies the
+applicable requirements below. A completed historical gate does not qualify a
+changed candidate.
 
 ## Exact-candidate rule
 
@@ -190,21 +179,12 @@ Passing this contract still does not justify claims of maturity, production
 readiness, anonymity, broad censorship resistance, provider independence, or
 exact browser equivalence.
 
-## Execution order
+## Applying this contract
 
-1. Preserve this merged policy-only contract as the release-policy boundary.
-2. Preserve merged RLC-001 as current truth. Complete independent exact-hash
-   review, exact-head public checks, privacy review, and merge for authorized
-   RLC-001b. Its artifact verifier accepts Beta and RC while deliberately
-   continuing to reject Stable; exact-RC candidate inputs remain RED.
-3. Prepare and independently review one exact Direct H2 RC candidate.
-4. After a recorded exact-candidate publication go/no-go, publish that RC as
-   prerelease/non-Latest.
-5. After recording each task's exact boundaries and go/no-go, complete
-   exact-RC field, security, compatibility, supply-chain, artifact, and Beta.4
-   rollback gates.
-6. Stop and cut a replacement RC if any gate-changing fix is needed.
-7. Only after every gate is complete on one exact RC, record the RLC-002 and
-   later Stable-publication go/no-go decisions. RLC-002 must implement and test
-   non-prerelease/Latest classification, review the promotion-only diff, and
-   reverify the exact files before publication.
+Use `STATUS.md` for current release state and `ROADMAP.md` for execution order.
+Do not repeat completed RLC tooling tasks or create policy-only prerequisite PRs.
+For a future release, select one exact candidate and apply the compatibility,
+security, supply-chain, artifact, rollback and publication rules above. A
+candidate-changing fix requires a replacement RC. Stable/Latest still requires
+its explicit implementation, exact-file verification, completed field evidence
+and publication decision; publishing RC.2 does not satisfy those conditions.

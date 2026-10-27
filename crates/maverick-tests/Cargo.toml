@@ -22,6 +22,7 @@ required-features = ["quiche-candidate"]
 
 [features]
 default = ["browser-tls"]
+experimental-h3 = ["maverick-client/experimental-h3", "maverick-server/experimental-h3", "browser-tls"]
 browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
 ech = ["maverick-client/ech", "maverick-server/ech"]
 quiche-candidate = ["dep:boring", "dep:log", "dep:quiche"]
@@ -35,7 +36,7 @@ tun-phase2 = ["tun-runtime", "dep:clap", "dep:libc"]
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
-boring = { version = "=5.1.0", optional = true }
+boring = { version = "=5.2.0", optional = true }
 bytes.workspace = true
 clap = { workspace = true, optional = true }
 etherparse = { version = "=0.20.3", optional = true }

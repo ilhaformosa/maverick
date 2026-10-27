@@ -522,7 +522,7 @@ async fn h2_request(
     let started = Instant::now();
     let mut h2 = match transport::connect(config).await? {
         transport::TunnelRequestSender::H2(h2) => h2,
-        transport::TunnelRequestSender::CloudflareWs(_) => bail!("expected H2 transport"),
+        _ => bail!("expected H2 transport"),
     };
     let mut builder = Request::builder().method(method).uri(uri);
     for (name, value) in &headers {

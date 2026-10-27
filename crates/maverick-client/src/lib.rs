@@ -9,6 +9,8 @@ pub mod dns;
 pub mod h2_transport;
 #[cfg(feature = "experimental-h3")]
 pub mod h3;
+#[cfg(feature = "experimental-h3")]
+mod h3_transport;
 pub mod http_connect;
 pub mod session;
 pub mod socks5;
@@ -263,6 +265,11 @@ impl ClientHandle {
 
 pub async fn start_client(config: ClientConfig) -> Result<ClientHandle> {
     config.validate().map_err(anyhow::Error::from)?;
+    #[cfg(not(feature = "experimental-h3"))]
+    anyhow::ensure!(
+        !config.advanced.quiche_h3,
+        "advanced.quiche_h3 requires the experimental-h3 build feature"
+    );
     #[cfg(not(feature = "tun-runtime"))]
     anyhow::ensure!(
         !config.advanced.experimental_tun,

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [features]
 default = ["browser-tls"]
+experimental-h3 = ["maverick-client/experimental-h3", "maverick-server/experimental-h3", "browser-tls"]
 browser-tls = ["maverick-client/browser-tls", "maverick-core/browser-tls"]
 ech = ["maverick-client/ech", "maverick-server/ech"]
 

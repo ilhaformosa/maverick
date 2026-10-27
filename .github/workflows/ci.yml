@@ -200,6 +200,13 @@ jobs:
         run: |
           manifest=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
           cargo test --locked -p maverick-client --features experimental-h3 h3::tests
+          cargo test --locked -p maverick-core --no-default-features quiche_h3
+          cargo test --locked -p maverick-cli --features experimental-h3 quiche_h3
+          cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product
+          cargo clippy --locked -p maverick-cli --features experimental-h3 --all-targets -- -D warnings
+          product_graph="$(cargo tree --locked -p maverick-cli --features experimental-h3 --edges normal,build --prefix none)"
+          [[ "$(grep -Ecx 'boring-sys v5\.3\.0' <<<"$product_graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'quiche v0\.30\.0' <<<"$product_graph")" -eq 1 ]]
           cargo fmt --manifest-path "$manifest" -- --check
           cargo clippy --locked --manifest-path "$manifest" --features proxy --all-targets -- -D warnings
           cargo test --locked --manifest-path "$manifest" --features proxy
@@ -227,8 +234,8 @@ jobs:
             --no-default-features --features browser-tls,quiche-candidate \
             --edges normal,build --prefix none)"
           [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$graph")" -eq 1 ]]
-          [[ "$(grep -Ecx 'boring v5\.1\.0' <<<"$graph")" -eq 1 ]]
-          [[ "$(grep -Ecx 'boring-sys v5\.1\.0' <<<"$graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'boring v5\.2\.0' <<<"$graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'boring-sys v5\.3\.0' <<<"$graph")" -eq 1 ]]
           ! grep -Eq '^boring(-sys)? v4\.' <<<"$graph"
           metadata="$(cargo metadata --locked --format-version 1 \
             --no-default-features \
@@ -248,7 +255,7 @@ jobs:
               select(contains("trace"))] | length == 0)
           ' <<<"$metadata" >/dev/null
           quiche_manifest="$(jq -er '
-            [.packages[] | select(.name == "quiche")] |
+            [.packages[] | select(.name == "quiche" and .version == "0.29.3")] |
             if length == 1 and .[0].version == "0.29.3" and
               .[0].source == "registry+https://github.com/rust-lang/crates.io-index" and
               .[0].id == "registry+https://github.com/rust-lang/crates.io-index#quiche@0.29.3"
@@ -697,10 +704,10 @@ jobs:
             .target_directory == $target and
             ([.packages[] | select(.source == null) | .name] | sort) ==
               ["maverick-quiche-p1-candidate", "quiche"] and
-            ([.packages[] | select(.name == "boring" and .version == "5.1.0")] |
+            ([.packages[] | select(.name == "boring" and .version == "5.2.0")] |
               length) == 1 and
             ([.packages[] | select(.name == "boring-sys" and
-              .version == "5.1.0" and .links == "boringssl")] | length) == 1 and
+              .version == "5.3.0" and .links == "boringssl")] | length) == 1 and
             ([.packages[] | select(.links == "boringssl")] | length) == 1 and
             ([.packages[] | select(.name == "qlog" or
               (.name == "boring" and (.version | startswith("4."))) or
@@ -713,7 +720,7 @@ jobs:
               .dependencies[]] | length) == 2 and
             ([.packages[] | select(.name == "maverick-quiche-p1-candidate") |
               .dependencies[] | select(.name == "boring" and
-                .req == "=5.1.0" and .source ==
+                .req == "=5.2.0" and .source ==
                   "registry+https://github.com/rust-lang/crates.io-index" and
                 .kind == null and .optional == false and .features == [])] |
               length) == 1 and
@@ -921,8 +928,12 @@ jobs:
         if: always()
         env:
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          CACHE_MATCHED: ${{ steps.rust-cache.outputs.cache-matched-key }}
         run: |
-          printf 'Rust dependency cache exact hit: `%s`\n' "$CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
+          restored=no
+          [[ -z "$CACHE_MATCHED" ]] || restored=yes
+          printf 'Rust dependency cache restored: `%s`; exact hit: `%s`\n' \
+            "$restored" "$CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
 
   macos-sbom-gate:
     needs: scope
@@ -971,6 +982,13 @@ jobs:
         run: |
           manifest=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
           cargo test --locked -p maverick-client --features experimental-h3 h3::tests
+          cargo test --locked -p maverick-core --no-default-features quiche_h3
+          cargo test --locked -p maverick-cli --features experimental-h3 quiche_h3
+          cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product
+          cargo clippy --locked -p maverick-cli --features experimental-h3 --all-targets -- -D warnings
+          product_graph="$(cargo tree --locked -p maverick-cli --features experimental-h3 --edges normal,build --prefix none)"
+          [[ "$(grep -Ecx 'boring-sys v5\.3\.0' <<<"$product_graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'quiche v0\.30\.0' <<<"$product_graph")" -eq 1 ]]
           cargo fmt --manifest-path "$manifest" -- --check
           cargo clippy --locked --manifest-path "$manifest" --features proxy --all-targets -- -D warnings
           cargo test --locked --manifest-path "$manifest" --features proxy
@@ -999,8 +1017,8 @@ jobs:
             --target "$MAVERICK_SBOM_TARGET" \
             --edges normal,build --prefix none)"
           [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$graph")" -eq 1 ]]
-          [[ "$(grep -Ecx 'boring v5\.1\.0' <<<"$graph")" -eq 1 ]]
-          [[ "$(grep -Ecx 'boring-sys v5\.1\.0' <<<"$graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'boring v5\.2\.0' <<<"$graph")" -eq 1 ]]
+          [[ "$(grep -Ecx 'boring-sys v5\.3\.0' <<<"$graph")" -eq 1 ]]
           ! grep -Eq '^boring(-sys)? v4\.' <<<"$graph"
           metadata="$(cargo metadata --locked --format-version 1 \
             --no-default-features \
@@ -1020,7 +1038,7 @@ jobs:
               select(contains("trace"))] | length == 0)
           ' <<<"$metadata" >/dev/null
           quiche_manifest="$(jq -er '
-            [.packages[] | select(.name == "quiche")] |
+            [.packages[] | select(.name == "quiche" and .version == "0.29.3")] |
             if length == 1 and .[0].version == "0.29.3" and
               .[0].source == "registry+https://github.com/rust-lang/crates.io-index" and
               .[0].id == "registry+https://github.com/rust-lang/crates.io-index#quiche@0.29.3"
@@ -1472,10 +1490,10 @@ jobs:
             .target_directory == $target and
             ([.packages[] | select(.source == null) | .name] | sort) ==
               ["maverick-quiche-p1-candidate", "quiche"] and
-            ([.packages[] | select(.name == "boring" and .version == "5.1.0")] |
+            ([.packages[] | select(.name == "boring" and .version == "5.2.0")] |
               length) == 1 and
             ([.packages[] | select(.name == "boring-sys" and
-              .version == "5.1.0" and .links == "boringssl")] | length) == 1 and
+              .version == "5.3.0" and .links == "boringssl")] | length) == 1 and
             ([.packages[] | select(.links == "boringssl")] | length) == 1 and
             ([.packages[] | select(.name == "qlog" or
               (.name == "boring" and (.version | startswith("4."))) or
@@ -1488,7 +1506,7 @@ jobs:
               .dependencies[]] | length) == 2 and
             ([.packages[] | select(.name == "maverick-quiche-p1-candidate") |
               .dependencies[] | select(.name == "boring" and
-                .req == "=5.1.0" and .source ==
+                .req == "=5.2.0" and .source ==
                   "registry+https://github.com/rust-lang/crates.io-index" and
                 .kind == null and .optional == false and .features == [])] |
               length) == 1 and
@@ -1670,8 +1688,12 @@ jobs:
         if: always()
         env:
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          CACHE_MATCHED: ${{ steps.rust-cache.outputs.cache-matched-key }}
         run: |
-          printf 'Rust dependency cache exact hit: `%s`\n' "$CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
+          restored=no
+          [[ -z "$CACHE_MATCHED" ]] || restored=yes
+          printf 'Rust dependency cache restored: `%s`; exact hit: `%s`\n' \
+            "$restored" "$CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
 
   public-pr-gate:
     if: always()

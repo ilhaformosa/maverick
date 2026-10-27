@@ -38,6 +38,23 @@ For the complete local code gate:
 ./scripts/local-harness.sh
 ```
 
+To build the ordinary CLI with H3 support and check separate local client/server
+processes:
+
+```sh
+cargo build --locked -p maverick-cli --features experimental-h3
+cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product
+```
+
+Set `advanced.quiche_h3: true` in both existing v1 configs, then use the ordinary
+`server -c` and `client -c` commands. Omission keeps H2. The new path reuses
+certificate/hostname/pin verification and authentication v1/v2. It rejects
+fronting, DNS/TUN and UDP associations; the retired `experimental_h3` flag stays
+rejected. See [configuration](CONFIG.md) for the exact scope. This is a Beta
+source capability, not a change to the immutable published RC.2 files.
+
+The following developer laboratories retain focused reference checks.
+
 Run the opt-in local quiche/H3 experiment:
 
 ```sh
@@ -61,10 +78,10 @@ cargo test --locked \
   --manifest-path crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
 ```
 
-It reuses the loopback driver, client TLS settings, and core authentication
-code. Its own lockfile keeps evaluation dependencies separate from the
-shipping H2 client. Current results and remaining product work are in
-`STATUS.md`.
+It reuses the client TLS settings, core authentication, and the shared H3
+driver. Its separate lockfile retains the isolated test setup; the current
+source uses one aligned Boring TLS version across H2 and H3. Current product
+and release state are recorded in `STATUS.md`.
 
 Run the local SOCKS-to-H3-to-TCP proxy smoke with actual server authentication:
 
@@ -79,9 +96,8 @@ This opt-in executable creates local SOCKS, QUIC, and TCP-origin sockets on
 512 KiB in both directions with client-first and server-first half-close,
 and simultaneous upload/download. Add `--features proxy` to the test command
 above to also check credentials, replay, flow limits, egress, active-download
-timeouts, GOAWAY, and disconnect cleanup. The normal
-CLI and Auto selector still use their existing transports; H3 is default-off,
-TCP-only, and not available for deployment or field use.
+timeouts, GOAWAY, and disconnect cleanup. H3 remains default-off and TCP-only.
+The ordinary CLI can now opt into this same driver; field validation is deferred.
 
 The isolated tests also exercise the selected upstream library's push/control
 behavior and logging cap. Request-priority hints preserve valid flows; ignored

@@ -1893,6 +1893,10 @@ const PROFILE_URI_MAX_BYTES: usize = 16 * 1024;
 fn export_config_uri(path: &Path, include_secret: bool, qr: bool) -> Result<()> {
     validate_qr_export(include_secret, qr)?;
     let cfg = read_client_config(&path.to_path_buf())?;
+    anyhow::ensure!(
+        !cfg.advanced.quiche_h3,
+        "profile URI v1 cannot represent advanced.quiche_h3; use the YAML configuration"
+    );
     let profile = ProfileUri {
         server: cfg.server.address,
         server_name: cfg.server.server_name,
@@ -4382,6 +4386,33 @@ fallback:
         assert!(!err.contains(secret.expose_secret()));
     }
 
+    #[cfg(all(
+        feature = "experimental-h3",
+        any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )
+    ))]
+    #[test]
+    fn export_config_uri_rejects_quiche_h3_instead_of_losing_transport_selection() {
+        let secret = SecretString::generate();
+        let input = format!(
+            "version: 1\nlocal:\n  socks5:\n    listen: '127.0.0.1:0'\nserver:\n  address: 'example.invalid:443'\n  server_name: example.invalid\n  tunnel_path: /assets/upload\n  credential_id: u_example\n  secret: '{}'\nadvanced:\n  quiche_h3: true\n  stealth:\n    tls_fingerprint: browser_mimic\n",
+            secret.expose_secret()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.yaml");
+        write_secret_config_file(&path, input).unwrap();
+        for (include_secret, qr) in [(false, false), (true, false), (false, true)] {
+            assert_eq!(
+                export_config_uri(&path, include_secret, qr)
+                    .unwrap_err()
+                    .to_string(),
+                "profile URI v1 cannot represent advanced.quiche_h3; use the YAML configuration"
+            );
+        }
+    }
+
     #[test]
     fn parses_minimal_profile_uri() {
         let profile = ProfileUri::parse(
@@ -4832,6 +4863,7 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
         assert_eq!(cfg.server.credential_id, "u_example");
         assert_eq!(cfg.server.secret.expose_secret(), secret.expose_secret());
         assert!(!cfg.advanced.experimental_h3);
+        assert!(!cfg.advanced.quiche_h3);
         assert!(cfg.advanced.experimental_tun);
     }
 

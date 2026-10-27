@@ -1,15 +1,12 @@
 //! One locally controlled QUIC connection per TCP tunnel. No public listener
 //! or automatic transport selection is installed by this experiment.
 
-use anyhow::{bail, ensure, Result};
-use bytes::{Buf, Bytes, BytesMut};
+use anyhow::{ensure, Result};
 use maverick_core::auth::TlsChannelBinding;
-use maverick_core::frame::{Frame, FRAME_HEADER_LEN};
-use maverick_core::h3_channel::{self, FrameChannel, TransportChannel};
-use quiche::h3::{self, Header, NameValue};
+use maverick_core::h3_channel::FrameChannel;
+use quiche::h3::{self, Header};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::UdpSocket;
 use tokio::sync::oneshot;
@@ -184,211 +181,13 @@ fn endpoint(
     path: &str,
     max_frame_size: usize,
 ) -> Result<(FrameChannel, RunningEndpoint)> {
-    let socket = UdpSocket::from_std(endpoint.socket)?;
-    let (channel, transport) = h3_channel::channel();
-    let (stop, stopped) = oneshot::channel();
-    let driver = Driver {
+    maverick_quiche::spawn_established(maverick_quiche::EstablishedEndpoint {
         conn: endpoint.conn,
-        socket,
-        local: endpoint.address,
-        peer: endpoint.peer,
+        socket: UdpSocket::from_std(endpoint.socket)?,
         h3,
-        app: transport,
+        peer: endpoint.peer,
         server,
         path: path.to_owned(),
         max_frame_size,
-    };
-    Ok((channel, (stop, tokio::spawn(driver.run(stopped)))))
-}
-
-struct Driver {
-    conn: quiche::Connection,
-    socket: UdpSocket,
-    local: SocketAddr,
-    peer: SocketAddr,
-    h3: h3::Connection,
-    app: TransportChannel,
-    server: bool,
-    path: String,
-    max_frame_size: usize,
-}
-
-impl Driver {
-    async fn flush(&mut self) -> Result<()> {
-        let mut packet = [0; 1350];
-        loop {
-            match self.conn.send(&mut packet) {
-                Ok((len, info)) => {
-                    ensure!(info.to == self.peer, "unexpected QUIC peer");
-                    self.socket.send_to(&packet[..len], info.to).await?;
-                }
-                Err(quiche::Error::Done) => return Ok(()),
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-
-    async fn run(mut self, mut stop: oneshot::Receiver<()>) -> Result<()> {
-        let mut packet = [0; 1351];
-        let mut wire_in = BytesMut::new();
-        let mut pending_in = None;
-        let mut wire_out = Bytes::new();
-        let mut end_out = false;
-        let mut fin_sent = false;
-        let mut end_in = false;
-        let mut end_delivered = false;
-        let mut body_readable = false;
-        let mut headers = false;
-        let mut response_pending = false;
-        let mut can_send = !self.server;
-        let inbound = self.app.inbound.clone();
-        loop {
-            loop {
-                let (stream, event) = match self.h3.poll(&mut self.conn) {
-                    Ok(event) => event,
-                    Err(h3::Error::Done) => break,
-                    Err(error) => return Err(error.into()),
-                };
-                if matches!(event, h3::Event::GoAway) {
-                    // RFC 9114 section 5.2: server IDs at/below our sole request
-                    // reject it. A higher ID lets stream 0 finish; client IDs
-                    // refer only to pushes, which this carrier never creates.
-                    ensure!(
-                        self.server || stream > 0,
-                        "server rejected H3 request with GOAWAY"
-                    );
-                    continue;
-                }
-                ensure!(stream == 0, "unexpected H3 stream");
-                match event {
-                    h3::Event::Headers { list, .. } => {
-                        ensure!(!headers, "unexpected extra H3 headers");
-                        let value =
-                            |name: &[u8]| list.iter().find(|h| h.name() == name).map(|h| h.value());
-                        if self.server {
-                            ensure!(
-                                value(b":method") == Some(b"POST".as_slice())
-                                    && value(b":path") == Some(self.path.as_bytes()),
-                                "unknown H3 request"
-                            );
-                            response_pending = true;
-                        } else {
-                            ensure!(
-                                value(b":status") == Some(b"200".as_slice()),
-                                "H3 request rejected"
-                            );
-                        }
-                        headers = true;
-                    }
-                    h3::Event::PriorityUpdate => {
-                        ensure!(self.server, "unexpected server priority update");
-                        // There is only one request to schedule. Consume the hint
-                        // without treating it as a Maverick frame or authorization.
-                        self.h3.take_last_priority_update(stream)?;
-                    }
-                    h3::Event::Data => body_readable = true,
-                    h3::Event::Finished => end_in = true,
-                    h3::Event::Reset(_) => return Ok(()),
-                    _ => bail!("unexpected H3 event"),
-                }
-            }
-            if self.conn.is_closed() || self.conn.is_draining() {
-                return Ok(());
-            }
-            if response_pending {
-                match self.h3.send_response(
-                    &mut self.conn,
-                    0,
-                    &[Header::new(b":status", b"200")],
-                    false,
-                ) {
-                    Ok(()) => {
-                        response_pending = false;
-                        can_send = true;
-                    }
-                    Err(h3::Error::StreamBlocked | h3::Error::Done) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            if can_send && !wire_out.is_empty() {
-                match self.h3.send_body(&mut self.conn, 0, &wire_out, false) {
-                    Ok(written) => wire_out.advance(written),
-                    Err(h3::Error::Done | h3::Error::StreamBlocked) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            if can_send && wire_out.is_empty() && end_out && !fin_sent {
-                match self.h3.send_body(&mut self.conn, 0, &[], true) {
-                    Ok(_) => {
-                        fin_sent = true;
-                        self.app.outbound.close();
-                    }
-                    Err(h3::Error::Done | h3::Error::StreamBlocked) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            if pending_in.is_none() && !end_delivered {
-                if let Some(frame) = Frame::decode_from(&mut wire_in, self.max_frame_size)? {
-                    pending_in = Some(Some(frame));
-                } else if headers && body_readable {
-                    let mut buf = [0; 16 * 1024];
-                    let capacity = buf
-                        .len()
-                        .min(self.max_frame_size + FRAME_HEADER_LEN - wire_in.len());
-                    match self.h3.recv_body(&mut self.conn, 0, &mut buf[..capacity]) {
-                        Ok(0) | Err(h3::Error::Done) => {
-                            body_readable = false;
-                            continue;
-                        }
-                        Ok(len) => {
-                            wire_in.extend_from_slice(&buf[..len]);
-                            continue;
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                } else if end_in {
-                    ensure!(wire_in.is_empty(), "truncated Maverick frame");
-                    pending_in = Some(None);
-                }
-            }
-            self.flush().await?;
-            let wait = self.conn.timeout().unwrap_or(Duration::from_secs(1));
-            tokio::select! {
-                _ = &mut stop => {
-                    let _ = self.conn.close(true, 0x100, b"");
-                    self.flush().await?;
-                    return Ok(());
-                }
-                read = self.socket.recv_from(&mut packet) => {
-                    let (len, peer) = read?;
-                    ensure!(peer == self.peer && len <= 1350, "unexpected UDP packet");
-                    match self.conn.recv(&mut packet[..len], quiche::RecvInfo { from: peer, to: self.local }) {
-                        Ok(_) | Err(quiche::Error::Done) => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                _ = tokio::time::sleep(wait) => self.conn.on_timeout(),
-                frame = self.app.outbound.recv(), if wire_out.is_empty() && !end_out => {
-                    match frame {
-                        Some((frame, end)) => { wire_out = frame.encode(self.max_frame_size)?; end_out = end; }
-                        None => {
-                            let _ = self.conn.close(true, 0x10c, b"");
-                            self.flush().await?;
-                            return Ok(());
-                        }
-                    }
-                }
-                permit = inbound.reserve(), if pending_in.is_some() => {
-                    match permit {
-                        Ok(permit) => {
-                            let frame = pending_in.take().expect("pending frame");
-                            end_delivered = frame.is_none();
-                            permit.send(Ok(frame));
-                        }
-                        Err(_) => { pending_in = None; end_delivered = true; }
-                    }
-                }
-            }
-        }
-    }
+    })
 }

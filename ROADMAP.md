@@ -1,117 +1,63 @@
 # Maverick Roadmap
 
-Status: fast iteration
+Date: 2026-10-28
 
-Date: 2026-10-27
+`STATUS.md` records current capabilities and evidence. This file records
+execution order; historical work belongs to Git, PRs, Actions and release records.
 
-`STATUS.md` says what is true now. This file says what we do now, next, and
-later. Git commits, pull requests, Actions runs, releases, and archived
-documents preserve history; Maverick does not need another planning framework.
+## Working Approach
 
-## Working Rule
+- Deliver one observable user result at a time, including implementation,
+  relevant tests and necessary documentation in the same change.
+- Use existing authentication, configuration, tools and transport primitives.
+- While CI runs, continue independent authorized work; failures take priority
+  before dependent merges. Do not repeat passing checks without a relevant change.
+- Measure time to a verified usable result, not the number of PRs.
 
-- Keep exactly one primary user-visible milestone active.
-- Prefer one PR per observable outcome, including its focused tests and truth
-  update. Do not routinely split authorization, implementation, evidence, and
-  post-merge truth into separate PRs.
-- Verification grows with risk. Documentation does not need release-grade
-  ceremony; release, dependency, wire, auth, config, and artifact changes do.
-- A week is a timebox for learning, not a promise to call unfinished work done.
-- If a task runs for three days without a runnable result, needs more than
-  three prerequisites, or creates more process than product, shrink or defer it.
+## Completed Foundations
 
-## Completed — Direct-H2 `v1.2.0-rc.2`
+Direct-H2 RC.2 is published. CI platforms now run in parallel with all prior
+checks retained, and approved CodeQL alert dispositions are recorded per alert.
+The local H3 work established verified TLS, real authentication/TCP forwarding,
+independent directions, half-close, resource cleanup and upstream control/logging
+boundaries. Those foundations are reused by the configured carrier.
 
-RC.2 is published as an immutable prerelease/non-Latest release. The exact
-candidate passed local checks, independent source/file review, public CI,
-Apple/Linux artifact and SBOM verification, and native Beta.4 rollback drills.
-The public files match the reviewed qualification artifacts.
+## Current — Configured H3 TCP in Ordinary Client and Server Commands
 
-## Deferred by Owner — RC.2 field validation and Stable
+The bounded integration uses `advanced.quiche_h3`, default false, plus the
+optional `experimental-h3` build feature. It reuses runnable config v1 and
+ordinary commands; it does not revive the retired H3 flag or require the whole
+future Config v2 migration project. Include real dialing/listening, certificate
+loading, the shared Boring dependency graph, existing authentication and egress
+policy, and separate-process loopback tests. Preserve the H2 default and both
+native platform checks. Field use remains deferred.
 
-The owner deferred field validation on 2026-10-27. Installation in a named
-owner-controlled environment, 72 hours of ordinary use, and owner field
-rollback remain incomplete. Stable cannot proceed on automated evidence alone.
-A future gate-changing product fix requires another RC rather than changing
-RC.2. The fixed rollback partner remains Beta.4.
+## Next — Measure the Integrated Path Before Adding Complexity
 
-The release-policy reference remains
-`docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md`.
+Use controlled local H2/H3 comparisons to identify concrete connection,
+concurrency, resource-use or interruption problems. Add connection reuse or
+other performance work only when measured behavior requires it. No automatic
+carrier switching, speculative scheduler or new coordination framework is a
+prerequisite for the explicit TCP path.
 
-## Completed — One Small Local H3 Experiment
+## Deferred — Field Validation and Stable
 
-The opt-in lab command now performs one certificate-validated local connection
-and H3 request/response over real loopback UDP, with one Boring 5 closure and
-bounded resources. Identity-rejection, deadline, and cleanup tests accompany
-the executable. This completes the small runnable slice, not H3 adoption.
+The owner continues to defer named-environment RC installation, 72-hour ordinary
+use and field rollback. H3 local development can continue independently;
+neither CI success nor a local H3 result makes Stable ready. A future changed
+release needs a new exact RC, not replacement of RC.2's immutable assets.
 
-## Completed — Upstream TLS and Authentication Feasibility
+## Later, With Their Own Concrete Requirement
 
-The isolated upstream test package runs the shared client TLS settings and
-authentication v1/v2 over loopback H3 through the official Boring integration.
-The shipping H2 dependency graph is unchanged. This proves a usable TLS API
-route and authentication binding, not a product carrier or browser equivalence.
+Native Datagram/CONNECT-UDP, Auto H3, full runnable Config v2 and migration,
+auth v3, TUN and additional providers are separate capabilities. Broad browser
+fingerprint equivalence, real-network performance and production claims require
+evidence for those claims. Paid audit, signing or provenance work belongs to a
+specific approved release need.
 
-## Completed — One Local Authenticated H3 TCP Carrier
+A later CI change may revisit duplicate main work and historical reference
+experiments after defining equivalent coverage, artifact provenance and branch
+protection. This iteration retains all checks and does not authorize bypasses.
 
-The opt-in local executable connects SOCKS5 through real H3 to the server's
-credential/replay/admission checks and TCP egress. Authentication v1/v2 each
-carry 512 KiB in both directions and preserve client half-close. Negative tests
-cover credentials, binding, epochs, replay, concurrent-flow limits, and egress.
-The shipping H2 graph and default route remain unchanged.
-
-## Completed — H3 TCP Lifecycle Before Integration
-
-Both directions now progress independently, either side may half-close first,
-and activity in one direction keeps the connection alive. The local tests
-reproduce and fix server-first upload truncation, false download idle timeouts,
-and rejecting a valid GOAWAY. Reset/EOF behavior and flow-slot release after
-disconnect are covered without changing the default H2 path.
-
-## Completed — Selected Upstream Push and Logging Decisions
-
-The 0.30.0 carrier handles request-priority hints without dropping valid flows.
-Ignored push metadata does not become proxy data or bypass authentication;
-upstream rejects pushed streams. The current no-push TCP design does not need
-the old private push patch. H3/QPACK Trace logging stays compiled out,
-including with verbose host loggers in release builds; qlog remains disabled.
-The upstream's incomplete push-ID validation remains documented and tested.
-
-## Next — Explicit Client and Server Integration
-
-Connect the tested carrier to explicit client/server configuration and unify
-the shipping Boring dependency graph. Start with the existing single-request
-TCP design, preserve the retired config-v1 flag rejection, and keep H3
-opt-in/default-off. Verify the ordinary H2 route and both supported platforms
-before changing shipping packages. Full backend qualification and any release
-claim remain separate; field use is still deferred.
-
-## Later, Only After Observed Need
-
-- Public Datagram APIs, real carrier adapters, consumer migration,
-  CONNECT-UDP, and native QUIC Datagram.
-- Auth v3, Config v2, schema migrations, Auto H3, TUN work, and additional
-  provider integrations.
-- Paid audit, provenance/attestation, signing, and reproducible-build work for
-  an exact release candidate when those controls are actually needed.
-
-- Remove the duplicate `product-ci` run on pushes to `main`: main requires
-  up-to-date PRs and squash merges, so the PR run already tests the merged
-  tree. Only together with enforcing branch protection for administrators
-  and a weekly scheduled `product-ci` run (deferred by the owner, 2026-10-14).
-
-## Explicitly Stopped
-
-- Phase 3 recovery or a renamed replacement.
-- Giant branch convergence, long-lived dual H3 backends, or H3 in Auto.
-- New receipt, seal, registry, watchdog, evidence schema, coordination layer,
-  successor playbook, or parallel active status document.
-- Routine policy-only, authorization-only, or post-merge truth-only PR chains.
-- Network-setting changes, unapproved provider/spending actions, private data
-  in git, or production-readiness claims derived from local tests.
-
-## Owner Participation
-
-No owner action is needed for the bounded loopback-only experiment. Owner
-field observation and rollback are deferred. Personal/legal attestations and
-any paid or provider resource decision still require the owner.
+Phase 3 recovery, giant convergence, policy-only prerequisite chains and new
+receipt/registry/watchdog systems remain stopped.

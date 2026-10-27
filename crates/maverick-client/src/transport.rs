@@ -22,13 +22,15 @@ pub struct CloudflareWsTunnel {
 pub enum TunnelRequestSender {
     H2(H2TunnelRequestSender),
     CloudflareWs(Box<CloudflareWsTunnel>),
+    #[cfg(feature = "experimental-h3")]
+    H3(maverick_quiche::Connected),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportKind {
     H2,
     CloudflareWs,
-    /// Compatibility shape only; no current implementation is installed.
+    /// Explicit opt-in quiche TCP carrier.
     H3,
 }
 
@@ -87,6 +89,12 @@ pub fn default_transport_kind(config: &ClientConfig) -> TransportKind {
 }
 
 fn default_transport_decision(config: &ClientConfig) -> DefaultTransportDecision {
+    if config.advanced.quiche_h3 {
+        return DefaultTransportDecision {
+            kind: TransportKind::H3,
+            provenance: DefaultTransportProvenance::LegacyV1,
+        };
+    }
     if project_v1_client_policy(config).is_ok_and(|projection| {
         matches!(
             projection.policy().transport_strategy(),
@@ -130,7 +138,18 @@ pub async fn connect(config: &ClientConfig) -> Result<TunnelRequestSender> {
         TransportKind::CloudflareWs => Ok(TunnelRequestSender::CloudflareWs(Box::new(
             crate::ws_transport::connect(config).await?,
         ))),
-        TransportKind::H3 => anyhow::bail!("H3 transport implementation is unavailable"),
+        TransportKind::H3 => {
+            #[cfg(feature = "experimental-h3")]
+            {
+                Ok(TunnelRequestSender::H3(
+                    crate::h3_transport::connect(config).await?,
+                ))
+            }
+            #[cfg(not(feature = "experimental-h3"))]
+            {
+                anyhow::bail!("advanced.quiche_h3 requires the experimental-h3 build feature")
+            }
+        }
     }
 }
 

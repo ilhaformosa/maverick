@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-proxy = ["dep:bytes", "dep:tokio", "dep:maverick-client", "dep:maverick-server", "maverick-core/experimental-h3"]
+proxy = ["dep:bytes", "dep:tokio", "dep:maverick-client", "dep:maverick-server", "dep:maverick-quiche", "maverick-core/experimental-h3"]
 
 [dependencies]
 anyhow = "1"
@@ -17,6 +17,7 @@ boring = "=5.2.0"
 brotli = "8.0"
 log = { version = "=0.4.33", default-features = false, features = ["max_level_debug"] }
 maverick-core = { path = "../../../maverick-core", default-features = false }
+maverick-quiche = { path = "../../../maverick-quiche", optional = true }
 quiche = { version = "=0.30.0", default-features = false, features = ["boringssl-boring-crate"] }
 rcgen = "0.13"
 sha2 = "0.10"

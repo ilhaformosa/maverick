@@ -47,6 +47,10 @@ pub(crate) async fn handle_socks_connection_with_pool(
         }
     };
     if request.command == socks5::SocksCommand::UdpAssociate {
+        if tunnel_pool.config().advanced.quiche_h3 {
+            let _ = socks5::write_failure(&mut local).await;
+            bail!("H3 currently supports TCP only");
+        }
         let control_peer = local.peer_addr().ok();
         return socks5::serve_udp_associate_with_pool(
             local,

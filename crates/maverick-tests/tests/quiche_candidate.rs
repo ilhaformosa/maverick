@@ -24,6 +24,7 @@ const CLIENT_CONTROL_STREAM: u64 = 2;
 static LOGGER: HostileLogger = HostileLogger;
 static LOGGER_INIT: Once = Once::new();
 static LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static H3_RECORDS: AtomicUsize = AtomicUsize::new(0);
 static TRACE_RECORDS: AtomicUsize = AtomicUsize::new(0);
 static DEBUG_RECORDS: AtomicUsize = AtomicUsize::new(0);
 static LOG_RECORDS: AtomicUsize = AtomicUsize::new(0);
@@ -43,6 +44,9 @@ impl Log for HostileLogger {
                 previous < MAX_LOG_RECORDS,
                 "candidate logger exceeded its fixed record bound"
             );
+        }
+        if record.target().starts_with("quiche::h3") {
+            H3_RECORDS.fetch_add(1, Ordering::SeqCst);
         }
         let _ = record.args().to_string();
         match record.level() {
@@ -539,6 +543,7 @@ fn candidate_h3_logging_surface_is_complete_for_both_roles() -> Result<()> {
         log::STATIC_MAX_LEVEL == LevelFilter::Debug,
         "candidate static log cap was not Debug"
     );
+    H3_RECORDS.store(0, Ordering::SeqCst);
     TRACE_RECORDS.store(0, Ordering::SeqCst);
     DEBUG_RECORDS.store(0, Ordering::SeqCst);
     let _log_budget = LogBudgetGuard::activate();
@@ -573,6 +578,10 @@ fn candidate_h3_logging_surface_is_complete_for_both_roles() -> Result<()> {
     ensure!(
         TRACE_RECORDS.load(Ordering::SeqCst) == 0,
         "real two-role H3 emitted a Trace record"
+    );
+    ensure!(
+        H3_RECORDS.load(Ordering::SeqCst) == 0,
+        "H3/QPACK logging escaped the compile-time cap"
     );
     ensure!(
         LOG_RECORDS.load(Ordering::SeqCst) <= MAX_LOG_RECORDS,

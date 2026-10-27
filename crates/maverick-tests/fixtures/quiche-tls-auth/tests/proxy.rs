@@ -24,10 +24,18 @@ async fn rejected_before_origin(kind: &str) -> anyhow::Result<()> {
     use std::time::Duration;
     use tokio::net::{TcpListener, TcpStream};
     tokio::time::timeout(Duration::from_secs(10), async {
-        let connection = proxy::connect(smoke::PATH, smoke::MAX_FRAME).await?;
+        let peer = match kind {
+            "priority_wrong_secret" => proxy::PeerInput::ClientPriority,
+            "push_wrong_secret" => proxy::PeerInput::ClientPushControls,
+            _ => proxy::PeerInput::None,
+        };
+        let connection =
+            proxy::connect_with_peer_input(smoke::PATH, smoke::MAX_FRAME, peer).await?;
         let (mut client, mut config) = smoke::configs(&connection, true)?;
         match kind {
-            "wrong_secret" => client.server.secret = SecretString::generate(),
+            "wrong_secret" | "priority_wrong_secret" | "push_wrong_secret" => {
+                client.server.secret = SecretString::generate()
+            }
             "unknown_user" => client.server.credential_id = "unknown-test-user".into(),
             "disabled_user" => config.users[0].enabled = false,
             "epoch" => client.auth.rotation.active_epoch = Some("202608".into()),
@@ -405,4 +413,77 @@ async fn transport_disconnect_releases_target_and_flow_slot() -> anyhow::Result<
         Ok::<_, anyhow::Error>(())
     })
     .await?
+}
+
+#[tokio::test]
+async fn request_priority_does_not_abort_authenticated_flow() -> anyhow::Result<()> {
+    assert_eq!(
+        smoke::run_with_peer_input(true, proxy::PeerInput::ClientPriority).await?,
+        smoke::PAYLOAD_SIZE
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unused_push_metadata_does_not_change_authenticated_flow() -> anyhow::Result<()> {
+    for peer in [
+        proxy::PeerInput::ClientPushControls,
+        proxy::PeerInput::ServerPushPromise,
+    ] {
+        assert_eq!(
+            smoke::run_with_peer_input(true, peer).await?,
+            smoke::PAYLOAD_SIZE
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn peer_controls_do_not_bypass_authentication() -> anyhow::Result<()> {
+    rejected_before_origin("priority_wrong_secret").await?;
+    rejected_before_origin("push_wrong_secret").await
+}
+
+#[tokio::test]
+async fn control_metadata_is_not_delivered_as_maverick_data() -> anyhow::Result<()> {
+    use maverick_core::{Frame, FrameType};
+    use std::time::Duration;
+    for peer in [
+        proxy::PeerInput::ClientPriority,
+        proxy::PeerInput::ClientPushControls,
+        proxy::PeerInput::ServerPushPromise,
+    ] {
+        let mut connection =
+            proxy::connect_with_peer_input(smoke::PATH, smoke::MAX_FRAME, peer).await?;
+        let (sender, receiver) = if matches!(peer, proxy::PeerInput::ServerPushPromise) {
+            (&connection.server, &mut connection.client)
+        } else {
+            (&connection.client, &mut connection.server)
+        };
+        // No authentication or application bytes have been sent. Consuming
+        // control metadata must neither create nor complete a Maverick frame.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), receiver.read(smoke::MAX_FRAME))
+                .await
+                .is_err()
+        );
+        let frame = Frame::new(
+            FrameType::TcpData,
+            0,
+            1,
+            bytes::Bytes::from_static(b"explicit-data-only"),
+        );
+        sender.send(frame.clone(), true, smoke::MAX_FRAME).await?;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), receiver.read(smoke::MAX_FRAME)).await??,
+            Some(frame)
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), receiver.read(smoke::MAX_FRAME))
+                .await??
+                .is_none()
+        );
+        connection.transport.shutdown().await?;
+    }
+    Ok(())
 }

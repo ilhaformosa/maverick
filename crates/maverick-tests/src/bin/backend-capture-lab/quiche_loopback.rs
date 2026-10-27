@@ -184,7 +184,7 @@ impl Pair {
         })
     }
 
-    fn advance(&mut self) -> Result<()> {
+    pub(super) fn advance(&mut self) -> Result<()> {
         self.rounds += 1;
         ensure!(
             Instant::now() < self.deadline && self.rounds <= MAX_ROUNDS,

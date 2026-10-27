@@ -68,14 +68,23 @@ reproduce and fix server-first upload truncation, false download idle timeouts,
 and rejecting a valid GOAWAY. Reset/EOF behavior and flow-slot release after
 disconnect are covered without changing the default H2 path.
 
-## Next — Decide the Upstream Carrier's Adoption Gaps
+## Completed — Selected Upstream Push and Logging Decisions
 
-Use this working local TCP carrier to resolve the remaining P1/P2/P3 behavior
-and platform/dependency requirements. GOAWAY handling is covered; strict peer-push
-policy and the selected upstream logging surface still need a concrete disposition. Keep the next implementation
-small and driven by an observed gap. Before moving quiche into shipping
-packages, verify one shared Boring closure and H2 compatibility. H3 remains
-default-off; field use is still deferred.
+The 0.30.0 carrier handles request-priority hints without dropping valid flows.
+Ignored push metadata does not become proxy data or bypass authentication;
+upstream rejects pushed streams. The current no-push TCP design does not need
+the old private push patch. H3/QPACK Trace logging stays compiled out,
+including with verbose host loggers in release builds; qlog remains disabled.
+The upstream's incomplete push-ID validation remains documented and tested.
+
+## Next — Explicit Client and Server Integration
+
+Connect the tested carrier to explicit client/server configuration and unify
+the shipping Boring dependency graph. Start with the existing single-request
+TCP design, preserve the retired config-v1 flag rejection, and keep H3
+opt-in/default-off. Verify the ordinary H2 route and both supported platforms
+before changing shipping packages. Full backend qualification and any release
+claim remain separate; field use is still deferred.
 
 ## Later, Only After Observed Need
 

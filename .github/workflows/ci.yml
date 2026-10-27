@@ -14,14 +14,13 @@ permissions:
   contents: read
 
 jobs:
-  public-pr-gate:
+  scope:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
     env:
       MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
-      MAVERICK_PILOT_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -131,19 +130,54 @@ jobs:
               ;;
           esac
           echo "documentation-only gate OK"
+
+  linux-gate:
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: "0"
+      MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      MAVERICK_PILOT_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        if: steps.scope.outputs.docs_only != 'true'
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - name: Identify Rust compiler for dependency cache
+        id: compiler
+        run: echo "key=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - name: Restore Rust dependencies and build tools
+        id: rust-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          # Include pilot-artifact dependencies, but rebuild first-party outputs.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+            crates/maverick-tests/fixtures/quiche-tls-auth/target
+            !**/incremental/**
+            !**/target/**/maverick*
+            !**/target/**/libmaverick*
+          key: product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
+          restore-keys: |
+            product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
       - name: Check the supported no-default build
-        if: steps.scope.outputs.docs_only != 'true'
         run: >-
           cargo check --locked
           -p maverick-cli -p maverick-sdk -p maverick-tests
           --all-targets --no-default-features
       - name: Test the complete supported rustls relay matrix
-        if: steps.scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           retirement_tests="$(cargo test --locked -p maverick-tests --no-default-features \
@@ -157,15 +191,12 @@ jobs:
           cargo test --locked -p maverick-tests --no-default-features \
             --test tcp_relay
       - name: Install Linux build and verification tools
-        if: steps.scope.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y binutils clang cmake file ripgrep shellcheck
       - name: Install the SBOM generator
-        if: steps.scope.outputs.docs_only != 'true'
         run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - name: Verify upstream H3 authentication and local TCP proxy
-        if: steps.scope.outputs.docs_only != 'true'
         run: |
           manifest=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
           cargo test --locked -p maverick-client --features experimental-h3 h3::tests
@@ -190,7 +221,6 @@ jobs:
                 .version == "0.30.0" and (.features | index("qlog")) == null)
             ' >/dev/null
       - name: Evaluate the default-off quiche candidate
-        if: steps.scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           graph="$(cargo tree --locked -p maverick-tests \
@@ -779,11 +809,9 @@ jobs:
             61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d ]]
           cmp "$candidate_archive" "$candidate_archive_copy"
       - name: Run the local product harness
-        if: steps.scope.outputs.docs_only != 'true'
         run: ./scripts/local-harness.sh
       - name: Build the exact-head GNU/Linux pilot archive
         id: pilot
-        if: steps.scope.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
           actual_revision="$(git rev-parse HEAD)"
@@ -794,7 +822,6 @@ jobs:
           printf 'revision=%s\n' "$actual_revision" >>"$GITHUB_OUTPUT"
           ./scripts/build-pilot.sh
       - name: Statically verify the GNU/Linux pilot archive
-        if: steps.scope.outputs.docs_only != 'true'
         env:
           MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
         run: |
@@ -807,7 +834,6 @@ jobs:
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level static
       - name: Natively verify the GNU/Linux pilot archive
-        if: steps.scope.outputs.docs_only != 'true'
         env:
           MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
         run: |
@@ -820,7 +846,6 @@ jobs:
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level native
       - name: Generate and fully verify the GNU/Linux candidate SBOM
-        if: steps.scope.outputs.docs_only != 'true'
         env:
           MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
         run: |
@@ -840,7 +865,6 @@ jobs:
             --verification-level full \
             --source-root .
       - name: Exercise RC.2 upgrade and Beta.4 rollback on GNU/Linux
-        if: steps.scope.outputs.docs_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
@@ -869,7 +893,6 @@ jobs:
             --candidate-checksum "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256" \
             --candidate-revision "$MAVERICK_PILOT_REVISION"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: steps.scope.outputs.docs_only != 'true'
         with:
           name: rc-candidate-x86_64-unknown-linux-gnu
           path: |
@@ -878,13 +901,36 @@ jobs:
             dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.cdx.json
           if-no-files-found: error
           retention-days: 7
+      - name: Save successful main dependency cache
+        if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+            crates/maverick-tests/fixtures/quiche-tls-auth/target
+            !**/incremental/**
+            !**/target/**/maverick*
+            !**/target/**/libmaverick*
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Record cache result
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+        run: |
+          printf 'Rust dependency cache exact hit: `%s`\n' "$CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
 
   macos-sbom-gate:
-    needs: public-pr-gate
-    if: ${{ needs.public-pr-gate.outputs.docs_only != 'true' }}
+    needs: scope
+    if: ${{ needs.scope.outputs.docs_only != 'true' }}
     runs-on: macos-14
     timeout-minutes: 30
     env:
+      CARGO_INCREMENTAL: "0"
       MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       MAVERICK_PILOT_TARGET: aarch64-apple-darwin
       MAVERICK_SBOM_TARGET: aarch64-apple-darwin
@@ -897,6 +943,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
+      - name: Identify Rust compiler for dependency cache
+        id: compiler
+        run: echo "key=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - name: Restore Rust dependencies and build tools
+        id: rust-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          # Include pilot-artifact dependencies, but rebuild first-party outputs.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+            crates/maverick-tests/fixtures/quiche-tls-auth/target
+            !**/incremental/**
+            !**/target/**/maverick*
+            !**/target/**/libmaverick*
+          key: product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
+          restore-keys: |
+            product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
       - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - run: cargo fetch --locked --target "$MAVERICK_SBOM_TARGET"
       - name: Verify upstream H3 authentication and local TCP proxy
@@ -1582,3 +1650,52 @@ jobs:
             dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.cdx.json
           if-no-files-found: error
           retention-days: 7
+      - name: Save successful main dependency cache
+        if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-cyclonedx
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+            crates/maverick-tests/fixtures/quiche-tls-auth/target
+            !**/incremental/**
+            !**/target/**/maverick*
+            !**/target/**/libmaverick*
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Record cache result
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+        run: |
+          printf 'Rust dependency cache exact hit: `%s`\n' "$CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
+
+  public-pr-gate:
+    if: always()
+    needs: [scope, linux-gate, macos-sbom-gate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require all applicable checks
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
+          LINUX_RESULT: ${{ needs.linux-gate.result }}
+          MACOS_RESULT: ${{ needs.macos-sbom-gate.result }}
+        run: |
+          set -euo pipefail
+          [[ "$SCOPE_RESULT" == success ]] || exit 1
+          case "$DOCS_ONLY" in
+            true)
+              [[ "$LINUX_RESULT" == skipped && "$MACOS_RESULT" == skipped ]] || exit 1
+              ;;
+            false)
+              [[ "$LINUX_RESULT" == success && "$MACOS_RESULT" == success ]] || exit 1
+              ;;
+            *) exit 1 ;;
+          esac
+          printf 'Scope: %s; Linux: %s; macOS: %s\n' \
+            "$SCOPE_RESULT" "$LINUX_RESULT" "$MACOS_RESULT" >>"$GITHUB_STEP_SUMMARY"

@@ -254,7 +254,11 @@ async fn exercise(
                     ensure!(Deadline::now() >= end, "long flow ended before its scheduled finish");
                 }
                 _ = churn.tick() => {
-                    flow_batch(proxy, &target, 4, 16 * 1024).await?;
+                    checked_stage(
+                        flow_batch(proxy, &target, 4, 16 * 1024).await,
+                        address,
+                        &format!("{} short-flow churn, cycle {cycle}, completed {short_flows}, elapsed {:.3}s", if h3 { "h3" } else { "h2" }, load_started.elapsed().as_secs_f64()),
+                    ).await?;
                     short_flows += 4;
                 }
                 _ = samples.tick() => {

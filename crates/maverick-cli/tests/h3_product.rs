@@ -39,7 +39,7 @@ impl Cli {
         let mut child = Command::new(env!("CARGO_BIN_EXE_maverick"))
             .args([command, "-c", config])
             .current_dir(directory)
-            .env("RUST_LOG", "info")
+            .env("RUST_LOG", "info,maverick_client=debug")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -52,10 +52,27 @@ impl Cli {
             readiness,
             reader: None,
         };
+        let pid = process.child.id();
         process.reader = Some(std::thread::spawn(move || {
-            // Consume logs without retaining or printing credentials, paths, or
-            // diagnostics. Only readiness addresses leave this thread.
+            // Never retain raw logs: emit only known static failure labels and
+            // readiness addresses, without credentials, paths or peer details.
             for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
+                if line.contains("SOCKS connection ended") {
+                    for reason in [
+                        "H3 connection timed out",
+                        "H3 authentication timed out",
+                        "missing H3 ServerHello",
+                        "server rejected H3 handshake",
+                        "server closed before flow opened",
+                        "remote target connection failed",
+                        "unexpected end of file",
+                        "broken pipe",
+                    ] {
+                        if line.contains(reason) {
+                            eprintln!("fixture client {pid}: {reason}");
+                        }
+                    }
+                }
                 for marker in [
                     SERVER_READY,
                     H2_SERVER_READY,
@@ -533,7 +550,11 @@ async fn measured_flow(
         };
         let request = async {
             let (mut stream, status) = socks_connect(proxy, address).await?;
-            ensure!(status == 0, "measured SOCKS connection rejected");
+            ensure!(
+                status == 0,
+                "measured SOCKS connection rejected: status {status}, elapsed {:.3}s",
+                started.elapsed().as_secs_f64()
+            );
             let connect_ms = started.elapsed().as_secs_f64() * 1000.0;
             let data_started = Instant::now();
             // Do not let the target pre-buffer downloads during SOCKS setup.

@@ -144,10 +144,11 @@ async fn paced_transfer(
     end: Deadline,
     send_byte: u8,
     receive_byte: u8,
+    block_bytes: usize,
 ) -> Result<(u64, u64)> {
     let (mut reader, mut writer) = stream.into_split();
     let send = async {
-        let bytes = [send_byte; 64 * 1024];
+        let bytes = vec![send_byte; block_bytes];
         let mut ticks = interval(Duration::from_millis(100));
         ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut sent = 0;
@@ -202,6 +203,7 @@ async fn exercise(
     seconds: u64,
     cycles: usize,
     concurrency: usize,
+    block_bytes: usize,
     resources: bool,
 ) -> Result<()> {
     // Keep room for short flows while all sustained H3 connections are active.
@@ -220,18 +222,24 @@ async fn exercise(
     )
     .await?;
     for cycle in 0..cycles {
-        let load_started = Instant::now();
-        let end = Deadline::now() + Duration::from_secs(seconds);
-        let mut long = tokio::task::JoinSet::new();
+        let setup_started = Instant::now();
+        let mut pairs = Vec::with_capacity(concurrency);
         for _ in 0..concurrency {
-            // Pair before launching churn, so each byte counter has the correct peer.
+            // Pair all peers before starting the common payload window or churn.
             let (local, status) = socks_connect(proxy, target.local_addr()?).await?;
             ensure!(status == 0, "long-flow setup rejected");
             let (origin, _) = target.accept().await?;
+            pairs.push((local, origin));
+        }
+        let setup_seconds = setup_started.elapsed().as_secs_f64();
+        let load_started = Instant::now();
+        let end = Deadline::now() + Duration::from_secs(seconds);
+        let mut long = tokio::task::JoinSet::new();
+        for (local, origin) in pairs {
             long.spawn(async move {
                 let (local, origin) = tokio::try_join!(
-                    paced_transfer(local, end, 0x35, 0x6a),
-                    paced_transfer(origin, end, 0x6a, 0x35)
+                    paced_transfer(local, end, 0x35, 0x6a, block_bytes),
+                    paced_transfer(origin, end, 0x6a, 0x35, block_bytes)
                 )?;
                 ensure!(
                     local.0 == origin.1 && local.1 == origin.0,
@@ -291,7 +299,7 @@ async fn exercise(
         .await?;
         println!(
             "soak {}",
-            json!({"carrier":if h3 {"h3"} else {"h2"}, "cycle":cycle, "load_seconds":seconds, "transfer_seconds":transfer_seconds, "concurrency":concurrency, "long_bytes":long_bytes, "short_flows":short_flows, "recovery":"passed"})
+            json!({"carrier":if h3 {"h3"} else {"h2"}, "cycle":cycle, "load_seconds":seconds, "setup_seconds":setup_seconds, "transfer_seconds":transfer_seconds, "concurrency":concurrency, "block_bytes":block_bytes, "long_bytes":long_bytes, "short_flows":short_flows, "recovery":"passed"})
         );
         if resources {
             sleep(Duration::from_secs(15)).await;
@@ -365,7 +373,9 @@ async fn exercise(
 async fn active_carriers_outlive_idle_timeout_and_release_admission() -> Result<()> {
     timeout(Duration::from_secs(90), async {
         for h3 in [false, true] {
-            exercise(h3, 12, 1, 32, false).await?;
+            // Preserve the former eight-flow aggregate rate (10 MiB/s) while
+            // checking 32 sessions. Release measurements retain 64 KiB blocks.
+            exercise(h3, 12, 1, 32, 16 * 1024, false).await?;
         }
         Ok::<_, anyhow::Error>(())
     })
@@ -397,8 +407,8 @@ async fn long_running_carrier_resources() -> Result<()> {
         "soak concurrency must be between 1 and 128"
     );
     timeout(Duration::from_secs(seconds * 4 + 240), async {
-        exercise(false, (seconds / 3).max(1), 3, concurrency, true).await?;
-        exercise(true, seconds, 3, concurrency, true).await?;
+        exercise(false, (seconds / 3).max(1), 3, concurrency, 64 * 1024, true).await?;
+        exercise(true, seconds, 3, concurrency, 64 * 1024, true).await?;
         Ok::<_, anyhow::Error>(())
     })
     .await

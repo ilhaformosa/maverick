@@ -16,12 +16,13 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 const MAX_UDP: usize = 1_350;
 const CONNECTION_ID_LEN: usize = 16;
 const PACKET_QUEUE: usize = 64;
+const SERVER_RECEIVE_BUFFER: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 pub struct Limits {
@@ -164,7 +165,16 @@ pub async fn serve(
     mut stop: oneshot::Receiver<()>,
 ) -> Result<()> {
     let local = socket.local_addr()?;
+    // Make room for concurrent bursts without shrinking a larger existing buffer.
+    // The operating system may clamp the requested size.
+    let socket_ref = socket2::SockRef::from(&socket);
+    if socket_ref.recv_buffer_size()? < SERVER_RECEIVE_BUFFER {
+        socket_ref
+            .set_recv_buffer_size(SERVER_RECEIVE_BUFFER)
+            .context("set H3 UDP receive buffer")?;
+    }
     let socket = Arc::new(socket);
+    let send_lock = Arc::new(Mutex::new(()));
     let mut config = transport_config(tls, options.limits)?;
     let mut routes: HashMap<Vec<u8>, Route> = HashMap::new();
     let mut tasks = JoinSet::new();
@@ -222,7 +232,11 @@ pub async fn serve(
                 let (send, incoming) = mpsc::channel(PACKET_QUEUE);
                 routes.insert(destination.clone(), Route { peer, packets: send.clone(), primary: false });
                 routes.insert(source.clone(), Route { peer, packets: send, primary: true });
-                let mut io = PacketIo { socket: Arc::clone(&socket), local, peer, incoming: Some(incoming), connected: false };
+                let mut io = PacketIo {
+                    socket: Arc::clone(&socket), local, peer,
+                    incoming: Some(incoming), connected: false,
+                    send_lock: Some(Arc::clone(&send_lock)),
+                };
                 let accepted = accepted.clone();
                 let path = options.path.clone();
                 let limits = options.limits;
@@ -310,6 +324,7 @@ struct PacketIo {
     peer: SocketAddr,
     incoming: Option<mpsc::Receiver<Vec<u8>>>,
     connected: bool,
+    send_lock: Option<Arc<Mutex<()>>>,
 }
 
 impl PacketIo {
@@ -320,6 +335,7 @@ impl PacketIo {
             socket: Arc::new(socket),
             peer,
             incoming: None,
+            send_lock: None,
         })
     }
 
@@ -337,6 +353,11 @@ impl PacketIo {
     }
 
     async fn flush(&self, conn: &mut quiche::Connection) -> Result<()> {
+        // Serialize each flush to avoid measured contention on the shared socket.
+        let _send = match &self.send_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
         let mut packet = [0; MAX_UDP];
         loop {
             match conn.send(&mut packet) {

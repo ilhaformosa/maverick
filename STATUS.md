@@ -320,8 +320,57 @@ churn, interruption, admission-release and process-restart checks without
 adding another test or CPU/RSS thresholds. The two-slot auth/TLS test waits for
 observed admission cleanup between stages before requiring both slots again;
 it preserves the original limits, negative cases and concurrent recovery pair.
-Production code and configuration defaults are unchanged. H3 remains
-default-off, and field validation remains deferred.
+Those test-method changes left production code and configuration defaults
+unchanged. H3 remains default-off, and field validation remains deferred.
+
+## Burst Ingress and Shared UDP Send Cost
+
+The 2026-10-29 local diagnosis reproduced new-connection timeouts during
+synchronized 32-flow traffic. Clients retransmitted their Initial packets but
+received no reply, and the server had no corresponding Initial admission event.
+Connection, source and pre-auth limits were not rejecting those attempts.
+Temporary numeric probes separated this path from application authentication.
+
+A same-binary receive-buffer A/B/A test used three 20-second H3 phases, 64 KiB
+per direction every 100 ms and four short flows per second. The client used one
+worker to concentrate bursts; the server kept its default runtime. The original
+786,896-byte listener buffer had 12 handshakes lasting at least one second.
+Requesting and obtaining 2 MiB removed those stalls; restoring the original
+buffer reproduced a five-second connection timeout. Host-wide UDP full-buffer
+drop increments were 534,665 / 2 / 228,452 respectively. Those system counters
+corroborate the controlled result; they are not per-socket loss measurements.
+
+The shared H3 listener now requests a 2 MiB receive buffer without shrinking a
+larger existing value. Operating systems may cap the request. This is a socket
+option owned by the process, not a global networking change or a new user knob.
+The existing `socket2` dependency is reused without changing either lockfile's
+resolved version. Connection limits, packet queues and authentication deadlines
+are retained.
+
+A separate stack sample found many server threads inside the shared socket's
+send system call. Each server flush now holds one asynchronous lock for that
+shared socket; direct client and independent fixture sockets keep their own
+send path. With the same 2 MiB buffer and workload above, the send-lock A/B/A
+comparison produced these phase-average CPU observations (100% is one core):
+
+| Shared send lock | Client CPU | Server CPU | Achieved aggregate rate |
+|---|---:|---:|---:|
+| Off | 29.61% | 339.46% | 39.99 MiB/s |
+| On | 24.90% | 55.35% | 39.98 MiB/s |
+| Off again | 29.69% | 367.12% | 39.99 MiB/s |
+
+All three runs passed payload, cancellation, admission-release and restart
+checks. The bounded per-connection packet queue dropped some datagrams with the
+lock enabled; QUIC recovered them and the queue limit was not increased. A
+separate bulk-transfer pair observed no lower H3 median throughput, but small
+connection-latency and short-flow completion results varied. These observations
+do not establish a universal speedup or a maximum capacity. The lock also covers
+packet construction, and a blocked socket send can delay other flushes.
+
+Temporary probes and per-role worker overrides were removed from product and
+test sources. Default runtime thread counts, default-off H3 and deferred field
+validation are retained. Final uninstrumented long-run results and exact PR/main
+checks belong with their tested revision in the PR validation report.
 
 ## CI and Security Alert Maintenance
 

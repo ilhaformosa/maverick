@@ -1,6 +1,6 @@
 # Maverick Roadmap
 
-Date: 2026-10-28
+Date: 2026-10-29
 
 `STATUS.md` records current capabilities and evidence. This file records
 execution order; historical work belongs to Git, PRs, Actions and release records.
@@ -76,7 +76,7 @@ Wait for observed client-exit cleanup instead of a fixed sleep, and exercise
 both H2 and H3 process recovery in normal CI. Keep the same cleanup deadline
 and per-phase idle observations; do not remove checks to improve run time.
 
-## Local Qualification at Higher Concurrency
+## Completed — Local Qualification at Higher Concurrency
 
 For higher-concurrency validation, use 32 sustained flows on the configured
 client/server path, with 30 minutes of H3 load and 10 minutes of H2 reference
@@ -90,6 +90,21 @@ the tested revision in the PR validation report; repeat a passed long run only
 for a relevant change or unresolved result. Change product behavior only for problems supported by
 the measurements; preserve default-off H3, deferred field validation and every
 existing quality check.
+
+## Completed — Burst Ingress and Shared-Socket Send Work
+
+Use short, controlled local runs to distinguish pre-auth transport drops from
+application rejection before changing policy. The observed burst timeout led to
+a bounded listener receive-buffer request; the measured shared-send cost led to
+serialization of that socket's flushes. Retain existing packet/admission limits,
+thread defaults and authentication deadlines. Scope and controlled results are
+recorded in `STATUS.md`.
+
+Finish source review and shared checks before the final uninstrumented long run,
+and overlap that run with remote CI on the same candidate. Keep stack sampling
+separate from quantitative runs. A macOS background-policy run changes network
+I/O as well as CPU scheduling and cannot isolate CPU cost. Temporary diagnostics
+must not replace or weaken the final ordinary-command checks.
 
 ## Next — Remaining H3 Cost and Integration Quality
 

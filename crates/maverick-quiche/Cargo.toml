@@ -13,4 +13,5 @@ log = { version = "=0.4.33", default-features = false, features = ["max_level_de
 maverick-core = { path = "../maverick-core", features = ["experimental-h3"] }
 quiche = { version = "=0.30.0", default-features = false, features = ["boringssl-boring-crate"] }
 rand.workspace = true
+socket2 = "0.6.4"
 tokio.workspace = true

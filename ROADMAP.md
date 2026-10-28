@@ -63,6 +63,19 @@ The bounded receive-queue change reduces measured server CPU and packet counts
 under the same controlled workload. The local before/after/control runs and
 their limits are recorded in `STATUS.md`.
 
+## Completed — Client CPU Measurement and Lifecycle Update
+
+The existing bounded receive turn now includes packets already available at
+the client socket. Local A/B/A measurements observed fewer client packets and
+a modest lower mean CPU cost; a fourth resource run without counters passed.
+Scope and measurement limits are in `STATUS.md`.
+Qualification continues through the shared H3 and product checks; H3 remains
+default-off and field validation deferred.
+
+Wait for observed client-exit cleanup instead of a fixed sleep, and exercise
+both H2 and H3 process recovery in normal CI. Keep the same cleanup deadline
+and per-phase idle observations; do not remove checks to improve run time.
+
 ## Next — Remaining H3 Cost and Integration Quality
 
 Keep using the configured client/server path and shared checks. Further CPU

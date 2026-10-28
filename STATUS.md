@@ -241,6 +241,57 @@ for the client and 17–18 MiB for the server. These are local observations, not
 field-performance or leak-freedom claims. Existing lifecycle and transfer tests
 cover the changed server path; no timing threshold was added to CI.
 
+## Measured H3 Client Receive Improvement
+
+The same bounded receive turn now includes datagrams already available on the
+client's UDP socket before flushing QUIC output. It retains the 64-packet
+per-turn bound and existing peer/packet-size checks, without waiting for more
+packets or increasing queue/flow-control buffering. It adds no dependencies or
+configuration. The server's existing queued-receive behavior remains in the
+shared driver.
+
+On 2026-10-28, four release-mode runs compared the original client path, the
+change, the original path again, and the final change without counters on the
+same local host. Each run used three 10-second H2 reference phases and three
+30-second H3 phases, with the same eight sustained bidirectional flows and four
+short flows per second. Each H3 run transferred 900 MiB plus 360 short flows.
+All four runs passed transfer, cancellation, admission-release,
+client-termination and restart checks. CPU values below are means of the three
+H3 phases; 100% is one fully used core.
+
+| Run, in execution order | Client CPU | Server CPU | Client packets for 24 long flows |
+|---|---:|---:|---:|
+| Original client path A | 19.61% | 32.25% | 768485 |
+| Read available packets B | 17.71% | 31.22% | 550054 |
+| Original client path A again | 19.31% | 32.87% | 768898 |
+| Final receive change, without counters | 18.48% | 35.50% | Not sampled |
+
+The observed client mean was 8–10% lower in B, with about 28% fewer client
+packets for identical application byte counts. The final client mean also
+remained below both original-path means, but individual CPU phase ranges
+overlap. The final H2 client/server reference was 5.09%/4.79%, versus
+3.99–4.29%/3.79–4.06% in the earlier runs. Host and measurement variation limit
+these observations to a modest local mean decline, not a fixed or universal
+CPU gain. They do not establish an independent server-side improvement. Only
+A/B/A used the same temporary numeric counters at connection end; the final
+run and product implementation have none. All four timed runs excluded
+concurrent builds and profiling. After idle, both processes returned to 11 file
+descriptors; H3 connection, flow and admission gauges returned to zero. These local results do
+not establish wireless or field performance, or prove leak freedom. H3 remains
+default-off; field validation remains deferred.
+
+A separate final release-mode CLI comparison passed connection setup, 8 MiB
+upload/download/duplex cases, 30-second eight-way concurrent runs for both
+carriers and interrupted-flow recovery; it was not a controlled before/after
+throughput comparison.
+
+The lifecycle test now waits for target EOF immediately after stopping the
+client, retaining the former total 15-second target-release allowance. It then
+requires closed connections and released admission before restarting. This
+removes the fixed 12-second sleep and lets normal CI cover process termination
+and recovery for both H2 and H3. The per-phase idle observation and every
+existing quality check remain; CPU/RSS thresholds are still absent from CI.
+
 ## CI and Security Alert Maintenance
 
 Linux CI installs a build/verification package only when a required command is

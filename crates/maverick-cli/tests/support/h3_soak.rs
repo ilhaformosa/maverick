@@ -3,11 +3,7 @@ use serde_json::{json, Value};
 use tokio::time::{interval, sleep, sleep_until, Instant as Deadline, MissedTickBehavior};
 
 async fn start_observed_pair(fixture: &Fixture) -> Result<(Cli, Cli, SocketAddr, SocketAddr)> {
-    fixture.server_config(true)?;
-    OpenOptions::new()
-        .append(true)
-        .open(fixture.directory.path().join("server.yaml"))?
-        .write_all(b"metrics:\n  enabled: true\n  listen: '127.0.0.1:0'\n")?;
+    fixture.server_config_with_metrics(true)?;
     let mut server = Cli::start(fixture.directory.path(), "server", "server.yaml")?;
     let address = server
         .ready(if fixture.h3 {
@@ -24,7 +20,7 @@ async fn start_observed_pair(fixture: &Fixture) -> Result<(Cli, Cli, SocketAddr,
     Ok((server, client, proxy, metrics))
 }
 
-async fn metrics(address: SocketAddr) -> Result<Value> {
+pub(super) async fn metrics(address: SocketAddr) -> Result<Value> {
     timeout(Duration::from_secs(3), async {
         let mut stream = TcpStream::connect(address).await?;
         stream
@@ -45,7 +41,10 @@ async fn metrics(address: SocketAddr) -> Result<Value> {
     .context("metrics request timed out")?
 }
 
-async fn wait_for_drained(address: SocketAddr, require_closed_connections: bool) -> Result<()> {
+pub(super) async fn wait_for_drained(
+    address: SocketAddr,
+    require_closed_connections: bool,
+) -> Result<()> {
     let mut last_observed = None;
     timeout(Duration::from_secs(3), async {
         loop {

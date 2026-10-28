@@ -1457,6 +1457,7 @@ dependencies = [
  "maverick-core",
  "quiche 0.30.0",
  "rand",
+ "socket2",
  "tokio",
 ]
 

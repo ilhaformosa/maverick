@@ -810,6 +810,7 @@ dependencies = [
  "maverick-core",
  "quiche",
  "rand",
+ "socket2",
  "tokio",
 ]
 

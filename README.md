@@ -92,12 +92,31 @@ The default runs three 100-second H2 reference phases and three 300-second H3
 phases, each with eight sustained bidirectional flows and four short flows per
 second. Idle intervals, cancellation, active-client exit and restart bring the
 total to about 22 minutes. Use `MAVERICK_SOAK_SECONDS=10` for a short preflight.
+`MAVERICK_SOAK_CONCURRENCY` controls sustained flows and defaults to eight.
+Each flow sends 64 KiB in each direction every 100 ms. For higher concurrency
+and a longer run:
+
+```sh
+MAVERICK_SOAK_SECONDS=600 MAVERICK_SOAK_CONCURRENCY=32 \
+  cargo test --locked --release -p maverick-cli --features experimental-h3 \
+  --test h3_product soak::long_running_carrier_resources -- --ignored --nocapture
+```
+
+This uses three 200-second H2 reference phases and three 600-second H3 phases,
+plus idle and recovery checks, for about 42 minutes. Four short flows per second
+continue alongside the sustained flows. Keep the same concurrency and reduce
+`MAVERICK_SOAK_SECONDS` to `10` for a preflight. Each phase records `concurrency`,
+`long_bytes` and `transfer_seconds`; their byte/time ratio is the achieved
+transfer rate, including setup and long-flow completion but excluding later
+recovery checks. This paced workload does not measure maximum throughput.
+
 The manual sampler requires `ps` and `lsof` and records only numeric CPU time,
 resident memory, descriptor counts and existing server metrics. Compare CPU
 time differences over elapsed time, and restart the counter after a process
 restart. Memory samples are not peaks, and retained allocator capacity or H2
-pool connections alone do not establish a leak. CI checks the same lifecycle
-with a short active run and no platform-dependent resource thresholds.
+pool connections alone do not establish a leak. The existing CI lifecycle case
+uses 32 sustained flows for 12 seconds per carrier, with no platform-dependent
+resource thresholds.
 
 Both normal CI and manual runs terminate and restart the client for H2 and H3.
 After termination, they wait for the target connection to close, up to the

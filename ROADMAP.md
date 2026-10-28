@@ -76,6 +76,21 @@ Wait for observed client-exit cleanup instead of a fixed sleep, and exercise
 both H2 and H3 process recovery in normal CI. Keep the same cleanup deadline
 and per-phase idle observations; do not remove checks to improve run time.
 
+## Local Qualification at Higher Concurrency
+
+For higher-concurrency validation, use 32 sustained flows on the configured
+client/server path, with 30 minutes of H3 load and 10 minutes of H2 reference
+load. Run a short preflight and relevant
+shared local checks first, then overlap remote CI with the long local run.
+Keep other local builds and profiling out of that measurement. Review before
+the first push, and merge only after both the long run and all CI checks pass.
+
+Record achieved transfer rate, CPU, sampled memory and resource cleanup against
+the tested revision in the PR validation report; repeat a passed long run only
+for a relevant change or unresolved result. Change product behavior only for problems supported by
+the measurements; preserve default-off H3, deferred field validation and every
+existing quality check.
+
 ## Next — Remaining H3 Cost and Integration Quality
 
 Keep using the configured client/server path and shared checks. Further CPU

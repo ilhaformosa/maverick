@@ -292,6 +292,29 @@ removes the fixed 12-second sleep and lets normal CI cover process termination
 and recovery for both H2 and H3. The per-phase idle observation and every
 existing quality check remain; CPU/RSS thresholds are still absent from CI.
 
+## Local Concurrency and Duration Coverage
+
+The existing resource test now accepts `MAVERICK_SOAK_CONCURRENCY`, defaulting
+to eight sustained bidirectional flows. The documented 32-flow recipe uses
+three 600-second H3 phases and three 200-second H2 reference phases, with four
+short flows per second, idle observations, cancellation and process recovery.
+It takes about 42 minutes. A 32-flow fixture allows 64 connections so the short
+flows have admission headroom; this changes only the test configuration.
+
+Each phase records its concurrency, verified long-flow byte count and elapsed
+transfer time through long-flow completion, before recovery checks. The ratio
+is an achieved rate under the paced workload, not maximum throughput. CPU
+comparisons use the first load sample through the drained sample for each
+phase; RSS and descriptor observations remain samples rather than peaks.
+Exact long-run measurements belong with the tested revision and workload in
+the PR validation report.
+
+The existing normal lifecycle test now uses 32 sustained flows for 12 seconds
+per carrier. It retains H2/H3 transfer, interruption, admission-release and
+process-restart checks without adding another test or CPU/RSS thresholds.
+Production code and configuration defaults are unchanged. H3 remains
+default-off, and field validation remains deferred.
+
 ## CI and Security Alert Maintenance
 
 Linux CI installs a build/verification package only when a required command is

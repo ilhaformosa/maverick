@@ -301,17 +301,25 @@ short flows per second, idle observations, cancellation and process recovery.
 It takes about 42 minutes. A 32-flow fixture allows 64 connections so the short
 flows have admission headroom; this changes only the test configuration.
 
-Each phase records its concurrency, verified long-flow byte count and elapsed
-transfer time through long-flow completion, before recovery checks. The ratio
-is an achieved rate under the paced workload, not maximum throughput. CPU
+All peers are paired before the common traffic window starts. Each phase records
+concurrency, block size, setup time, verified long-flow byte count and transfer
+time through long-flow completion. Setup and later recovery are excluded from
+the transfer-time denominator. The earlier #81 measurement included setup and
+retains that original interpretation. The ratio is an achieved rate under the
+paced workload, not maximum throughput. CPU
 comparisons use the first load sample through the drained sample for each
 phase; RSS and descriptor observations remain samples rather than peaks.
 Exact long-run measurements belong with the tested revision and workload in
 the PR validation report.
 
-The existing normal lifecycle test now uses 32 sustained flows for 12 seconds
-per carrier. It retains H2/H3 transfer, interruption, admission-release and
-process-restart checks without adding another test or CPU/RSS thresholds.
+The existing normal lifecycle test uses 32 sustained flows for a full 12 seconds
+per carrier. In debug CI, 16 KiB blocks every 100 ms keep aggregate offered load
+at the former eight-flow rate of 10 MiB/s; the manual release test retains
+64 KiB blocks and 40 MiB/s at 32 flows. CI retains H2/H3 transfer, short-flow
+churn, interruption, admission-release and process-restart checks without
+adding another test or CPU/RSS thresholds. The two-slot auth/TLS test waits for
+observed admission cleanup between stages before requiring both slots again;
+it preserves the original limits, negative cases and concurrent recovery pair.
 Production code and configuration defaults are unchanged. H3 remains
 default-off, and field validation remains deferred.
 

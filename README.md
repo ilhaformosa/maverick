@@ -105,18 +105,21 @@ MAVERICK_SOAK_SECONDS=600 MAVERICK_SOAK_CONCURRENCY=32 \
 This uses three 200-second H2 reference phases and three 600-second H3 phases,
 plus idle and recovery checks, for about 42 minutes. Four short flows per second
 continue alongside the sustained flows. Keep the same concurrency and reduce
-`MAVERICK_SOAK_SECONDS` to `10` for a preflight. Each phase records `concurrency`,
-`long_bytes` and `transfer_seconds`; their byte/time ratio is the achieved
-transfer rate, including setup and long-flow completion but excluding later
-recovery checks. This paced workload does not measure maximum throughput.
+`MAVERICK_SOAK_SECONDS` to `10` for a preflight. All peers are paired before the
+common traffic window starts. Each phase records `concurrency`, `block_bytes`,
+`setup_seconds`, `long_bytes` and `transfer_seconds`. The byte/transfer-time
+ratio is the achieved rate through long-flow completion, excluding setup and
+later recovery checks. This paced workload does not measure maximum throughput.
 
 The manual sampler requires `ps` and `lsof` and records only numeric CPU time,
 resident memory, descriptor counts and existing server metrics. Compare CPU
 time differences over elapsed time, and restart the counter after a process
 restart. Memory samples are not peaks, and retained allocator capacity or H2
 pool connections alone do not establish a leak. The existing CI lifecycle case
-uses 32 sustained flows for 12 seconds per carrier, with no platform-dependent
-resource thresholds.
+uses 32 sustained flows for 12 seconds per carrier. Its 16 KiB blocks retain the
+former eight-flow aggregate load of 10 MiB/s in debug builds; manual release
+measurements use 64 KiB blocks (40 MiB/s at 32 flows). There are no CPU/RSS
+thresholds in CI.
 
 Both normal CI and manual runs terminate and restart the client for H2 and H3.
 After termination, they wait for the target connection to close, up to the

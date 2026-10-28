@@ -39,7 +39,7 @@ impl Cli {
         let mut child = Command::new(env!("CARGO_BIN_EXE_maverick"))
             .args([command, "-c", config])
             .current_dir(directory)
-            .env("RUST_LOG", "info")
+            .env("RUST_LOG", "info,maverick_client=debug")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -52,10 +52,27 @@ impl Cli {
             readiness,
             reader: None,
         };
+        let pid = process.child.id();
         process.reader = Some(std::thread::spawn(move || {
-            // Consume logs without retaining or printing credentials, paths, or
-            // diagnostics. Only readiness addresses leave this thread.
+            // Never retain raw logs: emit only known static failure labels and
+            // readiness addresses, without credentials, paths or peer details.
             for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
+                if line.contains("SOCKS connection ended") {
+                    for reason in [
+                        "H3 connection timed out",
+                        "H3 authentication timed out",
+                        "missing H3 ServerHello",
+                        "server rejected H3 handshake",
+                        "server closed before flow opened",
+                        "remote target connection failed",
+                        "unexpected end of file",
+                        "broken pipe",
+                    ] {
+                        if line.contains(reason) {
+                            eprintln!("fixture client {pid}: {reason}");
+                        }
+                    }
+                }
                 for marker in [
                     SERVER_READY,
                     H2_SERVER_READY,
@@ -179,6 +196,15 @@ impl Fixture {
         private_file(self.directory.path(), "server.yaml", input)
     }
 
+    fn server_config_with_metrics(&self, v2: bool) -> Result<()> {
+        self.server_config(v2)?;
+        OpenOptions::new()
+            .append(true)
+            .open(self.directory.path().join("server.yaml"))?
+            .write_all(b"metrics:\n  enabled: true\n  listen: '127.0.0.1:0'\n")?;
+        Ok(())
+    }
+
     fn client_config(&self, name: &str, server: SocketAddr, v2: bool, fault: Fault) -> Result<()> {
         let secret = if matches!(fault, Fault::Secret) {
             SecretString::generate()
@@ -238,9 +264,13 @@ async fn http_connect(proxy: SocketAddr, target: SocketAddr) -> Result<TcpStream
         ensure!(response.len() < 1024, "oversized HTTP CONNECT response");
         response.push(stream.read_u8().await?);
     }
+    let status = std::str::from_utf8(&response)
+        .ok()
+        .and_then(|response| response.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok());
     ensure!(
         response.starts_with(b"HTTP/1.1 200 "),
-        "HTTP CONNECT rejected"
+        "HTTP CONNECT rejected: status {status:?}"
     );
     Ok(stream)
 }
@@ -250,7 +280,7 @@ async fn exchange(proxy: SocketAddr, target: SocketAddr, http: bool, payload: &[
         http_connect(proxy, target).await?
     } else {
         let (stream, status) = socks_connect(proxy, target).await?;
-        ensure!(status == 0, "SOCKS CONNECT rejected");
+        ensure!(status == 0, "SOCKS CONNECT rejected: status {status}");
         stream
     };
     stream.write_all(payload).await?;
@@ -272,16 +302,57 @@ async fn echo(mut stream: TcpStream) -> Result<()> {
     Ok(())
 }
 
-async fn successful_flows(socks: SocketAddr, http: SocketAddr) -> Result<()> {
-    // Sequential flows verify that finishing one QUIC connection leaves the
-    // ordinary server ready for the next one.
+async fn checked_stage(result: Result<()>, metrics: SocketAddr, stage: &str) -> Result<()> {
+    let Err(error) = result else {
+        return Ok(());
+    };
+    let Ok(state) = soak::metrics(metrics).await else {
+        return Err(error.context(format!("{stage}; server counters unavailable")));
+    };
+    // Only fixed numeric fields leave the fixture, never raw logs or credentials.
+    let counters = [
+        "active_connections",
+        "active_flows",
+        "active_pre_auth",
+        "connection_limit_rejections",
+        "source_connection_limit_rejections",
+        "pre_auth_admission_rejections",
+        "unauthenticated_rejections",
+        "auth_rate_limit_rejections",
+        "flow_limit_rejections",
+        "target_connect_failures",
+        "target_connect_timeouts",
+    ]
+    .map(|key| (key, state[key].as_u64()));
+    Err(error.context(format!("{stage}; server counters: {counters:?}")))
+}
+
+async fn successful_flows(socks: SocketAddr, http: SocketAddr, metrics: SocketAddr) -> Result<()> {
+    // TCP EOF does not promise that server session guards have been released.
+    // Check cleanup before requiring both of this fixture's two slots again.
     for (proxy, is_http) in [(socks, false), (http, true)] {
         let target = TcpListener::bind("127.0.0.1:0").await?;
         let address = target.local_addr()?;
-        tokio::try_join!(
-            async { echo(target.accept().await?.0).await },
-            exchange(proxy, address, is_http, b"sequential configured H3 flow")
-        )?;
+        let result = async {
+            tokio::try_join!(
+                async { echo(target.accept().await?.0).await },
+                exchange(proxy, address, is_http, b"sequential configured H3 flow")
+            )?;
+            soak::wait_for_drained(metrics, true)
+                .await
+                .context("server admission cleanup")
+        }
+        .await;
+        checked_stage(
+            result,
+            metrics,
+            if is_http {
+                "sequential HTTP CONNECT"
+            } else {
+                "sequential SOCKS CONNECT"
+            },
+        )
+        .await?;
     }
     let target = TcpListener::bind("127.0.0.1:0").await?;
     let address = target.local_addr()?;
@@ -291,12 +362,18 @@ async fn successful_flows(socks: SocketAddr, http: SocketAddr) -> Result<()> {
         tokio::try_join!(echo(first), echo(second))?;
         Ok::<_, anyhow::Error>(())
     };
-    tokio::try_join!(
-        origin,
-        exchange(socks, address, false, b"concurrent SOCKS flow"),
-        exchange(http, address, true, b"concurrent HTTP CONNECT flow")
-    )?;
-    Ok(())
+    let result = async {
+        tokio::try_join!(
+            origin,
+            exchange(socks, address, false, b"concurrent SOCKS flow"),
+            exchange(http, address, true, b"concurrent HTTP CONNECT flow")
+        )?;
+        soak::wait_for_drained(metrics, true)
+            .await
+            .context("server admission cleanup")
+    }
+    .await;
+    checked_stage(result, metrics, "concurrent SOCKS/HTTP CONNECT pair").await
 }
 
 async fn rejected_before_target(socks: SocketAddr) -> Result<()> {
@@ -335,9 +412,10 @@ async fn configured_cli_processes_forward_tcp_and_reject_invalid_authentication_
     timeout(Duration::from_secs(90), async {
         for v2 in [false, true] {
             let fixture = Fixture::new()?;
-            fixture.server_config(v2)?;
+            fixture.server_config_with_metrics(v2)?;
             let mut server = Cli::start(fixture.directory.path(), "server", "server.yaml")?;
             let server_address = server.ready(SERVER_READY).await?;
+            let metrics = server.ready(METRICS_READY).await?;
             let noise = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
             noise.send_to(&[0], server_address).await?;
             drop(noise);
@@ -346,9 +424,11 @@ async fn configured_cli_processes_forward_tcp_and_reject_invalid_authentication_
                 let mut client = Cli::start(fixture.directory.path(), "client", "client.yaml")?;
                 let socks = client.ready(SOCKS_READY).await?;
                 let http = client.ready(HTTP_READY).await?;
-                successful_flows(socks, http).await.with_context(|| {
-                    format!("auth v{} configured TCP forwarding", if v2 { 2 } else { 1 })
-                })?;
+                successful_flows(socks, http, metrics)
+                    .await
+                    .with_context(|| {
+                        format!("auth v{} configured TCP forwarding", if v2 { 2 } else { 1 })
+                    })?;
             }
             for (index, fault) in [Fault::Secret, Fault::Ca, Fault::Hostname, Fault::Pin]
                 .into_iter()
@@ -359,18 +439,35 @@ async fn configured_cli_processes_forward_tcp_and_reject_invalid_authentication_
                 let mut client = Cli::start(fixture.directory.path(), "client", &name)?;
                 let socks = client.ready(SOCKS_READY).await?;
                 client.ready(HTTP_READY).await?;
-                rejected_before_target(socks).await.with_context(|| {
-                    format!("auth v{} rejection: {fault:?}", if v2 { 2 } else { 1 })
-                })?;
+                let result = async {
+                    rejected_before_target(socks).await?;
+                    // Keep this client alive while the rejected session releases
+                    // admission; killing it is a separate lifecycle test.
+                    soak::wait_for_drained(metrics, true)
+                        .await
+                        .context("server admission cleanup after rejection")
+                }
+                .await;
+                checked_stage(
+                    result,
+                    metrics,
+                    &format!("auth v{} rejection: {fault:?}", if v2 { 2 } else { 1 }),
+                )
+                .await?;
             }
             // Rejections must release the two available connection/handshake
             // slots, so a valid pair of concurrent flows still works.
             let mut recovered = Cli::start(fixture.directory.path(), "client", "client.yaml")?;
             let socks = recovered.ready(SOCKS_READY).await?;
             let http = recovered.ready(HTTP_READY).await?;
-            successful_flows(socks, http)
+            successful_flows(socks, http, metrics)
                 .await
-                .context("valid flows after rejected peers")?;
+                .with_context(|| {
+                    format!(
+                        "auth v{} valid flows after rejected peers",
+                        if v2 { 2 } else { 1 }
+                    )
+                })?;
         }
         Ok::<_, anyhow::Error>(())
     })
@@ -453,7 +550,11 @@ async fn measured_flow(
         };
         let request = async {
             let (mut stream, status) = socks_connect(proxy, address).await?;
-            ensure!(status == 0, "measured SOCKS connection rejected");
+            ensure!(
+                status == 0,
+                "measured SOCKS connection rejected: status {status}, elapsed {:.3}s",
+                started.elapsed().as_secs_f64()
+            );
             let connect_ms = started.elapsed().as_secs_f64() * 1000.0;
             let data_started = Instant::now();
             // Do not let the target pre-buffer downloads during SOCKS setup.

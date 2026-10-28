@@ -366,6 +366,21 @@ impl PacketIo {
             Err(error) => Err(error.into()),
         }
     }
+
+    fn receive_queued(&mut self, conn: &mut quiche::Connection) -> Result<()> {
+        // Consume packets already routed to this connection before flushing
+        // ACKs. Do not wait for a batch or exceed the existing queue's capacity.
+        for _ in 1..PACKET_QUEUE {
+            let Some(incoming) = &mut self.incoming else {
+                break;
+            };
+            let Ok(mut packet) = incoming.try_recv() else {
+                break;
+            };
+            self.receive(conn, &mut packet)?;
+        }
+        Ok(())
+    }
 }
 
 async fn handshake(
@@ -565,6 +580,7 @@ impl Driver {
                 _ = inbound.closed(), if fin_sent && !app_finished => app_finished = true,
                 received = self.io.recv() => {
                     self.io.receive(&mut self.conn, &mut received?)?;
+                    self.io.receive_queued(&mut self.conn)?;
                 }
                 _ = tokio::time::sleep(wait) => self.conn.on_timeout(),
                 frame = self.app.outbound.recv(), if wire_out.is_empty() && !end_out => {

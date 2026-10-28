@@ -202,6 +202,45 @@ timeout, checks admission release and verifies recovery after terminating an
 active H3 client. The long resource run is manual; CI has no RSS/CPU thresholds.
 H3 remains default-off, and field validation remains deferred.
 
+## Measured H3 Receive-Queue Improvement
+
+The server driver now consumes already queued packets before processing H3 and
+flushing QUIC output. One turn handles at most the existing 64-packet queue
+capacity, including the first packet. It does not wait to fill a batch, increase
+buffers or change authentication, TLS, flow-control limits or default settings.
+This avoids flushing a separate acknowledgement after every queued packet.
+
+On 2026-10-28, four release-mode runs used the same local workload without
+concurrent local builds: three 10-second H2 reference phases and three 30-second
+H3 phases per run. Each H3 run transferred 900 MiB over eight sustained
+bidirectional flows plus 360 short flows, followed by the existing cancellation,
+idle, active-client termination and restart checks. All four runs passed.
+The following values are the means of the three H3 phases; 100% is one core.
+
+| Run, in execution order | Client CPU | Server CPU |
+|---|---:|---:|
+| Original driver A | 25.4% | 64.3% |
+| Queued receive B | 23.8% | 47.1% |
+| Original driver A again | 22.9% | 55.2% |
+| Final queued receive, without temporary counters | 21.3% | 35.4% |
+
+The instrumented B run used 15–27% less server CPU than the two instrumented
+controls. The final run confirmed the direction of improvement; host scheduling
+and measurement variation prevent a fixed speedup claim. Client CPU varied
+enough that this experiment does not establish an independent client-side gain.
+H3 still uses substantially more CPU than H2 under this workload.
+
+Temporary numeric end-of-connection counters in the first three runs showed
+server packets for the 24 long flows falling from 782774/782991 in the controls
+to 448812 (about 43% fewer). Client stream retransmission fell from
+1535476/855749 bytes to 386463 bytes. Application byte counts stayed identical.
+These counters and their output are absent from the final product. File
+descriptors returned to 11 per process after idle; connection/flow gauges
+returned to zero. The final run's post-idle RSS remained approximately 16–17 MiB
+for the client and 17–18 MiB for the server. These are local observations, not
+field-performance or leak-freedom claims. Existing lifecycle and transfer tests
+cover the changed server path; no timing threshold was added to CI.
+
 ## CI and Security Alert Maintenance
 
 Linux CI installs a build/verification package only when a required command is

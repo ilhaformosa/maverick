@@ -99,6 +99,13 @@ restart. Memory samples are not peaks, and retained allocator capacity or H2
 pool connections alone do not establish a leak. CI checks the same lifecycle
 with a short active run and no platform-dependent resource thresholds.
 
+Both normal CI and manual runs terminate and restart the client for H2 and H3.
+After termination, they wait for the target connection to close, up to the
+existing 15-second allowance, then require connection/admission cleanup before
+restarting. They continue as soon as cleanup is observed instead of sleeping
+for a fixed 12 seconds. The 15-second idle observation after each manual load
+phase remains unchanged.
+
 The following developer laboratories retain focused reference checks.
 
 Run the opt-in local quiche/H3 experiment:

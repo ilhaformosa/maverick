@@ -367,17 +367,27 @@ impl PacketIo {
         }
     }
 
-    fn receive_queued(&mut self, conn: &mut quiche::Connection) -> Result<()> {
-        // Consume packets already routed to this connection before flushing
-        // ACKs. Do not wait for a batch or exceed the existing queue's capacity.
+    fn receive_ready(&mut self, conn: &mut quiche::Connection) -> Result<()> {
+        // Consume packets already available before flushing ACKs. Keep the
+        // existing per-turn bound and never wait for more packets to arrive.
+        let mut packet = [0; MAX_UDP + 1];
         for _ in 1..PACKET_QUEUE {
-            let Some(incoming) = &mut self.incoming else {
-                break;
-            };
-            let Ok(mut packet) = incoming.try_recv() else {
-                break;
-            };
-            self.receive(conn, &mut packet)?;
+            if let Some(incoming) = &mut self.incoming {
+                let Ok(mut queued) = incoming.try_recv() else {
+                    break;
+                };
+                self.receive(conn, &mut queued)?;
+            } else {
+                match self.socket.try_recv_from(&mut packet) {
+                    Ok((len, peer)) => {
+                        if peer == self.peer && len <= MAX_UDP {
+                            self.receive(conn, &mut packet[..len])?;
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error.into()),
+                }
+            }
         }
         Ok(())
     }
@@ -580,7 +590,7 @@ impl Driver {
                 _ = inbound.closed(), if fin_sent && !app_finished => app_finished = true,
                 received = self.io.recv() => {
                     self.io.receive(&mut self.conn, &mut received?)?;
-                    self.io.receive_queued(&mut self.conn)?;
+                    self.io.receive_ready(&mut self.conn)?;
                 }
                 _ = tokio::time::sleep(wait) => self.conn.on_timeout(),
                 frame = self.app.outbound.recv(), if wire_out.is_empty() && !end_out => {

@@ -45,7 +45,7 @@ async fn metrics(address: SocketAddr) -> Result<Value> {
     .context("metrics request timed out")?
 }
 
-async fn wait_for_drained(address: SocketAddr, h3: bool) -> Result<()> {
+async fn wait_for_drained(address: SocketAddr, require_closed_connections: bool) -> Result<()> {
     let mut last_observed = None;
     timeout(Duration::from_secs(3), async {
         loop {
@@ -59,7 +59,7 @@ async fn wait_for_drained(address: SocketAddr, h3: bool) -> Result<()> {
             last_observed = Some((state["active_flows"].clone(), connections, admission));
             // H2 deliberately holds a connection admission permit for each
             // pooled TLS connection, in addition to temporary request permits.
-            let admission_released = if h3 {
+            let admission_released = if require_closed_connections {
                 connections == 0 && admission == 0
             } else {
                 admission == connections
@@ -295,59 +295,57 @@ async fn exercise(h3: bool, seconds: u64, cycles: usize, resources: bool) -> Res
             .await?;
         }
     }
-    if resources || h3 {
-        let target_at_exit = TcpListener::bind("127.0.0.1:0").await?;
-        let (mut held, status) = socks_connect(proxy, target_at_exit.local_addr()?).await?;
-        ensure!(status == 0, "client-exit setup rejected");
-        let (mut peer, _) = target_at_exit.accept().await?;
-        held.write_all(b"active").await?;
-        let mut bytes = [0; 6];
-        peer.read_exact(&mut bytes).await?;
-        snapshot(
-            h3,
-            "before-client-stop",
-            started,
-            &server,
-            Some(&client),
-            address,
-            resources,
-        )
-        .await?;
-        drop(client);
-        // Configured QUIC idle timeout is ten seconds; allow peer-loss cleanup.
-        sleep(Duration::from_secs(12)).await;
-        let mut rest = Vec::new();
-        timeout(Duration::from_secs(3), peer.read_to_end(&mut rest))
-            .await
-            .context("client exit did not release target")??;
-        drop(held);
-        wait_for_drained(address, h3).await?;
-        snapshot(
-            h3,
-            "client-stopped",
-            started,
-            &server,
-            None,
-            address,
-            resources,
-        )
-        .await?;
-        let mut restarted = Cli::start(fixture.directory.path(), "client", "client.yaml")?;
-        let proxy = restarted.ready(SOCKS_READY).await?;
-        restarted.ready(HTTP_READY).await?;
-        flow_batch(proxy, &target, 8, 64 * 1024).await?;
-        wait_for_drained(address, h3).await?;
-        snapshot(
-            h3,
-            "restarted",
-            started,
-            &server,
-            Some(&restarted),
-            address,
-            resources,
-        )
-        .await?;
-    }
+    let target_at_exit = TcpListener::bind("127.0.0.1:0").await?;
+    let (mut held, status) = socks_connect(proxy, target_at_exit.local_addr()?).await?;
+    ensure!(status == 0, "client-exit setup rejected");
+    let (mut peer, _) = target_at_exit.accept().await?;
+    held.write_all(b"active").await?;
+    let mut bytes = [0; 6];
+    peer.read_exact(&mut bytes).await?;
+    snapshot(
+        h3,
+        "before-client-stop",
+        started,
+        &server,
+        Some(&client),
+        address,
+        resources,
+    )
+    .await?;
+    drop(client);
+    // Keep the same 15-second deadline, but continue as soon as cleanup
+    // reaches the target. H2 need not wait for the QUIC idle timeout.
+    let mut rest = Vec::new();
+    timeout(Duration::from_secs(15), peer.read_to_end(&mut rest))
+        .await
+        .context("client exit did not release target")??;
+    drop(held);
+    wait_for_drained(address, true).await?;
+    snapshot(
+        h3,
+        "client-stopped",
+        started,
+        &server,
+        None,
+        address,
+        resources,
+    )
+    .await?;
+    let mut restarted = Cli::start(fixture.directory.path(), "client", "client.yaml")?;
+    let proxy = restarted.ready(SOCKS_READY).await?;
+    restarted.ready(HTTP_READY).await?;
+    flow_batch(proxy, &target, 8, 64 * 1024).await?;
+    wait_for_drained(address, h3).await?;
+    snapshot(
+        h3,
+        "restarted",
+        started,
+        &server,
+        Some(&restarted),
+        address,
+        resources,
+    )
+    .await?;
     Ok(())
 }
 

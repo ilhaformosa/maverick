@@ -204,6 +204,15 @@ H3 remains default-off, and field validation remains deferred.
 
 ## CI and Security Alert Maintenance
 
+Linux CI installs a build/verification package only when a required command is
+missing. Existing runner tools are retained. `scripts/check.sh` is the shared
+local/CI entry for product, rustls, H3 and the retained quiche candidate checks;
+Linux and macOS use the same H3/candidate scripts. The candidate script preserves
+the prior platform-specific dependency graph selection and isolated patch
+verification. Four negative dependency assertions now explicitly fail the
+script instead of relying on Bash `errexit` after `!`. Native artifact, SBOM,
+upgrade/rollback, security and both PR/main checks remain in CI.
+
 [PR #75](https://github.com/ilhaformosa/maverick/pull/75) runs Linux and macOS in
 parallel after scope classification. The required `public-pr-gate` now requires
 both applicable platform jobs to succeed. All prior checks and both PR/main

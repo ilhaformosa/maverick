@@ -39,7 +39,7 @@ setup, bulk transfers, concurrency and interrupted-flow recovery. The observed
 H2 target-first half-close truncation was corrected, and the repeatable H3
 receive-window improvement retained. Scope and limits are recorded in `STATUS.md`.
 
-## Current — Longer Local Sessions and Resource Measurements
+## Completed — Longer Local Sessions and Resource Measurements
 
 Use the same configured path for repeated sustained/churn load, idle periods,
 local cancellation and client-process recovery. Observe CPU time, resident
@@ -50,8 +50,18 @@ long resource measurements remain explicit local runs.
 
 Connection reuse needs a concrete workload and benefit; local throughput alone
 does not justify automatic carrier switching, new scheduling machinery or a
-browser/network performance claim. Changes to development tooling should first
-remove duplicate preparation and keep existing checks intact.
+browser/network performance claim.
+
+## Current — Shared Checks and Measured H3 CPU Work
+
+Use the shared local/CI check entry and install only missing CI tools. Retain
+all platform, compatibility, historical candidate, security and release checks.
+Calibrate workloads with a short preflight, finish focused review before the
+first CI push, and keep other local builds out of resource measurements.
+
+Profile the observed H3 CPU cost under the same controlled workload. Retain only
+small changes supported by before/after measurements and lifecycle tests;
+avoid new transport machinery without a demonstrated need.
 
 ## Deferred — Field Validation and Stable
 

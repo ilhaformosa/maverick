@@ -39,7 +39,7 @@ setup, bulk transfers, concurrency and interrupted-flow recovery. The observed
 H2 target-first half-close truncation was corrected, and the repeatable H3
 receive-window improvement retained. Scope and limits are recorded in `STATUS.md`.
 
-## Current — Longer Local Sessions and Resource Measurements
+## Completed — Longer Local Sessions and Resource Measurements
 
 Use the same configured path for repeated sustained/churn load, idle periods,
 local cancellation and client-process recovery. Observe CPU time, resident
@@ -50,8 +50,27 @@ long resource measurements remain explicit local runs.
 
 Connection reuse needs a concrete workload and benefit; local throughput alone
 does not justify automatic carrier switching, new scheduling machinery or a
-browser/network performance claim. Changes to development tooling should first
-remove duplicate preparation and keep existing checks intact.
+browser/network performance claim.
+
+## Completed — Shared Checks and Measured H3 CPU Work
+
+Use the shared local/CI check entry and install only missing CI tools. Retain
+all platform, compatibility, historical candidate, security and release checks.
+Calibrate workloads with a short preflight, finish focused review before the
+first CI push, and keep other local builds out of resource measurements.
+
+The bounded receive-queue change reduces measured server CPU and packet counts
+under the same controlled workload. The local before/after/control runs and
+their limits are recorded in `STATUS.md`.
+
+## Next — Remaining H3 Cost and Integration Quality
+
+Keep using the configured client/server path and shared checks. Further CPU
+changes need a measured benefit and preserved transfer/lifecycle behavior;
+the remaining client/UDP cost does not by itself justify connection pooling,
+automatic carrier switching or a new scheduler. Keep performance runs separate
+from builds, review code and documentation before the first push, and preserve
+all required CI checks while improving preparation and diagnostics.
 
 ## Deferred — Field Validation and Stable
 

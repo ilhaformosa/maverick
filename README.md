@@ -32,11 +32,25 @@ server/client path, proves a correct credential can relay data, and proves a
 wrong credential cannot establish a proxy flow. This is a local product check,
 not evidence of real-network usability or censorship resistance.
 
-For the complete local code gate:
+For the default product checks:
 
 ```sh
 ./scripts/local-harness.sh
 ```
+
+For the complete shared code checks, including the rustls compatibility matrix,
+H3 product path and retained quiche candidate checks:
+
+```sh
+./scripts/check.sh
+```
+
+The same entry runs in CI. Use `./scripts/check.sh h3` (or `product`, `rustls`,
+`quiche-candidate`) for a relevant subset while iterating, then run the complete
+entry before a change spanning those paths. Checks require the existing Rust,
+C/C++ build and shell tools, including `jq`, `rg` and `shellcheck`; the local
+entry does not install tools. CI retains its additional native release archive,
+SBOM, upgrade/rollback and CodeQL checks. Long performance runs remain opt-in.
 
 To build the ordinary CLI with H3 support and check separate local client/server
 processes:

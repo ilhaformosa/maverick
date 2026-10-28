@@ -198,8 +198,15 @@ async fn cancelled_local_flow(proxy: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-async fn exercise(h3: bool, seconds: u64, cycles: usize, resources: bool) -> Result<()> {
-    let fixture = Fixture::for_transport(h3, 32)?;
+async fn exercise(
+    h3: bool,
+    seconds: u64,
+    cycles: usize,
+    concurrency: usize,
+    resources: bool,
+) -> Result<()> {
+    // Keep room for short flows while all sustained H3 connections are active.
+    let fixture = Fixture::for_transport(h3, concurrency.max(16) * 2)?;
     let (server, client, proxy, address) = start_observed_pair(&fixture).await?;
     let target = Arc::new(TcpListener::bind("127.0.0.1:0").await?);
     let started = Instant::now();
@@ -214,9 +221,10 @@ async fn exercise(h3: bool, seconds: u64, cycles: usize, resources: bool) -> Res
     )
     .await?;
     for cycle in 0..cycles {
+        let load_started = Instant::now();
         let end = Deadline::now() + Duration::from_secs(seconds);
         let mut long = tokio::task::JoinSet::new();
-        for _ in 0..8 {
+        for _ in 0..concurrency {
             // Pair before launching churn, so each byte counter has the correct peer.
             let (local, status) = socks_connect(proxy, target.local_addr()?).await?;
             ensure!(status == 0, "long-flow setup rejected");
@@ -263,6 +271,7 @@ async fn exercise(h3: bool, seconds: u64, cycles: usize, resources: bool) -> Res
         })
         .await
         .context("long-flow completion timed out")??;
+        let transfer_seconds = load_started.elapsed().as_secs_f64();
         cancelled_local_flow(proxy).await?;
         interrupt_flows(proxy, 4).await?;
         flow_batch(proxy, &target, 8, 64 * 1024).await?;
@@ -279,7 +288,7 @@ async fn exercise(h3: bool, seconds: u64, cycles: usize, resources: bool) -> Res
         .await?;
         println!(
             "soak {}",
-            json!({"carrier":if h3 {"h3"} else {"h2"}, "cycle":cycle, "load_seconds":seconds, "long_bytes":long_bytes, "short_flows":short_flows, "recovery":"passed"})
+            json!({"carrier":if h3 {"h3"} else {"h2"}, "cycle":cycle, "load_seconds":seconds, "transfer_seconds":transfer_seconds, "concurrency":concurrency, "long_bytes":long_bytes, "short_flows":short_flows, "recovery":"passed"})
         );
         if resources {
             sleep(Duration::from_secs(15)).await;
@@ -353,7 +362,7 @@ async fn exercise(h3: bool, seconds: u64, cycles: usize, resources: bool) -> Res
 async fn active_carriers_outlive_idle_timeout_and_release_admission() -> Result<()> {
     timeout(Duration::from_secs(90), async {
         for h3 in [false, true] {
-            exercise(h3, 12, 1, false).await?;
+            exercise(h3, 12, 1, 32, false).await?;
         }
         Ok::<_, anyhow::Error>(())
     })
@@ -374,9 +383,19 @@ async fn long_running_carrier_resources() -> Result<()> {
         .transpose()?
         .unwrap_or(300);
     ensure!(seconds > 0, "soak phase must be nonzero");
+    let concurrency = std::env::var("MAVERICK_SOAK_CONCURRENCY")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(8);
+    // Stay below the existing 256-flow/stream defaults, including short flows.
+    ensure!(
+        (1..=128).contains(&concurrency),
+        "soak concurrency must be between 1 and 128"
+    );
     timeout(Duration::from_secs(seconds * 4 + 240), async {
-        exercise(false, (seconds / 3).max(1), 3, true).await?;
-        exercise(true, seconds, 3, true).await?;
+        exercise(false, (seconds / 3).max(1), 3, concurrency, true).await?;
+        exercise(true, seconds, 3, concurrency, true).await?;
         Ok::<_, anyhow::Error>(())
     })
     .await

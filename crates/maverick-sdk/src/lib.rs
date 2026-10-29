@@ -121,8 +121,16 @@ impl GuiClientRuntime {
         })
     }
 
-    pub fn is_connected(&self) -> bool {
+    /// Whether this wrapper holds a started local proxy runtime.
+    /// This is local lifecycle state, not a remote reachability or authentication check.
+    pub fn is_listening(&self) -> bool {
         self.client.is_some()
+    }
+
+    /// Legacy alias for local lifecycle state; it does not verify a remote connection.
+    #[deprecated(note = "use is_listening(); this legacy method only reports local proxy startup")]
+    pub fn is_connected(&self) -> bool {
+        self.is_listening()
     }
 
     pub fn local_addr(&self) -> Option<SocketAddr> {
@@ -131,7 +139,7 @@ impl GuiClientRuntime {
 
     pub fn diagnostics(&self) -> GuiDiagnosticsSnapshot {
         let connection_state = if self.client.is_some() {
-            GuiConnectionState::Connected
+            GuiConnectionState::Listening
         } else if self.last_error_class.is_some() {
             GuiConnectionState::Error
         } else {
@@ -149,6 +157,8 @@ impl GuiClientRuntime {
         snapshot
     }
 
+    /// Starts local listeners. Success does not establish remote TLS, authentication or forwarding.
+    /// Remote connections remain lazy and are opened only for actual proxy requests.
     pub async fn connect(&mut self) -> Result<()> {
         if self.client.is_some() {
             return Ok(());
@@ -166,6 +176,7 @@ impl GuiClientRuntime {
         }
     }
 
+    /// Stops the local runtime and releases its listeners.
     pub async fn disconnect(&mut self) -> Result<()> {
         let Some(client) = self.client.take() else {
             return Ok(());
@@ -1822,9 +1833,10 @@ mod tests {
     async fn gui_client_runtime_lifecycle_updates_redacted_diagnostics() -> Result<()> {
         let secret = SecretString::generate();
         let secret_rendered = secret.expose_secret().to_string();
+        let peer = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let config = client_config_builder()
             .local_socks5("127.0.0.1:0".parse()?)
-            .server_address("127.0.0.1:443")
+            .server_address(peer.local_addr()?.to_string())
             .server_name("localhost")
             .credential("u_gui_runtime_secret_2026", secret)
             .build()?;
@@ -1835,24 +1847,28 @@ mod tests {
             disconnected.connection_state,
             GuiConnectionState::Disconnected
         );
-        assert_eq!(disconnected.transport_status, GuiTransportStatus::Ready);
+        assert_eq!(
+            disconnected.transport_status,
+            GuiTransportStatus::Unverified
+        );
         assert!(!disconnected.tun_controls_enabled);
 
         runtime.connect().await?;
         let connected = runtime.diagnostics();
-        assert_eq!(connected.connection_state, GuiConnectionState::Connected);
+        assert_eq!(connected.connection_state, GuiConnectionState::Listening);
+        assert_eq!(connected.transport_status, GuiTransportStatus::Unverified);
         assert!(connected.local_socks5.ip().is_loopback());
         assert_ne!(connected.local_socks5.port(), 0);
-        assert!(runtime.is_connected());
+        assert!(runtime.is_listening());
         let bound_addr = connected.local_socks5;
 
         let rendered = format!("{connected:?} {}", serde_json::to_string(&connected)?);
         assert!(!rendered.contains("u_gui_runtime_secret_2026"));
         assert!(!rendered.contains(&secret_rendered));
-        assert!(!rendered.contains("127.0.0.1:443"));
+        assert!(!rendered.contains(&peer.local_addr()?.to_string()));
 
         runtime.disconnect().await?;
-        assert!(!runtime.is_connected());
+        assert!(!runtime.is_listening());
         assert_eq!(
             runtime.diagnostics().connection_state,
             GuiConnectionState::Disconnected
@@ -1864,9 +1880,10 @@ mod tests {
 
     #[tokio::test]
     async fn gui_client_runtime_disconnect_is_idempotent() -> Result<()> {
+        let peer = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let config = client_config_builder()
             .local_socks5("127.0.0.1:0".parse()?)
-            .server_address("127.0.0.1:443")
+            .server_address(peer.local_addr()?.to_string())
             .server_name("localhost")
             .credential("u_gui", SecretString::generate())
             .build()?;

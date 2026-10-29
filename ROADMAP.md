@@ -20,21 +20,31 @@ directions and one bounded pending server write. Deterministic regressions
 preserve progress deadlines, half-close, full-close and trailer behavior.
 See [STATUS.md](STATUS.md#default-h2-startup-and-duplex-relay) for the scope.
 
-## Next — SDK Readiness and Routine CI Cost
+## Delivered — SDK Readiness and Pinned CI Tool Cache
 
-Clarify SDK local-listener readiness versus authenticated remote connectivity.
-Its current GUI status still describes local startup; do not add automatic
-network probes or a background supervisor merely to rename that state. Select
-one observable user behavior and finite acceptance checks before implementation.
+Local SDK lifecycle is now `Listening` with remote transport `Unverified`;
+configuration and selector diagnostics cannot establish remote readiness.
+Existing enum tokens and the deprecated local-only method remain compatible,
+with explicit migration guidance. No background probe or observer was added.
+
+The supply-chain job verifies and reuses pinned tool binaries using an exact
+compatible cache key. It preserves every scan and saves reusable caches only
+from successful main runs. Verify actual cold/warm behavior through existing
+workflow dispatch, without adding a new recurring job or weakening checks.
+
+## Next — Remaining Usage and Build-Cost Evidence
+
+Before adding transport features, prioritize concrete failures in ordinary
+client/SDK use. A future remote-status capability needs a defined observation,
+freshness and failure meaning; local listeners or cumulative counters alone
+must not become a health claim.
 
 If SDK H3 becomes a delivery requirement, add its explicit feature and builder
-entry with one real SDK forwarding test; do not imply it exists today. H3
-pooling, automatic carrier selection and further CPU work still need a concrete
-user requirement or measured problem.
-
-Independently evaluate fixed-version security-tool caching and measured cache
-restore costs, retaining the scans and artifact checks. Prioritize changes that
-reduce the critical path or actual repeated work, not merely move waiting time.
+entry with one real SDK forwarding test. H3 pooling, automatic carrier choice
+and further CPU work need a concrete requirement or measured problem.
+Measure remaining product-cache restore/build costs before changing cache
+contents. Retain equivalent test, security, native artifact and rollback
+coverage; a quicker noncritical job need not shorten the whole PR.
 
 ## Deferred — Exact-Candidate Field Validation and Stable
 
@@ -58,9 +68,8 @@ approved release need.
 - Use the shared local/CI entry and preserve every required quality check.
   Review before the first push; continue independent work during CI and resolve
   failed main checks before dependent integration.
-- Evaluate fixed-version security-tool binary caching and actual target-cache
-  restore costs before changing CI further. Measure the whole critical path;
-  a shorter noncritical job does not necessarily shorten PR completion. Keep
+- Evaluate actual target-cache restore costs before changing CI further.
+  Measure the whole critical path; a shorter noncritical job does not necessarily shorten PR completion. Keep
   every scan and native artifact/rollback check.
 - Repeat a passing long test only for a relevant runtime change or unresolved
   failure. Use focused regressions first, including native checks for OS-sensitive

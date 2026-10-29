@@ -15,7 +15,7 @@ historical evidence; a result applies to its tested revision and workload.
 | Default source build and configuration | Browser-like TLS 1.3 + HTTP/2; H3 disabled |
 | Explicit H3 | Ordinary client/server commands support direct TCP through SOCKS5 and HTTP CONNECT when the build feature and both configurations enable it |
 | Configuration/authentication | Runnable config v1; existing authentication v1/v2 and frame formats retained; config v2 is policy-only |
-| SDK | Existing client/server wrappers and profile tooling; no dedicated H3 feature entry |
+| SDK | Client/server wrappers and profile tooling; local startup is distinguished from unverified remote connectivity; no dedicated H3 feature entry |
 | Field validation | Deferred by the owner; no new real-network trial authorized |
 | Stable | Not published; exact-RC field use and owner rollback remain incomplete |
 
@@ -77,6 +77,29 @@ true stalls, FIN/trailers and full-close ordering without host-speed thresholds.
 Shared product/rustls/H3/candidate checks and dependency inventory passed
 locally. Native CI retains its platform coverage; bounded resource runs
 complement these regressions and record shared-host context.
+
+## SDK Readiness and CI Tool Reuse
+
+The GUI-facing SDK wrapper reports `Listening` / `Unverified` after local
+startup, rather than manufacturing `Connected` / `Ready` from a listener handle.
+Local start errors remain `Error`; configuration/debug snapshots provide no
+remote verification. `is_listening()` names the local lifecycle explicitly,
+while deprecated `is_connected()` preserves its old local-only boolean for
+compatibility. New/old enum token handling and migration are documented in
+[CONFIG.md](CONFIG.md#sdk-diagnostics-and-local-lifecycle). No automatic remote
+probe, connection-health observer or GUI product-readiness change is added.
+
+Regression tests reproduce the former false state, exercise an unavailable and
+a rejecting loopback peer, and verify local bind failure, cleanup, redaction,
+legacy tokens and no unsolicited connection. These checks have no performance
+threshold and do not require unrelated development tasks to stop.
+
+The supply-chain workflow caches only its pinned audit/deny/CycloneDX binaries,
+keyed by OS/architecture, compiler and installer content. It verifies tool
+versions after restoration and installs only missing or mismatched tools.
+Only successful main runs save the reusable cache; every advisory, dependency
+policy and SBOM check still runs. Cold and warm hosted-run results belong to
+the associated PR/Actions evidence, not a claim that all CI waits disappear.
 
 ## Explicit H3 TCP
 
@@ -166,7 +189,7 @@ Stable publication checks. Local H3 success cannot replace these gates. See the
 the shared `scripts/check.sh` entry retain all product, rustls, H3, historical
 candidate, security, native artifact/SBOM and upgrade/rollback checks on the
 applicable platforms. Product CI installs only missing tools; the separate
-supply-chain job still rebuilds its fixed-version tools. PR and main checks
+supply-chain job now reuses its compatible pinned-tool binary cache. PR and main checks
 remain. Linux runs the full workspace/rustls matrix; macOS runs H3/candidate
 and native artifact/rollback gates, not the identical full matrix.
 Independent development can continue while CI runs, with failed main checks

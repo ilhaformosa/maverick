@@ -54,6 +54,14 @@ instead of silently changing policy. See [CONFIG.md](CONFIG.md#transport).
 These are source-build capabilities. Published RC.2 files remain immutable and
 do not include H3 or subsequent source changes.
 
+## Embedded SDK State
+
+`GuiClientRuntime::connect()` starts local listeners. Its diagnostics report
+`listening` / `unverified`, not a verified remote connection. Use
+`is_listening()` for local lifecycle checks; the old `is_connected()` name is
+deprecated. See [SDK diagnostics and compatibility](CONFIG.md#sdk-diagnostics-and-local-lifecycle)
+for state meanings and consumer updates.
+
 ## Local Product Checks
 
 Run the small loopback product check:

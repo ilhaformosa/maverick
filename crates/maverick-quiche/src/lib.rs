@@ -608,7 +608,17 @@ impl Driver {
                     self.io.flush(&mut self.conn).await?;
                     return Ok(());
                 }
-                _ = inbound.closed(), if fin_sent && !app_finished => app_finished = true,
+                _ = inbound.closed(), if !app_finished && (!self.server || fin_sent) => {
+                    // The client normally consumes HTTP EOF before dropping its
+                    // receiver. Earlier closure cancels a download, including
+                    // after upload FIN has disabled outbound.recv(None).
+                    if !self.server && !end_in {
+                        let _ = self.conn.close(true, 0x10c, b"");
+                        self.io.flush(&mut self.conn).await?;
+                        return Ok(());
+                    }
+                    app_finished = true;
+                }
                 received = self.io.recv() => {
                     self.io.receive(&mut self.conn, &mut received?)?;
                     self.io.receive_ready(&mut self.conn)?;

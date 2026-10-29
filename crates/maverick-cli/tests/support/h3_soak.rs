@@ -125,15 +125,17 @@ async fn snapshot(
     if resources {
         let server_pid = server.child.id();
         let client_pid = client.map(|c| c.child.id());
-        let (server_usage, client_usage) = tokio::task::spawn_blocking(move || {
+        let (server_usage, client_usage, host) = tokio::task::spawn_blocking(move || {
             Ok::<_, anyhow::Error>((
                 process_usage(server_pid)?,
                 client_pid.map(process_usage).transpose()?,
+                host_context::sample().context("read host benchmark context")?,
             ))
         })
         .await??;
         row["server"] = server_usage;
         row["client"] = client_usage.unwrap_or(Value::Null);
+        row["host"] = host;
     }
     println!("soak {row}");
     Ok(())

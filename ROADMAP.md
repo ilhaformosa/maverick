@@ -57,7 +57,7 @@ browser/network performance claim.
 Use the shared local/CI check entry and install only missing CI tools. Retain
 all platform, compatibility, historical candidate, security and release checks.
 Calibrate workloads with a short preflight, finish focused review before the
-first CI push, and keep other local builds out of resource measurements.
+first CI push, and keep this task's builds out of resource measurements.
 
 The bounded receive-queue change reduces measured server CPU and packet counts
 under the same controlled workload. The local before/after/control runs and
@@ -82,7 +82,8 @@ For higher-concurrency validation, use 32 sustained flows on the configured
 client/server path, with 30 minutes of H3 load and 10 minutes of H2 reference
 load. Run a short preflight and relevant
 shared local checks first, then overlap remote CI with the long local run.
-Keep other local builds and profiling out of that measurement. Review before
+Keep this task's builds and profiling separate, record whole-host context, and
+do not assume unrelated projects are idle. Review before
 the first push, and merge only after both the long run and all CI checks pass.
 
 Record achieved transfer rate, CPU, sampled memory and resource cleanup against
@@ -105,6 +106,20 @@ and overlap that run with remote CI on the same candidate. Keep stack sampling
 separate from quantitative runs. A macOS background-policy run changes network
 I/O as well as CPU scheduling and cannot isolate CPU cost. Temporary diagnostics
 must not replace or weaken the final ordinary-command checks.
+
+## Local Reliability and Measurement Context
+
+Qualify selected packet loss/delay, slow-reader isolation and server restart on
+the ordinary H3 CLI path. Reuse existing fixture and cleanup checks. Record host
+load and platform memory context without process names or command lines; separate
+correctness and loaded-host observations from quantitative performance claims.
+Background activity is neither proof of a product defect nor a reason to dismiss
+a failure. No automatic skip or relaxed deadline follows from a busy host.
+
+Use short focused tests first, then shared checks and existing PR/main gates.
+Repeat long runs for relevant runtime changes or unresolved failures, not for
+every edit to test/documentation code. Keep performance runs separate from this
+task's own builds/profiling, but do not require unrelated projects to stop.
 
 ## Next — Remaining H3 Cost and Integration Quality
 

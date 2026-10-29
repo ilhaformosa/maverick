@@ -76,9 +76,13 @@ cargo test --locked --release -p maverick-cli --features experimental-h3 \
 
 This measures connection setup and verified bulk transfers, then checks
 30 seconds of bounded concurrent traffic and recovery after interrupted flows.
-Run it without other builds or tests competing for CPU. Timing is diagnostic;
-CI runs the bounded correctness/stability cases without speed thresholds.
-See `STATUS.md` for observations and their limits.
+Keep this task's own builds and profiling separate from timing runs. Each
+carrier emits `comparison_host` context before and after the measured work;
+other projects may still be active. Timing is diagnostic: comparisons need the
+same workload and sufficiently comparable conditions. If background activity
+makes a comparison unreliable, report that limitation instead of a speedup.
+CI retains correctness/stability assertions without speed thresholds. See
+`STATUS.md` for observations and their limits.
 
 For longer local stability and process-resource measurements:
 
@@ -111,10 +115,19 @@ common traffic window starts. Each phase records `concurrency`, `block_bytes`,
 ratio is the achieved rate through long-flow completion, excluding setup and
 later recovery checks. This paced workload does not measure maximum throughput.
 
-The manual sampler requires `ps` and `lsof` and records only numeric CPU time,
-resident memory, descriptor counts and existing server metrics. Compare CPU
-time differences over elapsed time, and restart the counter after a process
-restart. Memory samples are not peaks, and retained allocator capacity or H2
+The manual sampler requires `ps` and `lsof` and records numeric CPU time,
+resident memory, descriptor counts and existing server metrics. Its `host`
+context includes available CPU parallelism and 1/5/15-minute load averages.
+These are whole-host observations including Maverick itself; load averages
+are not CPU percentages, and parallelism is not a count of currently idle cores.
+On macOS it also reads the raw memory-pressure code and cumulative swap-in/out
+page counters; on Linux it records total/available memory estimates and used
+swap in KiB. The platform-specific memory fields are not interchangeable.
+No other project names or process command lines are collected. Missing context
+fails the manual measurement explicitly rather than becoming zero or proving
+an idle machine. Context never skips a functional assertion or changes a limit.
+Compare CPU time differences over elapsed time, and restart the counter after a
+process restart. Memory samples are not peaks, and retained allocator capacity or H2
 pool connections alone do not establish a leak. The existing CI lifecycle case
 uses 32 sustained flows for 12 seconds per carrier. Its 16 KiB blocks retain the
 former eight-flow aggregate load of 10 MiB/s in debug builds; manual release
@@ -127,6 +140,19 @@ existing 15-second allowance, then require connection/admission cleanup before
 restarting. They continue as soon as cleanup is observed instead of sleeping
 for a fixed 12 seconds. The 15-second idle observation after each manual load
 phase remains unchanged.
+
+The normal H3 CLI suite also exercises selected datagram loss and a single
+delayed response, a backpressured reader alongside healthy SOCKS/HTTP requests,
+and same-client recovery after the server exits and restarts at its original
+OS-assigned address. Faults are injected inside a loopback test process; no host
+network configuration changes. These cases validate integrity, independent
+progress and cleanup, not real-network performance or a permanently blocked
+kernel UDP socket. Run just these cases with:
+
+```sh
+cargo test --locked -p maverick-cli --features experimental-h3 \
+  --test h3_product resilience::
+```
 
 The following developer laboratories retain focused reference checks.
 

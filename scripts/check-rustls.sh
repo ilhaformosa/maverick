@@ -20,3 +20,4 @@ cargo test --locked -p maverick-cli --no-default-features --test config_handoff
 cargo test --locked -p maverick-cli -p maverick-sdk \
   --no-default-features --test server_startup --test gui_readiness
 cargo test --locked -p maverick-client --no-default-features tunnel::relay_tests
+cargo test --locked -p maverick-client --no-default-features --lib bind_failure_

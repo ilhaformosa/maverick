@@ -285,6 +285,58 @@ pub async fn start_client(config: ClientConfig) -> Result<ClientHandle> {
             "SOCKS5 listener is not loopback-only; protect this port explicitly"
         );
     }
+    // Bind every configured endpoint before spawning tasks, so failed startup
+    // releases all of its listeners before returning to the caller.
+    let dns_socket = match config
+        .local
+        .dns
+        .as_ref()
+        .filter(|dns| dns.enabled)
+        .and_then(|dns| dns.listen)
+    {
+        Some(listen) => Some(
+            UdpSocket::bind(listen)
+                .await
+                .context("bind local.dns.listen")?,
+        ),
+        None => None,
+    };
+    let dns_addr = dns_socket.as_ref().map(UdpSocket::local_addr).transpose()?;
+    if let Some(addr) = dns_addr {
+        if !addr.ip().is_loopback() {
+            warn!(
+                listen = %addr,
+                "DNS listener is not loopback-only; protect this port explicitly"
+            );
+        }
+    }
+    let http_listener = match config
+        .local
+        .http_connect
+        .as_ref()
+        .filter(|http| http.enabled)
+        .and_then(|http| http.listen)
+    {
+        Some(listen) => Some(
+            TcpListener::bind(listen)
+                .await
+                .context("bind local.http_connect.listen")?,
+        ),
+        None => None,
+    };
+    let http_connect_addr = http_listener
+        .as_ref()
+        .map(TcpListener::local_addr)
+        .transpose()?;
+    if let Some(addr) = http_connect_addr {
+        if !addr.ip().is_loopback() {
+            warn!(
+                listen = %addr,
+                "HTTP CONNECT listener is not loopback-only; protect this port explicitly"
+            );
+        }
+    }
+
     let flow_limit = Arc::new(Semaphore::new(
         config.advanced.max_concurrent_flows as usize,
     ));
@@ -305,70 +357,32 @@ pub async fn start_client(config: ClientConfig) -> Result<ClientHandle> {
 
     let mut shutdowns = vec![socks_shutdown_tx];
     let mut joins = vec![socks_join];
-    let mut dns_addr = None;
-    let mut http_connect_addr = None;
 
-    if let Some(dns_config) = &config.local.dns {
-        if dns_config.enabled {
-            if let Some(listen) = dns_config.listen {
-                let socket = UdpSocket::bind(listen)
-                    .await
-                    .context("bind local.dns.listen")?;
-                let addr = socket.local_addr()?;
-                if !addr.ip().is_loopback() {
-                    warn!(
-                        listen = %addr,
-                        "DNS listener is not loopback-only; protect this port explicitly"
-                    );
-                }
-                let (dns_shutdown_tx, dns_shutdown_rx) = oneshot::channel();
-                let dns_tunnel_pool = Arc::clone(&tunnel_pool);
-                let dns_flow_limit = Arc::clone(&flow_limit);
-                let dns_join = tokio::spawn(async move {
-                    dns::serve_dns_with_pool(
-                        socket,
-                        dns_tunnel_pool,
-                        dns_flow_limit,
-                        dns_shutdown_rx,
-                    )
-                    .await
-                });
-                shutdowns.push(dns_shutdown_tx);
-                joins.push(dns_join);
-                dns_addr = Some(addr);
-            }
-        }
+    if let Some(socket) = dns_socket {
+        let (dns_shutdown_tx, dns_shutdown_rx) = oneshot::channel();
+        let dns_tunnel_pool = Arc::clone(&tunnel_pool);
+        let dns_flow_limit = Arc::clone(&flow_limit);
+        let dns_join = tokio::spawn(async move {
+            dns::serve_dns_with_pool(socket, dns_tunnel_pool, dns_flow_limit, dns_shutdown_rx).await
+        });
+        shutdowns.push(dns_shutdown_tx);
+        joins.push(dns_join);
     }
-    if let Some(http_config) = &config.local.http_connect {
-        if http_config.enabled {
-            if let Some(listen) = http_config.listen {
-                let listener = TcpListener::bind(listen)
-                    .await
-                    .context("bind local.http_connect.listen")?;
-                let addr = listener.local_addr()?;
-                if !addr.ip().is_loopback() {
-                    warn!(
-                        listen = %addr,
-                        "HTTP CONNECT listener is not loopback-only; protect this port explicitly"
-                    );
-                }
-                let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel();
-                let http_tunnel_pool = Arc::clone(&tunnel_pool);
-                let http_flow_limit = Arc::clone(&flow_limit);
-                let http_join = tokio::spawn(async move {
-                    http_connect::serve_http_connect_with_pool(
-                        listener,
-                        http_tunnel_pool,
-                        http_flow_limit,
-                        http_shutdown_rx,
-                    )
-                    .await
-                });
-                shutdowns.push(http_shutdown_tx);
-                joins.push(http_join);
-                http_connect_addr = Some(addr);
-            }
-        }
+    if let Some(listener) = http_listener {
+        let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel();
+        let http_tunnel_pool = Arc::clone(&tunnel_pool);
+        let http_flow_limit = Arc::clone(&flow_limit);
+        let http_join = tokio::spawn(async move {
+            http_connect::serve_http_connect_with_pool(
+                listener,
+                http_tunnel_pool,
+                http_flow_limit,
+                http_shutdown_rx,
+            )
+            .await
+        });
+        shutdowns.push(http_shutdown_tx);
+        joins.push(http_join);
     }
 
     Ok(ClientHandle {
@@ -677,6 +691,123 @@ mod build_gate_tests {
         let err = start_error(config).await;
 
         assert!(err.to_string().contains("local.http_connect.listen"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dns_bind_failure_releases_socks_before_return_and_allows_immediate_retry() -> Result<()>
+    {
+        let reserved_socks = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let socks_addr = reserved_socks.local_addr()?;
+        let occupied_dns = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        let dns_addr = occupied_dns.local_addr()?;
+        let mut config = test_client_config();
+        config.local.socks5.listen = socks_addr;
+        config.local.dns = Some(ClientDnsConfig {
+            enabled: true,
+            listen: Some(dns_addr),
+        });
+        drop(reserved_socks);
+
+        let error = start_error(config.clone()).await;
+        assert!(error.to_string().contains("local.dns.listen"));
+        // No yield or sleep: an error must release earlier listeners before returning.
+        let rebound_socks = std::net::TcpListener::bind(socks_addr)
+            .context("failed DNS startup retained the SOCKS listener")?;
+        assert!(std::net::UdpSocket::bind(dns_addr).is_err());
+        drop(rebound_socks);
+        drop(occupied_dns);
+
+        let handle = start_client(config).await?;
+        assert_eq!(handle.local_addr, socks_addr);
+        assert_eq!(handle.dns_addr, Some(dns_addr));
+        assert_eq!(handle.http_connect_addr, None);
+        handle.shutdown().await?;
+        let _socks = std::net::TcpListener::bind(socks_addr)?;
+        let _dns = std::net::UdpSocket::bind(dns_addr)?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn http_bind_failure_releases_socks_and_dns_before_return_and_allows_immediate_retry(
+    ) -> Result<()> {
+        let reserved_socks = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let socks_addr = reserved_socks.local_addr()?;
+        let reserved_dns = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        let dns_addr = reserved_dns.local_addr()?;
+        let occupied_http = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let http_addr = occupied_http.local_addr()?;
+        let mut config = test_client_config();
+        config.local.socks5.listen = socks_addr;
+        config.local.dns = Some(ClientDnsConfig {
+            enabled: true,
+            listen: Some(dns_addr),
+        });
+        config.local.http_connect = Some(HttpConnectConfig {
+            enabled: true,
+            listen: Some(http_addr),
+        });
+        drop(reserved_socks);
+        drop(reserved_dns);
+
+        let error = start_error(config.clone()).await;
+        assert!(error.to_string().contains("local.http_connect.listen"));
+        // Check both earlier listeners without scheduling their former accept loops.
+        let rebound_socks = std::net::TcpListener::bind(socks_addr);
+        let rebound_dns = std::net::UdpSocket::bind(dns_addr);
+        assert_eq!(
+            (rebound_socks.is_ok(), rebound_dns.is_ok()),
+            (true, true),
+            "failed HTTP startup retained an earlier listener"
+        );
+        assert!(std::net::TcpListener::bind(http_addr).is_err());
+        drop(rebound_socks);
+        drop(rebound_dns);
+        drop(occupied_http);
+
+        let handle = start_client(config).await?;
+        assert_eq!(handle.local_addr, socks_addr);
+        assert_eq!(handle.dns_addr, Some(dns_addr));
+        assert_eq!(handle.http_connect_addr, Some(http_addr));
+        handle.shutdown().await?;
+        let _socks = std::net::TcpListener::bind(socks_addr)?;
+        let _dns = std::net::UdpSocket::bind(dns_addr)?;
+        let _http = std::net::TcpListener::bind(http_addr)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-h3")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn quiche_h3_http_bind_failure_releases_socks_and_allows_immediate_retry() -> Result<()> {
+        let reserved_socks = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let socks_addr = reserved_socks.local_addr()?;
+        let occupied_http = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let http_addr = occupied_http.local_addr()?;
+        let mut config = test_client_config();
+        assert!(!config.advanced.quiche_h3);
+        config.advanced.quiche_h3 = true;
+        config.local.socks5.listen = socks_addr;
+        config.local.http_connect = Some(HttpConnectConfig {
+            enabled: true,
+            listen: Some(http_addr),
+        });
+        drop(reserved_socks);
+
+        let error = start_error(config.clone()).await;
+        assert!(error.to_string().contains("local.http_connect.listen"));
+        let rebound_socks = std::net::TcpListener::bind(socks_addr)
+            .context("failed H3 HTTP startup retained the SOCKS listener")?;
+        assert!(std::net::TcpListener::bind(http_addr).is_err());
+        drop(rebound_socks);
+        drop(occupied_http);
+
+        let handle = start_client(config).await?;
+        assert_eq!(handle.local_addr, socks_addr);
+        assert_eq!(handle.http_connect_addr, Some(http_addr));
+        assert_eq!(handle.dns_addr, None);
+        handle.shutdown().await?;
+        let _socks = std::net::TcpListener::bind(socks_addr)?;
+        let _http = std::net::TcpListener::bind(http_addr)?;
+        Ok(())
     }
 
     #[tokio::test]

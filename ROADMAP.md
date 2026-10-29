@@ -5,46 +5,41 @@ Date: 2026-10-30
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
-## Delivered — Configuration Generation and Handoff
+## Delivered — Reliable Local Startup and Handoff
 
-The explicit H3 generator, paired-output preflight, accurate version capability
-list and rejection of lossy URI exports are implemented with public-command,
-generated-config and existing quality checks. H2 remains the default. Current
-behavior and evidence are in [STATUS.md](STATUS.md#configuration-handoff).
+Configuration generation/handoff, H2 server initialization and duplex progress,
+and explicit SDK local-state reporting are delivered; [STATUS.md](STATUS.md)
+records their behavior and limits. Client startup now also completes all local
+binds before spawning tasks. A later listener conflict releases earlier sockets
+before returning, permitting immediate corrected startup through the SDK.
+Regression coverage includes DNS/HTTP conflicts, explicit H3 and shutdown.
 
-## Delivered — Default H2 Startup and Duplex Progress
+The pinned security-tool cache has already been verified cold and warm on the
+same revision: the supply-chain job took 410 and 42 seconds respectively, with
+every scan retained. Do not repeat that completed experiment without a relevant
+change. See [cold](https://github.com/ilhaformosa/maverick/actions/runs/40947204197)
+and [warm](https://github.com/ilhaformosa/maverick/actions/runs/40948666434) evidence.
 
-TLS/user initialization now finishes before a server start succeeds. Reproduced
-client and server backpressure stalls were corrected with independent client
-directions and one bounded pending server write. Deterministic regressions
-preserve progress deadlines, half-close, full-close and trailer behavior.
-See [STATUS.md](STATUS.md#default-h2-startup-and-duplex-relay) for the scope.
+## Next — Product Cache Size and End-to-End CI Cost
 
-## Delivered — SDK Readiness and Pinned CI Tool Cache
+PR #90's product workflow took 719 seconds and its main run 671 seconds.
+Linux was the critical path; restoring its approximately 4.98 GB compressed
+cache took 188/118 seconds. Parallel macOS and CodeQL finished earlier.
+These observed runs justify examining cache contents, not dropping checks.
 
-Local SDK lifecycle is now `Listening` with remote transport `Unverified`;
-configuration and selector diagnostics cannot establish remote readiness.
-Existing enum tokens and the deprecated local-only method remain compatible,
-with explicit migration guidance. No background probe or observer was added.
+Inventory first-party test/tool executables that escape the current
+`maverick*`/`libmaverick*` exclusions before changing the cache selection.
+Keep reusable dependencies and build-script outputs. Acceptance requires a
+real warm run showing cache size, restore time, additional rebuild cost and
+whole-job time, with identical quality coverage. A smaller archive alone does
+not establish a faster PR. Do not add a cache framework or recurring benchmark.
 
-The supply-chain job verifies and reuses pinned tool binaries using an exact
-compatible cache key. It preserves every scan and saves reusable caches only
-from successful main runs. Verify actual cold/warm behavior through existing
-workflow dispatch, without adding a new recurring job or weakening checks.
-
-## Next — Remaining Usage and Build-Cost Evidence
-
-Before adding transport features, prioritize concrete failures in ordinary
-client/SDK use. A future remote-status capability needs a defined observation,
-freshness and failure meaning; local listeners or cumulative counters alone
-must not become a health claim.
-
-If SDK H3 becomes a delivery requirement, add its explicit feature and builder
-entry with one real SDK forwarding test. H3 pooling, automatic carrier choice
-and further CPU work need a concrete requirement or measured problem.
-Measure remaining product-cache restore/build costs before changing cache
-contents. Retain equivalent test, security, native artifact and rollback
-coverage; a quicker noncritical job need not shorten the whole PR.
+Concrete ordinary-use failures still take priority. H3 pooling, automatic
+carrier choice and further CPU work need a measured problem. A remote-status
+capability needs defined observations and freshness; local listeners or
+cumulative counters cannot establish health. Add an explicit SDK H3 feature
+and builder only when that becomes the chosen delivery entry, with a real SDK
+forwarding test; it is not required to keep the existing CLI H3 path working.
 
 ## Deferred — Exact-Candidate Field Validation and Stable
 
@@ -68,9 +63,8 @@ approved release need.
 - Use the shared local/CI entry and preserve every required quality check.
   Review before the first push; continue independent work during CI and resolve
   failed main checks before dependent integration.
-- Evaluate actual target-cache restore costs before changing CI further.
-  Measure the whole critical path; a shorter noncritical job does not necessarily shorten PR completion. Keep
-  every scan and native artifact/rollback check.
+- Measure the whole CI critical path and preserve every scan and native
+  artifact/rollback check. A faster noncritical job need not shorten completion.
 - Repeat a passing long test only for a relevant runtime change or unresolved
   failure. Use focused regressions first, including native checks for OS-sensitive
   fixtures, before expensive workloads.

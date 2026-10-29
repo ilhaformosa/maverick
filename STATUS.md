@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-10-29
+Date: 2026-10-30
 
 This is the current product-state record. `ROADMAP.md` gives execution order;
 Git, pull requests, Actions and release records retain historical evidence.
@@ -460,6 +460,31 @@ The self-check is functional evidence. Its printed timing values can be affected
 by background development work and are not performance assertions. The existing
 separate-process integration, resilience and lifecycle tests remain; no relay or
 transport implementation changes are needed for this entry point.
+
+## H3 Shaping Configuration Coverage
+
+The client test authenticates through `h3::open` using a real client
+configuration, then checks the H3 sender's output for shaping disabled, ordinary
+padding enabled, approved cover traffic enabled, and Stable mode. It verifies
+padding before unchanged data, the per-padding payload cap, and a final TCP FIN
+with the end flag. A paused clock checks the configured batching delay without
+requiring an idle host. This covers configuration-to-sender wiring, beyond the
+core policy calculations.
+
+The ordinary CLI test enables the same small shaping/approved-cover settings on
+both endpoints and compares Auto with Stable. Existing sequential/concurrent
+SOCKS and HTTP CONNECT exchanges verify exact payloads, half-close and admission
+cleanup. Auto produces both ordinary and cover padding; Stable leaves all four
+server padding counters at zero. Total padding counters include cover traffic
+and measure server output only; the client check supplies separate evidence for
+client emissions.
+
+These are selected configuration and frame-boundary checks, not a measurement
+of total wire overhead, privacy effectiveness or real-network performance.
+No runtime policy, transport, dependency or default setting changes were needed.
+Existing shared and native CI checks remain; unrelated long performance runs
+are not repeated for this test/documentation change. H3 stays default-off and
+field validation stays deferred.
 
 ## CI and Security Alert Maintenance
 

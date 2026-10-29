@@ -283,7 +283,11 @@ impl H3Sender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maverick_core::config::{Mode, ShapingConfig};
+    use maverick_core::auth::{ClientHello, ServerHello};
+    use maverick_core::config::{
+        ClientAdvancedConfig, ClientServerConfig, LocalConfig, Mode, ShapingConfig, Socks5Config,
+    };
+    use maverick_core::SecretString;
 
     fn tunnel(channel: FrameChannel) -> H3ClientTunnel {
         let shaping = ShapingConfig::default();
@@ -300,6 +304,127 @@ mod tests {
                 flow_id: 1,
             },
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn configured_shaping_preserves_data_and_fin_order() -> Result<()> {
+        let mut config = ClientConfig {
+            version: 1,
+            mode: Mode::Auto,
+            local: LocalConfig {
+                socks5: Socks5Config {
+                    listen: "127.0.0.1:0".parse()?,
+                },
+                dns: None,
+                http_connect: None,
+            },
+            server: ClientServerConfig {
+                address: "localhost:443".into(),
+                server_name: "localhost".into(),
+                tunnel_path: "/assets/upload".into(),
+                credential_id: "local-shaping-test".into(),
+                secret: SecretString::generate(),
+                ca_cert: None,
+                cert_pin: None,
+            },
+            auth: Default::default(),
+            log: Default::default(),
+            advanced: ClientAdvancedConfig {
+                quiche_h3: true,
+                shaping: ShapingConfig {
+                    max_padding_bytes_per_frame: 16,
+                    max_overhead_ratio: 0.25,
+                    max_batch_bytes: 1024,
+                    max_delay_ms: 11,
+                    ..ShapingConfig::default()
+                },
+                ..ClientAdvancedConfig::default()
+            },
+        };
+        config.auth.channel_binding.require = true;
+        for (mode, enabled, cover, padding_count) in [
+            (Mode::Auto, false, false, 0),
+            (Mode::Auto, true, false, 1),
+            (Mode::Auto, true, true, 2),
+            (Mode::Stable, true, true, 0),
+        ] {
+            config.mode = mode;
+            config.advanced.shaping.enabled = enabled;
+            config.advanced.shaping.cover_traffic = cover;
+            config.advanced.shaping.cover_traffic_operator_approved = cover;
+            let (channel, mut transport) = h3_channel::channel();
+            let binding = TlsChannelBinding::new([7; 32]);
+            let authenticate = async {
+                let (frame, end) = transport.outbound.recv().await.context("missing hello")?;
+                assert_eq!(frame.frame_type, FrameType::ClientHello);
+                assert!(!end);
+                let hello = ClientHello::decode(&frame.payload)?;
+                let reply = ServerHello::try_new_with_channel_binding(
+                    &config.server.secret,
+                    &hello.client_nonce,
+                    65_536,
+                    1,
+                    hello.feature_flags,
+                    Some(binding),
+                )?;
+                transport
+                    .inbound
+                    .send(Ok(Some(Frame::new(
+                        FrameType::ServerHello,
+                        0,
+                        0,
+                        reply.encode(),
+                    ))))
+                    .await?;
+                Ok::<_, anyhow::Error>(())
+            };
+            let (mut tunnel, ()) = tokio::try_join!(open(&config, channel, binding), authenticate)?;
+            let data = Frame::new(FrameType::TcpData, 2, 73, (0..128).collect::<Vec<u8>>());
+            let fin = Frame::new(FrameType::TcpFin, 0, 73, Bytes::new());
+            let send = async {
+                tunnel.send_frame(data.clone(), false).await?;
+                tunnel.send_frame(fin.clone(), true).await
+            };
+            let receive = async {
+                let mut frames = Vec::new();
+                loop {
+                    let frame = transport.outbound.recv().await.context("missing frame")?;
+                    let end = frame.1;
+                    frames.push(frame);
+                    if end {
+                        return Ok::<_, anyhow::Error>(frames);
+                    }
+                }
+            };
+            let started = tokio::time::Instant::now();
+            let ((), frames) = timeout(Duration::from_secs(1), async {
+                tokio::try_join!(send, receive)
+            })
+            .await??;
+            let elapsed = started.elapsed();
+            if enabled && mode != Mode::Stable {
+                // Allow timer rounding, but distinguish the configured batch
+                // delay from Auto's fallback pacing, which is capped at 5 ms.
+                assert!((Duration::from_millis(11)..=Duration::from_millis(13)).contains(&elapsed));
+            } else {
+                assert_eq!(elapsed, Duration::ZERO);
+            }
+            assert_eq!(frames.len(), padding_count + 2);
+            for (padding, end) in &frames[..padding_count] {
+                assert_eq!(padding.frame_type, FrameType::Padding);
+                assert_eq!(padding.flow_id, 0);
+                assert_eq!(padding.flags, 0);
+                assert!((1..=16).contains(&padding.payload.len()));
+                assert!(!end);
+            }
+            assert_eq!(frames[padding_count], (data, false));
+            assert_eq!(frames[padding_count + 1], (fin, true));
+            assert!(matches!(
+                transport.outbound.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+        Ok(())
     }
 
     #[tokio::test]

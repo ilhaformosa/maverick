@@ -168,6 +168,17 @@ cargo test --locked -p maverick-cli --features experimental-h3 \
   --test h3_product resilience::
 ```
 
+The same CLI suite also checks configured shaping in Auto and Stable modes:
+
+```sh
+cargo test --locked -p maverick-cli --features experimental-h3 \
+  --test h3_product shaping::
+```
+
+It verifies payloads and cleanup alongside server padding counters. Separate
+authenticated client tests verify outgoing padding/data/FIN ordering and batching
+with a paused clock. These checks do not use performance thresholds.
+
 The following developer laboratories retain focused reference checks.
 
 Run the opt-in local quiche/H3 experiment:

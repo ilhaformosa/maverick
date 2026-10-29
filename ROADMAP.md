@@ -1,6 +1,6 @@
 # Maverick Roadmap
 
-Date: 2026-10-29
+Date: 2026-10-30
 
 `STATUS.md` records current capabilities and evidence. This file records
 execution order; historical work belongs to Git, PRs, Actions and release records.
@@ -148,6 +148,19 @@ This entry-point change does not alter relay or transport behavior. Retain the
 existing integration/lifecycle and native CI coverage; a new long performance
 run needs a relevant runtime change or failure. Self-check timings remain
 diagnostic when other development tasks are active.
+
+## Completed — H3 Shaping Configuration Coverage
+
+Verify the existing shaping controls from client configuration through the H3
+sender, then through ordinary CLI payload and cleanup checks. Use Auto/Stable
+configuration controls and existing server counters, interpreting cover counters
+as part of total padding. Keep client-emission evidence separate from server
+metrics. Fixed data, frame checks and virtual-time batching checks avoid host-load
+performance thresholds; no new product metric or test framework is needed.
+
+Retain all shared and native checks. Re-run long measurements only for a relevant
+runtime change or unresolved failure, and do not turn this bounded coverage into
+an overall privacy or network-overhead claim.
 
 ## Next — Remaining H3 Cost and Integration Quality
 

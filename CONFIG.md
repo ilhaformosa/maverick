@@ -441,6 +441,16 @@ ratios, delay caps above 1000 ms, batch caps above 1 MiB, cover traffic without
 `Padding` frames tied to observed payload budget; it does not generate idle
 background traffic.
 
+Each endpoint applies its own mode: client `mode` and server
+`maverick.mode_default`. `stable` suppresses that endpoint's runtime padding and
+cover traffic even when shaping options are configured; client batching is also
+disabled. Explicit H3 uses these same existing controls.
+
+Server `shaping_padding_frames` and `shaping_padding_bytes` include cover
+traffic; `cover_traffic_padding_*` are subsets, not additional totals. These
+counters describe server-generated padding payloads, not client emissions or
+overall network overhead.
+
 ## ECH Gate
 
 Native Maverick server-side ECH is not implemented. The config surface and

@@ -10,6 +10,7 @@ cargo test --locked -p maverick-core --no-default-features quiche_h3
 cargo test --locked -p maverick-cli --features experimental-h3 quiche_h3
 cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product
 cargo test --locked -p maverick-cli --features experimental-h3 --test user_smoke
+cargo test --locked -p maverick-cli --features experimental-h3 --test config_handoff
 cargo clippy --locked -p maverick-cli -p maverick-client -p maverick-server \
   --features experimental-h3 --all-targets -- -D warnings
 product_graph="$(cargo tree --locked -p maverick-cli --features experimental-h3 --edges normal,build --prefix none)"

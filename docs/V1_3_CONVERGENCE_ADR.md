@@ -1,5 +1,15 @@
 # Maverick v1.3 Convergence Decision Record
 
+> Current scope, 2026-10-30: this preserves the historical convergence decisions
+> and recovery evidence. Later owner-authorized work supersedes its ordering and
+> stop statements that made complete Config v2 and broad backend qualification
+> prerequisites for explicit product H3 TCP. The current bounded v1 extension
+> uses upstream quiche, remains default-off and does not adopt a private fork.
+> [STATUS.md](../STATUS.md) records current capability and authorization;
+> [ROADMAP.md](../ROADMAP.md) is the execution queue. Other future capabilities,
+> Auto H3, field trials and release claims remain subject to their own decisions
+> and evidence; historical RED/PASS results below are not rewritten.
+
 Date: 2026-08-12
 Status: **Accepted and amended — OD-01 through OD-09 ratified; B-003 direction superseded on 2026-08-12**
 

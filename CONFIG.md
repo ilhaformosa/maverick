@@ -240,8 +240,12 @@ This bounded v1 extension replaces the former requirement to implement all of
 Product Config v2 before H3 TCP integration. It does not revive
 `advanced.experimental_h3`, change authentication/frame versions, or make the
 v2 policy parser a runnable configuration. Default generated v1 files omit the
-new field and continue to use H2. Old binaries reject an explicitly configured
-new field instead of silently using another carrier.
+new field and continue to use H2. `gen-config --quiche-h3` creates a matching
+explicit-H3 pair when the CLI was built with `experimental-h3`; an unsupported
+build rejects the option before writing either file. `maverick version` includes
+`quiche-h3` in its feature list only for a capable build. This reports compiled
+capability, not the carrier selected by a configuration. Old binaries reject an
+explicitly configured new field instead of silently using another carrier.
 
 H3 supports SOCKS TCP and HTTP CONNECT. Fronting/WebSocket combinations, the
 local DNS listener, TUN, and `rustls_default` are rejected. SOCKS UDP ASSOCIATE
@@ -596,6 +600,21 @@ failure.
 pacer across TCP, DNS, and UDP relay paths. It is intended as an operator safety
 control, not a precise billing-grade traffic shaper.
 
+## Generating a configuration pair
+
+Run `maverick gen-config` in an empty directory for default H2, or use
+`maverick gen-config --quiche-h3` with an H3-capable binary. Both outputs use the
+same fresh credential and retain private file permissions. The generator checks
+both filenames before writing, so an existing server file does not leave a new
+client file with mismatched credentials. Existing files are never overwritten;
+this is not a transaction across filesystem failures or concurrent generators.
+
+The files are templates: set the server endpoint/name and TLS certificate/key
+paths before use, and keep the shared credential private. URI v1 cannot carry
+H3 or a custom CA; use the YAML files for those configurations. Do not copy a
+machine-specific CA path to another machine without supplying the corresponding
+trusted certificate and correct local path.
+
 ## Validation
 
 ```sh
@@ -605,9 +624,14 @@ maverick migrate-config --kind client -c client.yaml
 maverick migrate-config --kind server -c server.yaml
 ```
 
+`check-config` is offline parsing and configuration-rule validation. An `OK`
+result does not establish that certificate files exist, a remote server is
+reachable, authentication succeeds, or traffic can be forwarded. The local
+`user-smoke` command checks its own temporary configuration, not these files.
+
 `advanced.connect_timeout_ms` on the client bounds the full server connection
-setup path: TCP connect, TLS handshake, and H2 handshake. Timeout values must be
-greater than zero.
+setup path: TCP/TLS/H2 for H2, or UDP/QUIC/H3 for explicit H3. Timeout values
+must be greater than zero.
 
 For explicit H3 TCP, `advanced.idle_timeout_secs` bounds a lack of relay
 progress, not the total transfer duration. Successful partial TCP writes count
@@ -622,10 +646,11 @@ reached, new local TCP proxy attempts fail before opening a Maverick tunnel.
 
 Server `advanced.max_concurrent_connections` and
 `advanced.max_concurrent_connections_per_source` limit accepted TCP/TLS
-connections globally and per source IP. Server `advanced.pre_auth_max_concurrent`
-limits concurrent unauthenticated handshake and tunnel-sniffing work across
-the runnable H2 and WebSocket carriers. Server `advanced.fallback_max_concurrent` bounds
-ordinary static or reverse-proxy fallback work. Server
+connections or explicit H3 QUIC connections globally and per source IP. Server
+`advanced.pre_auth_max_concurrent` limits concurrent unauthenticated handshake
+and tunnel admission across H2, WebSocket and explicit H3. Server
+`advanced.fallback_max_concurrent` bounds ordinary static or reverse-proxy
+fallback work. Server
 `advanced.h2_max_concurrent_streams` advertises the HTTP/2 concurrent stream
 limit per connection. Archived Quinn loopback history is not a config-v1
 product carrier or a separate concurrency claim. `advanced.h2_max_concurrent_reset_streams`,
@@ -635,10 +660,12 @@ limits explicit instead of relying on library defaults. Server
 `advanced.max_auth_failures_per_window`,
 `advanced.auth_failure_window_secs`, and
 `advanced.auth_failure_cache_max_entries` bound repeated failed tunnel
-authentication attempts by source IP. Ordinary failed authentication attempts
-still receive fallback behavior; repeated failures beyond the configured window
-keep receiving fallback-shaped behavior when active-probing resistance is on and
-increment `auth_rate_limit_rejections`.
+authentication attempts by source IP. H2/WebSocket failed authentication
+attempts receive fallback behavior; repeated failures beyond the configured
+window keep fallback-shaped behavior when
+active-probing resistance is on and increment `auth_rate_limit_rejections`.
+Explicit H3 rejects or closes failed authentication; it does not serve the
+H2 fallback site.
 
 `migrate-config` is currently a dry-run report. It validates config and reports
 missing defaults such as `advanced.experimental_h3=false` and
@@ -1222,7 +1249,23 @@ compatibility decision. An envelope declaring a newer schema can report typed
 by the current reader; a payload containing future-only fields can be rejected
 during deserialization before that status is available.
 
-## Profile URI v1 parser boundary
+## Profile URI v1 sharing and parser boundary
+
+A v1 URI is an endpoint/credential profile, not a full configuration backup.
+Export rejects H3, custom CA paths, nondefault channel binding, enabled auth v2,
+credential-rotation settings, enabled fronting/WebSocket routing, and a TLS
+fingerprint different from this build's import default. These connection,
+authentication and trust settings cannot be represented by v1; silently dropping
+them could make a working configuration fail or change its requested policy.
+The error identifies only the unsupported field and asks for YAML; it does not
+print that field's value or a partial URI, including with `--include-secret`.
+
+Supported v1 links retain their format and defaults. Local listeners, logging,
+flow/time limits and shaping are still local settings and are not transferred;
+use YAML when those must be preserved. Import uses the receiving build's defaults,
+so a URI does not promise identical TLS behavior across different build variants.
+Secret omission remains the export default, and secret-bearing QR export remains
+rejected. This change does not introduce URI v2.
 
 The CLI Profile URI v1 reader accepts exactly these ten decoded query keys:
 `server`, `name`, `path`, `mode`, `credential_id`, `secret`, `cert_pin`,

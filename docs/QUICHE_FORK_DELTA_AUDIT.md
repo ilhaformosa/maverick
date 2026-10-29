@@ -1,5 +1,13 @@
 # quiche fork delta audit
 
+> Historical result, clarified 2026-10-30: this audit covers the preserved
+> private patches and candidate named below. Its RED result remains intact.
+> Statements that no patch disposition exists or product adoption is blocked
+> are not current status for the later upstream-only H3 TCP implementation.
+> See [STATUS.md](../STATUS.md#explicit-h3-tcp) for the bounded P1/P2/P3 decisions
+> and current limits. No private patch was adopted, and this notice supplies no
+> new fork, browser-equivalence, release or field-validation evidence.
+
 Date: 2026-08-12
 
 Audit alignment note: 2026-08-13. `STATUS.md` remains the only current-truth

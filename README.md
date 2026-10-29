@@ -4,33 +4,63 @@ Maverick is an experimental Rust privacy proxy. It is Beta software, is
 not production-ready, and does not claim anonymity, censorship resistance, or
 exact browser fingerprint equivalence.
 
-## Current Direction
+[STATUS.md](STATUS.md) records current capabilities, release state and
+authorization. [ROADMAP.md](ROADMAP.md) gives the next deliverables;
+[CONFIG.md](CONFIG.md) describes runnable configuration.
 
-Current product truth, pilot strategy, audit status, and authorization all live
-in [STATUS.md](STATUS.md). [ROADMAP.md](ROADMAP.md) contains execution order,
-not a second status record. Historical plans and orchestration remain under the
-archive directories as provenance only.
+## Build and Configure
 
-## Product Surface
+The default source build uses Direct H2. Choose one generation recipe below
+from the checkout; neither generated file may already exist.
 
-The active product is the Rust core, client, server, CLI, SDK, and loopback
-integration suite. `STATUS.md` is the only record of what is currently
-implemented or validated. [CONFIG.md](CONFIG.md) documents configuration, and
-[docs/TRANSPORT_ARCHITECTURE.md](docs/TRANSPORT_ARCHITECTURE.md) explains the
-data path without creating a second status ledger.
+```sh
+cargo build --locked -p maverick-cli
+./target/debug/maverick version
+./target/debug/maverick gen-config
+./target/debug/maverick check-config --kind server -c server.generated.yaml
+./target/debug/maverick check-config --kind client -c client.generated.yaml
+```
 
-## Local Product Check
+For an explicitly selected H3 build and configuration pair, use this alternative:
 
-Run the small, human-readable loopback check:
+```sh
+cargo build --locked -p maverick-cli --features experimental-h3
+./target/debug/maverick version
+./target/debug/maverick gen-config --quiche-h3
+./target/debug/maverick check-config --kind server -c server.generated.yaml
+./target/debug/maverick check-config --kind client -c client.generated.yaml
+```
+
+Generation creates fresh matching credentials in owner-only files and checks
+both output names before writing. Bare `gen-config` keeps H2 even when the
+binary supports H3. The explicit H3 option requires the build feature;
+`version` reports compiled support, not a successful connection.
+
+The generated files are examples: replace `example.com`, the server address
+and certificate paths before any separately authorized deployment. Keep the
+matching credential private. `check-config` validates configuration syntax and
+policy; it does not prove certificate files or a remote server work. Ordinary
+startup uses `server -c server.generated.yaml` and
+`client -c client.generated.yaml`. Field validation remains deferred.
+
+H3 supports direct TCP through SOCKS5 and HTTP CONNECT, using existing
+certificate/hostname/pin verification and authentication v1/v2. Both ends must
+select `advanced.quiche_h3: true`; omission keeps H2. Fronting, local DNS/TUN,
+rustls selection and SOCKS UDP associations are unsupported. There is no
+automatic selection or fallback. Profile URI v1 cannot carry H3 or every
+connection/authentication/trust setting; unsupported exports are rejected
+instead of silently changing policy. See [CONFIG.md](CONFIG.md#transport).
+
+These are source-build capabilities. Published RC.2 files remain immutable and
+do not include H3 or subsequent source changes.
+
+## Local Product Checks
+
+Run the small loopback product check:
 
 ```sh
 ./scripts/user-smoke.sh
 ```
-
-It uses only `127.0.0.1` and OS-assigned ephemeral ports. It starts the real
-server/client path, proves a correct credential can relay data, and proves a
-wrong credential cannot establish a proxy flow. This is a local product check,
-not evidence of real-network usability or censorship resistance.
 
 To explicitly check H3 in a build that includes it:
 
@@ -38,50 +68,49 @@ To explicitly check H3 in a build that includes it:
 cargo run --locked -p maverick-cli --features experimental-h3 -- user-smoke --quiche-h3
 ```
 
-The result identifies `carrier: h3` after the credential and payload checks.
-Bare `user-smoke` continues to check H2, even in an H3-enabled build. The shell
-wrapper uses the default build and forwards its arguments; use the command above
-to build and check H3. A build without H3 rejects the explicit option before
-starting the check. Both modes use temporary local certificates and credentials
-rather than a deployment configuration. Printed timings are diagnostic and can be
-affected by other development tasks; they are not a performance pass criterion.
+Both modes use temporary local certificates, credentials, `127.0.0.1` and
+OS-assigned ports. They verify the real client/server path, correct-credential
+payload exchange and wrong-credential rejection. The result identifies
+`carrier: h2` or `carrier: h3`. Bare `user-smoke` and the default-build shell
+wrapper keep H2; a build without H3 rejects an explicit H3 request. Neither
+check uses a deployment configuration or establishes real-network usability.
+Printed timings are diagnostic, not performance pass criteria.
 
-For the default product checks:
-
-```sh
-./scripts/local-harness.sh
-```
-
-For the complete shared code checks, including the rustls compatibility matrix,
-H3 product path and retained quiche candidate checks:
+For normal development:
 
 ```sh
 ./scripts/check.sh
 ```
 
-The same entry runs in CI. Use `./scripts/check.sh h3` (or `product`, `rustls`,
-`quiche-candidate`) for a relevant subset while iterating, then run the complete
-entry before a change spanning those paths. Checks require the existing Rust,
-C/C++ build and shell tools, including `jq`, `rg` and `shellcheck`; the local
-entry does not install tools. CI retains its additional native release archive,
-SBOM, upgrade/rollback and CodeQL checks. Long performance runs remain opt-in.
+For default-product-only changes, `./scripts/local-harness.sh` is the smaller
+entry. The complete shared check also covers the rustls compatibility matrix,
+configured H3 path and retained quiche candidate checks; it already includes
+the product harness. Use `./scripts/check.sh h3` (or `product`, `rustls`,
+`quiche-candidate`) while iterating, then the complete entry for changes
+spanning those paths. It requires existing Rust, C/C++ build and shell tools,
+including `jq`, `rg` and `shellcheck`; it does not install tools.
 
-To build the ordinary CLI with H3 support and check separate local client/server
-processes:
+The same entry runs in CI, which also retains native release archive, SBOM,
+upgrade/rollback and CodeQL checks. Linux and macOS run in parallel. Long
+performance runs are opt-in and are repeated for relevant runtime changes or
+unresolved failures, not every PR.
+
+The ordinary CLI integration suite starts separate local client/server processes:
 
 ```sh
-cargo build --locked -p maverick-cli --features experimental-h3
 cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product
 ```
 
-Set `advanced.quiche_h3: true` in both existing v1 configs, then use the ordinary
-`server -c` and `client -c` commands. Omission keeps H2. The new path reuses
-certificate/hostname/pin verification and authentication v1/v2. It rejects
-fronting, DNS/TUN and UDP associations; the retired `experimental_h3` flag stays
-rejected. See [configuration](CONFIG.md) for the exact scope. This is a Beta
-source capability, not a change to the immutable published RC.2 files.
+It covers authentication/TLS, payload integrity, half-close, concurrency,
+cleanup and process recovery. Filter with `resilience::` for selected datagram
+loss/delay, slow-reader isolation and same-client server-restart recovery;
+filter with `shaping::` for configured Auto/Stable padding behavior. Separate
+authenticated client tests verify frame ordering and batching with a paused
+clock. These checks have no performance thresholds and change no host networking.
 
-For a manual local H2/H3 comparison using optimized binaries:
+## Manual Performance and Resource Measurements
+
+For a release-mode H2/H3 loopback comparison:
 
 ```sh
 cargo test --locked --release -p maverick-cli --features experimental-h3 \
@@ -89,16 +118,12 @@ cargo test --locked --release -p maverick-cli --features experimental-h3 \
 ```
 
 This measures connection setup and verified bulk transfers, then checks
-30 seconds of bounded concurrent traffic and recovery after interrupted flows.
-Keep this task's own builds and profiling separate from timing runs. Each
-carrier emits `comparison_host` context before and after the measured work;
-other projects may still be active. Timing is diagnostic: comparisons need the
-same workload and sufficiently comparable conditions. If background activity
-makes a comparison unreliable, report that limitation instead of a speedup.
-CI retains correctness/stability assertions without speed thresholds. See
-`STATUS.md` for observations and their limits.
+30 seconds of bounded concurrency and recovery. Each carrier records
+`comparison_host` context before and after the work. Use the same workload and
+comparable conditions for quantitative comparisons; report an unreliable
+comparison instead of claiming a speedup.
 
-For longer local stability and process-resource measurements:
+For longer sustained/churn traffic and process-resource sampling:
 
 ```sh
 MAVERICK_SOAK_SECONDS=300 cargo test --locked --release -p maverick-cli \
@@ -106,13 +131,11 @@ MAVERICK_SOAK_SECONDS=300 cargo test --locked --release -p maverick-cli \
   soak::long_running_carrier_resources -- --ignored --nocapture
 ```
 
-The default runs three 100-second H2 reference phases and three 300-second H3
-phases, each with eight sustained bidirectional flows and four short flows per
-second. Idle intervals, cancellation, active-client exit and restart bring the
-total to about 22 minutes. Use `MAVERICK_SOAK_SECONDS=10` for a short preflight.
-`MAVERICK_SOAK_CONCURRENCY` controls sustained flows and defaults to eight.
-Each flow sends 64 KiB in each direction every 100 ms. For higher concurrency
-and a longer run:
+This uses three 100-second H2 reference phases and three 300-second H3 phases,
+eight sustained bidirectional flows and four short flows/s. Each long flow
+sends 64 KiB per direction every 100 ms. Idle, cancellation and client-exit/
+restart checks bring the total to about 22 minutes. Set
+`MAVERICK_SOAK_SECONDS=10` for a preflight. For the established higher-load recipe:
 
 ```sh
 MAVERICK_SOAK_SECONDS=600 MAVERICK_SOAK_CONCURRENCY=32 \
@@ -120,176 +143,83 @@ MAVERICK_SOAK_SECONDS=600 MAVERICK_SOAK_CONCURRENCY=32 \
   --test h3_product soak::long_running_carrier_resources -- --ignored --nocapture
 ```
 
-This uses three 200-second H2 reference phases and three 600-second H3 phases,
-plus idle and recovery checks, for about 42 minutes. Four short flows per second
-continue alongside the sustained flows. Keep the same concurrency and reduce
-`MAVERICK_SOAK_SECONDS` to `10` for a preflight. All peers are paired before the
-common traffic window starts. Each phase records `concurrency`, `block_bytes`,
-`setup_seconds`, `long_bytes` and `transfer_seconds`. The byte/transfer-time
-ratio is the achieved rate through long-flow completion, excluding setup and
-later recovery checks. This paced workload does not measure maximum throughput.
+This takes about 42 minutes: three 200-second H2 and three 600-second H3 phases,
+plus cleanup/recovery. All peers are paired before the common traffic window.
+The report records concurrency, block size, setup time, verified bytes and
+transfer time. The byte/transfer-time ratio excludes setup and later recovery;
+it is an achieved paced rate, not maximum throughput. The normal CI lifecycle
+case instead uses 32 flows for 12 seconds per carrier and 16 KiB blocks, keeping
+debug offered load at 10 MiB/s versus 40 MiB/s for the manual 32-flow recipe.
 
-The manual sampler requires `ps` and `lsof` and records numeric CPU time,
-resident memory, descriptor counts and existing server metrics. Its `host`
-context includes available CPU parallelism and 1/5/15-minute load averages.
-These are whole-host observations including Maverick itself; load averages
-are not CPU percentages, and parallelism is not a count of currently idle cores.
-On macOS it also reads the raw memory-pressure code and cumulative swap-in/out
-page counters; on Linux it records total/available memory estimates and used
-swap in KiB. The platform-specific memory fields are not interchangeable.
-No other project names or process command lines are collected. Missing context
-fails the manual measurement explicitly rather than becoming zero or proving
-an idle machine. Context never skips a functional assertion or changes a limit.
-Compare CPU time differences over elapsed time, and restart the counter after a
-process restart. Memory samples are not peaks, and retained allocator capacity or H2
-pool connections alone do not establish a leak. The existing CI lifecycle case
-uses 32 sustained flows for 12 seconds per carrier. Its 16 KiB blocks retain the
-former eight-flow aggregate load of 10 MiB/s in debug builds; manual release
-measurements use 64 KiB blocks (40 MiB/s at 32 flows). There are no CPU/RSS
-thresholds in CI.
+The sampler requires `ps` and `lsof` and records numeric CPU time, RSS,
+descriptor counts and server metrics. Whole-host context includes available
+CPU parallelism and 1/5/15-minute load averages. macOS adds its raw pressure
+code and cumulative swap-in/out pages; Linux adds total/available memory and
+used swap in KiB. These platform-specific memory values are not interchangeable.
+Load averages include Maverick and other work, are not CPU percentages, and do
+not identify idle cores. No other project names or process command lines are
+collected. Unavailable context fails the manual measurement explicitly.
 
-Both normal CI and manual runs terminate and restart the client for H2 and H3.
-After termination, they wait for the target connection to close, up to the
-existing 15-second allowance, then require connection/admission cleanup before
-restarting. They continue as soon as cleanup is observed instead of sleeping
-for a fixed 12 seconds. The 15-second idle observation after each manual load
-phase remains unchanged.
+Keep this task's builds/profiling separate from timing runs; other projects may
+remain active. Context never skips an assertion or changes a deadline. CPU uses
+counter differences over elapsed time, restarted after a process restart;
+100% represents one core. RSS/descriptor observations are samples, not peaks or
+proof of leak freedom. H2 may retain pooled connections during idle observation.
+Both carriers must release connections/admission after client termination,
+within the existing 15-second allowance, before restart. Manual phases retain
+15-second idle observations. There are no CPU/RSS thresholds in CI.
+[STATUS.md](STATUS.md#local-evidence-and-limits) links measured results and limits.
 
-The normal H3 CLI suite also exercises selected datagram loss and a single
-delayed response, a backpressured reader alongside healthy SOCKS/HTTP requests,
-and same-client recovery after the server exits and restarts at its original
-OS-assigned address. Faults are injected inside a loopback test process; no host
-network configuration changes. These cases validate integrity, independent
-progress and cleanup, not real-network performance or a permanently blocked
-kernel UDP socket. Run just these cases with:
+## Retained Developer References
+
+The shared H3 checks also use the isolated TLS/auth fixture. For focused work:
 
 ```sh
-cargo test --locked -p maverick-cli --features experimental-h3 \
-  --test h3_product resilience::
+cargo test --locked \
+  --manifest-path crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
+cargo run --locked \
+  --manifest-path crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml \
+  --features proxy --bin h3-proxy-smoke
 ```
 
-The same CLI suite also checks configured shaping in Auto and Stable modes:
+The fixture uses the same H3 driver as the product with its separate lockfile.
+Proxy mode verifies authentication and 512 KiB transfers in both directions;
+adding `--features proxy` to its test command includes rejection, limits,
+timeouts and cleanup. Control/push and debug/release logging checks retain their
+bounded scope, rather than claiming full HTTP/3 conformance.
 
-```sh
-cargo test --locked -p maverick-cli --features experimental-h3 \
-  --test h3_product shaping::
-```
-
-It verifies payloads and cleanup alongside server padding counters. Separate
-authenticated client tests verify outgoing padding/data/FIN ordering and batching
-with a paused clock. These checks do not use performance thresholds.
-
-The following developer laboratories retain focused reference checks.
-
-Run the opt-in local quiche/H3 experiment:
+The earlier single-request loopback lab remains available:
 
 ```sh
 cargo run --locked -p maverick-tests --no-default-features \
   --features quiche-candidate --bin backend-capture-lab -- quiche-loopback
 ```
 
-This developer command generates temporary local credentials, validates the
-server certificate and hostname, exchanges one H3 request/response over real
-loopback UDP, and closes both connections. It uses OS-assigned ports, fixed
-packet/body limits, and a five-second network deadline; it accepts no external
-address. Temporary credentials and sockets are released on return. It does
-not enable H3 in the product or complete backend qualification. The existing
-`backend-capture-lab preflight` reports the separate qualification state.
+It accepts no external address, uses temporary credentials and a five-second
+network deadline, and does not complete the separate Chrome qualification.
 
-To check the existing TLS settings and authentication v1/v2 through quiche's
-upstream Boring integration, run the isolated test package:
+## Pilot Artifacts and Further Documentation
 
-```sh
-cargo test --locked \
-  --manifest-path crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
-```
+`./scripts/build-pilot.sh` builds the default H2 CLI, start guide, checksums and
+target archive under ignored `dist/`. Public archives contain no credentials;
+operators generate them locally. The builder does not contact a server or
+change network settings. Publication and Stable follow the
+[release contract](docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md).
 
-It reuses the client TLS settings, core authentication, and the shared H3
-driver. Its separate lockfile retains the isolated test setup; the current
-source uses one aligned Boring TLS version across H2 and H3. Current product
-and release state are recorded in `STATUS.md`.
-
-Run the local SOCKS-to-H3-to-TCP proxy smoke with actual server authentication:
-
-```sh
-cargo run --locked \
-  --manifest-path crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml \
-  --features proxy --bin h3-proxy-smoke
-```
-
-This opt-in executable creates local SOCKS, QUIC, and TCP-origin sockets on
-`127.0.0.1` with OS-assigned ports. Authentication v1 and v2 each transfer
-512 KiB in both directions with client-first and server-first half-close,
-and simultaneous upload/download. Add `--features proxy` to the test command
-above to also check credentials, replay, flow limits, egress, active-download
-timeouts, GOAWAY, and disconnect cleanup. H3 remains default-off and TCP-only.
-The ordinary CLI can now opt into this same driver; field validation is deferred.
-
-The isolated tests also exercise the selected upstream library's push/control
-behavior and logging cap. Request-priority hints preserve valid flows; ignored
-push metadata never becomes proxy data, and actual pushed streams are rejected.
-This does not claim full upstream push-ID conformance. Debug and release tests
-check H3/QPACK logging with verbose host loggers; see `STATUS.md` for the exact
-P1/P2/P3 decisions and remaining integration work.
-
-Build the first owner-pilot folder and shareable archive:
-
-```sh
-./scripts/build-pilot.sh
-```
-
-It creates ignored output under `dist/`: one CLI binary, a start guide, checksums,
-and a target-specific `.tar.gz`. Public archives contain no credentials; the
-user runs `maverick gen-config` after download to create fresh local configs.
-Version tags publish the same target archives as GitHub prereleases. The builder
-does not contact a server or change network settings. See `STATUS.md` for the
-current validation state.
-
-## Build and Configure
-
-```sh
-cargo build -p maverick-cli
-cargo run -p maverick-cli -- gen-config
-cargo run -p maverick-cli -- check-config --kind server -c server.generated.yaml
-cargo run -p maverick-cli -- check-config --kind client -c client.generated.yaml
-```
-
-Generated configs contain fresh credentials and are ignored by git. Protect
-real config files with owner-only permissions and never commit real endpoints,
-credentials, account details, or infrastructure identifiers.
-
-Separately authorized Ubuntu test origins use the fail-closed host gate in
-[docs/TEST_SERVER_PREPARATION.md](docs/TEST_SERVER_PREPARATION.md). Ubuntu
-26.04 LTS is the default; Ubuntu 24.04 LTS requires an explicit fallback reason.
-The gate updates packages, stops for a required manual reboot, and persistently
-configures stock Ubuntu BBR (commonly called BBRv1) while preserving an existing
-`fq` or `fq_codel` choice after its package and configuration safety gates pass.
-Those two qdiscs are equally supported; every other value is rejected. The gate
-then verifies runtime state, rolling back an apply failure or requesting a
-reboot when the active qdisc is still unsupported. It does not install a custom
-kernel, reboot, start Maverick, or change a live qdisc. The package upgrade may
-install an Ubuntu-provided default-kernel update.
-
-## Active Documents
-
-- [STATUS.md](STATUS.md): the single current-truth and pilot decision record.
-- [ROADMAP.md](ROADMAP.md): the user-first execution order.
-- [CONFIG.md](CONFIG.md): configuration reference.
-- [THREAT_MODEL.md](THREAT_MODEL.md): the current Beta threat model.
-- [SECURITY.md](SECURITY.md): reporting, secret handling, and security limits.
-- [docs/TRANSPORT_ARCHITECTURE.md](docs/TRANSPORT_ARCHITECTURE.md): compact
-  product architecture.
-- [docs/TEST_SERVER_PREPARATION.md](docs/TEST_SERVER_PREPARATION.md):
-  fail-closed Ubuntu test-origin package, reboot, BBRv1, and qdisc gate.
+- [CONFIG.md](CONFIG.md): runnable configuration and compatibility.
+- [docs/TRANSPORT_ARCHITECTURE.md](docs/TRANSPORT_ARCHITECTURE.md): product data path.
+- [THREAT_MODEL.md](THREAT_MODEL.md) and [SECURITY.md](SECURITY.md): protections,
+  reporting and limits.
+- [docs/TEST_SERVER_PREPARATION.md](docs/TEST_SERVER_PREPARATION.md): preparation
+  for a separately authorized Ubuntu origin; it can change that server's packages
+  and TCP settings and is not a local quick-start step.
 - [docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md](docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md):
-  privacy-safe, one-change-at-a-time field diagnosis.
+  field diagnosis within a separately authorized trial.
 - [docs/archive/README.md](docs/archive/README.md): historical-material boundary.
 
-## Safety
-
-Local tests and demos must not change this machine's system proxy, DNS, route
-table, firewall, VPN, or other network-service settings. They use loopback and
-ephemeral ports only. A real-network pilot requires a separately named,
-owner-controlled environment and explicit authorization.
+Local tests use loopback and ephemeral ports. Never change this Mac's system
+proxy, DNS, routes, firewall, VPN or Surge settings. Real-network trials require
+a separately named owner-controlled environment and explicit authorization.
+Keep credentials and private infrastructure details out of git and shared logs.
 
 Apache License 2.0. See [LICENSE](LICENSE).

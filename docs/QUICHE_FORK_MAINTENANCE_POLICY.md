@@ -1,5 +1,14 @@
 # quiche fork maintenance policy
 
+> Current scope, 2026-10-30: this is the historical private-fork qualification
+> policy. Its RED results and blanket product-adoption stop statements below
+> describe that earlier candidate, not the current upstream-only H3 TCP path.
+> [STATUS.md](../STATUS.md#explicit-h3-tcp) records the bounded P1/P2/P3 decisions
+> and current implementation; [ROADMAP.md](../ROADMAP.md) gives execution order.
+> No private quiche patch is in the product. A future private-fork proposal must
+> still address its maintenance costs and evidence; this notice does not accept
+> a fork, enable Auto H3 or authorize field work.
+
 Date: 2026-08-12
 
 Task: B-002-S1; policy precision B-002-S3-2B/S3-2D/S3-2E (2026-08-13)

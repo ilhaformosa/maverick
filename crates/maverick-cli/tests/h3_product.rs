@@ -25,6 +25,8 @@ const SOCKS_READY: &str = "Maverick SOCKS5 client listening";
 const HTTP_READY: &str = "Maverick HTTP CONNECT client listening";
 const METRICS_READY: &str = "Maverick local metrics listening";
 
+#[path = "support/h3_generated_config.rs"]
+mod generated_config;
 #[path = "support/host_context.rs"]
 mod host_context;
 #[path = "support/h3_resilience.rs"]

@@ -53,7 +53,7 @@ enum Commands {
         #[arg(long)]
         allow_loose_permissions: bool,
     },
-    /// Start the TLS/H2 server.
+    /// Start the configured TLS proxy server.
     Server {
         #[arg(short, long)]
         config: PathBuf,
@@ -71,7 +71,11 @@ enum Commands {
         cert: PathBuf,
     },
     /// Write example client/server config files to the current directory.
-    GenConfig,
+    GenConfig {
+        /// Generate explicit H3/TCP configurations; requires experimental-h3.
+        #[arg(long)]
+        quiche_h3: bool,
+    },
     /// Validate a client or server config file.
     CheckConfig {
         #[arg(short, long)]
@@ -256,16 +260,28 @@ async fn main() -> Result<()> {
             println!("{}", cert_pin_from_pem(&input)?);
             Ok(())
         }
-        Commands::GenConfig => {
+        Commands::GenConfig { quiche_h3 } => {
+            anyhow::ensure!(
+                !quiche_h3 || cfg!(feature = "experimental-h3"),
+                "--quiche-h3 requires a build with --features experimental-h3"
+            );
+            // Check both outputs before generating a new pair of credentials.
+            // create_new below still prevents overwriting a concurrent writer.
+            for path in [GENERATED_CLIENT_CONFIG, GENERATED_SERVER_CONFIG] {
+                anyhow::ensure!(
+                    !Path::new(path).try_exists()?,
+                    "{path} already exists; generate the configuration pair in an empty directory"
+                );
+            }
             let secret = SecretString::generate();
             write_secret_config_file(
                 GENERATED_CLIENT_CONFIG,
-                example_client_config(secret.expose_secret()),
+                example_client_config(secret.expose_secret(), quiche_h3),
             )
             .with_context(|| format!("write {GENERATED_CLIENT_CONFIG}"))?;
             write_secret_config_file(
                 GENERATED_SERVER_CONFIG,
-                example_server_config(secret.expose_secret()),
+                example_server_config(secret.expose_secret(), quiche_h3),
             )
             .with_context(|| format!("write {GENERATED_SERVER_CONFIG}"))?;
             println!("wrote {GENERATED_CLIENT_CONFIG} and {GENERATED_SERVER_CONFIG}");
@@ -356,8 +372,18 @@ async fn main() -> Result<()> {
         Commands::Version => {
             println!("maverick {}", env!("CARGO_PKG_VERSION"));
             println!("protocol_version: {}", maverick_core::PROTOCOL_VERSION);
+            let browser_tls = if cfg!(feature = "browser-tls") {
+                "browser-tls-default,"
+            } else {
+                ""
+            };
+            let h3 = if cfg!(feature = "experimental-h3") {
+                ",quiche-h3"
+            } else {
+                ""
+            };
             println!(
-                "features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
+                "features: tls13,h2,{browser_tls}cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke{h3}"
             );
             Ok(())
         }
@@ -1900,10 +1926,39 @@ const PROFILE_URI_MAX_BYTES: usize = 16 * 1024;
 fn export_config_uri(path: &Path, include_secret: bool, qr: bool) -> Result<()> {
     validate_qr_export(include_secret, qr)?;
     let cfg = read_client_config(&path.to_path_buf())?;
-    anyhow::ensure!(
-        !cfg.advanced.quiche_h3,
-        "profile URI v1 cannot represent advanced.quiche_h3; use the YAML configuration"
-    );
+    // URI v1 supplies local defaults, but must not silently lose the remote
+    // connection's carrier, authentication or trust requirements.
+    let rotation = &cfg.auth.rotation;
+    for (unsupported, field) in [
+        (cfg.advanced.quiche_h3, "advanced.quiche_h3"),
+        (cfg.server.ca_cert.is_some(), "server.ca_cert"),
+        (
+            !cfg.auth.channel_binding.enabled || cfg.auth.channel_binding.require,
+            "auth.channel_binding",
+        ),
+        (cfg.auth.v2.enabled || cfg.auth.v2.require, "auth.v2"),
+        (
+            rotation.active_epoch.is_some()
+                || rotation.next_credential_id.is_some()
+                || rotation.auto_switch
+                || rotation.next.is_some(),
+            "auth.rotation",
+        ),
+        (
+            cfg.advanced.tls_terminating_fronting_enabled(),
+            "advanced.stealth.cdn_fronting",
+        ),
+        (
+            cfg.advanced.stealth.tls_fingerprint
+                != ClientAdvancedConfig::default().stealth.tls_fingerprint,
+            "advanced.stealth.tls_fingerprint",
+        ),
+    ] {
+        anyhow::ensure!(
+            !unsupported,
+            "profile URI v1 cannot represent {field}; use the YAML configuration"
+        );
+    }
     let profile = ProfileUri {
         server: cfg.server.address,
         server_name: cfg.server.server_name,
@@ -2820,7 +2875,8 @@ fn random_id() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn example_client_config(secret: &str) -> String {
+fn example_client_config(secret: &str, quiche_h3: bool) -> String {
+    let quiche_h3 = if quiche_h3 { "  quiche_h3: true\n" } else { "" };
     let tls_fingerprint =
         tls_fingerprint_name(ClientAdvancedConfig::default().stealth.tls_fingerprint);
     format!(
@@ -2882,7 +2938,7 @@ advanced:
       carrier: "h2"
       trusted_tls_terminating_provider: false
   allow_non_loopback_listeners: false
-  experimental_h3: false
+{quiche_h3}  experimental_h3: false
   experimental_cloudflare_ws: false
   experimental_ech: false
   experimental_tun: false
@@ -2896,7 +2952,8 @@ advanced:
     )
 }
 
-fn example_server_config(secret: &str) -> String {
+fn example_server_config(secret: &str, quiche_h3: bool) -> String {
+    let quiche_h3 = if quiche_h3 { "  quiche_h3: true\n" } else { "" };
     format!(
         r#"version: 1
 listen: "0.0.0.0:443"
@@ -2992,7 +3049,7 @@ advanced:
     allow_link_local: false
     allow_multicast: false
     allow_unspecified: false
-  experimental_h3: false
+{quiche_h3}  experimental_h3: false
   experimental_cloudflare_ws: false
   experimental_ech: false
   crypto:
@@ -3316,7 +3373,7 @@ mod tests {
     #[test]
     fn generated_client_config_keeps_v1_and_disables_optional_dns_relay() {
         let secret = SecretString::generate();
-        let rendered = example_client_config(secret.expose_secret());
+        let rendered = example_client_config(secret.expose_secret(), false);
         let config = ClientConfig::from_yaml_str(&rendered).unwrap();
 
         assert_eq!(config.version, 1);

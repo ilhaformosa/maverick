@@ -107,7 +107,7 @@ separate from quantitative runs. A macOS background-policy run changes network
 I/O as well as CPU scheduling and cannot isolate CPU cost. Temporary diagnostics
 must not replace or weaken the final ordinary-command checks.
 
-## Local Reliability and Measurement Context
+## Completed — Local Reliability and Measurement Context
 
 Qualify selected packet loss/delay, slow-reader isolation and server restart on
 the ordinary H3 CLI path. Reuse existing fixture and cleanup checks. Record host
@@ -120,6 +120,22 @@ Use short focused tests first, then shared checks and existing PR/main gates.
 Repeat long runs for relevant runtime changes or unresolved failures, not for
 every edit to test/documentation code. Keep performance runs separate from this
 task's own builds/profiling, but do not require unrelated projects to stop.
+
+## Completed — H3 Progress and Idle Semantics
+
+Distinguish slowly advancing TCP writes from actual stalls on the client and
+server relay paths. Reproduce timing errors with paused-clock, bounded-stream
+tests, then make the smallest correction without changing configured deadlines.
+Keep QUIC network-idle and policy-induced wire silence distinct from application
+write progress; do not add keepalive or rate-scheduling machinery for this fix.
+
+Retain all shared and native CI checks. For this timer correction, use the
+existing 32-flow resource/recovery workload for three 60-second H3 phases and
+three 20-second H2 reference phases after focused tests. The paused-clock cases
+exercise the failure directly; repeat the prior 42-minute run only if a new
+failure or a broader runtime change justifies it. For OS-sensitive fixtures,
+confirm native test results before starting a costly long run. Record host
+context and avoid performance claims from incomparable background conditions.
 
 ## Next — Remaining H3 Cost and Integration Quality
 

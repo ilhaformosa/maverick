@@ -185,7 +185,7 @@ impl Server {
             &policy,
         )
         .await?;
-        relay_tcp(target, tunnel, open.flow_id, max, policy).await
+        relay_tcp(target.into_split(), tunnel, open.flow_id, max, policy).await
     }
 }
 
@@ -225,14 +225,17 @@ async fn send(
     Ok(())
 }
 
-async fn relay_tcp(
-    target: TcpStream,
+async fn relay_tcp<R, W>(
+    (mut read, mut write): (R, W),
     tunnel: FrameChannel,
     flow_id: u64,
     max: usize,
     policy: relay::TunnelRelayPolicy,
-) -> Result<()> {
-    let (mut read, mut write) = target.into_split();
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     // Separate directions preserve receive progress while the H3 sender is
     // backpressured, including a response after the client's TCP half-close.
     let FrameChannel {
@@ -254,9 +257,18 @@ async fn relay_tcp(
                     if let Some(rate) = &policy.rate_limiter {
                         rate.throttle(frame.payload.len()).await;
                     }
-                    timeout(policy.idle_timeout, write.write_all(&frame.payload))
-                        .await
-                        .context("target relay write timed out")??;
+                    let mut bytes = frame.payload.as_ref();
+                    while !bytes.is_empty() {
+                        let written = timeout(policy.idle_timeout, write.write(bytes))
+                            .await
+                            .context("target relay write timed out")??;
+                        anyhow::ensure!(
+                            written > 0,
+                            "target relay writer closed before the frame was complete"
+                        );
+                        bytes = &bytes[written..];
+                        activity.send_replace(());
+                    }
                 }
                 FrameType::TcpFin | FrameType::CloseFlow => {
                     write.shutdown().await?;
@@ -426,4 +438,118 @@ async fn serve_listener(
         join.await??;
     }
     result.and(driver_result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{advance, Instant};
+
+    fn relay_policy() -> relay::TunnelRelayPolicy {
+        relay::TunnelRelayPolicy {
+            idle_timeout: Duration::from_secs(2),
+            rate_limiter: None,
+            padding: RuntimePadding::disabled(),
+            cover_traffic: RuntimeCoverTraffic::disabled(),
+            shaping_metrics: None,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn target_write_progress_outlives_idle_timeout() -> Result<()> {
+        let (channel, mut transport) = h3_channel::channel();
+        let (target, mut peer) = tokio::io::duplex(1);
+        let task = tokio::spawn(relay_tcp(
+            tokio::io::split(target),
+            channel,
+            1,
+            65_536,
+            relay_policy(),
+        ));
+        let payload = b"progress";
+        transport
+            .inbound
+            .send(Ok(Some(Frame::new(
+                FrameType::TcpData,
+                0,
+                1,
+                Bytes::from_static(payload),
+            ))))
+            .await?;
+        let started = Instant::now();
+        for (index, expected) in payload.iter().enumerate() {
+            let mut byte = [0];
+            peer.read_exact(&mut byte)
+                .await
+                .context("target stopped while partial writes were advancing")?;
+            assert_eq!(byte[0], *expected);
+            if index + 1 < payload.len() {
+                tokio::task::yield_now().await;
+                advance(Duration::from_millis(500)).await;
+            }
+        }
+        assert!(started.elapsed() > relay_policy().idle_timeout);
+        transport
+            .inbound
+            .send(Ok(Some(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()))))
+            .await?;
+        peer.shutdown().await?;
+        task.await??;
+        let (fin, ended) = transport
+            .outbound
+            .recv()
+            .await
+            .context("missing target FIN")?;
+        assert_eq!(fin.frame_type, FrameType::TcpFin);
+        assert!(ended);
+        assert!(transport.outbound.recv().await.is_none());
+        assert!(transport.inbound.is_closed());
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn target_write_stall_times_out_after_progress() -> Result<()> {
+        let (channel, mut transport) = h3_channel::channel();
+        let (target, mut peer) = tokio::io::duplex(1);
+        let task = tokio::spawn(relay_tcp(
+            tokio::io::split(target),
+            channel,
+            1,
+            65_536,
+            relay_policy(),
+        ));
+        transport
+            .inbound
+            .send(Ok(Some(Frame::new(
+                FrameType::TcpData,
+                0,
+                1,
+                Bytes::from_static(b"progress then stop"),
+            ))))
+            .await?;
+        let mut byte = [0];
+        peer.read_exact(&mut byte).await?;
+        assert_eq!(byte[0], b'p');
+        tokio::task::yield_now().await;
+        advance(Duration::from_secs(1)).await;
+        peer.read_exact(&mut byte).await?;
+        assert_eq!(byte[0], b'r');
+        tokio::task::yield_now().await;
+        // A partial write at t=1 must move the deadline past the original t=2.
+        advance(Duration::from_millis(1500)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "target write expired before one idle window without progress"
+        );
+        advance(Duration::from_secs(1)).await;
+        let error = task.await?.expect_err("stalled target write must time out");
+        assert!(
+            error.to_string().contains("target relay write timed out")
+                || error.to_string().contains("H3 relay idle timeout")
+        );
+        assert!(transport.inbound.is_closed());
+        assert!(transport.outbound.recv().await.is_none());
+        Ok(())
+    }
 }

@@ -187,12 +187,17 @@ impl H3ClientTunnel {
                 }
                 match frame.frame_type {
                     FrameType::TcpData => {
-                        crate::session::write_all_with_idle_timeout(
-                            &mut write,
-                            &frame.payload,
-                            idle,
-                        )
-                        .await?;
+                        let mut bytes = frame.payload.as_ref();
+                        while !bytes.is_empty() {
+                            let written = timeout(idle, write.write(bytes))
+                                .await
+                                .context("local relay write timed out")??;
+                            if written == 0 {
+                                bail!("local relay writer closed before the frame was complete");
+                            }
+                            bytes = &bytes[written..];
+                            activity.send_replace(());
+                        }
                     }
                     FrameType::TcpFin | FrameType::CloseFlow => {
                         let full_close = frame.frame_type == FrameType::CloseFlow;
@@ -384,6 +389,99 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })
         .await?
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_download_progress_outlives_one_idle_window() -> Result<()> {
+        let (channel, mut transport) = h3_channel::channel();
+        let (local, mut app) = tokio::io::duplex(1);
+        let idle = Duration::from_secs(2);
+        let task = tokio::spawn(tunnel(channel).relay(local, idle));
+        app.shutdown().await?;
+        let (fin, end) = transport
+            .outbound
+            .recv()
+            .await
+            .context("missing upload FIN")?;
+        assert_eq!(fin.frame_type, FrameType::TcpFin);
+        assert!(end);
+
+        let payload = b"progress";
+        transport
+            .inbound
+            .send(Ok(Some(Frame::new(
+                FrameType::TcpData,
+                0,
+                1,
+                Bytes::from_static(payload),
+            ))))
+            .await?;
+        let started = tokio::time::Instant::now();
+        for (index, expected) in payload.iter().enumerate() {
+            if index != 0 {
+                tokio::time::advance(Duration::from_secs(1)).await;
+            }
+            let mut byte = [0];
+            app.read_exact(&mut byte).await?;
+            assert_eq!(byte[0], *expected);
+            tokio::task::yield_now().await;
+        }
+        assert!(started.elapsed() > idle);
+        transport
+            .inbound
+            .send(Ok(Some(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()))))
+            .await?;
+        transport.inbound.send(Ok(None)).await?;
+        assert_eq!(task.await??, crate::session::RelayClose::Graceful);
+        assert_eq!(app.read(&mut [0]).await?, 0);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_download_still_times_out_when_progress_stops() -> Result<()> {
+        let (channel, mut transport) = h3_channel::channel();
+        let (local, mut app) = tokio::io::duplex(1);
+        let task = tokio::spawn(tunnel(channel).relay(local, Duration::from_secs(2)));
+        app.shutdown().await?;
+        let (fin, end) = transport
+            .outbound
+            .recv()
+            .await
+            .context("missing upload FIN")?;
+        assert_eq!(fin.frame_type, FrameType::TcpFin);
+        assert!(end);
+        transport
+            .inbound
+            .send(Ok(Some(Frame::new(
+                FrameType::TcpData,
+                0,
+                1,
+                Bytes::from_static(b"progress"),
+            ))))
+            .await?;
+        let mut byte = [0];
+        app.read_exact(&mut byte).await?;
+        assert_eq!(&byte, b"p");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        app.read_exact(&mut byte).await?;
+        assert_eq!(&byte, b"r");
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(1500)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "partial write progress must refresh the idle deadline"
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let error = timeout(Duration::from_secs(1), task)
+            .await
+            .context("stalled partial download did not finish")??
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("timed out") || error.to_string().contains("idle timeout")
+        );
+        Ok(())
     }
 
     #[tokio::test]

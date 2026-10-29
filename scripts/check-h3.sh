@@ -5,10 +5,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 manifest=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
 cargo test --locked -p maverick-client --features experimental-h3 h3::tests
+cargo test --locked -p maverick-server --features experimental-h3 h3::tests
 cargo test --locked -p maverick-core --no-default-features quiche_h3
 cargo test --locked -p maverick-cli --features experimental-h3 quiche_h3
 cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product
-cargo clippy --locked -p maverick-cli --features experimental-h3 --all-targets -- -D warnings
+cargo clippy --locked -p maverick-cli -p maverick-client -p maverick-server \
+  --features experimental-h3 --all-targets -- -D warnings
 product_graph="$(cargo tree --locked -p maverick-cli --features experimental-h3 --edges normal,build --prefix none)"
 [[ "$(grep -Ecx 'boring-sys v5\.3\.0' <<<"$product_graph")" -eq 1 ]]
 [[ "$(grep -Ecx 'quiche v0\.30\.0' <<<"$product_graph")" -eq 1 ]]

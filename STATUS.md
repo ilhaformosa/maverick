@@ -418,6 +418,27 @@ keep binaries, workloads and methods matched, record context and use short
 paired controls; incomparable conditions do not support a speedup claim. Other
 projects are not stopped, and Mac/Surge settings are not changed.
 
+## H3 Partial-Write Progress
+
+Focused relay tests reproduced premature idle expiry while one TCP frame was
+still being written in small successful pieces. The client's download path
+notified its outer idle watcher only on incoming frames; the server also applied one timeout
+to the entire target write. Both H3 TCP write paths now update activity after
+each positive partial write and retain the existing timeout for a stalled write.
+The default H2 implementation, timeout values and rate limiter are unchanged.
+
+Paused-clock tests use bounded in-memory streams to check complete slow writes,
+half-close completion and expiry measured from the last write progress. They
+do not depend on TCP receive-buffer tuning or an idle host. The server tests
+join the shared H3 check entry used locally and on both native CI platforms.
+That entry also lints the feature-enabled client and server test targets alongside
+the CLI. Ordinary CLI integrity, cancellation, restart and resource checks remain.
+
+This fixes application-relay timing, not QUIC keepalive behavior. Network-idle
+and frame-send deadlines still apply. A rate limiter can create genuine wire
+silence, so this change does not promise survival across arbitrary rate/idle
+combinations. H3 remains default-off and field validation remains deferred.
+
 ## CI and Security Alert Maintenance
 
 Linux CI installs a build/verification package only when a required command is

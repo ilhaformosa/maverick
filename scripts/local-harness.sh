@@ -65,6 +65,9 @@ echo "==> isolated test-server preparation checks"
 echo "==> security-tool installer checks"
 ./scripts/test-install-security-tools.sh
 
+echo "==> project-cache inventory checks"
+./scripts/test-inspect-project-cache.sh
+
 echo "==> release publication gate checks"
 ./scripts/test-release-gates.sh
 
@@ -146,6 +149,7 @@ done
 git diff --check
 bash -n scripts/local-harness.sh scripts/user-smoke.sh scripts/build-pilot.sh \
   scripts/install-security-tools.sh scripts/test-install-security-tools.sh \
+  scripts/inspect-project-cache.sh scripts/test-inspect-project-cache.sh \
   scripts/generate-cyclonedx-sbom.sh scripts/security-dependency-inventory.sh \
   scripts/prepare-test-server.sh scripts/test-cyclonedx-sbom.sh \
   scripts/test-prepare-test-server.sh scripts/verify-cyclonedx-sbom.sh \

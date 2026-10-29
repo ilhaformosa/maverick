@@ -172,6 +172,8 @@ jobs:
           key: product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
           restore-keys: |
             product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
+      - name: Inventory restored project outputs
+        run: ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-before.json"
       - name: Check the supported rustls build and relay matrix
         run: ./scripts/check.sh rustls
       - name: Install Linux build and verification tools
@@ -275,6 +277,12 @@ jobs:
             dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.cdx.json
           if-no-files-found: error
           retention-days: 7
+      - name: Compare project outputs after all checks
+        run: |
+          ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-after.json"
+          ./scripts/inspect-project-cache.sh compare \
+            "$RUNNER_TEMP/project-cache-before.json" "$RUNNER_TEMP/project-cache-after.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Save successful main dependency cache
         if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -343,6 +351,8 @@ jobs:
           key: product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
           restore-keys: |
             product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
+      - name: Inventory restored project outputs
+        run: ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-before.json"
       - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - run: cargo fetch --locked --target "$MAVERICK_SBOM_TARGET"
       - name: Verify upstream H3 authentication and local TCP proxy
@@ -416,6 +426,12 @@ jobs:
             dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.cdx.json
           if-no-files-found: error
           retention-days: 7
+      - name: Compare project outputs after all checks
+        run: |
+          ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-after.json"
+          ./scripts/inspect-project-cache.sh compare \
+            "$RUNNER_TEMP/project-cache-before.json" "$RUNNER_TEMP/project-cache-after.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Save successful main dependency cache
         if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5

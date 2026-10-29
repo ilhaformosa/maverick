@@ -182,7 +182,11 @@ enum Commands {
         server_shaping: bool,
     },
     /// Prove the real product path locally with correct and wrong credentials.
-    UserSmoke,
+    UserSmoke {
+        /// Test opt-in H3 TCP; requires a build with experimental-h3.
+        #[arg(long)]
+        quiche_h3: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -371,10 +375,13 @@ async fn main() -> Result<()> {
                 client_shaping,
                 server_shaping,
                 false,
+                false,
             )
             .await
         }
-        Commands::UserSmoke => bench_local(4096, 1, Mode::Auto, false, false, true).await,
+        Commands::UserSmoke { quiche_h3 } => {
+            bench_local(4096, 1, Mode::Auto, false, false, true, quiche_h3).await
+        }
     }
 }
 
@@ -3004,10 +3011,15 @@ async fn bench_local(
     client_shaping: bool,
     server_shaping: bool,
     verify_wrong_credential: bool,
+    quiche_h3: bool,
 ) -> Result<()> {
     anyhow::ensure!(
         (1..=128).contains(&concurrency),
         "concurrency must be between 1 and 128"
+    );
+    anyhow::ensure!(
+        !quiche_h3 || cfg!(feature = "experimental-h3"),
+        "--quiche-h3 requires a build with --features experimental-h3"
     );
     init_tracing("warn");
     let echo_addr = start_echo_server().await?;
@@ -3025,7 +3037,10 @@ async fn bench_local(
     )?;
 
     let secret = SecretString::generate();
-    let mut server_advanced = ServerAdvancedConfig::default();
+    let mut server_advanced = ServerAdvancedConfig {
+        quiche_h3,
+        ..ServerAdvancedConfig::default()
+    };
     server_advanced.egress.allow_loopback = true;
     if server_shaping {
         server_advanced.shaping = ShapingConfig {
@@ -3068,7 +3083,10 @@ async fn bench_local(
         advanced: server_advanced,
     })
     .await?;
-    let mut client_advanced = ClientAdvancedConfig::default();
+    let mut client_advanced = ClientAdvancedConfig {
+        quiche_h3,
+        ..ClientAdvancedConfig::default()
+    };
     if client_shaping {
         client_advanced.shaping = ShapingConfig {
             enabled: true,
@@ -3130,7 +3148,9 @@ async fn bench_local(
     println!("mode: {}", mode_name(mode));
     println!("client_shaping: {client_shaping}");
     println!("server_shaping: {server_shaping}");
-    println!("tls_fingerprint: {}", tls_fingerprint_name(tls_fingerprint));
+    if !quiche_h3 {
+        println!("tls_fingerprint: {}", tls_fingerprint_name(tls_fingerprint));
+    }
     println!(
         "direct_tcp_roundtrip_ms: {:.3}",
         direct.as_secs_f64() * 1000.0
@@ -3148,6 +3168,7 @@ async fn bench_local(
         (proxied.as_secs_f64() * 1000.0) / concurrency as f64
     );
     if verify_wrong_credential {
+        println!("carrier: {}", if quiche_h3 { "h3" } else { "h2" });
         println!("correct_credential_roundtrip: PASS");
     }
 

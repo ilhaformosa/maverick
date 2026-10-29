@@ -32,6 +32,20 @@ server/client path, proves a correct credential can relay data, and proves a
 wrong credential cannot establish a proxy flow. This is a local product check,
 not evidence of real-network usability or censorship resistance.
 
+To explicitly check H3 in a build that includes it:
+
+```sh
+cargo run --locked -p maverick-cli --features experimental-h3 -- user-smoke --quiche-h3
+```
+
+The result identifies `carrier: h3` after the credential and payload checks.
+Bare `user-smoke` continues to check H2, even in an H3-enabled build. The shell
+wrapper uses the default build and forwards its arguments; use the command above
+to build and check H3. A build without H3 rejects the explicit option before
+starting the check. Both modes use temporary local certificates and credentials
+rather than a deployment configuration. Printed timings are diagnostic and can be
+affected by other development tasks; they are not a performance pass criterion.
+
 For the default product checks:
 
 ```sh

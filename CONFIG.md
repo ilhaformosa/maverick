@@ -629,6 +629,18 @@ result does not establish that certificate files exist, a remote server is
 reachable, authentication succeeds, or traffic can be forwarded. The local
 `user-smoke` command checks its own temporary configuration, not these files.
 
+H2 server startup initializes TLS and the user/runtime state before binding
+listeners or reporting success. Missing or invalid TLS material is a start
+error, including through the SDK. A successful server start still does not prove
+that a remote client can reach or authenticate to it.
+
+H2 TCP relay keeps upload and download progressing independently when one side
+waits for socket writes or H2 capacity. TCP FIN closes one direction; full
+CloseFlow/Error stops uploads before response completion is drained. Client
+activity and per-write/send stall handling retain the configured idle budget,
+including partial-write progress. Flow limits and shared rate-limit policy are
+unchanged.
+
 `advanced.connect_timeout_ms` on the client bounds the full server connection
 setup path: TCP/TLS/H2 for H2, or UDP/QUIC/H3 for explicit H3. Timeout values
 must be greater than zero.

@@ -51,6 +51,131 @@ pub struct H2ClientTunnel {
     connection_lease: Option<crate::connection_manager::H2ConnectionLease>,
 }
 
+pub(crate) struct H2Sender<'a> {
+    stream: &'a mut h2::SendStream<Bytes>,
+    padding: RuntimePadding,
+    cover_traffic: &'a RuntimeCoverTraffic,
+    batcher: &'a mut RuntimeBatcher,
+    max_frame_size: usize,
+    stall_timeout: Duration,
+    lease: Option<&'a crate::connection_manager::H2ConnectionLease>,
+    activity: Option<&'a tokio::sync::watch::Sender<()>>,
+}
+
+pub(crate) struct H2Receiver<'a> {
+    recv_stream: &'a mut h2::RecvStream,
+    recv_buf: &'a mut BytesMut,
+    max_frame_size: usize,
+    stall_timeout: Duration,
+    lease: Option<&'a crate::connection_manager::H2ConnectionLease>,
+}
+
+impl H2ClientTunnel {
+    pub(crate) fn split<'a>(
+        &'a mut self,
+        activity: Option<&'a tokio::sync::watch::Sender<()>>,
+    ) -> (H2Sender<'a>, H2Receiver<'a>) {
+        (
+            H2Sender {
+                stream: &mut self.send_stream,
+                padding: self.padding,
+                cover_traffic: &self.cover_traffic,
+                batcher: &mut self.batcher,
+                max_frame_size: self.max_frame_size,
+                stall_timeout: self.send_stall_timeout,
+                lease: self.connection_lease.as_ref(),
+                activity,
+            },
+            H2Receiver {
+                recv_stream: &mut self.recv_stream,
+                recv_buf: &mut self.recv_buf,
+                max_frame_size: self.max_frame_size,
+                stall_timeout: self.send_stall_timeout,
+                lease: self.connection_lease.as_ref(),
+            },
+        )
+    }
+}
+
+impl H2Sender<'_> {
+    pub(crate) async fn send_frame(&mut self, frame: Frame, end_stream: bool) -> Result<()> {
+        let result = async {
+            let frames = prepare_outgoing_frames(frame, self.batcher, &self.padding).await;
+            if let Some(activity) = self.activity {
+                activity.send_replace(());
+            }
+            let last = frames.len().saturating_sub(1);
+            for (index, frame) in frames.into_iter().enumerate() {
+                if let Some(padding) = self.padding.padding_frame(
+                    frame.frame_type,
+                    frame.payload.len(),
+                    self.max_frame_size,
+                ) {
+                    send_h2_frame(
+                        self.stream,
+                        padding,
+                        self.max_frame_size,
+                        false,
+                        self.stall_timeout,
+                        self.activity,
+                    )
+                    .await?;
+                }
+                for padding in self.cover_traffic.padding_frames(
+                    frame.frame_type,
+                    frame.payload.len(),
+                    self.max_frame_size,
+                ) {
+                    send_h2_frame(
+                        self.stream,
+                        padding,
+                        self.max_frame_size,
+                        false,
+                        self.stall_timeout,
+                        self.activity,
+                    )
+                    .await?;
+                }
+                send_h2_frame(
+                    self.stream,
+                    frame,
+                    self.max_frame_size,
+                    end_stream && index == last,
+                    self.stall_timeout,
+                    self.activity,
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        .await;
+        record_h2_runtime_failure(self.lease, &result);
+        result
+    }
+}
+
+impl H2Receiver<'_> {
+    pub(crate) async fn read_next_frame(&mut self) -> Result<Option<Frame>> {
+        let result = read_next_h2_frame(self).await;
+        record_h2_runtime_failure(self.lease, &result);
+        result
+    }
+
+    pub(crate) async fn finish_response(&mut self, allow_legacy_udp_reset: bool) -> Result<()> {
+        let result = match timeout(
+            self.stall_timeout,
+            finish_h2_response(self, allow_legacy_udp_reset),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!("gRPC response completion timed out")),
+        };
+        record_h2_runtime_failure(self.lease, &result);
+        result
+    }
+}
+
 pub struct WsClientTunnel {
     pub stream: crate::ws_transport::WsClientStream,
     pub recv_buf: BytesMut,
@@ -75,55 +200,7 @@ impl ClientTunnel {
         match self {
             #[cfg(feature = "experimental-h3")]
             Self::H3(tunnel) => tunnel.send_frame(frame, end_stream).await,
-            Self::H2(tunnel) => {
-                let result: Result<()> = async {
-                    let frames =
-                        prepare_outgoing_frames(frame, &mut tunnel.batcher, &tunnel.padding).await;
-                    let last = frames.len().saturating_sub(1);
-                    for (idx, frame) in frames.into_iter().enumerate() {
-                        if let Some(padding) = tunnel.padding.padding_frame(
-                            frame.frame_type,
-                            frame.payload.len(),
-                            max_frame_size,
-                        ) {
-                            send_h2_frame(
-                                &mut tunnel.send_stream,
-                                padding,
-                                max_frame_size,
-                                false,
-                                tunnel.send_stall_timeout,
-                            )
-                            .await?;
-                        }
-                        for cover_frame in tunnel.cover_traffic.padding_frames(
-                            frame.frame_type,
-                            frame.payload.len(),
-                            max_frame_size,
-                        ) {
-                            send_h2_frame(
-                                &mut tunnel.send_stream,
-                                cover_frame,
-                                max_frame_size,
-                                false,
-                                tunnel.send_stall_timeout,
-                            )
-                            .await?;
-                        }
-                        send_h2_frame(
-                            &mut tunnel.send_stream,
-                            frame,
-                            max_frame_size,
-                            end_stream && idx == last,
-                            tunnel.send_stall_timeout,
-                        )
-                        .await?;
-                    }
-                    Ok(())
-                }
-                .await;
-                record_h2_runtime_failure(tunnel, &result);
-                result
-            }
+            Self::H2(tunnel) => tunnel.split(None).0.send_frame(frame, end_stream).await,
             Self::CloudflareWs(tunnel) => {
                 let frames =
                     prepare_outgoing_frames(frame, &mut tunnel.batcher, &tunnel.padding).await;
@@ -160,11 +237,7 @@ impl ClientTunnel {
 
     pub async fn read_next_frame(&mut self) -> Result<Option<Frame>> {
         match self {
-            Self::H2(tunnel) => {
-                let result = read_next_h2_frame(tunnel).await;
-                record_h2_runtime_failure(tunnel, &result);
-                result
-            }
+            Self::H2(tunnel) => tunnel.split(None).1.read_next_frame().await,
             Self::CloudflareWs(tunnel) => read_next_ws_frame(tunnel).await,
             #[cfg(feature = "experimental-h3")]
             Self::H3(tunnel) => tunnel.read_next_frame().await,
@@ -185,18 +258,11 @@ impl ClientTunnel {
     ) -> Result<()> {
         match self {
             Self::H2(tunnel) => {
-                let finish_timeout = tunnel.send_stall_timeout;
-                let result = match timeout(
-                    finish_timeout,
-                    finish_h2_response(tunnel, allow_legacy_udp_reset),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(anyhow::anyhow!("gRPC response completion timed out")),
-                };
-                record_h2_runtime_failure(tunnel, &result);
-                result
+                tunnel
+                    .split(None)
+                    .1
+                    .finish_response(allow_legacy_udp_reset)
+                    .await
             }
             Self::CloudflareWs(_) => Ok(()),
             #[cfg(feature = "experimental-h3")]
@@ -228,11 +294,14 @@ fn classify_h2_runtime_failure(error: &anyhow::Error) -> Option<H2RuntimeFailure
     None
 }
 
-fn record_h2_runtime_failure<T>(tunnel: &H2ClientTunnel, result: &Result<T>) {
+fn record_h2_runtime_failure<T>(
+    lease: Option<&crate::connection_manager::H2ConnectionLease>,
+    result: &Result<T>,
+) {
     let Err(error) = result else {
         return;
     };
-    let Some(lease) = tunnel.connection_lease.as_ref() else {
+    let Some(lease) = lease else {
         return;
     };
     match classify_h2_runtime_failure(error) {
@@ -280,6 +349,7 @@ async fn open_h2(
         DEFAULT_MAX_FRAME_SIZE,
         false,
         handshake_stall_timeout,
+        None,
     )
     .await?;
 
@@ -298,13 +368,13 @@ async fn open_h2(
         send_stall_timeout: Duration::from_secs(config.advanced.idle_timeout_secs),
         connection_lease,
     };
-    let server_frame = read_next_h2_frame(&mut tunnel)
+    let server_frame = read_next_h2_frame(&mut tunnel.split(None).1)
         .await?
         .context("missing ServerHello")?;
     if server_frame.frame_type == FrameType::Error {
         timeout(
             handshake_stall_timeout,
-            finish_h2_response(&mut tunnel, false),
+            finish_h2_response(&mut tunnel.split(None).1, false),
         )
         .await
         .map_err(|_| anyhow::anyhow!("gRPC handshake response completion timed out"))??;
@@ -560,12 +630,14 @@ async fn send_h2_frame(
     max_frame_size: usize,
     end_stream: bool,
     stall_timeout: Duration,
+    activity: Option<&tokio::sync::watch::Sender<()>>,
 ) -> Result<()> {
     send_h2_bytes_with_capacity(
         stream,
         encode_grpc_frame(frame, max_frame_size)?,
         end_stream,
         stall_timeout,
+        activity,
     )
     .await
 }
@@ -591,6 +663,7 @@ async fn send_h2_bytes_with_capacity(
     mut bytes: Bytes,
     end_stream: bool,
     stall_timeout: Duration,
+    activity: Option<&tokio::sync::watch::Sender<()>>,
 ) -> Result<()> {
     if bytes.is_empty() {
         stream.send_data(bytes, end_stream)?;
@@ -608,13 +681,16 @@ async fn send_h2_bytes_with_capacity(
         let chunk_len = capacity.min(bytes.len());
         let chunk = bytes.split_to(chunk_len);
         stream.send_data(chunk, end_stream && bytes.is_empty())?;
+        if let Some(activity) = activity {
+            activity.send_replace(());
+        }
     }
     Ok(())
 }
 
-async fn read_next_h2_frame(tunnel: &mut H2ClientTunnel) -> Result<Option<Frame>> {
+async fn read_next_h2_frame(tunnel: &mut H2Receiver<'_>) -> Result<Option<Frame>> {
     loop {
-        if let Some(frame) = decode_grpc_frame_from(&mut tunnel.recv_buf, tunnel.max_frame_size)? {
+        if let Some(frame) = decode_grpc_frame_from(tunnel.recv_buf, tunnel.max_frame_size)? {
             if frame.frame_type == FrameType::Padding {
                 continue;
             }
@@ -636,12 +712,11 @@ async fn read_next_h2_frame(tunnel: &mut H2ClientTunnel) -> Result<Option<Frame>
 }
 
 async fn finish_h2_response(
-    tunnel: &mut H2ClientTunnel,
+    tunnel: &mut H2Receiver<'_>,
     allow_legacy_udp_reset: bool,
 ) -> Result<()> {
     loop {
-        while let Some(frame) = decode_grpc_frame_from(&mut tunnel.recv_buf, tunnel.max_frame_size)?
-        {
+        while let Some(frame) = decode_grpc_frame_from(tunnel.recv_buf, tunnel.max_frame_size)? {
             if frame.frame_type != FrameType::Padding {
                 bail!("gRPC response contained data after terminal frame");
             }
@@ -729,6 +804,9 @@ pub(crate) fn validate_negotiated_max_frame_size(value: u32) -> Result<usize> {
     }
     Ok(value)
 }
+
+#[cfg(test)]
+mod relay_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1257,6 +1335,7 @@ mod tests {
                 DEFAULT_MAX_FRAME_SIZE,
                 true,
                 stall_timeout,
+                None,
             ),
         )
         .await

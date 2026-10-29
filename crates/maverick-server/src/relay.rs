@@ -12,9 +12,10 @@ use std::fmt;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 use tokio::time::{sleep_until, timeout, Duration, Instant};
@@ -329,14 +330,40 @@ async fn connect_target_tcp(addr: SocketAddr) -> io::Result<TcpStream> {
 
 pub async fn relay_target_and_tunnel(
     target: TcpStream,
+    send_stream: h2::SendStream<Bytes>,
+    recv_stream: h2::RecvStream,
+    recv_buf: BytesMut,
+    max_frame_size: usize,
+    flow_id: u64,
+    policy: TunnelRelayPolicy,
+) -> Result<()> {
+    relay_halves_and_tunnel(
+        target.into_split(),
+        send_stream,
+        recv_stream,
+        recv_buf,
+        max_frame_size,
+        flow_id,
+        policy,
+    )
+    .await
+}
+
+async fn relay_halves_and_tunnel<R, W>(
+    (mut target_read, target_write): (R, W),
     mut send_stream: h2::SendStream<Bytes>,
     mut recv_stream: h2::RecvStream,
     mut recv_buf: BytesMut,
     max_frame_size: usize,
     flow_id: u64,
     policy: TunnelRelayPolicy,
-) -> Result<()> {
-    let (mut target_read, mut target_write) = target.into_split();
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let mut target_write = Some(target_write);
+    let mut pending_target_write: Option<Pin<Box<dyn Future<Output = Result<W>> + Send>>> = None;
     let mut target_buf = vec![0u8; 16 * 1024];
     let mut client_eof = false;
     let mut target_eof = false;
@@ -352,11 +379,18 @@ pub async fn relay_target_and_tunnel(
             .and_then(|pending| pending.frames.front())
             .map_or(0, Bytes::len);
         tokio::select! {
-            _ = tokio::time::sleep(policy.idle_timeout) => {
+            _ = tokio::time::sleep(policy.idle_timeout), if pending_target_write.is_none() => {
                 if pending_send.is_some() {
                     return Err(H2SendStall.into());
                 }
                 break;
+            }
+
+            written = async { pending_target_write.as_mut().expect("pending target write").await },
+                if pending_target_write.is_some() =>
+            {
+                target_write = Some(written?);
+                pending_target_write = None;
             }
 
             capacity = wait_h2_capacity(&mut send_stream, desired_capacity),
@@ -415,7 +449,7 @@ pub async fn relay_target_and_tunnel(
             }
 
             tunnel_frame = read_next_frame(&mut recv_stream, &mut recv_buf, max_frame_size),
-                if !client_eof =>
+                if !client_eof && pending_target_write.is_none() =>
             {
                 if pending_send.is_some() {
                     send_stream.reserve_capacity(0);
@@ -427,20 +461,26 @@ pub async fn relay_target_and_tunnel(
                                 if let Some(limiter) = &policy.rate_limiter {
                                     limiter.throttle(frame.payload.len()).await;
                                 }
-                                write_all_with_idle_timeout(
-                                    &mut target_write,
-                                    &frame.payload,
-                                    policy.idle_timeout,
-                                    "target relay write timed out",
-                                )
-                                .await?;
+                                let mut writer = target_write.take().expect("available target writer");
+                                let idle_timeout = policy.idle_timeout;
+                                // Keep exactly one frame pending while the response direction runs.
+                                // The same future retains its per-write progress deadline.
+                                pending_target_write = Some(Box::pin(async move {
+                                    write_all_with_idle_timeout(
+                                        &mut writer,
+                                        &frame.payload,
+                                        idle_timeout,
+                                        "target relay write timed out",
+                                    ).await?;
+                                    Ok(writer)
+                                }));
                             }
                             FrameType::TcpFin | FrameType::CloseFlow => {
-                                let _ = target_write.shutdown().await;
+                                let _ = target_write.as_mut().expect("available target writer").shutdown().await;
                                 client_eof = true;
                             }
                             FrameType::TcpReset => {
-                                let _ = target_write.shutdown().await;
+                                let _ = target_write.as_mut().expect("available target writer").shutdown().await;
                                 break;
                             }
                             _ => {}
@@ -448,7 +488,7 @@ pub async fn relay_target_and_tunnel(
                     }
                     Some(_) => {}
                     None => {
-                        let _ = target_write.shutdown().await;
+                        let _ = target_write.as_mut().expect("available target writer").shutdown().await;
                         // Request EOS without a Maverick FIN/CloseFlow is an
                         // abrupt protocol end. Dropping the still-open response
                         // stream makes h2 send RST_STREAM instead of a false
@@ -940,9 +980,11 @@ mod tests {
     use std::future::{pending, ready};
     use std::io;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use std::task::{Context, Poll};
+    use tokio::io::{duplex, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream, UdpSocket};
     use tokio::time::{advance, timeout, Duration};
 
@@ -1908,6 +1950,197 @@ mod tests {
 
         target_writer.await??;
         timeout(Duration::from_secs(2), relay_completed_rx).await???;
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn h2_target_backpressure_preserves_download_direction() -> Result<()> {
+        let (target, mut target_peer) = duplex(1);
+        let (client_io, server_io) = duplex(16 * 1024);
+        let (relay_completed_tx, relay_completed_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut h2 = h2::server::handshake(server_io).await.unwrap();
+            if let Some(Ok((request, mut respond))) = h2.accept().await {
+                let response = http::Response::builder().status(200).body(()).unwrap();
+                let send_stream = respond.send_response(response, false).unwrap();
+                tokio::spawn(async move {
+                    let result = super::relay_halves_and_tunnel(
+                        tokio::io::split(target),
+                        send_stream,
+                        request.into_body(),
+                        BytesMut::new(),
+                        65_536,
+                        1,
+                        TunnelRelayPolicy {
+                            idle_timeout: Duration::from_secs(5),
+                            rate_limiter: None,
+                            padding: RuntimePadding::disabled(),
+                            cover_traffic: RuntimeCoverTraffic::disabled(),
+                            shaping_metrics: None,
+                        },
+                    )
+                    .await;
+                    let _ = relay_completed_tx.send(result);
+                });
+            }
+            while h2.accept().await.is_some() {}
+        });
+
+        let (client, connection) = h2::client::handshake(client_io).await?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let mut client = client.ready().await?;
+        let request = http::Request::builder().method("POST").uri("/").body(())?;
+        let (response, mut request_body) = client.send_request(request, false)?;
+        let mut response_body = response.await?.into_body();
+        request_body.send_data(
+            encode_grpc_frame(
+                Frame::new(FrameType::TcpData, 0, 1, Bytes::from_static(b"abc")),
+                65_536,
+            )?,
+            false,
+        )?;
+
+        let first_upload_byte = timeout(Duration::from_secs(1), target_peer.read_u8()).await??;
+        assert_eq!(first_upload_byte, b'a');
+        // Two bytes remain, but this target's unread upload capacity is one.
+        // The upload cannot finish until we read again after the download check.
+        target_peer.write_all(b"d").await?;
+        let mut response_bytes = BytesMut::new();
+        let downloaded = timeout(
+            Duration::from_secs(1),
+            super::read_next_frame(&mut response_body, &mut response_bytes, 65_536),
+        )
+        .await
+        .expect("download must continue while the target upload is blocked")?
+        .expect("complete download frame");
+        assert_eq!(downloaded.frame_type, FrameType::TcpData);
+        assert_eq!(downloaded.payload, Bytes::from_static(b"d"));
+
+        let mut rest = [0; 2];
+        target_peer.read_exact(&mut rest).await?;
+        assert_eq!(&rest, b"bc");
+        request_body.send_data(
+            encode_grpc_frame(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()), 65_536)?,
+            true,
+        )?;
+        let mut extra = Vec::new();
+        target_peer.read_to_end(&mut extra).await?;
+        assert!(extra.is_empty());
+        target_peer.shutdown().await?;
+        let fin = super::read_next_frame(&mut response_body, &mut response_bytes, 65_536)
+            .await?
+            .expect("download FIN");
+        assert_eq!(fin.frame_type, FrameType::TcpFin);
+        assert!(
+            super::read_next_frame(&mut response_body, &mut response_bytes, 65_536)
+                .await?
+                .is_none()
+        );
+        assert_grpc_ok_trailers(&mut response_body).await?;
+        assert!(response_bytes.is_empty());
+        timeout(Duration::from_secs(1), relay_completed_rx).await???;
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn h2_target_write_stall_times_out_despite_download_progress() -> Result<()> {
+        struct BlockedWriter(Option<tokio::sync::oneshot::Sender<()>>);
+
+        impl AsyncWrite for BlockedWriter {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _bytes: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                if let Some(blocked) = self.0.take() {
+                    let _ = blocked.send(());
+                }
+                Poll::Pending
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let (target_read, mut target_peer) = duplex(1);
+        let (client_io, server_io) = duplex(16 * 1024);
+        let (blocked_tx, blocked_rx) = tokio::sync::oneshot::channel();
+        let (relay_completed_tx, mut relay_completed_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut h2 = h2::server::handshake(server_io).await.unwrap();
+            if let Some(Ok((request, mut respond))) = h2.accept().await {
+                let response = http::Response::builder().status(200).body(()).unwrap();
+                let send_stream = respond.send_response(response, false).unwrap();
+                tokio::spawn(async move {
+                    let result = super::relay_halves_and_tunnel(
+                        (target_read, BlockedWriter(Some(blocked_tx))),
+                        send_stream,
+                        request.into_body(),
+                        BytesMut::new(),
+                        65_536,
+                        1,
+                        TunnelRelayPolicy {
+                            idle_timeout: Duration::from_secs(5),
+                            rate_limiter: None,
+                            padding: RuntimePadding::disabled(),
+                            cover_traffic: RuntimeCoverTraffic::disabled(),
+                            shaping_metrics: None,
+                        },
+                    )
+                    .await;
+                    let _ = relay_completed_tx.send(result);
+                });
+            }
+            while h2.accept().await.is_some() {}
+        });
+
+        let (client, connection) = h2::client::handshake(client_io).await?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let mut client = client.ready().await?;
+        let request = http::Request::builder().method("POST").uri("/").body(())?;
+        let (response, mut request_body) = client.send_request(request, false)?;
+        let mut response_body = response.await?.into_body();
+        request_body.send_data(
+            encode_grpc_frame(
+                Frame::new(FrameType::TcpData, 0, 1, Bytes::from_static(b"blocked")),
+                65_536,
+            )?,
+            false,
+        )?;
+        blocked_rx.await?;
+
+        let mut response_bytes = BytesMut::new();
+        for _ in 0..5 {
+            target_peer.write_all(b"d").await?;
+            let frame = timeout(
+                Duration::from_secs(1),
+                super::read_next_frame(&mut response_body, &mut response_bytes, 65_536),
+            )
+            .await??
+            .expect("download continues during the target write stall");
+            assert_eq!(frame.frame_type, FrameType::TcpData);
+            assert_eq!(frame.payload, Bytes::from_static(b"d"));
+            assert!(matches!(
+                relay_completed_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            advance(Duration::from_secs(1)).await;
+        }
+        let error = timeout(Duration::from_millis(1), relay_completed_rx)
+            .await
+            .expect("download activity must not restart the blocked target write deadline")?
+            .expect_err("the target write must time out");
+        assert!(error.to_string().contains("target relay write timed out"));
+        assert!(error.downcast_ref::<H2SendStall>().is_none());
         Ok(())
     }
 

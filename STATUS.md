@@ -48,6 +48,36 @@ for SOCKS/HTTP payloads, half-close and cleanup. PR/main quality gates remain
 required. This does not add a configuration version, change transport defaults
 or update the immutable public RC.2 artifacts.
 
+## Default H2 Startup and Duplex Relay
+
+H2 server startup loads and validates TLS material and the user/runtime state
+before binding listeners or reporting readiness. The SDK start call returns
+initialization errors directly; the CLI does not announce a listening server
+or metrics endpoint when TLS initialization fails. This describes server
+startup, not remote connectivity from a client.
+
+The client H2 relay polls upload and download independently while retaining
+one connection-pool lease and the existing framing, shaping and gRPC response
+checks. The server keeps at most one pending target-write frame while its
+response direction continues. A blocked H2 request window, paused local reader
+or blocked target write no longer holds the opposite direction in the same
+await. Existing flow/admission limits, rate-limiter policy and timeout values
+are retained; this does not redesign rate-limit scheduling.
+
+TCP FIN ends only its direction. Full CloseFlow/Error stops further upload
+before response trailers are drained. Partial writes report activity while
+individual send/write stalls still return their existing errors. No unbounded
+queue, extra background relay task or new transport framework is introduced.
+
+Old-code regressions reproduced delayed startup errors and all three blocking
+paths. SDK/CLI cases cover missing/malformed certificates and mismatched keys,
+initialization before bind, corrected startup and listener release. In-memory
+H2/duplex tests use a paused clock to check directional progress, slow writes,
+true stalls, FIN/trailers and full-close ordering without host-speed thresholds.
+Shared product/rustls/H3/candidate checks and dependency inventory passed
+locally. Native CI retains its platform coverage; bounded resource runs
+complement these regressions and record shared-host context.
+
 ## Explicit H3 TCP
 
 Build with `--features experimental-h3` and set `advanced.quiche_h3: true` on

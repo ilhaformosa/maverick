@@ -20,19 +20,29 @@ every scan retained. Do not repeat that completed experiment without a relevant
 change. See [cold](https://github.com/ilhaformosa/maverick/actions/runs/40947204197)
 and [warm](https://github.com/ilhaformosa/maverick/actions/runs/40948666434) evidence.
 
-## Next — Product Cache Size and End-to-End CI Cost
+## Delivered — Evidence-Based Product Cache Preparation
 
 PR #90's product workflow took 719 seconds and its main run 671 seconds.
 Linux was the critical path; restoring its approximately 4.98 GB compressed
 cache took 188/118 seconds. Parallel macOS and CodeQL finished earlier.
 These observed runs justify examining cache contents, not dropping checks.
 
-Inventory first-party test/tool executables that escape the current
-`maverick*`/`libmaverick*` exclusions before changing the cache selection.
-Keep reusable dependencies and build-script outputs. Acceptance requires a
-real warm run showing cache size, restore time, additional rebuild cost and
-whole-job time, with identical quality coverage. A smaller archive alone does
-not establish a faster PR. Do not add a cache framework or recurring benchmark.
+A hosted before/after inventory and a reproduction of the pinned cache action
+showed that parent-directory tar recursion bypassed the existing child
+exclusions. Product cache v2 therefore uses Cargo's workspace-scoped cleanup
+after successful checks and artifact upload, preserving reusable dependencies.
+Root, isolated fixture and pilot build directories are covered; no local shared
+cache is cleaned. The same paths can restore v1 during migration, while only
+successful main runs save v2. See [STATUS.md](STATUS.md#sdk-readiness-and-ci-tool-reuse)
+and the associated PR for baseline and warm-run evidence.
+
+## Next — Follow the Remaining Measured Bottleneck
+
+Judge further CI changes by restore, rebuild and whole-workflow time together.
+A smaller archive alone does not establish a faster PR; runner variation and
+parallel CodeQL/macOS work can limit the benefit. Do not repeat the completed
+cache experiment without a relevant change or unresolved failure, or add a
+recurring benchmark. Preserve every quality check.
 
 Concrete ordinary-use failures still take priority. H3 pooling, automatic
 carrier choice and further CPU work need a measured problem. A remote-status

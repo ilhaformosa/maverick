@@ -111,9 +111,26 @@ the associated PR/Actions evidence, not a claim that all CI waits disappear.
 For PR #90, the complete product workflow took 719 seconds; its main run took
 671 seconds. Linux was the critical path, including 188/118 seconds restoring
 the same approximately 4.98 GB compressed cache. The macOS job and CodeQL ran
-in parallel and completed earlier. These two observations identify the next
-measurement target, not a fixed speedup promise. Product-cache content changes
-remain pending measurement; no check is removed to reduce the wait.
+in parallel and completed earlier. These observations identified cache contents
+as a measurement target, not a fixed speedup promise.
+
+The subsequent hosted baseline found 3.42 GB of restored project-output bytes
+rewritten on Linux and 321 MB on macOS (logical sizes per path, not compressed
+cache savings). The pinned cache action selects parent directories and tar
+recursively archives them, so the old child-glob exclusions did not remove
+those outputs. A small reproduction against the pinned action confirmed this.
+
+Product cache v2 uses Cargo's workspace selection after every check and native
+artifact upload has succeeded. It removes generated workspace artifacts from
+the runner's root, isolated fixture and pilot build directories, retaining
+dependency artifacts. The fixture's Maverick path dependencies are selected
+through the root workspace. The Mac's shared development cache is untouched.
+Only successful main jobs save; an exact cache hit skips preparation and save.
+The unchanged path list allows v1 restoration during migration. Read-only
+inventories distinguish rewritten from unchanged files; unchanged metadata does
+not prove reuse. Warm-cache size, restore, rebuild and whole-workflow results
+are recorded with [PR #92](https://github.com/ilhaformosa/maverick/pull/92).
+All existing checks remain, and no fixed speedup is promised.
 
 ## Explicit H3 TCP
 

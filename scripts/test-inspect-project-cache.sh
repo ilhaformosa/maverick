@@ -8,6 +8,7 @@ trap 'rm -rf -- "$fixture_root"' EXIT
 export MAVERICK_CACHE_FIXTURE="$fixture_root"
 export CARGO_BIN="$fixture_root/cargo"
 export CARGO_TARGET_DIR="$fixture_root/shared target"
+export MAVERICK_PILOT_BUILD_DIR="$fixture_root/missing-pilot"
 mkdir -p "$CARGO_TARGET_DIR/debug/deps" "$fixture_root/workspace"
 
 fail() { printf 'project-cache inspection test failed: %s\n' "$1" >&2; exit 1; }
@@ -87,5 +88,34 @@ CARGO_TARGET_DIR="$fixture_root/missing" "$subject" capture "$fixture_root/missi
 jq -e '.files == []' "$fixture_root/missing.json" >/dev/null || fail missing-target
 "$subject" compare "$fixture_root/missing.json" "$fixture_root/missing.json" >"$fixture_root/empty-comparison"
 grep -F $'TOTAL\t0\t0\t0\t0\t0\t0\t0\t0' "$fixture_root/empty-comparison" >/dev/null || fail empty-comparison
+
+# The pilot override is independent of the ordinary Cargo target directory.
+pilot_override="$fixture_root/override-pilot"
+CARGO_TARGET_DIR="$pilot_override" artifact aarch64-apple-darwin/release/tool "$fixture_root/workspace/src/main.rs"
+CARGO_TARGET_DIR="$pilot_override" artifact aarch64-apple-darwin/release/deps/tool-abcd src/main.rs
+MAVERICK_PILOT_BUILD_DIR="$pilot_override" "$subject" capture "$fixture_root/pilot-override.json"
+jq -e '.files | length == 8 and ([.[] | select(.root == "target-1")] | length == 2)' "$fixture_root/pilot-override.json" >/dev/null || fail pilot-override
+MAVERICK_PILOT_BUILD_DIR="$CARGO_TARGET_DIR" "$subject" capture "$fixture_root/pilot-shared.json"
+jq -e '.files | length == 6 and all(.[]; .root == "target-0")' "$fixture_root/pilot-shared.json" >/dev/null || fail shared-pilot-deduplication
+
+# Copy only the subject so its default pilot directory stays inside this fixture.
+nested_repo="$fixture_root/nested-repo"
+mkdir -p "$nested_repo/scripts"
+cp "$subject" "$nested_repo/scripts/inspect-project-cache.sh"
+nested_target="$nested_repo/target"
+mkdir -p "$nested_target/debug/deps"
+CARGO_TARGET_DIR="$nested_target" artifact debug/tool "$fixture_root/workspace/src/main.rs"
+CARGO_TARGET_DIR="$nested_target/pilot-artifact" artifact release/tool "$fixture_root/workspace/src/main.rs"
+CARGO_TARGET_DIR="$nested_target/pilot-artifact" artifact release/deps/tool-abcd src/main.rs
+CARGO_TARGET_DIR="$nested_target/pilot-artifact" artifact aarch64-apple-darwin/release/tool "$fixture_root/workspace/src/main.rs"
+CARGO_TARGET_DIR="$nested_target/pilot-artifact" artifact aarch64-apple-darwin/release/deps/tool-abcd src/main.rs
+mkdir -p "$nested_target/pilot-artifact/release/tool.dSYM/Contents/Resources/DWARF"
+printf 'symbols' >"$nested_target/pilot-artifact/release/tool.dSYM/Contents/Resources/DWARF/tool"
+(
+  unset MAVERICK_PILOT_BUILD_DIR
+  CARGO_TARGET_DIR="$nested_target" "$nested_repo/scripts/inspect-project-cache.sh" capture "$fixture_root/pilot-default.json"
+)
+jq -e '.files | length == 6 and ([.[] | select(.path | contains("aarch64-apple-darwin/release"))] | length == 2) and ([.[] | select(.kind == "dsym")] | length == 1)' "$fixture_root/pilot-default.json" >/dev/null || fail nested-pilot-deduplication
+if grep -F "$fixture_root" "$fixture_root/pilot-default.json"; then fail private-pilot-path; fi
 
 echo 'project-cache inspection focused tests OK'

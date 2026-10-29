@@ -8,17 +8,25 @@ stat_os="$(uname -s)"
 capture() (
   local output="$1" temp metadata target_dir workspace label name source kind profile file hash
   local root_id root_count=0 i relative_source absolute_source dependencies matched
-  local roots=() manifest expected symbol
+  local roots=() scope manifest expected symbol
   temp="$(mktemp -d "${TMPDIR:-/tmp}/maverick-cache-inspect.XXXXXX")"
   trap 'rm -rf -- "$temp"' EXIT
   : >"$temp/files"
-  for manifest in "$repo_root/Cargo.toml" "$repo_root/crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml"; do
+  for scope in workspace fixture pilot; do
+    manifest="$repo_root/Cargo.toml"
+    if [[ "$scope" == fixture ]]; then
+      manifest="$repo_root/crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml"
+    elif [[ "$scope" == pilot ]]; then
+      # Match build-pilot.sh, which uses a separate target directory by default.
+      export CARGO_TARGET_DIR="${MAVERICK_PILOT_BUILD_DIR:-$repo_root/target/pilot-artifact}"
+    fi
     if ! metadata="$("$cargo_bin" metadata --locked --offline --no-deps --format-version 1 --manifest-path "$manifest" 2>"$temp/metadata-error")"; then
       echo 'project-cache inspection: Cargo metadata failed' >&2
       return 1
     fi
     target_dir="$(jq -r .target_directory <<<"$metadata")"
     workspace="$(jq -r .workspace_root <<<"$metadata")"
+    if [[ -d "$target_dir" ]]; then target_dir="$(cd "$target_dir" && pwd -P)"; fi
     root_id=""
     for ((i = 0; i < root_count; i++)); do
       if [[ "${roots[$i]}" == "$target_dir" ]]; then root_id="target-$i"; fi
@@ -67,7 +75,8 @@ capture() (
       done
     done <"$temp/targets"
   done
-  jq -s '{schema: 1, files: (unique_by([.root, .path]) | sort_by(.root, .path))}' "$temp/files" >"$output"
+  # A nested pilot root can expose the same file through two metadata roots.
+  jq -s '{schema: 1, files: (unique_by(._file) | map(del(._file)) | sort_by(.root, .path))}' "$temp/files" >"$output"
 )
 
 record_file() {
@@ -79,9 +88,9 @@ record_file() {
     fields="$(TZ=UTC stat -c $'%s\t%y\t%i' "$file")"
   fi
   IFS=$'\t' read -r size modified inode <<<"$fields"
-  jq -cn --arg root "$root_id" --arg path "${file#"$target_dir"/}" --arg target "$label" \
+  jq -cn --arg file "$file" --arg root "$root_id" --arg path "${file#"$target_dir"/}" --arg target "$label" \
     --arg kind "$artifact_kind" --argjson size "$size" --arg mtime "$modified" --arg inode "$inode" \
-    '{root: $root, path: $path, target: $target, kind: $kind, size: $size, mtime: $mtime, inode: $inode}' >>"$output"
+    '{_file: $file, root: $root, path: $path, target: $target, kind: $kind, size: $size, mtime: $mtime, inode: $inode}' >>"$output"
 }
 
 compare() {

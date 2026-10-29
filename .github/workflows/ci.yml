@@ -157,7 +157,8 @@ jobs:
         id: rust-cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          # Include pilot-artifact dependencies, but rebuild first-party outputs.
+          # Keep paths stable for v1 restoration. Cargo removes workspace outputs
+          # before v2 saves; child globs alone do not filter recursive tar entries.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -169,8 +170,9 @@ jobs:
             !**/incremental/**
             !**/target/**/maverick*
             !**/target/**/libmaverick*
-          key: product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
+          key: product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
           restore-keys: |
+            product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
             product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
       - name: Inventory restored project outputs
         run: ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-before.json"
@@ -283,6 +285,27 @@ jobs:
           ./scripts/inspect-project-cache.sh compare \
             "$RUNNER_TEMP/project-cache-before.json" "$RUNNER_TEMP/project-cache-after.json" \
             | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Prepare reusable dependency cache after verification
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          fixture=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
+          fixture_target="$(cargo metadata --locked --offline --no-deps --format-version 1 \
+            --manifest-path "$fixture" | jq -r .target_directory)"
+          for profile in dev release; do
+            cargo clean --workspace --locked --offline --profile "$profile"
+            cargo clean --workspace --locked --offline --profile "$profile" \
+              --manifest-path "$fixture"
+            # The fixture also builds libraries belonging to the root workspace.
+            cargo clean --workspace --locked --offline --profile "$profile" \
+              --target-dir "$fixture_target"
+          done
+          cargo clean --workspace --locked --offline --release \
+            --target "$MAVERICK_PILOT_TARGET" \
+            --target-dir "${MAVERICK_PILOT_BUILD_DIR:-$GITHUB_WORKSPACE/target/pilot-artifact}"
+          ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-prepared.json"
+          jq -e '.files | length == 0' "$RUNNER_TEMP/project-cache-prepared.json" >/dev/null
+          echo 'Identified project executable outputs remaining before cache save: 0'
       - name: Save successful main dependency cache
         if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -336,7 +359,8 @@ jobs:
         id: rust-cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          # Include pilot-artifact dependencies, but rebuild first-party outputs.
+          # Keep paths stable for v1 restoration. Cargo removes workspace outputs
+          # before v2 saves; child globs alone do not filter recursive tar entries.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -348,8 +372,9 @@ jobs:
             !**/incremental/**
             !**/target/**/maverick*
             !**/target/**/libmaverick*
-          key: product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
+          key: product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
           restore-keys: |
+            product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
             product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
       - name: Inventory restored project outputs
         run: ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-before.json"
@@ -432,6 +457,27 @@ jobs:
           ./scripts/inspect-project-cache.sh compare \
             "$RUNNER_TEMP/project-cache-before.json" "$RUNNER_TEMP/project-cache-after.json" \
             | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Prepare reusable dependency cache after verification
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          fixture=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
+          fixture_target="$(cargo metadata --locked --offline --no-deps --format-version 1 \
+            --manifest-path "$fixture" | jq -r .target_directory)"
+          for profile in dev release; do
+            cargo clean --workspace --locked --offline --profile "$profile"
+            cargo clean --workspace --locked --offline --profile "$profile" \
+              --manifest-path "$fixture"
+            # The fixture also builds libraries belonging to the root workspace.
+            cargo clean --workspace --locked --offline --profile "$profile" \
+              --target-dir "$fixture_target"
+          done
+          cargo clean --workspace --locked --offline --release \
+            --target "$MAVERICK_PILOT_TARGET" \
+            --target-dir "${MAVERICK_PILOT_BUILD_DIR:-$GITHUB_WORKSPACE/target/pilot-artifact}"
+          ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-prepared.json"
+          jq -e '.files | length == 0' "$RUNNER_TEMP/project-cache-prepared.json" >/dev/null
+          echo 'Identified project executable outputs remaining before cache save: 0'
       - name: Save successful main dependency cache
         if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5

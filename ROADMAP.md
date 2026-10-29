@@ -12,25 +12,29 @@ list and rejection of lossy URI exports are implemented with public-command,
 generated-config and existing quality checks. H2 remains the default. Current
 behavior and evidence are in [STATUS.md](STATUS.md#configuration-handoff).
 
-## Next — Default H2 Startup and SDK Readiness
+## Delivered — Default H2 Startup and Duplex Progress
 
-Prioritize the default user path before adding more transport features:
+TLS/user initialization now finishes before a server start succeeds. Reproduced
+client and server backpressure stalls were corrected with independent client
+directions and one bounded pending server write. Deterministic regressions
+preserve progress deadlines, half-close, full-close and trailer behavior.
+See [STATUS.md](STATUS.md#default-h2-startup-and-duplex-relay) for the scope.
 
-1. Reproduce the H2 server's startup result when TLS certificate/key loading
-   fails. It currently initializes TLS inside the spawned serving task; the
-   SDK can receive a handle first. Make confirmed startup errors synchronous
-   and verify that failure leaves no listener, using the existing fixtures.
-2. Verify H2 duplex progress when upload capacity or a local reader blocks.
-   Static inspection found waits inside one select branch, not a reproduced
-   failure. Add a focused reproduction first; fix only an established problem.
-3. Clarify SDK local-listener readiness versus authenticated remote connectivity.
-   If SDK H3 becomes a delivery requirement, add its explicit feature and builder
-   entry with one real SDK forwarding test; do not imply it exists today.
+## Next — SDK Readiness and Routine CI Cost
 
-Choose one observable behavior and finite acceptance checks before implementing
-that follow-up. No new supervisor or generic relay framework is needed in advance.
-H3 pooling, automatic carrier selection and further CPU work need a concrete
+Clarify SDK local-listener readiness versus authenticated remote connectivity.
+Its current GUI status still describes local startup; do not add automatic
+network probes or a background supervisor merely to rename that state. Select
+one observable user behavior and finite acceptance checks before implementation.
+
+If SDK H3 becomes a delivery requirement, add its explicit feature and builder
+entry with one real SDK forwarding test; do not imply it exists today. H3
+pooling, automatic carrier selection and further CPU work still need a concrete
 user requirement or measured problem.
+
+Independently evaluate fixed-version security-tool caching and measured cache
+restore costs, retaining the scans and artifact checks. Prioritize changes that
+reduce the critical path or actual repeated work, not merely move waiting time.
 
 ## Deferred — Exact-Candidate Field Validation and Stable
 

@@ -193,8 +193,9 @@ pub(crate) async fn relay_stream_and_tunnel<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    #[cfg(feature = "experimental-h3")]
     let tunnel = match tunnel {
+        ClientTunnel::H2(mut tunnel) => return relay_h2(local, &mut tunnel, idle_timeout).await,
+        #[cfg(feature = "experimental-h3")]
         ClientTunnel::H3(tunnel) => return tunnel.relay(local, idle_timeout).await,
         other => other,
     };
@@ -202,12 +203,8 @@ where
     let (mut local_read, mut local_write) = tokio::io::split(local);
     let mut local_buf = vec![0u8; 16 * 1024];
     let mut local_eof = false;
-    let mut remote_eof = false;
 
     loop {
-        if local_eof && remote_eof {
-            return Ok(RelayClose::Graceful);
-        }
         if local_eof {
             tokio::select! {
                 _ = tokio::time::sleep(idle_timeout) => break,
@@ -256,20 +253,9 @@ where
                         .await?;
                 }
             }
-            remote_frame = tunnel.read_next_frame(), if !remote_eof => {
+            remote_frame = tunnel.read_next_frame() => {
                 match remote_frame? {
                     Some(frame) => {
-                        if matches!(&tunnel, ClientTunnel::H2(_))
-                            && frame.flow_id == FLOW_ID
-                            && frame.frame_type == FrameType::TcpFin
-                        {
-                            // The response FIN ends downloads only. The peer
-                            // can still be reading our request/upload.
-                            local_write.shutdown().await?;
-                            tunnel.finish_response().await?;
-                            remote_eof = true;
-                            continue;
-                        }
                         let finish_response = response_frame_is_complete(frame.frame_type);
                         if let Some(close) =
                             handle_remote_frame(frame, &mut local_write, idle_timeout).await?
@@ -286,6 +272,119 @@ where
         }
     }
     Ok(RelayClose::Graceful)
+}
+
+async fn relay_h2<S>(
+    local: S,
+    tunnel: &mut crate::tunnel::H2ClientTunnel,
+    idle: Duration,
+) -> Result<RelayClose>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut local_read, mut local_write) = tokio::io::split(local);
+    let (activity, mut progress) = tokio::sync::watch::channel(());
+    let (mut sender, mut receiver) = tunnel.split(Some(&activity));
+    let completion: Result<(RelayClose, bool)> = {
+        let upload = async {
+            let mut bytes = vec![0; 16 * 1024];
+            loop {
+                let count = local_read.read(&mut bytes).await?;
+                activity.send_replace(());
+                let frame = if count == 0 {
+                    Frame::new(FrameType::TcpFin, 0, FLOW_ID, Bytes::new())
+                } else {
+                    Frame::new(
+                        FrameType::TcpData,
+                        0,
+                        FLOW_ID,
+                        Bytes::copy_from_slice(&bytes[..count]),
+                    )
+                };
+                sender.send_frame(frame, count == 0).await?;
+                if count == 0 {
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+        };
+        let download = async {
+            loop {
+                let Some(frame) = receiver.read_next_frame().await? else {
+                    return Ok::<_, anyhow::Error>(Some((RelayClose::Graceful, false)));
+                };
+                activity.send_replace(());
+                if frame.flow_id != FLOW_ID {
+                    continue;
+                }
+                match frame.frame_type {
+                    FrameType::TcpData => {
+                        write_all_with_idle_progress(
+                            &mut local_write,
+                            &frame.payload,
+                            idle,
+                            Some(&activity),
+                        )
+                        .await?;
+                    }
+                    FrameType::TcpFin => {
+                        local_write.shutdown().await?;
+                        receiver.finish_response(false).await?;
+                        return Ok(None);
+                    }
+                    FrameType::CloseFlow | FrameType::Error | FrameType::TcpReset => {
+                        let close = if frame.frame_type == FrameType::CloseFlow {
+                            RelayClose::Graceful
+                        } else {
+                            RelayClose::Reset
+                        };
+                        return Ok(Some((close, response_frame_is_complete(frame.frame_type))));
+                    }
+                    _ => {}
+                }
+            }
+        };
+        let relay = async {
+            tokio::pin!(upload, download);
+            tokio::select! {
+                sent = &mut upload => {
+                    sent?;
+                    Ok(download.await?.unwrap_or((RelayClose::Graceful, false)))
+                }
+                received = &mut download => {
+                    if let Some(close) = received? {
+                        return Ok(close);
+                    }
+                    // A response FIN closes downloads only. The request may still
+                    // carry upload data or be waiting for H2 send capacity.
+                    upload.await?;
+                    Ok((RelayClose::Graceful, false))
+                }
+            }
+        };
+        tokio::pin!(relay);
+        loop {
+            tokio::select! {
+                // Preserve a per-write/send stall error if its deadline and the
+                // overall idle deadline become ready together.
+                biased;
+                result = &mut relay => break result,
+                changed = timeout(idle, progress.changed()) => {
+                    match changed {
+                        Ok(changed) => changed?,
+                        Err(_) => break Ok((RelayClose::Graceful, false)),
+                    }
+                }
+            }
+        }
+    };
+    let (close, finish_response) = completion?;
+    if finish_response {
+        // Full close/error stops the upload before exposing local EOF or
+        // waiting for trailers. A response FIN keeps the upload alive above.
+        let _ = local_write.shutdown().await;
+        receiver.finish_response(false).await?;
+    }
+    Ok(close)
 }
 
 fn response_frame_is_complete(frame_type: FrameType) -> bool {
@@ -325,8 +424,20 @@ where
 
 pub(crate) async fn write_all_with_idle_timeout<W>(
     writer: &mut W,
+    bytes: &[u8],
+    idle_timeout: Duration,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_all_with_idle_progress(writer, bytes, idle_timeout, None).await
+}
+
+async fn write_all_with_idle_progress<W>(
+    writer: &mut W,
     mut bytes: &[u8],
     idle_timeout: Duration,
+    activity: Option<&tokio::sync::watch::Sender<()>>,
 ) -> Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -339,6 +450,9 @@ where
             bail!("local relay writer closed before the frame was complete");
         }
         bytes = &bytes[written..];
+        if let Some(activity) = activity {
+            activity.send_replace(());
+        }
     }
     Ok(())
 }

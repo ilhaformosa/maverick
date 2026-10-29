@@ -202,16 +202,19 @@ pub async fn start_server(config: ServerConfig) -> Result<ServerHandle> {
     if config.advanced.quiche_h3 {
         return h3::start(config).await;
     }
-    let listener = TcpListener::bind(config.listen).await?;
+    let acceptor = h2_acceptor::acceptor(&config)?;
+    let state = server_state(config)?;
+    let listener = TcpListener::bind(state.config.listen).await?;
     let local_addr = listener.local_addr()?;
-    let metrics_listener = bind_metrics_listener(&config).await?;
+    let metrics_listener = bind_metrics_listener(&state.config).await?;
     let metrics_addr = match &metrics_listener {
         Some(listener) => Some(listener.local_addr()?),
         None => None,
     };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let join =
-        tokio::spawn(async move { serve(listener, metrics_listener, config, shutdown_rx).await });
+    let join = tokio::spawn(async move {
+        serve(listener, metrics_listener, acceptor, state, shutdown_rx).await
+    });
     Ok(ServerHandle {
         local_addr,
         metrics_addr,
@@ -237,14 +240,16 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         } = handle;
         return join.await?;
     }
-    let listener = TcpListener::bind(config.listen).await?;
-    let metrics_listener = bind_metrics_listener(&config).await?;
+    let acceptor = h2_acceptor::acceptor(&config)?;
+    let state = server_state(config)?;
+    let listener = TcpListener::bind(state.config.listen).await?;
+    let metrics_listener = bind_metrics_listener(&state.config).await?;
     info!(listen = %listener.local_addr()?, "Maverick server listening");
     if let Some(listener) = &metrics_listener {
         info!(listen = %listener.local_addr()?, "Maverick local metrics listening");
     }
     let (_tx, rx) = oneshot::channel();
-    serve(listener, metrics_listener, config, rx).await
+    serve(listener, metrics_listener, acceptor, state, rx).await
 }
 
 fn validate_runtime_features(config: &ServerConfig) -> Result<()> {
@@ -448,11 +453,10 @@ fn server_state(config: ServerConfig) -> Result<ServerState> {
 async fn serve(
     listener: TcpListener,
     metrics_listener: Option<TcpListener>,
-    config: ServerConfig,
+    acceptor: tokio_rustls::TlsAcceptor,
+    state: ServerState,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let acceptor = h2_acceptor::acceptor(&config)?;
-    let state = server_state(config)?;
     let metrics = Arc::clone(&state.metrics);
     let (metrics_shutdown_tx, metrics_join) = if let Some(listener) = metrics_listener {
         let (tx, rx) = oneshot::channel();

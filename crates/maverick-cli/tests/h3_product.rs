@@ -25,6 +25,10 @@ const SOCKS_READY: &str = "Maverick SOCKS5 client listening";
 const HTTP_READY: &str = "Maverick HTTP CONNECT client listening";
 const METRICS_READY: &str = "Maverick local metrics listening";
 
+#[path = "support/host_context.rs"]
+mod host_context;
+#[path = "support/h3_resilience.rs"]
+mod resilience;
 #[path = "support/h3_soak.rs"]
 mod soak;
 
@@ -61,6 +65,8 @@ impl Cli {
                     for reason in [
                         "H3 connection timed out",
                         "H3 authentication timed out",
+                        "H3 relay idle timeout",
+                        "local relay write timed out",
                         "missing H3 ServerHello",
                         "server rejected H3 handshake",
                         "server closed before flow opened",
@@ -668,6 +674,8 @@ async fn compare_h2_h3_loopback() -> Result<()> {
     timeout(Duration::from_secs(300), async {
         for h3 in [false, true] {
             let carrier = if h3 { "h3" } else { "h2" };
+            let host = tokio::task::spawn_blocking(host_context::sample).await??;
+            println!("comparison_host {}", serde_json::json!({"carrier":carrier, "phase":"before", "host":host}));
             println!("comparison starting carrier={carrier}");
             let fixture = Fixture::for_transport(h3, 32)?;
             let (_server, _client, proxy) = start_pair(&fixture).await?;
@@ -702,6 +710,8 @@ async fn compare_h2_h3_loopback() -> Result<()> {
             interrupt_flows(proxy, 8).await?;
             flow_batch(proxy, &target, 8, 256 * 1024).await?;
             println!("comparison carrier={carrier} sustained_seconds={:.3} concurrency=8 batch_pause_ms=100 completed={completed} interrupted=8 recovery=passed", started.elapsed().as_secs_f64());
+            let host = tokio::task::spawn_blocking(host_context::sample).await??;
+            println!("comparison_host {}", serde_json::json!({"carrier":carrier, "phase":"after", "host":host}));
         }
         Ok::<_, anyhow::Error>(())
     }).await.context("local comparison timed out")?

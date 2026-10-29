@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-10-28
+Date: 2026-10-29
 
 This is the current product-state record. `ROADMAP.md` gives execution order;
 Git, pull requests, Actions and release records retain historical evidence.
@@ -187,7 +187,8 @@ that is expected rather than a leaked unauthenticated request. After the idle
 interval both carriers returned to zero active connections and baseline file
 descriptor counts. RSS grew modestly across phases; the observations do not
 establish a memory leak or prove leak freedom. They are periodic samples, not
-instantaneous peaks. The long run was isolated from local builds and profiling.
+instantaneous peaks. This task did not launch builds or profiling during the long
+run; whole-host background activity was not recorded.
 
 H3's CPU cost under this workload remains substantially higher than H2's.
 A separate three-second stack sample showed UDP send/receive paths prominently
@@ -211,7 +212,7 @@ buffers or change authentication, TLS, flow-control limits or default settings.
 This avoids flushing a separate acknowledgement after every queued packet.
 
 On 2026-10-28, four release-mode runs used the same local workload without
-concurrent local builds: three 10-second H2 reference phases and three 30-second
+builds launched by this task: three 10-second H2 reference phases and three 30-second
 H3 phases per run. Each H3 run transferred 900 MiB over eight sustained
 bidirectional flows plus 360 short flows, followed by the existing cancellation,
 idle, active-client termination and restart checks. All four runs passed.
@@ -275,7 +276,7 @@ these observations to a modest local mean decline, not a fixed or universal
 CPU gain. They do not establish an independent server-side improvement. Only
 A/B/A used the same temporary numeric counters at connection end; the final
 run and product implementation have none. All four timed runs excluded
-concurrent builds and profiling. After idle, both processes returned to 11 file
+builds or profiling launched by this task. After idle, both processes returned to 11 file
 descriptors; H3 connection, flow and admission gauges returned to zero. These local results do
 not establish wireless or field performance, or prove leak freedom. H3 remains
 default-off; field validation remains deferred.
@@ -371,6 +372,51 @@ Temporary probes and per-role worker overrides were removed from product and
 test sources. Default runtime thread counts, default-off H3 and deferred field
 validation are retained. Final uninstrumented long-run results and exact PR/main
 checks belong with their tested revision in the PR validation report.
+
+## Controlled Reliability and Benchmark Context
+
+The configured CLI tests cover selected first-flight loss, a single delayed
+response and one datagram dropped after CONNECT succeeds, with complete
+bidirectional payload verification. A slow local TCP reader must leave its
+producer backpressured while independent SOCKS and HTTP requests finish on the
+same H3 server. Resuming the reader verifies the full payload; cancelling a
+blocked reader must release the flow and allow new requests. A server exit
+terminates the active target and client connections, an offline request fails
+without reaching its target, and the same client succeeds on its first new
+requests after restart.
+The server reuses the address originally assigned by the OS, without a retry loop.
+
+These are finite, deterministic loopback scenarios, not a general network
+simulator. Existing limits, authentication and deadlines remain. They do not
+prove progress if the kernel's shared UDP socket is permanently unable to send,
+nor do they qualify field conditions. Runtime changes need a reproduced problem;
+new tests alone do not justify another transport abstraction.
+
+The slow-reader cancellation case reproduced a retained target connection after
+the client had already half-closed its upload. The carrier no longer watched
+outbound cancellation after upload FIN and waited for a blocked download to
+finish. The client now cancels the carrier when its response receiver closes
+before HTTP EOF. Normal completion still waits for sent bytes and FIN to be
+acknowledged; server response handling is unchanged. Cancellation failed before
+this fix, including with normal TCP receive-buffer settings, and passed afterward
+with the same three-second cleanup limit.
+
+Manual soak snapshots and the timing comparison now record anonymous whole-host
+context. Load averages include Maverick and the measurement helpers as well as
+unrelated activity, and are not CPU percentages. Available parallelism describes
+CPU capacity rather than free cores. macOS pressure codes and cumulative swap I/O
+pages differ from Linux available-memory estimates and swap occupancy; the report
+retains their units and platform rather than synthesizing a common pressure score.
+Read/parse failures are explicit. No host-load threshold bypasses or relaxes tests.
+
+Earlier performance records only establish that this task did not launch a
+concurrent build or profile. They did not record all background workloads and
+must not be described as whole-machine isolation. The A/B/A figures remain
+observations from those runs, not fixed gains under every load. Functional passes
+remain valid, while any failure still needs investigation. Future comparisons
+keep binaries, workloads and methods matched, record context and use short
+paired controls; incomparable conditions do not support a speedup claim. Other
+projects are not stopped, and Mac/Surge settings are not changed.
 
 ## CI and Security Alert Maintenance
 

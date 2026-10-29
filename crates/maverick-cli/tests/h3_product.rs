@@ -29,6 +29,8 @@ const METRICS_READY: &str = "Maverick local metrics listening";
 mod host_context;
 #[path = "support/h3_resilience.rs"]
 mod resilience;
+#[path = "support/h3_shaping.rs"]
+mod shaping;
 #[path = "support/h3_soak.rs"]
 mod soak;
 

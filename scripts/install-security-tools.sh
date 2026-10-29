@@ -27,7 +27,8 @@ install_pinned_tool() {
   fi
 }
 
+# Labels are from `cargo <command> --version`, not direct binary invocation.
 # The workflow hashes this script, binding the cache to these exact pins.
-install_pinned_tool audit 0.22.2 cargo-audit
+install_pinned_tool audit 0.22.2 cargo-audit-audit
 install_pinned_tool deny 0.20.2 cargo-deny
 install_pinned_tool cyclonedx 0.5.9 cargo-cyclonedx-cyclonedx

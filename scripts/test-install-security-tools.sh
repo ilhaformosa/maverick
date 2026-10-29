@@ -20,6 +20,7 @@ case "${1:-}" in
     [[ $# -eq 2 && "$2" == --version ]] || exit 97
     [[ -f "$state/$1" ]] || exit 1
     case "$1" in
+      audit) label=cargo-audit-audit ;;
       cyclonedx) label=cargo-cyclonedx-cyclonedx ;;
       *) label="cargo-$1" ;;
     esac
@@ -53,7 +54,7 @@ run_installer() {
 }
 
 new_state missing
-run_installer
+run_installer || fail missing-tool-installation
 expected="$(printf '%s\n' \
   'install cargo-audit --version 0.22.2 --locked --force' \
   'install cargo-deny --version 0.20.2 --locked --force' \
@@ -62,11 +63,11 @@ expected="$(printf '%s\n' \
 
 # Simulate a binary cache hit: no installation metadata is provided.
 : >"$state/installs"
-run_installer
+run_installer || fail cached-tool-validation
 [[ ! -s "$state/installs" ]] || fail cache-hit-reinstalled-tools
 
 printf '0.22.1\n' >"$state/audit"
-run_installer
+run_installer || fail wrong-version-replacement
 [[ "$(cat "$state/installs")" == 'install cargo-audit --version 0.22.2 --locked --force' ]] ||
   fail wrong-version
 

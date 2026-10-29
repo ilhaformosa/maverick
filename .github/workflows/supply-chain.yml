@@ -13,8 +13,10 @@ on:
       - "deny.toml"
       - "rust-toolchain.toml"
       - "scripts/generate-cyclonedx-sbom.sh"
+      - "scripts/install-security-tools.sh"
       - "scripts/security-dependency-inventory.sh"
       - "scripts/test-cyclonedx-sbom.sh"
+      - "scripts/test-install-security-tools.sh"
       - "scripts/verify-cyclonedx-sbom.sh"
   schedule:
     - cron: "17 3 * * 1"
@@ -48,10 +50,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
-      - run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - run: cargo install cargo-audit --version 0.22.2 --locked
-      - run: cargo install cargo-deny --version 0.20.2 --locked
-      - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+      - name: Identify security-tool cache compatibility
+        id: tool-environment
+        run: |
+          set -euo pipefail
+          echo "rust=$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+          echo "os=$(sha256sum /etc/os-release | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - name: Restore pinned security tools
+        id: security-tools-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/bin/cargo-audit
+            ~/.cargo/bin/cargo-deny
+            ~/.cargo/bin/cargo-cyclonedx
+          # No prefix fallback: binaries must match OS, architecture, compiler,
+          # and the install script containing the exact tool-version pins.
+          key: security-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.tool-environment.outputs.os }}-${{ steps.tool-environment.outputs.rust }}-${{ hashFiles('scripts/install-security-tools.sh') }}
+      - name: Install ripgrep if missing
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+      - name: Test pinned tool installation decisions
+        run: ./scripts/test-install-security-tools.sh
+      - name: Install missing or mismatched security tools
+        run: ./scripts/install-security-tools.sh
       - name: Fetch both release-target dependency closures
         run: |
           cargo fetch --locked --target x86_64-unknown-linux-gnu
@@ -59,3 +84,19 @@ jobs:
       - run: ./scripts/security-dependency-inventory.sh
       - name: Generate and verify target-aware development SBOMs
         run: ./scripts/test-cyclonedx-sbom.sh
+      - name: Save verified main security tools
+        if: github.ref == 'refs/heads/main' && steps.security-tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/bin/cargo-audit
+            ~/.cargo/bin/cargo-deny
+            ~/.cargo/bin/cargo-cyclonedx
+          key: ${{ steps.security-tools-cache.outputs.cache-primary-key }}
+      - name: Record security-tool cache result
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.security-tools-cache.outputs.cache-hit }}
+        run: |
+          printf 'Pinned security-tool cache exact hit: `%s`\n' \
+            "${CACHE_HIT:-unavailable}" >>"$GITHUB_STEP_SUMMARY"

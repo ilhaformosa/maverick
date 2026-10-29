@@ -14,6 +14,9 @@ use crate::util::redact_id;
 pub enum GuiConnectionState {
     Disconnected,
     Connecting,
+    /// The local proxy runtime has started; remote connectivity is not implied.
+    Listening,
+    /// A caller-supplied connection observation, never inferred from configuration.
     Connected,
     Error,
 }
@@ -125,6 +128,9 @@ impl StealthDiagnosticsSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuiTransportStatus {
+    /// No remote transport verification is available.
+    Unverified,
+    /// Reserved for callers with actual transport-verification evidence.
     Ready,
     Degraded,
 }
@@ -163,7 +169,7 @@ impl GuiTransportDebugSnapshot {
         if self.h3_candidate_enabled && self.h3_in_cooldown {
             GuiTransportStatus::Degraded
         } else {
-            GuiTransportStatus::Ready
+            GuiTransportStatus::Unverified
         }
     }
 }
@@ -186,6 +192,8 @@ pub struct GuiDiagnosticsSnapshot {
 }
 
 impl GuiDiagnosticsSnapshot {
+    /// Describes configuration and the caller's lifecycle state, without contacting a peer.
+    /// Configuration alone cannot establish that a remote transport is ready.
     pub fn from_client_config(
         profile_name: impl Into<String>,
         config: &ClientConfig,
@@ -226,7 +234,7 @@ impl GuiDiagnosticsSnapshot {
             transport_status: if retired_v1_h3 {
                 GuiTransportStatus::Degraded
             } else {
-                GuiTransportStatus::Ready
+                GuiTransportStatus::Unverified
             },
             transport_debug: None,
         }
@@ -430,6 +438,76 @@ mod tests {
     };
 
     #[test]
+    fn config_only_diagnostics_do_not_verify_a_remote_transport() {
+        let config = client_config("u123", SecretString::generate());
+        let snapshot = GuiDiagnosticsSnapshot::from_client_config(
+            "local",
+            &config,
+            GuiConnectionState::Disconnected,
+            None,
+        );
+        assert_eq!(snapshot.transport_status, GuiTransportStatus::Unverified);
+    }
+
+    #[test]
+    fn transport_selection_debug_does_not_verify_a_remote_transport() {
+        let debug = GuiTransportDebugSnapshot::new(GuiTransportCarrier::H2, false, false);
+        assert_eq!(debug.public_status(), GuiTransportStatus::Unverified);
+    }
+
+    #[test]
+    fn diagnostics_preserve_supplied_state_without_inventing_transport_evidence() {
+        let config = client_config("u123", SecretString::generate());
+        let supplied = GuiDiagnosticsSnapshot::from_client_config(
+            "local",
+            &config,
+            GuiConnectionState::Connected,
+            None,
+        );
+        assert_eq!(supplied.connection_state, GuiConnectionState::Connected);
+        assert_eq!(supplied.transport_status, GuiTransportStatus::Unverified);
+        let listening = GuiDiagnosticsSnapshot::from_client_config(
+            "local",
+            &config,
+            GuiConnectionState::Listening,
+            None,
+        )
+        .with_transport_debug(GuiTransportDebugSnapshot::new(
+            GuiTransportCarrier::H2,
+            false,
+            false,
+        ));
+        assert_eq!(listening.connection_state, GuiConnectionState::Listening);
+        assert_eq!(listening.transport_status, GuiTransportStatus::Unverified);
+    }
+
+    #[test]
+    fn readiness_tokens_support_new_states_and_keep_legacy_values_readable() {
+        for (state, value) in [
+            (GuiConnectionState::Listening, "listening"),
+            (GuiConnectionState::Connected, "connected"),
+        ] {
+            let encoded = serde_json::to_value(state).unwrap();
+            assert_eq!(encoded, serde_json::json!(value));
+            assert_eq!(
+                serde_json::from_value::<GuiConnectionState>(encoded).unwrap(),
+                state
+            );
+        }
+        for (state, value) in [
+            (GuiTransportStatus::Unverified, "unverified"),
+            (GuiTransportStatus::Ready, "ready"),
+        ] {
+            let encoded = serde_json::to_value(state).unwrap();
+            assert_eq!(encoded, serde_json::json!(value));
+            assert_eq!(
+                serde_json::from_value::<GuiTransportStatus>(encoded).unwrap(),
+                state
+            );
+        }
+    }
+
+    #[test]
     fn gui_diagnostics_redacts_sensitive_fields() {
         let secret = SecretString::generate();
         let full_id = "u_sensitive_credential_id_2026";
@@ -442,7 +520,7 @@ mod tests {
         );
         assert_eq!(snapshot.credential_display, "u_se...26");
         assert_eq!(snapshot.policy_mode, Mode::Auto);
-        assert_eq!(snapshot.transport_status, GuiTransportStatus::Ready);
+        assert_eq!(snapshot.transport_status, GuiTransportStatus::Unverified);
         assert_eq!(snapshot.transport_debug, None);
         assert_eq!(snapshot.local_socks5.to_string(), "127.0.0.1:1080");
         assert_eq!(
@@ -537,7 +615,7 @@ mod tests {
             false,
             false,
         ));
-        assert_eq!(ordinary.transport_status, GuiTransportStatus::Ready);
+        assert_eq!(ordinary.transport_status, GuiTransportStatus::Unverified);
         assert_eq!(
             ordinary.transport_debug,
             Some(GuiTransportDebugSnapshot::new(

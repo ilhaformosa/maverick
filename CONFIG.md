@@ -695,6 +695,34 @@ missing defaults such as `advanced.experimental_h3=false` and
 `advanced.experimental_ech=false`, `advanced.ech_fallback_policy=fail_closed`,
 and `auth.v2.enabled=false` without rewriting files or printing secrets.
 
+## SDK diagnostics and local lifecycle
+
+`GuiClientRuntime::connect()` starts the configured local proxy listeners. It
+returns a local-start result; it does not verify remote TLS, authentication or
+traffic forwarding. `is_listening()` reports whether the wrapper holds that
+started runtime. `disconnect()` stops it and releases its listeners.
+
+| Runtime observation | `connection_state` | `transport_status` |
+|---|---|---|
+| Before first start, or stopped after a successful start | `disconnected` | `unverified` |
+| Local proxy started | `listening` | `unverified` |
+| Local start failed | `error` | `unverified` |
+
+There is no remote health observer in this wrapper. A failed or successful
+proxy request does not turn these local lifecycle snapshots into a current
+remote health claim. Startup and diagnostics do not initiate a remote probe;
+only actual proxy requests open remote connections. Existing retired-config
+`error` / `degraded` rejection remains separate from remote verification.
+
+Migrate local-lifecycle checks from deprecated `is_connected()` to
+`is_listening()`. The old method retains its historical local-handle boolean
+for source compatibility and must not be used as evidence of remote connection
+success. Existing `connected` and `ready` enum/JSON values remain readable for
+callers supplying their own observations; configuration-derived diagnostics and
+transport-selector debug no longer produce `ready`. Consumers with exhaustive
+Rust matches or closed JSON enums must accept the new `listening` and
+`unverified` values. Config and stored-profile schemas do not change.
+
 ## Design and Compatibility Reference
 
 ## Config v2 policy semantic contract

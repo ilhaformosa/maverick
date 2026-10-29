@@ -62,6 +62,9 @@ CARGO_BIN="$cargo_bin" ./scripts/user-smoke.sh
 echo "==> isolated test-server preparation checks"
 ./scripts/test-prepare-test-server.sh
 
+echo "==> security-tool installer checks"
+./scripts/test-install-security-tools.sh
+
 echo "==> release publication gate checks"
 ./scripts/test-release-gates.sh
 
@@ -142,6 +145,7 @@ done
 
 git diff --check
 bash -n scripts/local-harness.sh scripts/user-smoke.sh scripts/build-pilot.sh \
+  scripts/install-security-tools.sh scripts/test-install-security-tools.sh \
   scripts/generate-cyclonedx-sbom.sh scripts/security-dependency-inventory.sh \
   scripts/prepare-test-server.sh scripts/test-cyclonedx-sbom.sh \
   scripts/test-prepare-test-server.sh scripts/verify-cyclonedx-sbom.sh \

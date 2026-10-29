@@ -397,8 +397,9 @@ the client had already half-closed its upload. The carrier no longer watched
 outbound cancellation after upload FIN and waited for a blocked download to
 finish. The client now cancels the carrier when its response receiver closes
 before HTTP EOF. Normal completion still waits for sent bytes and FIN to be
-acknowledged; server response handling is unchanged. The regression failed twice
-before this fix and passed afterward with the same three-second cleanup limit.
+acknowledged; server response handling is unchanged. Cancellation failed before
+this fix, including with normal TCP receive-buffer settings, and passed afterward
+with the same three-second cleanup limit.
 
 Manual soak snapshots and the timing comparison now record anonymous whole-host
 context. Load averages include Maverick and the measurement helpers as well as

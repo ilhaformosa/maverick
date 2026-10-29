@@ -65,6 +65,8 @@ impl Cli {
                     for reason in [
                         "H3 connection timed out",
                         "H3 authentication timed out",
+                        "H3 relay idle timeout",
+                        "local relay write timed out",
                         "missing H3 ServerHello",
                         "server rejected H3 handshake",
                         "server closed before flow opened",
@@ -240,10 +242,7 @@ impl Fixture {
 }
 
 async fn socks_connect(proxy: SocketAddr, target: SocketAddr) -> Result<(TcpStream, u8)> {
-    socks_request(TcpStream::connect(proxy).await?, target).await
-}
-
-async fn socks_request(mut stream: TcpStream, target: SocketAddr) -> Result<(TcpStream, u8)> {
+    let mut stream = TcpStream::connect(proxy).await?;
     stream.write_all(&[5, 1, 0]).await?;
     let mut greeting = [0; 2];
     stream.read_exact(&mut greeting).await?;

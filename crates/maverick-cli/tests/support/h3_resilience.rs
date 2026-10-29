@@ -154,9 +154,9 @@ async fn configured_h3_slow_reader_preserves_other_connections() -> Result<()> {
             const PAYLOAD: usize = 8 * 1024 * 1024;
             for cancel in [false, true] {
                 let target = TcpListener::bind("127.0.0.1:0").await?;
-                let (local, receive_options) = tcp_options(TcpStream::connect(socks).await?)?;
-                receive_options.set_recv_buffer_size(8 * 1024)?;
-                let (mut local, status) = socks_request(local, target.local_addr()?).await?;
+                // Pausing reads establishes backpressure without shrinking a
+                // connected TCP receive window, which disables Linux autotuning.
+                let (mut local, status) = socks_connect(socks, target.local_addr()?).await?;
                 ensure!(status == 0, "slow-reader CONNECT rejected: status {status}");
                 local.shutdown().await?;
                 let (origin, _) = target.accept().await?;
@@ -199,7 +199,6 @@ async fn configured_h3_slow_reader_preserves_other_connections() -> Result<()> {
                 }
                 if cancel {
                     drop(local);
-                    drop(receive_options);
                     let result = timeout(Duration::from_secs(3), writers.join_next())
                         .await
                         .context("cancelled slow reader retained its target writer")?
@@ -211,9 +210,6 @@ async fn configured_h3_slow_reader_preserves_other_connections() -> Result<()> {
                         );
                     }
                 } else {
-                    // Keep the initial slow-reader condition separate from drain speed.
-                    receive_options.set_recv_buffer_size(2 * 1024 * 1024)?;
-                    drop(receive_options);
                     let (read, write) = local.into_split();
                     drop(write);
                     receive_payload(read, PAYLOAD).await?;

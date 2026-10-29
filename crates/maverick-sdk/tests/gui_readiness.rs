@@ -1,4 +1,5 @@
 use anyhow::{ensure, Context, Result};
+use maverick_core::config::{ClientDnsConfig, HttpConnectConfig};
 use maverick_sdk::{
     client_config_builder, GuiClientRuntime, GuiConnectionState, GuiErrorClass, GuiTransportStatus,
     SecretString,
@@ -146,4 +147,71 @@ async fn local_bind_failure_is_error_without_a_listening_handle() -> Result<()> 
     })
     .await
     .context("SDK occupied-listener test timed out")?
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn optional_listener_failure_allows_immediate_sdk_retry() -> Result<()> {
+    timeout(Duration::from_secs(5), async {
+        let socks = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let socks_addr = socks.local_addr()?;
+        let dns = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        let dns_addr = dns.local_addr()?;
+        let occupied_http = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let http_addr = occupied_http.local_addr()?;
+        let unavailable = TcpSocket::new_v4()?;
+        unavailable.bind("127.0.0.1:0".parse()?)?;
+        let mut config = client_config_builder()
+            .local_socks5(socks_addr)
+            .server_address(unavailable.local_addr()?.to_string())
+            .server_name("localhost")
+            .credential("local-startup-test", SecretString::generate())
+            .build()?;
+        config.local.dns = Some(ClientDnsConfig {
+            enabled: true,
+            listen: Some(dns_addr),
+        });
+        config.local.http_connect = Some(HttpConnectConfig {
+            enabled: true,
+            listen: Some(http_addr),
+        });
+        let mut runtime = GuiClientRuntime::new("local-test", config)?;
+        drop(socks);
+        drop(dns);
+
+        let error = runtime
+            .connect()
+            .await
+            .expect_err("occupied HTTP listener unexpectedly started");
+        ensure!(
+            error.to_string().contains("bind local.http_connect.listen"),
+            "startup did not reach the occupied HTTP listener"
+        );
+        let failed = runtime.diagnostics();
+        assert_eq!(failed.connection_state, GuiConnectionState::Error);
+        assert_eq!(failed.last_error_class, Some(GuiErrorClass::Network));
+        assert!(!runtime.is_listening());
+        assert!(runtime.local_addr().is_none());
+
+        // Retry in the same task, without a sleep or yield to clean up failed startup.
+        drop(occupied_http);
+        runtime
+            .connect()
+            .await
+            .context("immediate SDK retry failed")?;
+        assert!(runtime.is_listening());
+        assert_eq!(runtime.local_addr(), Some(socks_addr));
+        let started = runtime.diagnostics();
+        assert_eq!(started.connection_state, GuiConnectionState::Listening);
+        assert_eq!(started.transport_status, GuiTransportStatus::Unverified);
+        assert_eq!(started.last_error_class, None);
+
+        runtime.disconnect().await?;
+        assert!(!runtime.is_listening());
+        let _socks_rebound = std::net::TcpListener::bind(socks_addr)?;
+        let _dns_rebound = std::net::UdpSocket::bind(dns_addr)?;
+        let _http_rebound = std::net::TcpListener::bind(http_addr)?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("SDK retry test timed out")?
 }

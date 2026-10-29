@@ -80,6 +80,13 @@ complement these regressions and record shared-host context.
 
 ## SDK Readiness and CI Tool Reuse
 
+Client startup binds every enabled local listener before spawning listener or
+pool tasks. A DNS/HTTP bind failure releases the earlier sockets before returning,
+so corrected startup can retry immediately. Deterministic current-thread tests
+reproduced the old retained-port failure in the client and public SDK; coverage
+includes DNS and HTTP conflicts, explicit H3, successful retry and shutdown.
+No retry loop, background supervisor or new timeout is introduced.
+
 The GUI-facing SDK wrapper reports `Listening` / `Unverified` after local
 startup, rather than manufacturing `Connected` / `Ready` from a listener handle.
 Local start errors remain `Error`; configuration/debug snapshots provide no
@@ -100,6 +107,13 @@ versions after restoration and installs only missing or mismatched tools.
 Only successful main runs save the reusable cache; every advisory, dependency
 policy and SBOM check still runs. Cold and warm hosted-run results belong to
 the associated PR/Actions evidence, not a claim that all CI waits disappear.
+
+For PR #90, the complete product workflow took 719 seconds; its main run took
+671 seconds. Linux was the critical path, including 188/118 seconds restoring
+the same approximately 4.98 GB compressed cache. The macOS job and CodeQL ran
+in parallel and completed earlier. These two observations identify the next
+measurement target, not a fixed speedup promise. Product-cache content changes
+remain pending measurement; no check is removed to reduce the wait.
 
 ## Explicit H3 TCP
 

@@ -634,6 +634,12 @@ listeners or reporting success. Missing or invalid TLS material is a start
 error, including through the SDK. A successful server start still does not prove
 that a remote client can reach or authenticate to it.
 
+Client startup binds all enabled local SOCKS5, DNS and HTTP CONNECT listeners
+before starting their tasks. If a later bind fails, earlier sockets are released
+before the error returns. After correcting the conflict, the caller can retry
+immediately; no cleanup sleep or automatic retry is required. A successful
+local start still does not verify the remote server.
+
 H2 TCP relay keeps upload and download progressing independently when one side
 waits for socket writes or H2 capacity. TCP FIN closes one direction; full
 CloseFlow/Error stops uploads before response completion is drained. Client

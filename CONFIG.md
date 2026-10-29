@@ -599,6 +599,13 @@ maverick migrate-config --kind server -c server.yaml
 setup path: TCP connect, TLS handshake, and H2 handshake. Timeout values must be
 greater than zero.
 
+For explicit H3 TCP, `advanced.idle_timeout_secs` bounds a lack of relay
+progress, not the total transfer duration. Successful partial TCP writes count
+as activity; a write that stops advancing still times out. QUIC's network-idle
+deadline and frame-send deadlines remain independent. Local TCP progress does
+not generate keepalives or exempt a long rate-limit wait from peer/transport
+idle deadlines.
+
 `advanced.max_concurrent_flows` on the client limits simultaneous local TCP
 proxy flows opened through SOCKS5 CONNECT and HTTP CONNECT. When the limit is
 reached, new local TCP proxy attempts fail before opening a Maverick tunnel.

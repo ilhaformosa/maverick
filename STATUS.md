@@ -439,6 +439,28 @@ and frame-send deadlines still apply. A rate limiter can create genuine wire
 silence, so this change does not promise survival across arbitrary rate/idle
 combinations. H3 remains default-off and field validation remains deferred.
 
+## Explicit Local H3 Self-Check
+
+`maverick user-smoke --quiche-h3` checks the existing H3 TCP path when the CLI
+is built with `experimental-h3`. It reuses temporary local certificates,
+credentials and OS-assigned loopback ports, rejects a wrong credential, verifies
+the correct-credential payload roundtrip, and reports `carrier: h3`. It does
+not inspect a deployment configuration or contact a remote server.
+
+Bare `user-smoke` remains H2, including in a build with H3 support, and reports
+`carrier: h2`. A build without the feature rejects the explicit option before
+starting the check; it does not fall back. Generated configuration and default
+transport selection are unchanged. Public CLI tests cover both build variants
+locally. Feature-enabled cases run on Linux and macOS CI; the default-build
+rejection case runs in the shared product harness on Linux CI.
+The default-build shell wrapper forwards arguments, so an explicit unsupported
+H3 request is rejected instead of silently running an H2 check.
+
+The self-check is functional evidence. Its printed timing values can be affected
+by background development work and are not performance assertions. The existing
+separate-process integration, resilience and lifecycle tests remain; no relay or
+transport implementation changes are needed for this entry point.
+
 ## CI and Security Alert Maintenance
 
 Linux CI installs a build/verification package only when a required command is

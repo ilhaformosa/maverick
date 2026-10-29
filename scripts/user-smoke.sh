@@ -15,4 +15,4 @@ if [[ -z "$cargo_bin" ]]; then
 fi
 
 cd "$repo_root"
-exec "$cargo_bin" run --quiet -p maverick-cli -- user-smoke
+exec "$cargo_bin" run --quiet -p maverick-cli -- user-smoke "$@"

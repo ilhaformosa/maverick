@@ -137,6 +137,18 @@ failure or a broader runtime change justifies it. For OS-sensitive fixtures,
 confirm native test results before starting a costly long run. Record host
 context and avoid performance claims from incomparable background conditions.
 
+## Completed — Explicit Local H3 Self-Check
+
+Expose the existing H3 path through `user-smoke --quiche-h3`, with H2 remaining
+the default and unsupported builds rejecting the explicit option. Reuse the
+local certificate/credential and payload checks instead of another test harness.
+Exercise the public command in both build variants through shared checks.
+
+This entry-point change does not alter relay or transport behavior. Retain the
+existing integration/lifecycle and native CI coverage; a new long performance
+run needs a relevant runtime change or failure. Self-check timings remain
+diagnostic when other development tasks are active.
+
 ## Next — Remaining H3 Cost and Integration Quality
 
 Keep using the configured client/server path and shared checks. Further CPU

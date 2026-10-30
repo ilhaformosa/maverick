@@ -1,6 +1,6 @@
 # Maverick Roadmap
 
-Date: 2026-10-30
+Date: 2026-10-31
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
@@ -36,7 +36,18 @@ cache is cleaned. The same paths can restore v1 during migration, while only
 successful main runs save v2. See [STATUS.md](STATUS.md#sdk-readiness-and-ci-tool-reuse)
 and the associated PR for baseline and warm-run evidence.
 
-## Next — Follow the Remaining Measured Bottleneck
+## Delivered — H3 Address Selection
+
+The H3 client previously discarded every resolved server address after the
+first. It now tries subsequent addresses after a failed QUIC/TLS attempt,
+within the original total connection budget. Focused loopback regressions cover
+TLS/frame transfer, certificate-pin rejection, timeout and socket release;
+ordinary CLI authentication and forwarding coverage remains in the shared gates.
+
+This does not add parallel dialing or promise recovery when a silent first
+address consumes the entire budget. H3 remains explicit and default-off.
+
+## Next — Follow Concrete Ordinary-Use Evidence
 
 Judge further CI changes by restore, rebuild and whole-workflow time together.
 A smaller archive alone does not establish a faster PR; runner variation and

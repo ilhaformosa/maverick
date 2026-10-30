@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-10-30
+Date: 2026-10-31
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
@@ -139,6 +139,16 @@ both endpoints. Omission keeps H2; the retired `advanced.experimental_h3` flag
 still rejects. Existing endpoint, certificate, credential and timeout fields
 are reused. One QUIC connection and one H3 request carry one TCP flow; there is
 no connection pool, automatic H3 selection or carrier fallback.
+
+The H3 dialer tries resolved server addresses in order after a QUIC/TLS
+connection error, instead of discarding every address after the first.
+Resolution and all attempts share the original connection timeout. A silent
+first address may still consume it; parallel dialing is not implemented.
+TLS server-name/trust checks apply to each attempt, and the first established
+connection must pass the existing certificate pin check before authentication.
+The old first-address failure was reproduced on loopback; regressions cover
+transfer through the next address, pin rejection before application data and
+the original timeout releasing its socket without contacting a later address.
 
 The optional `maverick-quiche` crate supplies the shared UDP/QUIC/H3 driver.
 The ordinary client/server path verifies CA, hostname and optional certificate

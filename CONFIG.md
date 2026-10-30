@@ -236,6 +236,13 @@ credential, and timeout fields. The server uses its configured `listen` address
 for UDP instead of the H2 TCP listener. A client opens one H3 connection per TCP
 flow; there is no automatic H3 selection, carrier fallback, or connection pool.
 
+For a server name with multiple resolved addresses, H3 tries them in resolver
+order after an unsuccessful QUIC/TLS connection attempt. Resolution and all
+attempts share the existing `advanced.connect_timeout_ms` budget. A silent
+first address can still consume that budget; there is no parallel address race.
+Every attempt uses the configured TLS server name and trust roots. Any configured
+certificate pin must match before Maverick authentication begins.
+
 This bounded v1 extension replaces the former requirement to implement all of
 Product Config v2 before H3 TCP integration. It does not revive
 `advanced.experimental_h3`, change authentication/frame versions, or make the

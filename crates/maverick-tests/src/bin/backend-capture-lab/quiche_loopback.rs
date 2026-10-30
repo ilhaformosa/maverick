@@ -37,6 +37,14 @@ pub(super) struct Endpoint {
 }
 
 impl Endpoint {
+    fn close(&mut self) -> Result<()> {
+        self.conn.close(true, 0x100, b"")?;
+        // Send the close before an overdue handshake timer can schedule probes
+        // while the closing connection no longer processes acknowledgements.
+        self.flush()?;
+        Ok(())
+    }
+
     fn tick(&mut self) -> Result<bool> {
         if self
             .conn
@@ -72,17 +80,27 @@ impl Endpoint {
                 Err(error) => return Err(error.into()),
             }
         }
+        let sent = self.flush()?;
+        Ok(activity || sent)
+    }
+
+    fn flush(&mut self) -> Result<bool> {
+        let mut activity = false;
+        let mut packet = [0; MAX_UDP];
         loop {
-            match self.conn.send(&mut packet[..MAX_UDP]) {
+            match self.conn.send(&mut packet) {
                 Ok((len, info)) => {
                     self.sent += 1;
                     ensure!(
                         self.sent <= MAX_PACKETS,
-                        "UDP send budget exhausted: sent={}, received={}, established={}, lost={}",
+                        "UDP send budget exhausted: sent={}, received={}, established={}, lost={}, closing={}, draining={}, bytes={}",
                         self.sent,
                         self.received,
                         self.conn.is_established(),
-                        self.conn.stats().lost
+                        self.conn.stats().lost,
+                        self.conn.local_error().is_some(),
+                        self.conn.is_draining(),
+                        len
                     );
                     ensure!(
                         info.to == self.peer && info.from == self.address,
@@ -191,12 +209,17 @@ impl Pair {
         })
     }
 
-    pub(super) fn advance(&mut self) -> Result<()> {
+    fn begin_round(&mut self) -> Result<()> {
         self.rounds += 1;
         ensure!(
             Instant::now() < self.deadline && self.rounds <= MAX_ROUNDS,
             "loopback time or iteration budget exhausted"
         );
+        Ok(())
+    }
+
+    pub(super) fn advance(&mut self) -> Result<()> {
+        self.begin_round()?;
         let client = self.client.tick()?;
         let server = self.server.tick()?;
         if !client && !server {
@@ -299,11 +322,8 @@ impl Pair {
     }
 
     pub(super) fn shutdown(mut self) -> Result<usize> {
-        // Consume pending handshake confirmation before closing stops
-        // processing input. Otherwise an overdue handshake PTO can keep
-        // producing ACK-only packets instead of the application close.
-        self.advance()?;
-        self.client.conn.close(true, 0x100, b"")?; // H3_NO_ERROR
+        self.begin_round()?;
+        self.client.close()?; // H3_NO_ERROR
         while !self.client.conn.is_closed() || !self.server.conn.is_closed() {
             self.advance()?;
         }
@@ -479,6 +499,95 @@ mod tests {
             timeout.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
         );
         pair.shutdown()?;
+        assert_released(addresses, &fixture)
+    }
+
+    #[test]
+    fn expired_shutdown_stops_before_io_and_releases_resources() -> Result<()> {
+        let mut pair = Pair::new(true, "localhost")?;
+        let addresses = [pair.client.address, pair.server.address];
+        let fixture = pair.fixture.path().to_owned();
+        pair.handshake()?;
+        pair.advance()?;
+        let receiver = pair.server.socket.try_clone()?;
+        assert_eq!(
+            receiver.peek_from(&mut [0; MAX_UDP]).unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
+        pair.deadline = Instant::now();
+        let error = pair.shutdown().expect_err("expired probe sent a close");
+        assert_eq!(
+            error.to_string(),
+            "loopback time or iteration budget exhausted"
+        );
+        assert_eq!(
+            receiver.peek_from(&mut [0; MAX_UDP]).unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
+        drop(receiver);
+        assert_released(addresses, &fixture)
+    }
+
+    #[test]
+    fn close_flushes_before_overdue_handshake_timer() -> Result<()> {
+        let mut pair = Pair::new(true, "localhost")?;
+        let addresses = [pair.client.address, pair.server.address];
+        let fixture = pair.fixture.path().to_owned();
+        pair.handshake()?;
+        // Hold confirmation beyond the former one-turn shutdown workaround.
+        let mut pending = Vec::new();
+        let mut packet = [0; MAX_UDP + 1];
+        while pending.is_empty() {
+            ensure!(
+                Instant::now() < pair.deadline,
+                "confirmation deadline exhausted"
+            );
+            pair.server.tick()?;
+            loop {
+                match pair.client.socket.recv_from(&mut packet) {
+                    Ok((len, from)) => {
+                        ensure!(
+                            from == pair.server.address && len <= MAX_UDP,
+                            "unexpected confirmation packet"
+                        );
+                        ensure!(pending.len() < MAX_PACKETS, "too many confirmation packets");
+                        pending.push(packet[..len].to_vec());
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if pending.is_empty() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        pair.advance()?;
+        let at = pair.client.conn.timeout_instant().expect("handshake PTO");
+        let wake_at = at + Duration::from_millis(1);
+        ensure!(
+            wake_at < pair.deadline,
+            "handshake PTO exceeds probe deadline"
+        );
+        std::thread::sleep(wake_at.saturating_duration_since(Instant::now()));
+        // Confirmation arrives only after that turn, with the timer overdue.
+        for packet in pending {
+            ensure!(
+                pair.server.socket.send_to(&packet, pair.client.address)? == packet.len(),
+                "partial confirmation send"
+            );
+        }
+        pair.client.close()?;
+        while !pair.client.conn.is_closed() || !pair.server.conn.is_closed() {
+            pair.advance()?;
+        }
+        ensure!(
+            pair.server
+                .conn
+                .peer_error()
+                .is_some_and(|error| error.is_app && error.error_code == 0x100),
+            "server did not receive clean H3 close"
+        );
+        drop(pair);
         assert_released(addresses, &fixture)
     }
 

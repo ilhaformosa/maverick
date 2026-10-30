@@ -10,7 +10,7 @@ mod loopback;
 #[path = "../../../../maverick-client/src/tls_distrust.rs"]
 mod tls_distrust;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use maverick_core::auth::{
     ClientHello, ClientHelloV2, ClientHelloV2Params, ServerHello, ServerHelloV2,
     ServerHelloV2Params, TlsChannelBinding, FEATURE_TLS_CHANNEL_BINDING,
@@ -139,7 +139,7 @@ fn response(
 
 fn exchange(version: Version, fault: Fault) -> Result<bool> {
     let mut connection = pair(Peer::Valid)?;
-    connection.handshake()?;
+    connection.handshake().context("primary handshake")?;
     let client_binding = binding(&mut connection.client.conn)?;
     let server_binding = binding(&mut connection.server.conn)?;
     ensure!(
@@ -151,10 +151,10 @@ fn exchange(version: Version, fault: Fault) -> Result<bool> {
         Fault::OtherClientConnection | Fault::OtherServerConnection
     ) {
         let mut other = pair(Peer::Valid)?;
-        other.handshake()?;
+        other.handshake().context("secondary handshake")?;
         let value = binding(&mut other.client.conn)?;
         ensure!(value != client_binding, "independent TLS exporters agree");
-        other.shutdown()?;
+        other.shutdown().context("secondary shutdown")?;
         value
     } else {
         client_binding
@@ -187,7 +187,9 @@ fn exchange(version: Version, fault: Fault) -> Result<bool> {
         client_h3.send_body(&mut connection.client.conn, stream, &hello, true)? == hello.len(),
         "partial client hello"
     );
-    let received = connection.receive(&mut server_h3, true, &headers, &hello)?;
+    let received = connection
+        .receive(&mut server_h3, true, &headers, &hello)
+        .context("request")?;
     let reply_binding = match fault {
         Fault::MissingServerBinding => None,
         Fault::OtherServerConnection => Some(other_binding),
@@ -210,7 +212,9 @@ fn exchange(version: Version, fault: Fault) -> Result<bool> {
             "partial server hello"
         );
     }
-    let received = connection.receive(&mut client_h3, false, &headers, &reply)?;
+    let received = connection
+        .receive(&mut client_h3, false, &headers, &reply)
+        .context("response")?;
     let authenticated = accepted
         && match version {
             Version::V1 => {
@@ -226,7 +230,7 @@ fn exchange(version: Version, fault: Fault) -> Result<bool> {
         };
     drop(client_h3);
     drop(server_h3);
-    connection.shutdown()?;
+    connection.shutdown().context("primary shutdown")?;
     Ok(authenticated)
 }
 

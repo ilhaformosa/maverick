@@ -1,0 +1,83 @@
+name: codeql-cache-comparison
+
+# Shadow experiment: default setup remains the authoritative scanner.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Compare (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, rust]
+    env:
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR: ${{ runner.temp }}/codeql-rust-cargo
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Initialize fresh CodeQL database
+        id: init
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          dependency-caching: true
+      - name: Identify Rust compiler
+        if: matrix.language == 'rust'
+        id: compiler
+        run: echo "key=$(rustc -vV | sha256sum | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - name: Restore Rust extractor Cargo work
+        if: matrix.language == 'rust'
+        id: rust-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ env.CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR }}
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: codeql-rust-v1-pr${{ github.event.pull_request.number }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.init.outputs.codeql-version }}-${{ steps.compiler.outputs.key }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml') }}
+      - name: Analyze all source with default queries
+        id: analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370
+        with:
+          category: /language:${{ matrix.language }}
+          upload: never
+          upload-database: false
+      - name: Record repository source coverage
+        env:
+          MAVERICK_CODEQL_LANGUAGE: ${{ matrix.language }}
+        run: |
+          set -euo pipefail
+          unzip -Z1 "$RUNNER_TEMP/codeql_databases/$MAVERICK_CODEQL_LANGUAGE/src.zip" |
+            awk -v root="${GITHUB_WORKSPACE#/}/" '
+              { sub(/^\//, ""); if (index($0, root) == 1) print substr($0, length(root) + 1) }
+            ' | LC_ALL=C sort >"$RUNNER_TEMP/codeql-$MAVERICK_CODEQL_LANGUAGE-sources.txt"
+          test -s "$RUNNER_TEMP/codeql-$MAVERICK_CODEQL_LANGUAGE-sources.txt"
+      - name: Preserve comparison results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-comparison-${{ matrix.language }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.analyze.outputs.sarif-output }}/*.sarif
+            ${{ runner.temp }}/codeql-${{ matrix.language }}-sources.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save Rust Cargo cache for this PR
+        if: >-
+          success() && matrix.language == 'rust' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ${{ env.CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR }}
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}

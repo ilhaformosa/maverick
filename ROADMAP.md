@@ -36,7 +36,7 @@ cache is cleaned. The same paths can restore v1 during migration, while only
 successful main runs save v2. See [STATUS.md](STATUS.md#sdk-readiness-and-ci-tool-reuse)
 and the associated PR for baseline and warm-run evidence.
 
-## Delivered — H3 Address Selection
+## Delivered — H3 Connection Setup
 
 The H3 client previously discarded every resolved server address after the
 first. It now tries subsequent addresses after a failed QUIC/TLS attempt,
@@ -46,6 +46,11 @@ ordinary CLI authentication and forwarding coverage remains in the shared gates.
 
 This does not add parallel dialing or promise recovery when a silent first
 address consumes the entire budget. H3 remains explicit and default-off.
+
+Mismatched tunnel paths now receive an explicit rejection before authentication.
+Local regressions distinguish the rejection from an authentication timeout;
+the CLI cases check target isolation, admission release and successful forwarding
+with corrected configurations. Normal authentication and timeout policy remain.
 
 ## Next — Follow Concrete Ordinary-Use Evidence
 

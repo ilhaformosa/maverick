@@ -160,6 +160,7 @@ enum Fault {
     Ca,
     Hostname,
     Pin,
+    Path,
 }
 
 impl Fixture {
@@ -236,8 +237,13 @@ impl Fixture {
         } else {
             self.pin.clone()
         };
+        let path = if matches!(fault, Fault::Path) {
+            "/wrong-local-h3"
+        } else {
+            "/local-h3"
+        };
         let input = format!(
-            "version: 1\nlocal:\n  socks5:\n    listen: '127.0.0.1:0'\n  http_connect:\n    enabled: true\n    listen: '127.0.0.1:0'\nserver:\n  address: '{server}'\n  server_name: {hostname}\n  tunnel_path: /local-h3\n  credential_id: local-test-user\n  secret: '{}'\n  ca_cert: {ca}\n  cert_pin: '{pin}'\nauth:\n  channel_binding:\n    enabled: true\n    require: true\n  v2:\n    enabled: {v2}\n  rotation:\n    active_epoch: '202607'\nadvanced:\n  quiche_h3: {h3}\n  connect_timeout_ms: 5000\n  idle_timeout_secs: 10\n  stealth:\n    tls_fingerprint: browser_mimic\n",
+            "version: 1\nlocal:\n  socks5:\n    listen: '127.0.0.1:0'\n  http_connect:\n    enabled: true\n    listen: '127.0.0.1:0'\nserver:\n  address: '{server}'\n  server_name: {hostname}\n  tunnel_path: {path}\n  credential_id: local-test-user\n  secret: '{}'\n  ca_cert: {ca}\n  cert_pin: '{pin}'\nauth:\n  channel_binding:\n    enabled: true\n    require: true\n  v2:\n    enabled: {v2}\n  rotation:\n    active_epoch: '202607'\nadvanced:\n  quiche_h3: {h3}\n  connect_timeout_ms: 5000\n  idle_timeout_secs: 10\n  stealth:\n    tls_fingerprint: browser_mimic\n",
             secret.expose_secret(),
             h3 = self.h3,
         );
@@ -440,9 +446,15 @@ async fn configured_cli_processes_forward_tcp_and_reject_invalid_authentication_
                         format!("auth v{} configured TCP forwarding", if v2 { 2 } else { 1 })
                     })?;
             }
-            for (index, fault) in [Fault::Secret, Fault::Ca, Fault::Hostname, Fault::Pin]
-                .into_iter()
-                .enumerate()
+            for (index, fault) in [
+                Fault::Secret,
+                Fault::Ca,
+                Fault::Hostname,
+                Fault::Pin,
+                Fault::Path,
+            ]
+            .into_iter()
+            .enumerate()
             {
                 let name = format!("rejected-{index}.yaml");
                 fixture.client_config(&name, server_address, v2, fault)?;

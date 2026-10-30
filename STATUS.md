@@ -160,6 +160,11 @@ are rejected. H3 authentication failures close the session without H2 fallback
 content. Profile URI v1 cannot represent H3; v1-to-v2 policy projection also
 reports the unsupported choice.
 
+Requests whose HTTP method or tunnel path does not match the H3 endpoint are
+actively closed before application processing. On receiving this rejection,
+the client terminates its authentication wait instead of leaving it to expire.
+The existing rejection, admission and target-access rules remain unchanged.
+
 Product H3 uses upstream quiche 0.30.0 and its official Boring integration,
 with Boring 5.2.0, boring-sys 5.3.0 and tokio-boring 5.2.0 aligned across H2/H3.
 No private quiche patch enters the product. This shared TLS update also affects

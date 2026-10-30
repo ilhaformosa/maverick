@@ -76,7 +76,14 @@ impl Endpoint {
             match self.conn.send(&mut packet[..MAX_UDP]) {
                 Ok((len, info)) => {
                     self.sent += 1;
-                    ensure!(self.sent <= MAX_PACKETS, "UDP send budget exhausted");
+                    ensure!(
+                        self.sent <= MAX_PACKETS,
+                        "UDP send budget exhausted: sent={}, received={}, established={}, lost={}",
+                        self.sent,
+                        self.received,
+                        self.conn.is_established(),
+                        self.conn.stats().lost
+                    );
                     ensure!(
                         info.to == self.peer && info.from == self.address,
                         "unexpected UDP path"
@@ -292,6 +299,10 @@ impl Pair {
     }
 
     pub(super) fn shutdown(mut self) -> Result<usize> {
+        // Consume pending handshake confirmation before closing stops
+        // processing input. Otherwise an overdue handshake PTO can keep
+        // producing ACK-only packets instead of the application close.
+        self.advance()?;
         self.client.conn.close(true, 0x100, b"")?; // H3_NO_ERROR
         while !self.client.conn.is_closed() || !self.server.conn.is_closed() {
             self.advance()?;
@@ -446,6 +457,28 @@ mod tests {
         );
         assert_eq!(pair.client.sent + pair.server.sent, 0);
         drop(pair);
+        assert_released(addresses, &fixture)
+    }
+
+    #[test]
+    fn shutdown_after_handshake_pto_releases_resources() -> Result<()> {
+        let mut pair = Pair::new(true, "localhost")?;
+        let addresses = [pair.client.address, pair.server.address];
+        let fixture = pair.fixture.path().to_owned();
+        pair.handshake()?;
+        let timeout = pair
+            .client
+            .conn
+            .timeout_instant()
+            .expect("pending handshake PTO");
+        ensure!(
+            timeout < pair.deadline,
+            "handshake PTO exceeds probe deadline"
+        );
+        std::thread::sleep(
+            timeout.saturating_duration_since(Instant::now()) + Duration::from_millis(1),
+        );
+        pair.shutdown()?;
         assert_released(addresses, &fixture)
     }
 

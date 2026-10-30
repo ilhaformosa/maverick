@@ -44,10 +44,11 @@ file_size() {
 
 sha256_file() {
   local digest
-  if command -v shasum >/dev/null 2>&1; then
-    digest="$(shasum -a 256 "$1" 2>/dev/null | awk '{print $1}')" || fail
-  elif command -v sha256sum >/dev/null 2>&1; then
+  # Prefer native hashing to repeated Perl startup during archive verification.
+  if command -v sha256sum >/dev/null 2>&1; then
     digest="$(sha256sum "$1" 2>/dev/null | awk '{print $1}')" || fail
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(shasum -a 256 "$1" 2>/dev/null | awk '{print $1}')" || fail
   else
     fail
   fi

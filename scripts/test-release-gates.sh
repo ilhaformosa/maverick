@@ -55,6 +55,7 @@ make_isolated_elf_tool_path() {
     tool_path="$(command -v "$tool")" || fail_test
     ln -s "$tool_path" "$destination/$tool" || fail_test
   done
+  # Keep these isolated cases on the shasum fallback when both tools exist.
   if command -v shasum >/dev/null 2>&1; then
     tool_path="$(command -v shasum)" || fail_test
     ln -s "$tool_path" "$destination/shasum" || fail_test
@@ -67,10 +68,10 @@ make_isolated_elf_tool_path() {
 }
 
 sha256_file() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
-  elif command -v sha256sum >/dev/null 2>&1; then
+  if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
   else
     fail_test
   fi

@@ -52,7 +52,8 @@ impl Peer {
                 limits: maverick_quiche::Limits {
                     max_frame_size: MAX_FRAME,
                     handshake_timeout: Duration::from_secs(5),
-                    idle_timeout: Duration::from_secs(5),
+                    // Keep idle expiry distinct from the client's 5-second auth budget.
+                    idle_timeout: Duration::from_secs(30),
                 },
                 max_connections: 2,
                 max_connections_per_source: 2,
@@ -161,6 +162,30 @@ async fn failed_first_address_reaches_next_verified_h3_peer() -> Result<()> {
     })
     .await
     .context("H3 candidate forwarding test timed out")?
+}
+
+#[tokio::test]
+async fn mismatched_request_path_is_rejected_without_an_authentication_timeout() -> Result<()> {
+    timeout(Duration::from_secs(15), async {
+        let peer = Peer::start().await?;
+        let mut config = peer.config();
+        config.server.tunnel_path = "/wrong-path".into();
+        let connected = connect_to(&config, peer.address).await?;
+        let result = crate::h3::open(&config, connected.channel, connected.binding).await;
+        peer.shutdown().await?;
+        let error = result
+            .err()
+            .context("mismatched H3 request path was accepted")?;
+        assert!(
+            !error
+                .chain()
+                .any(|cause| cause.to_string().contains("H3 authentication timed out")),
+            "the rejected request waited for the client's authentication timeout"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("H3 request-path rejection test timed out")?
 }
 
 #[tokio::test]

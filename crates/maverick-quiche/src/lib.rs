@@ -489,11 +489,15 @@ impl Driver {
                         let value =
                             |name: &[u8]| list.iter().find(|h| h.name() == name).map(|h| h.value());
                         if self.server {
-                            ensure!(
-                                value(b":method") == Some(b"POST".as_slice())
-                                    && value(b":path") == Some(self.path.as_bytes()),
-                                "unknown H3 request"
-                            );
+                            if value(b":method") != Some(b"POST".as_slice())
+                                || value(b":path") != Some(self.path.as_bytes())
+                            {
+                                // No application frames have been delivered. This
+                                // connection carries only the rejected request.
+                                let _ = self.conn.close(true, 0x10b, b""); // H3_REQUEST_REJECTED
+                                self.io.flush(&mut self.conn).await?;
+                                bail!("unknown H3 request");
+                            }
                             response_pending = true;
                         } else {
                             ensure!(

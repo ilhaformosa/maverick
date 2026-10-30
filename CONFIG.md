@@ -261,6 +261,12 @@ URI format is rejected for H3 configurations because that format cannot retain
 this transport choice. Certificate CA/hostname/pin checks and exporter-bound
 authentication remain required when configured.
 
+The client and server `tunnel_path` values must match. An H3 request with a
+different path or method is rejected before Maverick authentication or target
+access. The server sends a QUIC close for that request so the client can report
+failure without waiting for its authentication timeout. No fallback response
+or automatic retry is added.
+
 H3 is Beta and default-off. Local validation does not authorize a field trial
 or claim browser equivalence, native Datagram support, or better performance.
 

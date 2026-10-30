@@ -321,7 +321,7 @@ impl Pair {
         (self.client, self.server, self.fixture)
     }
 
-    pub(super) fn shutdown(mut self) -> Result<usize> {
+    fn close_connections(&mut self) -> Result<()> {
         self.begin_round()?;
         self.client.close()?; // H3_NO_ERROR
         while !self.client.conn.is_closed() || !self.server.conn.is_closed() {
@@ -334,6 +334,11 @@ impl Pair {
                 .is_some_and(|error| error.is_app && error.error_code == 0x100),
             "server did not receive the clean H3 close"
         );
+        Ok(())
+    }
+
+    pub(super) fn shutdown(mut self) -> Result<usize> {
+        self.close_connections()?;
         let sent = self.client.sent + self.server.sent;
         // Close temporary files explicitly so a cleanup failure is reported.
         // All error exits also release sockets/connections and the TempDir via RAII.
@@ -508,23 +513,17 @@ mod tests {
         let addresses = [pair.client.address, pair.server.address];
         let fixture = pair.fixture.path().to_owned();
         pair.handshake()?;
-        pair.advance()?;
-        let receiver = pair.server.socket.try_clone()?;
-        assert_eq!(
-            receiver.peek_from(&mut [0; MAX_UDP]).unwrap_err().kind(),
-            ErrorKind::WouldBlock
-        );
+        let sent = (pair.client.sent, pair.server.sent);
         pair.deadline = Instant::now();
-        let error = pair.shutdown().expect_err("expired probe sent a close");
+        let error = pair
+            .close_connections()
+            .expect_err("expired probe sent a close");
         assert_eq!(
             error.to_string(),
             "loopback time or iteration budget exhausted"
         );
-        assert_eq!(
-            receiver.peek_from(&mut [0; MAX_UDP]).unwrap_err().kind(),
-            ErrorKind::WouldBlock
-        );
-        drop(receiver);
+        assert_eq!((pair.client.sent, pair.server.sent), sent);
+        drop(pair);
         assert_released(addresses, &fixture)
     }
 

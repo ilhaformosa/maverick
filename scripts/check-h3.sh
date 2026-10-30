@@ -5,6 +5,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 manifest=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
 cargo test --locked -p maverick-client --features experimental-h3 h3::tests
+cargo test --locked -p maverick-client --features experimental-h3 h3_transport::tests
 cargo test --locked -p maverick-client --features experimental-h3 --lib bind_failure_
 cargo test --locked -p maverick-client --features experimental-h3 tunnel::relay_tests
 cargo test --locked -p maverick-server --features experimental-h3 h3::tests

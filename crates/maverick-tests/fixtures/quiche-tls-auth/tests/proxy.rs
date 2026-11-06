@@ -295,6 +295,99 @@ async fn server_half_close_preserves_remaining_upload() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn transport_loss_after_response_eof_ends_silent_local_upload() -> anyhow::Result<()> {
+    use anyhow::Context;
+    use maverick_core::h3_channel::FrameChannel;
+    use std::time::Duration;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+        sync::{mpsc, oneshot},
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let connection = proxy::connect(smoke::PATH, smoke::MAX_FRAME).await?;
+        let (client, config) = smoke::configs(&connection, true)?;
+        let server = maverick_server::h3::Server::new(config)?;
+        let origin = TcpListener::bind("127.0.0.1:0").await?;
+        let target_addr = origin.local_addr()?;
+        let socks = TcpListener::bind("127.0.0.1:0").await?;
+        let socks_addr = socks.local_addr()?;
+        let FrameChannel {
+            outbound,
+            mut inbound,
+        } = connection.client;
+        let (forward, forwarded) = mpsc::channel(1);
+        let (consumed, response_eof) = oneshot::channel();
+        let forward_task = tokio::spawn(async move {
+            let mut consumed = Some(consumed);
+            while let Some(frame) = inbound.recv().await {
+                let eof = matches!(&frame, Ok(None));
+                forward
+                    .send(frame)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("client frame receiver closed"))?;
+                if eof {
+                    // Local TCP EOF precedes consumption of HTTP EOF. Wait for
+                    // this real transport event to leave the one-frame queue.
+                    drop(
+                        forward
+                            .reserve()
+                            .await
+                            .context("client did not consume HTTP EOF")?,
+                    );
+                    if let Some(consumed) = consumed.take() {
+                        let _ = consumed.send(());
+                    }
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        });
+        let server_task = tokio::spawn(async move {
+            server
+                .serve(
+                    connection.server,
+                    connection.client_addr,
+                    smoke::PATH,
+                    connection.server_binding,
+                )
+                .await
+        });
+        let client_task = tokio::spawn(async move {
+            let (local, _) = socks.accept().await?;
+            maverick_client::h3::proxy_socks_connection(
+                local,
+                &client,
+                FrameChannel {
+                    outbound,
+                    inbound: forwarded,
+                },
+                connection.client_binding,
+            )
+            .await
+        });
+        let mut app = TcpStream::connect(socks_addr).await?;
+        assert_eq!(smoke::socks_connect(&mut app, target_addr).await?, 0);
+        let (mut target, _) = origin.accept().await?;
+        target.shutdown().await?;
+        assert_eq!(app.read(&mut [0]).await?, 0);
+        response_eof.await.context("missing consumed HTTP EOF")?;
+        // The local application's upload side remains open and silent.
+        connection.transport.shutdown().await?;
+        let error = client_task
+            .await?
+            .expect_err("disconnected client relay must terminate");
+        assert!(
+            !error.to_string().contains("H3 relay idle timeout"),
+            "client retained its local connection until the idle timeout"
+        );
+        assert!(server_task.await?.is_err());
+        forward_task.await??;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await?
+}
+
+#[tokio::test]
 async fn simultaneous_large_upload_and_download() -> anyhow::Result<()> {
     for v2 in [false, true] {
         assert_eq!(

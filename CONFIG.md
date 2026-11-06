@@ -279,6 +279,8 @@ Closing only the request's TCP upload direction still permits a response.
 While an established H3 flow waits for target response data, loss of the H3
 transport also ends the relay and releases its target connection and flow slot.
 Normal target-first TCP FIN still allows the client's remaining upload.
+After the response ends, transport closure also ends a client relay waiting
+for local upload. A normal request FIN still allows the response to finish.
 
 H3 is Beta and default-off. Local validation does not authorize a field trial
 or claim browser equivalence, native Datagram support, or better performance.

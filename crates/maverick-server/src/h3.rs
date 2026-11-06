@@ -156,14 +156,18 @@ impl Server {
             )
             .await;
         };
-        let target = match relay::open_target_with_metrics(
-            &target,
-            state.config.advanced.tcp_connect_timeout_ms,
-            &state.config.advanced.egress,
-            &state.metrics.target_open_sinks(),
-        )
-        .await
-        {
+        let target_metrics = state.metrics.target_open_sinks();
+        // Transport loss cancels setup; a request FIN leaves this sender open.
+        let target = tokio::select! {
+            _ = tunnel.outbound.closed() => return Ok(()),
+            result = relay::open_target_with_metrics(
+                &target,
+                state.config.advanced.tcp_connect_timeout_ms,
+                &state.config.advanced.egress,
+                &target_metrics,
+            ) => result,
+        };
+        let target = match target {
             Ok(target) => target,
             Err(_) => {
                 return send(
@@ -443,6 +447,9 @@ async fn serve_listener(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::poll;
+    use maverick_core::{frame::TargetAddr, Mode};
+    use std::task::Poll;
     use tokio::time::{advance, Instant};
 
     fn relay_policy() -> relay::TunnelRelayPolicy {
@@ -453,6 +460,113 @@ mod tests {
             cover_traffic: RuntimeCoverTraffic::disabled(),
             shaping_metrics: None,
         }
+    }
+
+    #[test]
+    fn pending_target_resolution_releases_flow_when_transport_closes() -> Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()?
+            .block_on(async {
+                // Hold this private runtime's only blocking worker so the real
+                // localhost resolver stays pending without network manipulation.
+                // Dropping release also unblocks it if an assertion fails.
+                let (release, released) = std::sync::mpsc::channel::<()>();
+                let (entered, blocked) = oneshot::channel();
+                let worker = tokio::task::spawn_blocking(move || {
+                    let _ = entered.send(());
+                    let _ = released.recv();
+                });
+                blocked.await?;
+
+                let secret = SecretString::generate();
+                let config = ServerConfig::from_yaml_str(&format!(
+                    "version: 1\nlisten: '127.0.0.1:0'\ntls:\n  cert_path: cert.pem\n  key_path: key.pem\nmaverick:\n  tunnel_path: /pending-target\nusers:\n  - id: pending-target-user\n    secret: '{}'\n    max_concurrent_flows: 1\nfallback:\n  type: static\n  static_dir: public\nadvanced:\n  quiche_h3: true\n  egress:\n    allow_loopback: true\n",
+                    secret.expose_secret(),
+                ))?;
+                let server = Server::new(config)?;
+                let user = server
+                    .state
+                    .policies
+                    .for_user("pending-target-user")
+                    .context("missing test user policy")?;
+                let metrics = &server.state.metrics;
+                let target = TcpListener::bind("127.0.0.1:0").await?;
+                let address = target.local_addr()?;
+                let mut binding_bytes = [0; 32];
+                boring::rand::rand_bytes(&mut binding_bytes)?;
+                let binding = TlsChannelBinding::new(binding_bytes);
+                let hello = ClientHello::try_new_with_channel_binding(
+                    "pending-target-user",
+                    &secret,
+                    "/pending-target",
+                    Mode::Stable,
+                    FEATURE_TLS_CHANNEL_BINDING,
+                    Some(binding),
+                )?;
+                let (channel, mut transport) = h3_channel::channel();
+                let mut serving = Box::pin(server.serve(
+                    channel,
+                    address,
+                    "/pending-target",
+                    binding,
+                ));
+                transport
+                    .inbound
+                    .try_send(Ok(Some(Frame::new(
+                        FrameType::ClientHello,
+                        0,
+                        0,
+                        hello.encode(),
+                    ))))
+                    .map_err(|_| anyhow::anyhow!("cannot queue test ClientHello"))?;
+                assert!(poll!(serving.as_mut()).is_pending());
+                let (hello, ended) = transport.outbound.try_recv()?;
+                assert_eq!(hello.frame_type, FrameType::ServerHello);
+                assert!(!ended);
+
+                let open = OpenTcpPayload::new(
+                    TargetAddr::Domain("localhost".into()),
+                    address.port(),
+                );
+                transport
+                    .inbound
+                    .try_send(Ok(Some(Frame::new(FrameType::OpenTcp, 0, 1, open.encode()?))))
+                    .map_err(|_| anyhow::anyhow!("cannot queue test OpenTcp"))?;
+                assert!(poll!(serving.as_mut()).is_pending());
+                assert_eq!(metrics.active_flows.load(Ordering::Relaxed), 1);
+                assert_eq!(user.flow_limit.available_permits(), 0);
+                assert_eq!(metrics.target_open_sinks().resolution_latency.snapshot().count, 0);
+
+                // Upload FIN does not mean the response transport disappeared.
+                transport
+                    .inbound
+                    .try_send(Ok(Some(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()))))
+                    .map_err(|_| anyhow::anyhow!("cannot queue test TCP FIN"))?;
+                assert!(poll!(serving.as_mut()).is_pending());
+                assert_eq!(metrics.active_flows.load(Ordering::Relaxed), 1);
+
+                drop(transport.outbound);
+                match poll!(serving.as_mut()) {
+                    Poll::Ready(result) => result?,
+                    Poll::Pending => anyhow::bail!(
+                        "disconnected H3 transport retained the pending target and flow slot"
+                    ),
+                }
+                assert_eq!(metrics.active_flows.load(Ordering::Relaxed), 0);
+                assert_eq!(metrics.active_connections.load(Ordering::Relaxed), 0);
+                assert_eq!(user.flow_limit.available_permits(), 1);
+                assert_eq!(metrics.target_open_sinks().resolution_latency.snapshot().count, 0);
+
+                let reused = try_user_flow_permit(&server.state, &user)
+                    .context("cancelled target retained the only user flow slot")?;
+                drop(reused);
+                release.send(())?;
+                worker.await?;
+                assert!(poll!(Box::pin(target.accept()).as_mut()).is_pending());
+                Ok(())
+            })
     }
 
     #[tokio::test(start_paused = true)]

@@ -1,6 +1,6 @@
 # Maverick Roadmap
 
-Date: 2026-10-31
+Date: 2026-11-06
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
@@ -51,6 +51,10 @@ Mismatched tunnel paths now receive an explicit rejection before authentication.
 Local regressions distinguish the rejection from an authentication timeout;
 the CLI cases check target isolation, admission release and successful forwarding
 with corrected configurations. Normal authentication and timeout policy remain.
+
+Target setup also observes transport loss so a disconnected H3 session releases
+its user-flow slot while resolution or connection is pending. Keep normal TCP
+half-close behavior covered alongside cancellation and subsequent slot reuse.
 
 ## Next — Follow Concrete Ordinary-Use Evidence
 

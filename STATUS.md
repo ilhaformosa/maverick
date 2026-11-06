@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-10-31
+Date: 2026-11-06
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
@@ -164,6 +164,12 @@ Requests whose HTTP method or tunnel path does not match the H3 endpoint are
 actively closed before application processing. On receiving this rejection,
 the client terminates its authentication wait instead of leaving it to expire.
 The existing rejection, admission and target-access rules remain unchanged.
+
+If the H3 transport disappears while the server is resolving or connecting to
+a target, the session stops waiting and releases its connection and user-flow
+permits. A request-side TCP FIN does not cancel target setup or its response.
+An operating-system DNS lookup already submitted may still finish independently;
+the cancelled session no longer continues from that result to TCP connection.
 
 Product H3 uses upstream quiche 0.30.0 and its official Boring integration,
 with Boring 5.2.0, boring-sys 5.3.0 and tokio-boring 5.2.0 aligned across H2/H3.

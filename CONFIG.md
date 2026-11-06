@@ -267,6 +267,10 @@ access. The server sends a QUIC close for that request so the client can report
 failure without waiting for its authentication timeout. No fallback response
 or automatic retry is added.
 
+If the H3 transport ends while the server is opening a target connection, the
+server stops waiting and releases the session's connection and user-flow slots.
+Closing only the request's TCP upload direction still permits a response.
+
 H3 is Beta and default-off. Local validation does not authorize a field trial
 or claim browser equivalence, native Datagram support, or better performance.
 

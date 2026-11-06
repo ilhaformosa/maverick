@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-11-06
+Date: 2026-11-07
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
@@ -158,8 +158,10 @@ The ordinary client/server path verifies CA, hostname and optional certificate
 pin, then applies existing exporter-bound authentication v1/v2, replay checks,
 user/flow limits, egress policy and shaping. The server retains bounded packet
 queues, global/per-source admission and the pre-auth permit through authentication.
-Fronting/WebSocket, local DNS/TUN, rustls selection and SOCKS UDP associations
-are rejected. H3 authentication failures close the session without H2 fallback
+Fronting/WebSocket, local DNS/TUN and rustls selection are rejected. SOCKS UDP
+ASSOCIATE is rejected locally with Command not supported (`0x07`), before
+contacting the server. The rejection releases the local flow slot for subsequent TCP.
+H3 authentication failures close the session without H2 fallback
 content. Profile URI v1 cannot represent H3; v1-to-v2 policy projection also
 reports the unsupported choice.
 

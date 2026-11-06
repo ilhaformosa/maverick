@@ -262,7 +262,8 @@ explicitly configured new field instead of silently using another carrier.
 
 H3 supports SOCKS TCP and HTTP CONNECT. Fronting/WebSocket combinations, the
 local DNS listener, TUN, and `rustls_default` are rejected. SOCKS UDP ASSOCIATE
-is rejected without opening a UDP association. Export to the existing Profile
+is rejected locally with reply `0x07` (Command not supported), without opening
+a server connection or UDP association. Export to the existing Profile
 URI format is rejected for H3 configurations because that format cannot retain
 this transport choice. Certificate CA/hostname/pin checks and exporter-bound
 authentication remain required when configured.

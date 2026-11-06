@@ -144,7 +144,7 @@ where
     write_reply(stream, 0x05).await
 }
 
-async fn write_reply<S>(stream: &mut S, code: u8) -> Result<()>
+pub(crate) async fn write_reply<S>(stream: &mut S, code: u8) -> Result<()>
 where
     S: AsyncWrite + Unpin,
 {

@@ -6,6 +6,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::error::{Error, Result};
 
 pub const FRAME_HEADER_LEN: usize = 14;
+/// Product handshake limits; the generic frame codec does not impose this range.
+pub const DEFAULT_MAX_FRAME_SIZE: usize = 65_536;
+pub const MAX_NEGOTIATED_FRAME_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

@@ -37,6 +37,9 @@ and using it, while preserving default H2 behavior:
   pair. Existing configurations and secret-file permissions remain protected.
 - `version` describes compiled carrier support, separately from the default
   carrier and runtime configuration.
+- Server `advanced.max_frame_size` is checked against the existing client
+  range, 65536 through 1048576 bytes. Unsupported values fail configuration
+  checking and startup instead of advertising a limit the client will reject.
 - Profile URI v1 export rejects connection, authentication or trust settings
   that its format cannot preserve, instead of silently changing their meaning.
 

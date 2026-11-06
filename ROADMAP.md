@@ -14,6 +14,11 @@ binds before spawning tasks. A later listener conflict releases earlier sockets
 before returning, permitting immediate corrected startup through the SDK.
 Regression coverage includes DNS/HTTP conflicts, explicit H3 and shutdown.
 
+Server frame-size configuration now shares the existing client negotiation
+limits. Configuration checking rejects unsupported values before startup;
+ordinary H3 forwarding is covered at the supported upper limit as well as the
+default. No larger protocol limit or automatic value adjustment is introduced.
+
 The pinned security-tool cache has already been verified cold and warm on the
 same revision: the supply-chain job took 410 and 42 seconds respectively, with
 every scan retained. Do not repeat that completed experiment without a relevant

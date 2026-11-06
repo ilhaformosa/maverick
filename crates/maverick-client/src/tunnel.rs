@@ -9,7 +9,7 @@ use maverick_core::auth::{
     AUTH_V2_PROTOCOL_VERSION, FEATURE_TLS_CHANNEL_BINDING, PROTOCOL_VERSION,
 };
 use maverick_core::config::{parse_auth_epoch, select_client_credential_at_unix};
-use maverick_core::frame::{Frame, FrameType};
+use maverick_core::frame::{Frame, FrameType, DEFAULT_MAX_FRAME_SIZE, MAX_NEGOTIATED_FRAME_SIZE};
 use maverick_core::grpc::{decode_grpc_frame_from, encode_grpc_frame};
 use maverick_core::padding::{RuntimeBatcher, RuntimeCoverTraffic, RuntimePadding};
 use maverick_core::{ClientConfig, SecretString};
@@ -17,9 +17,6 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::transport::{self, TunnelRequestSender};
-
-const DEFAULT_MAX_FRAME_SIZE: usize = 65_536;
-const MAX_NEGOTIATED_FRAME_SIZE: usize = 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct H2SendStalled;

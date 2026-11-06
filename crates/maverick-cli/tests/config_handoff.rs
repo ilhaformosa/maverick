@@ -107,6 +107,89 @@ async fn generated_default_pair_remains_h2() -> Result<()> {
 }
 
 #[tokio::test]
+async fn server_frame_size_is_checked_before_startup() -> Result<()> {
+    let carriers: &[bool] = if cfg!(feature = "experimental-h3") {
+        &[false, true]
+    } else {
+        &[false]
+    };
+    for &h3 in carriers {
+        let directory = TempDir::new()?;
+        let mut generate = vec!["gen-config"];
+        if h3 {
+            generate.push("--quiche-h3");
+        }
+        let output = cli(directory.path(), &generate, None).await?;
+        ensure!(output.status.success(), "configuration generation failed");
+        let source = fs::read_to_string(directory.path().join("server.generated.yaml"))?;
+        let config = ServerConfig::from_yaml_str(&source)
+            .map_err(|_| anyhow::anyhow!("generated server configuration is invalid"))?;
+        let secret = &config.users[0].secret;
+        ensure!(
+            source.matches("  max_frame_size: 65536\n").count() == 1,
+            "generated server frame-size field changed"
+        );
+        let source = source.replace("listen: \"0.0.0.0:443\"", "listen: \"127.0.0.1:0\"");
+        ensure!(
+            ServerConfig::from_yaml_str(&source)?.listen == "127.0.0.1:0".parse()?,
+            "frame-size fixture must use an ephemeral loopback listener"
+        );
+        for (size, valid) in [
+            (65_535, false),
+            (1_048_577, false),
+            (65_536, true),
+            (1_048_576, true),
+        ] {
+            let name = format!("frame-size-{size}.yaml");
+            let yaml = source.replace(
+                "  max_frame_size: 65536\n",
+                &format!("  max_frame_size: {size}\n"),
+            );
+            private_file(&directory.path().join(&name), &yaml)?;
+            let mut commands = vec![vec!["check-config", "--kind", "server", "-c", &name]];
+            if !valid {
+                // No TLS files exist: an invalid frame size must fail during
+                // configuration validation, before TLS setup or listener startup.
+                commands.push(vec!["server", "-c", &name]);
+            }
+            for args in commands {
+                let output = cli(directory.path(), &args, None).await?;
+                ensure!(
+                    output.status.success() == valid,
+                    "{} accepted the wrong frame-size range for {size} (H3={h3})",
+                    args[0]
+                );
+                if !valid {
+                    let error = String::from_utf8_lossy(&output.stderr);
+                    ensure!(
+                        error.contains("advanced.max_frame_size")
+                            && error.contains("65536")
+                            && error.contains("1048576"),
+                        "invalid frame size lacked its field and supported range"
+                    );
+                }
+                for captured in [&output.stdout, &output.stderr] {
+                    let text = String::from_utf8_lossy(captured);
+                    ensure!(
+                        !text.contains(secret.expose_secret()),
+                        "frame-size validation disclosed its credential"
+                    );
+                    if !valid {
+                        ensure!(
+                            !text.contains("Maverick server listening")
+                                && !text.contains("Maverick H3 server listening")
+                                && !text.contains("Maverick local metrics listening"),
+                            "invalid frame size announced readiness"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn generation_refuses_existing_pair_member_without_partial_writes() -> Result<()> {
     for (existing, absent) in [
         ("client.generated.yaml", "server.generated.yaml"),

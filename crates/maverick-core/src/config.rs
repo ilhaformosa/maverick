@@ -16,6 +16,7 @@ use zeroize::Zeroize;
 use crate::auth::AUTH_V2_MAX_CREDENTIAL_HINT_LEN;
 use crate::crypto::CryptoPolicyConfig;
 use crate::error::{Error, Result};
+use crate::frame::{DEFAULT_MAX_FRAME_SIZE, MAX_NEGOTIATED_FRAME_SIZE};
 
 pub mod v2;
 
@@ -858,9 +859,11 @@ impl ServerConfig {
                 "advanced.handshake_timeout_ms must be greater than zero".into(),
             ));
         }
-        if self.advanced.max_frame_size < FRAME_HEADER_MIN_MAX_SIZE {
+        if !(DEFAULT_MAX_FRAME_SIZE..=MAX_NEGOTIATED_FRAME_SIZE)
+            .contains(&(self.advanced.max_frame_size as usize))
+        {
             return Err(Error::Config(format!(
-                "advanced.max_frame_size must be at least {FRAME_HEADER_MIN_MAX_SIZE}"
+                "advanced.max_frame_size must be between {DEFAULT_MAX_FRAME_SIZE} and {MAX_NEGOTIATED_FRAME_SIZE} bytes"
             )));
         }
         if self.advanced.udp_idle_timeout_ms == 0 {
@@ -1944,7 +1947,7 @@ fn default_max_concurrent_flows() -> u32 {
 }
 
 fn default_max_frame_size() -> u32 {
-    65_536
+    DEFAULT_MAX_FRAME_SIZE as u32
 }
 
 fn default_replay_window_secs() -> i64 {
@@ -1987,7 +1990,6 @@ fn default_cover_traffic_window_ms() -> u64 {
     1_000
 }
 
-const FRAME_HEADER_MIN_MAX_SIZE: u32 = 14;
 const AUTH_V1_MAX_STRING_LEN: usize = u16::MAX as usize;
 pub const MAX_REPLAY_WINDOW_SECS: i64 = 86_400;
 

@@ -497,6 +497,38 @@ async fn configured_cli_processes_forward_tcp_and_reject_invalid_authentication_
     .context("configured H3 CLI process test timed out")?
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_h3_forwards_with_the_maximum_supported_frame_size() -> Result<()> {
+    timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::new()?;
+        fixture.server_config_with_metrics(true)?;
+        let path = fixture.directory.path().join("server.yaml");
+        let config = std::fs::read_to_string(&path)?.replacen(
+            "advanced:\n",
+            "advanced:\n  max_frame_size: 1048576\n",
+            1,
+        );
+        ensure!(
+            maverick_core::ServerConfig::from_yaml_str(&config)?
+                .advanced
+                .max_frame_size
+                == 1_048_576,
+            "fixture did not select the maximum supported frame size"
+        );
+        std::fs::write(&path, config)?;
+        let mut server = Cli::start(fixture.directory.path(), "server", "server.yaml")?;
+        let address = server.ready(SERVER_READY).await?;
+        let metrics = server.ready(METRICS_READY).await?;
+        fixture.client_config("client.yaml", address, true, Fault::None)?;
+        let mut client = Cli::start(fixture.directory.path(), "client", "client.yaml")?;
+        let socks = client.ready(SOCKS_READY).await?;
+        let http = client.ready(HTTP_READY).await?;
+        successful_flows(socks, http, metrics).await
+    })
+    .await
+    .context("H3 maximum-frame configuration test timed out")?
+}
+
 // Both carriers use the same CLI binary, equivalent TLS/auth v2 settings and
 // payload checks. H2 retains its normal pool and H3 its one-connection-per-flow
 // behavior: this compares the currently shipped paths, not protocol limits.

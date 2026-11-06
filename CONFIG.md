@@ -181,6 +181,12 @@ advanced:
 Server `log.redact` follows the same rule as the client: it must remain `true`.
 The prototype does not support a non-redacted operational logging mode.
 
+Server `advanced.max_frame_size` accepts **65536 through 1048576 bytes**,
+inclusive; the default is **65536**. This is the maximum payload size of one
+Maverick frame, not a limit on the total TCP transfer. The range matches the
+existing H2, WebSocket and H3 clients. Values outside it fail configuration
+checking and startup before TLS files are loaded or listeners are opened.
+
 ## Modes
 
 - `auto`: default v1 behavior.

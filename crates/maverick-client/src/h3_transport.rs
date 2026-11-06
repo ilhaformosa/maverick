@@ -1,6 +1,7 @@
 //! Explicit quiche dialer for the existing TCP tunnel/session path.
 use anyhow::{Context, Result};
 use boring::ssl::{SslContext, SslContextBuilder, SslMethod, SslVersion};
+use maverick_core::frame::MAX_NEGOTIATED_FRAME_SIZE;
 use maverick_core::ClientConfig;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -32,7 +33,7 @@ async fn connect_to(
                 &config.server.tunnel_path,
                 tls,
                 maverick_quiche::Limits {
-                    max_frame_size: 1024 * 1024,
+                    max_frame_size: MAX_NEGOTIATED_FRAME_SIZE,
                     handshake_timeout: budget,
                     idle_timeout: Duration::from_secs(config.advanced.idle_timeout_secs),
                 },

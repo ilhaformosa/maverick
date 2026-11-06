@@ -286,7 +286,12 @@ where
     let downstream = async {
         let mut buf = vec![0; (16 * 1024).min(max)];
         loop {
-            let count = read.read(&mut buf).await?;
+            // Once our response FIN is sent, this direction is done and the
+            // remaining upload must survive the driver's normal sender closure.
+            let count = tokio::select! {
+                _ = outbound.closed() => anyhow::bail!("H3 response transport closed"),
+                count = read.read(&mut buf) => count?,
+            };
             activity.send_replace(());
             if count == 0 {
                 send(
@@ -460,6 +465,132 @@ mod tests {
             cover_traffic: RuntimeCoverTraffic::disabled(),
             shaping_metrics: None,
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transport_loss_releases_silent_target_after_fin_or_blocked_upload() -> Result<()> {
+        for upload_finished in [true, false] {
+            let (channel, transport) = h3_channel::channel();
+            let (target, mut peer) = tokio::io::duplex(1);
+            let mut relay = Box::pin(relay_tcp(
+                tokio::io::split(target),
+                channel,
+                1,
+                65_536,
+                relay_policy(),
+            ));
+            let frame = if upload_finished {
+                Frame::new(FrameType::TcpFin, 0, 1, Bytes::new())
+            } else {
+                Frame::new(
+                    FrameType::TcpData,
+                    0,
+                    1,
+                    Bytes::from_static(b"blocked upload"),
+                )
+            };
+            transport
+                .inbound
+                .try_send(Ok(Some(frame)))
+                .map_err(|_| anyhow::anyhow!("cannot queue test upload"))?;
+            let started = Instant::now();
+            assert!(poll!(relay.as_mut()).is_pending());
+            let mut first = [0];
+            match poll!(Box::pin(peer.read(&mut first)).as_mut()) {
+                Poll::Ready(result) => {
+                    assert_eq!(result?, if upload_finished { 0 } else { 1 });
+                    if !upload_finished {
+                        assert_eq!(&first, b"b");
+                    }
+                }
+                Poll::Pending => anyhow::bail!("upload did not reach the target"),
+            }
+            // In the data case the next byte fills the one-byte target buffer,
+            // leaving the rest of the upload blocked while its read stays silent.
+            assert!(poll!(relay.as_mut()).is_pending());
+            drop(transport.outbound);
+            match poll!(relay.as_mut()) {
+                Poll::Ready(result) => {
+                    assert!(
+                        result.is_err(),
+                        "transport loss completed as a graceful relay"
+                    );
+                }
+                Poll::Pending => anyhow::bail!(
+                    "transport loss retained a silent target (upload_finished={upload_finished})"
+                ),
+            }
+            assert_eq!(
+                Instant::now(),
+                started,
+                "cancellation waited for idle expiry"
+            );
+            assert!(transport.inbound.is_closed());
+            match poll!(Box::pin(peer.write_all(b"late target response")).as_mut()) {
+                Poll::Ready(result) => {
+                    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+                }
+                Poll::Pending => anyhow::bail!("cancelled relay retained its target reader"),
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn target_fin_preserves_upload_after_response_channel_closes() -> Result<()> {
+        let (channel, mut transport) = h3_channel::channel();
+        let (target, mut peer) = tokio::io::duplex(16);
+        let mut relay = Box::pin(relay_tcp(
+            tokio::io::split(target),
+            channel,
+            1,
+            65_536,
+            relay_policy(),
+        ));
+        peer.shutdown().await?;
+        assert!(poll!(relay.as_mut()).is_pending());
+        let (fin, ended) = transport.outbound.try_recv()?;
+        assert_eq!(fin.frame_type, FrameType::TcpFin);
+        assert!(ended);
+        // The driver closes this receiver after sending the response FIN.
+        // The target's read direction must still accept the client's upload.
+        transport.outbound.close();
+        let payload = b"late upload";
+        transport
+            .inbound
+            .try_send(Ok(Some(Frame::new(
+                FrameType::TcpData,
+                0,
+                1,
+                Bytes::from_static(payload),
+            ))))
+            .map_err(|_| anyhow::anyhow!("cannot queue upload after target FIN"))?;
+        assert!(poll!(relay.as_mut()).is_pending());
+        let mut received = [0; 11];
+        match poll!(Box::pin(peer.read_exact(&mut received)).as_mut()) {
+            Poll::Ready(result) => {
+                result?;
+            }
+            Poll::Pending => anyhow::bail!("target FIN prevented continued upload"),
+        }
+        assert_eq!(&received, payload);
+        transport
+            .inbound
+            .try_send(Ok(Some(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()))))
+            .map_err(|_| anyhow::anyhow!("cannot queue final upload FIN"))?;
+        match poll!(relay.as_mut()) {
+            Poll::Ready(result) => result?,
+            Poll::Pending => {
+                anyhow::bail!("relay did not complete after both TCP directions ended")
+            }
+        }
+        let mut byte = [0];
+        match poll!(Box::pin(peer.read(&mut byte)).as_mut()) {
+            Poll::Ready(result) => assert_eq!(result?, 0),
+            Poll::Pending => anyhow::bail!("final upload FIN did not reach target"),
+        }
+        assert!(transport.inbound.is_closed());
+        Ok(())
     }
 
     #[test]

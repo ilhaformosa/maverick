@@ -359,11 +359,13 @@ async fn transport_disconnect_releases_target_and_flow_slot() -> anyhow::Result<
             origin.local_addr()?.port(),
         )
         .encode()?;
-        // The same one-slot server must accept a later connection after the first transport vanishes.
-        for (connection, disconnect) in [
-            (first, true),
-            (proxy::connect(smoke::PATH, smoke::MAX_FRAME).await?, false),
-        ] {
+        // Reuse the same one-slot server after both kinds of transport loss.
+        let mut first = Some(first);
+        for (upload_fin, disconnect) in [(false, true), (true, true), (true, false)] {
+            let connection = match first.take() {
+                Some(connection) => connection,
+                None => proxy::connect(smoke::PATH, smoke::MAX_FRAME).await?,
+            };
             let server = server.clone();
             let task = tokio::spawn(async move {
                 server
@@ -386,20 +388,31 @@ async fn transport_disconnect_releases_target_and_flow_slot() -> anyhow::Result<
                 FrameType::WindowUpdate
             );
             let (mut target, _) = origin.accept().await?;
-            if disconnect {
-                connection.transport.shutdown().await?;
-                assert!(task.await?.is_err());
-                assert!(tunnel.read_next_frame().await.is_err());
-                let mut received = Vec::new();
-                target.read_to_end(&mut received).await?;
-                assert!(received.is_empty());
-            } else {
+            if upload_fin {
                 tunnel
                     .send_frame(
                         Frame::new(FrameType::TcpFin, 0, 1, bytes::Bytes::new()),
                         true,
                     )
                     .await?;
+                // This proves upload FIN was consumed, not that the whole
+                // target socket was released. Its response direction stays open.
+                assert_eq!(target.read(&mut [0]).await?, 0);
+            }
+            if disconnect {
+                connection.transport.shutdown().await?;
+                let error = task.await?.expect_err("disconnected flow must terminate");
+                assert!(
+                    !error.to_string().contains("H3 relay idle timeout"),
+                    "disconnected flow retained its slot until the idle timeout"
+                );
+                assert!(tunnel.read_next_frame().await.is_err());
+                if !upload_fin {
+                    let mut received = Vec::new();
+                    target.read_to_end(&mut received).await?;
+                    assert!(received.is_empty());
+                }
+            } else {
                 target.shutdown().await?;
                 assert_eq!(
                     tunnel.read_next_frame().await?.unwrap().frame_type,

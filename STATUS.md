@@ -173,6 +173,10 @@ a target, the session stops waiting and releases its connection and user-flow
 permits. A request-side TCP FIN does not cancel target setup or its response.
 An operating-system DNS lookup already submitted may still finish independently;
 the cancelled session no longer continues from that result to TCP connection.
+Established relays also observe transport loss while waiting for target data,
+including after upload FIN or while an upload is blocked on a target write.
+They release the target and user-flow slot without waiting for idle expiry.
+Target-first FIN continues to permit upload until the client finishes it.
 
 Product H3 uses upstream quiche 0.30.0 and its official Boring integration,
 with Boring 5.2.0, boring-sys 5.3.0 and tokio-boring 5.2.0 aligned across H2/H3.

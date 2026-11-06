@@ -158,7 +158,12 @@ impl H3ClientTunnel {
         let upload = async {
             let mut bytes = vec![0; (16 * 1024).min(max)];
             loop {
-                let count = read.read(&mut bytes).await?;
+                // Watch only while uploading: the driver also closes this
+                // sender after our FIN, while the response may still be live.
+                let count = tokio::select! {
+                    _ = sender.channel.closed() => bail!("H3 request transport closed"),
+                    count = read.read(&mut bytes) => count?,
+                };
                 activity.send_replace(());
                 let frame = if count == 0 {
                     Frame::new(FrameType::TcpFin, 0, flow_id, Bytes::new())
@@ -283,11 +288,13 @@ impl H3Sender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::poll;
     use maverick_core::auth::{ClientHello, ServerHello};
     use maverick_core::config::{
         ClientAdvancedConfig, ClientServerConfig, LocalConfig, Mode, ShapingConfig, Socks5Config,
     };
     use maverick_core::SecretString;
+    use std::task::Poll;
 
     fn tunnel(channel: FrameChannel) -> H3ClientTunnel {
         let shaping = ShapingConfig::default();
@@ -304,6 +311,57 @@ mod tests {
                 flow_id: 1,
             },
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transport_loss_after_response_fin_releases_silent_upload() -> Result<()> {
+        let (channel, transport) = h3_channel::channel();
+        let (local, mut app) = tokio::io::duplex(1);
+        let mut relay = Box::pin(tunnel(channel).relay(local, Duration::from_secs(2)));
+        let started = tokio::time::Instant::now();
+        transport
+            .inbound
+            .try_send(Ok(Some(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()))))
+            .map_err(|_| anyhow::anyhow!("cannot queue response FIN"))?;
+        assert!(poll!(relay.as_mut()).is_pending());
+        let mut byte = [0];
+        match poll!(Box::pin(app.read(&mut byte)).as_mut()) {
+            Poll::Ready(result) => assert_eq!(result?, 0),
+            Poll::Pending => anyhow::bail!("response FIN did not reach the local application"),
+        }
+        transport
+            .inbound
+            .try_send(Ok(None))
+            .map_err(|_| anyhow::anyhow!("cannot queue response EOF"))?;
+        assert!(poll!(relay.as_mut()).is_pending());
+
+        // The response is complete, but the local application's upload is
+        // still open and silent when the transport disappears.
+        drop(transport.outbound);
+        match poll!(relay.as_mut()) {
+            Poll::Ready(result) => {
+                assert!(
+                    result.is_err(),
+                    "transport loss completed as a graceful relay"
+                );
+            }
+            Poll::Pending => {
+                anyhow::bail!("transport loss retained the silent upload after response completion")
+            }
+        }
+        assert_eq!(
+            tokio::time::Instant::now(),
+            started,
+            "cancellation waited for idle expiry"
+        );
+        assert!(transport.inbound.is_closed());
+        match poll!(Box::pin(app.write_all(b"late local upload")).as_mut()) {
+            Poll::Ready(result) => {
+                assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+            }
+            Poll::Pending => anyhow::bail!("cancelled relay retained its local reader"),
+        }
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
@@ -531,6 +589,9 @@ mod tests {
         assert_eq!(fin.frame_type, FrameType::TcpFin);
         assert!(end);
 
+        // Sending request FIN closes the driver's upload receiver while the
+        // response direction remains live.
+        transport.outbound.close();
         let payload = b"progress";
         transport
             .inbound

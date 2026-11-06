@@ -62,6 +62,8 @@ its user-flow slot while resolution or connection is pending. Keep normal TCP
 half-close behavior covered alongside cancellation and subsequent slot reuse.
 Established relays waiting for target response data likewise end on transport
 loss, including after upload FIN, while retaining target-first half-close.
+Client relays waiting for local upload after response completion also end on
+transport loss. Keep normal half-close in both directions covered alongside it.
 
 ## Next — Follow Concrete Ordinary-Use Evidence
 

@@ -177,6 +177,9 @@ Established relays also observe transport loss while waiting for target data,
 including after upload FIN or while an upload is blocked on a target write.
 They release the target and user-flow slot without waiting for idle expiry.
 Target-first FIN continues to permit upload until the client finishes it.
+After the response ends, the client also releases its local connection when
+the transport closes while it waits for more upload. A normal upload FIN
+continues to permit the remaining response.
 
 Product H3 uses upstream quiche 0.30.0 and its official Boring integration,
 with Boring 5.2.0, boring-sys 5.3.0 and tokio-boring 5.2.0 aligned across H2/H3.

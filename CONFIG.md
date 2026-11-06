@@ -276,6 +276,9 @@ or automatic retry is added.
 If the H3 transport ends while the server is opening a target connection, the
 server stops waiting and releases the session's connection and user-flow slots.
 Closing only the request's TCP upload direction still permits a response.
+While an established H3 flow waits for target response data, loss of the H3
+transport also ends the relay and releases its target connection and flow slot.
+Normal target-first TCP FIN still allows the client's remaining upload.
 
 H3 is Beta and default-off. Local validation does not authorize a field trial
 or claim browser equivalence, native Datagram support, or better performance.

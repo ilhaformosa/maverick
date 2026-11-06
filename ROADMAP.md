@@ -60,6 +60,8 @@ with corrected configurations. Normal authentication and timeout policy remain.
 Target setup also observes transport loss so a disconnected H3 session releases
 its user-flow slot while resolution or connection is pending. Keep normal TCP
 half-close behavior covered alongside cancellation and subsequent slot reuse.
+Established relays waiting for target response data likewise end on transport
+loss, including after upload FIN, while retaining target-first half-close.
 
 ## Next — Follow Concrete Ordinary-Use Evidence
 

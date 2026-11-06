@@ -1,6 +1,6 @@
 # Maverick Roadmap
 
-Date: 2026-11-06
+Date: 2026-11-07
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
@@ -64,6 +64,9 @@ Established relays waiting for target response data likewise end on transport
 loss, including after upload FIN, while retaining target-first half-close.
 Client relays waiting for local upload after response completion also end on
 transport loss. Keep normal half-close in both directions covered alongside it.
+Unsupported SOCKS UDP requests receive the corresponding local rejection
+without dialing the server; ordinary CLI coverage checks subsequent TCP reuse
+with one local flow slot.
 
 ## Next — Follow Concrete Ordinary-Use Evidence
 

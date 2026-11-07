@@ -283,6 +283,12 @@ Normal target-first TCP FIN still allows the client's remaining upload.
 After the response ends, transport closure also ends a client relay waiting
 for local upload. A normal request FIN still allows the response to finish.
 
+Explicit `ServerHandle::shutdown()` cancels unfinished connection setup and
+notifies active H3 peers through the existing QUIC close path before joining
+their drivers. Active TCP transfers end during shutdown. Close delivery is
+best effort; forced process exit or lost datagrams still relies on peer failure
+or idle detection.
+
 H3 is Beta and default-off. Local validation does not authorize a field trial
 or claim browser equivalence, native Datagram support, or better performance.
 

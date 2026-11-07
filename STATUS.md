@@ -183,6 +183,12 @@ After the response ends, the client also releases its local connection when
 the transport closes while it waits for more upload. A normal upload FIN
 continues to permit the remaining response.
 
+Explicit server-handle shutdown cancels unfinished setup and notifies active
+H3 peers through the existing QUIC close path before joining their drivers.
+It ends active TCP transfers and releases local listeners for restart. Close
+delivery remains best effort; forced process termination or datagram loss can
+still leave peers waiting for failure or idle detection.
+
 Product H3 uses upstream quiche 0.30.0 and its official Boring integration,
 with Boring 5.2.0, boring-sys 5.3.0 and tokio-boring 5.2.0 aligned across H2/H3.
 No private quiche patch enters the product. This shared TLS update also affects

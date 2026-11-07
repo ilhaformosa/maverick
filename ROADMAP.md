@@ -68,6 +68,10 @@ Unsupported SOCKS UDP requests receive the corresponding local rejection
 without dialing the server; ordinary CLI coverage checks subsequent TCP reuse
 with one local flow slot.
 
+Explicit server-handle shutdown cancels unfinished setup and notifies active
+H3 peers before joining their drivers. Keep same-endpoint restart and subsequent
+TCP use covered, with forced process termination distinct from this API path.
+
 ## Next — Follow Concrete Ordinary-Use Evidence
 
 Judge further CI changes by restore, rebuild and whole-workflow time together.

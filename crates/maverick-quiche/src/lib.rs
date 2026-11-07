@@ -12,11 +12,12 @@ use maverick_core::h3_channel::{self, FrameChannel, TransportChannel};
 use quiche::h3::{self, Header, NameValue};
 use rand::{rngs::OsRng, TryRngCore};
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 const MAX_UDP: usize = 1_350;
@@ -76,7 +77,15 @@ pub fn spawn_established(endpoint: EstablishedEndpoint) -> Result<(FrameChannel,
         path: endpoint.path,
         max_frame_size: endpoint.max_frame_size,
     };
-    Ok((channel, (stop, tokio::spawn(driver.run(Some(stopped))))))
+    Ok((
+        channel,
+        (
+            stop,
+            tokio::spawn(driver.run(async move {
+                let _ = stopped.await;
+            })),
+        ),
+    ))
 }
 
 pub async fn connect(
@@ -138,7 +147,7 @@ pub async fn connect(
             path: path.to_owned(),
             max_frame_size: limits.max_frame_size,
         }
-        .run(None),
+        .run(std::future::pending()),
     );
     Ok(Connected {
         channel,
@@ -156,7 +165,8 @@ struct Route {
 }
 
 /// Serve one UDP listener. Each connection owns one request/TCP flow and one
-/// bounded packet queue; dropping/stopping this task also aborts its drivers.
+/// bounded packet queue. Normal stop notifies and joins its drivers; dropping
+/// this task aborts them.
 pub async fn serve(
     socket: UdpSocket,
     tls: SslContextBuilder,
@@ -178,6 +188,7 @@ pub async fn serve(
     let mut config = transport_config(tls, options.limits)?;
     let mut routes: HashMap<Vec<u8>, Route> = HashMap::new();
     let mut tasks = JoinSet::new();
+    let (stopping, stopped) = watch::channel(());
     let mut packet = [0; MAX_UDP + 1];
     loop {
         tokio::select! {
@@ -240,19 +251,28 @@ pub async fn serve(
                 let accepted = accepted.clone();
                 let path = options.path.clone();
                 let limits = options.limits;
+                let mut stopped = stopped.clone();
                 tasks.spawn(async move {
                     let result: Result<()> = async {
-                        handshake(&mut conn, &mut io, limits.handshake_timeout).await?;
-                        let binding = binding(&mut conn)?;
-                        let h3 = h3_connection(&mut conn)?;
-                        let (channel, app) = h3_channel::channel();
-                        let connected = Connected {
-                            channel, binding, peer, peer_certificate_der: None,
-                            admission: Some(admission),
+                        // Setup may be waiting on TLS or a full acceptance queue.
+                        // A stop must cancel either before a driver is running.
+                        let (h3, app) = tokio::select! {
+                            _ = stopped.changed() => return Ok(()),
+                            result = async {
+                                handshake(&mut conn, &mut io, limits.handshake_timeout).await?;
+                                let binding = binding(&mut conn)?;
+                                let h3 = h3_connection(&mut conn)?;
+                                let (channel, app) = h3_channel::channel();
+                                let connected = Connected {
+                                    channel, binding, peer, peer_certificate_der: None,
+                                    admission: Some(admission),
+                                };
+                                accepted.send(connected).await.context("H3 session receiver closed")?;
+                                Ok::<_, anyhow::Error>((h3, app))
+                            } => result?,
                         };
-                        accepted.send(connected).await.context("H3 session receiver closed")?;
                         Driver { conn, io, h3, app, server: true, path, max_frame_size: limits.max_frame_size }
-                            .run(None).await
+                            .run(async move { let _ = stopped.changed().await; }).await
                     }.await;
                     // A failed handshake/session is isolated to its own connection.
                     let _ = result;
@@ -261,7 +281,7 @@ pub async fn serve(
             }
         }
     }
-    tasks.abort_all();
+    stopping.send_replace(());
     while tasks.join_next().await.is_some() {}
     Ok(())
 }
@@ -451,7 +471,8 @@ struct Driver {
 }
 
 impl Driver {
-    async fn run(mut self, mut stop: Option<oneshot::Receiver<()>>) -> Result<()> {
+    async fn run(mut self, stop: impl Future<Output = ()>) -> Result<()> {
+        tokio::pin!(stop);
         let mut wire_in = BytesMut::new();
         let mut pending_in = None;
         let mut wire_out = Bytes::new();
@@ -602,12 +623,7 @@ impl Driver {
             }
             let wait = self.conn.timeout().unwrap_or(Duration::from_secs(1));
             tokio::select! {
-                _ = async {
-                    match &mut stop {
-                        Some(stop) => { let _ = stop.await; }
-                        None => std::future::pending::<()>().await,
-                    }
-                } => {
+                _ = &mut stop => {
                     let _ = self.conn.close(true, 0x100, b"");
                     self.io.flush(&mut self.conn).await?;
                     return Ok(());

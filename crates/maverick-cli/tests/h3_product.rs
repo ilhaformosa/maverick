@@ -500,6 +500,89 @@ async fn configured_h3_rejects_udp_associate_without_contacting_server() -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_handle_shutdown_releases_h3_flow_and_allows_restart() -> Result<()> {
+    timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::for_transport(true, 1)?;
+        fixture.server_config(true)?;
+        let mut server_config = maverick_core::ServerConfig::from_yaml_str(
+            &std::fs::read_to_string(fixture.directory.path().join("server.yaml"))?,
+        )?;
+        server_config.tls.cert_path = fixture.directory.path().join("cert.pem");
+        server_config.tls.key_path = fixture.directory.path().join("key.pem");
+        server_config.advanced.idle_timeout_secs = 60;
+        let server = maverick_server::start_server(server_config.clone()).await?;
+        let address = server.local_addr;
+        server_config.listen = address;
+
+        fixture.client_config("client.yaml", address, true, Fault::None)?;
+        let mut client_config = maverick_core::ClientConfig::from_yaml_str(
+            &std::fs::read_to_string(fixture.directory.path().join("client.yaml"))?,
+        )?;
+        client_config.server.ca_cert = Some(fixture.directory.path().join("ca.pem"));
+        client_config.advanced.idle_timeout_secs = 60;
+        client_config.advanced.max_concurrent_flows = 1;
+        let client = maverick_client::start_client(client_config).await?;
+        let target = TcpListener::bind("127.0.0.1:0").await?;
+        let (mut local, status) = socks_connect(client.local_addr, target.local_addr()?).await?;
+        ensure!(status == 0, "initial H3 TCP connection was rejected");
+        let (mut peer, _) = target.accept().await?;
+
+        // Confirm both relay directions, then leave them open and silent.
+        let mut byte = [0];
+        local.write_all(b"u").await?;
+        peer.read_exact(&mut byte).await?;
+        ensure!(&byte == b"u", "initial upload changed bytes");
+        peer.write_all(b"d").await?;
+        local.read_exact(&mut byte).await?;
+        ensure!(&byte == b"d", "initial download changed bytes");
+
+        server.shutdown().await?;
+        // Keep the endpoint silent rather than leaving a closed UDP port that
+        // could notify the client through an ICMP error instead of QUIC close.
+        let guard = std::net::UdpSocket::bind(address)?;
+        ensure!(
+            timeout(Duration::from_secs(5), peer.read(&mut byte))
+                .await
+                .context("server shutdown retained the target connection")??
+                == 0,
+            "server shutdown delivered unexpected target bytes"
+        );
+        ensure!(
+            timeout(Duration::from_secs(5), local.read(&mut byte))
+                .await
+                .context("server shutdown left the H3 client waiting for idle expiry")??
+                == 0,
+            "server shutdown delivered unexpected local bytes"
+        );
+
+        drop(guard);
+        let restarted = maverick_server::start_server(server_config).await?;
+        ensure!(
+            restarted.local_addr == address,
+            "restarted H3 server did not reuse its endpoint"
+        );
+        // Keep the old local socket alive so dropping it cannot release the
+        // client's single flow slot on behalf of the server shutdown.
+        tokio::try_join!(
+            async { echo(target.accept().await?.0).await },
+            exchange(
+                client.local_addr,
+                target.local_addr()?,
+                false,
+                b"TCP after normal H3 server shutdown"
+            )
+        )?;
+        drop(local);
+        drop(peer);
+        client.shutdown().await?;
+        restarted.shutdown().await?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("H3 server API shutdown and restart test timed out")?
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configured_cli_processes_forward_tcp_and_reject_invalid_authentication_and_tls(
 ) -> Result<()> {
     timeout(Duration::from_secs(90), async {

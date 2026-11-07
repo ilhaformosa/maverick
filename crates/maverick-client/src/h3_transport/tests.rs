@@ -21,8 +21,10 @@ struct Peer {
     ca: PathBuf,
     certificate: Vec<u8>,
     accepted: mpsc::Receiver<maverick_quiche::Connected>,
+    admission: Arc<Semaphore>,
     stop: oneshot::Sender<()>,
     task: JoinHandle<Result<()>>,
+    _socket_guard: std::net::UdpSocket,
     _directory: TempDir,
 }
 
@@ -42,8 +44,12 @@ impl Peer {
         tls.check_private_key()?;
         let socket = UdpSocket::bind("127.0.0.1:0").await?;
         let address = socket.local_addr()?;
+        let socket = socket.into_std()?;
+        let socket_guard = socket.try_clone()?;
+        let socket = UdpSocket::from_std(socket)?;
         let (send, accepted) = mpsc::channel(1);
         let (stop, stopped) = oneshot::channel();
+        let admission = Arc::new(Semaphore::new(2));
         let task = tokio::spawn(maverick_quiche::serve(
             socket,
             tls,
@@ -57,7 +63,7 @@ impl Peer {
                 },
                 max_connections: 2,
                 max_connections_per_source: 2,
-                admission: Arc::new(Semaphore::new(2)),
+                admission: Arc::clone(&admission),
             },
             send,
             stopped,
@@ -67,8 +73,10 @@ impl Peer {
             ca,
             certificate: certificate.cert.der().to_vec(),
             accepted,
+            admission,
             stop,
             task,
+            _socket_guard: socket_guard,
             _directory: directory,
         })
     }
@@ -110,6 +118,126 @@ impl Peer {
         let _ = self.stop.send(());
         self.task.await?
     }
+}
+
+#[tokio::test]
+async fn listener_shutdown_notifies_established_peer() -> Result<()> {
+    timeout(Duration::from_secs(15), async {
+        let mut peer = Peer::start().await?;
+        // Retain the bound port after serve exits so a later client datagram
+        // cannot turn an ICMP port-unreachable error into a false close signal.
+        let socket_guard = peer._socket_guard.try_clone()?;
+        let config = peer.config();
+        let mut connected = connect_to(&config, peer.address).await?;
+        let remote = peer
+            .accepted
+            .recv()
+            .await
+            .context("H3 peer was not accepted")?;
+        remote
+            .channel
+            .send(
+                Frame::new(FrameType::TcpData, 0, 1, Bytes::from_static(b"ready")),
+                false,
+                MAX_FRAME,
+            )
+            .await?;
+        let ready = connected
+            .channel
+            .read(MAX_FRAME)
+            .await?
+            .context("missing response before listener shutdown")?;
+        assert_eq!(ready.payload, Bytes::from_static(b"ready"));
+        peer.shutdown().await?;
+        assert!(
+            timeout(Duration::from_secs(5), connected.channel.read(MAX_FRAME))
+                .await
+                .context("listener shutdown did not notify the established H3 peer")?
+                .is_err(),
+            "listener shutdown did not close the H3 transport"
+        );
+        // Both application channels stayed alive until the listener's close
+        // reached the client; dropping them must not cause the notification.
+        drop(remote);
+        drop(connected);
+        drop(socket_guard);
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("H3 listener shutdown notification test timed out")?
+}
+
+#[tokio::test]
+async fn listener_shutdown_cancels_pending_handshake() -> Result<()> {
+    timeout(Duration::from_secs(15), async {
+        let peer = Peer::start().await?;
+        let admission = Arc::clone(&peer.admission);
+        let spy = UdpSocket::bind("127.0.0.1:0").await?;
+        let config = peer.config();
+        let mut attempt = Box::pin(connect_to(&config, spy.local_addr()?));
+        let mut packet = [0; 1350];
+        let (len, client_address) = tokio::select! {
+            result = &mut attempt => {
+                anyhow::bail!("handshake ended before its first datagram: {}", result.is_ok());
+            }
+            received = spy.recv_from(&mut packet) => received?,
+        };
+        spy.send_to(&packet[..len], peer.address).await?;
+        loop {
+            let (len, source) = tokio::select! {
+                result = &mut attempt => {
+                    anyhow::bail!("handshake ended before the server flight: {}", result.is_ok());
+                }
+                received = spy.recv_from(&mut packet) => received?,
+            };
+            if source == peer.address {
+                assert!(len > 0);
+                break;
+            }
+            assert_eq!(source, client_address);
+        }
+        // The server has replied to Initial, but its flight never reaches the
+        // client, so the admitted handshake cannot have completed.
+        assert_eq!(admission.available_permits(), 1);
+        timeout(Duration::from_secs(2), peer.shutdown())
+            .await
+            .context("listener shutdown waited for the 5-second handshake timeout")??;
+        assert_eq!(admission.available_permits(), 2);
+        drop(attempt);
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("H3 pending-handshake shutdown test timed out")?
+}
+
+#[tokio::test]
+async fn listener_shutdown_cancels_unconsumed_accepts() -> Result<()> {
+    timeout(Duration::from_secs(15), async {
+        let peer = Peer::start().await?;
+        let admission = Arc::clone(&peer.admission);
+        let config = peer.config();
+        let first = connect_to(&config, peer.address).await?;
+        while peer.accepted.len() != 1 {
+            tokio::task::yield_now().await;
+        }
+        let second = connect_to(&config, peer.address).await?;
+        assert_eq!(peer.accepted.len(), 1);
+        assert_eq!(admission.available_permits(), 0);
+        // Keep the full accepted queue alive while stopping. This covers
+        // unconsumed accepts without relying on the second task's exact stage.
+        let _ = peer.stop.send(());
+        timeout(Duration::from_secs(2), peer.task)
+            .await
+            .context("listener shutdown was held by unconsumed accepts")???;
+        // The queued Connected owns its admission permit outside the driver.
+        drop(peer.accepted);
+        assert_eq!(admission.available_permits(), 2);
+        drop(first);
+        drop(second);
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("H3 unconsumed-accepts shutdown test timed out")?
 }
 
 #[tokio::test]

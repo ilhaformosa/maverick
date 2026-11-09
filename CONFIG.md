@@ -240,10 +240,12 @@ built with `--features experimental-h3`; the ordinary `client -c client.yaml`
 and `server -c server.yaml` commands then use the existing endpoint, certificate,
 credential, and timeout fields. The server uses its configured `listen` address
 for UDP instead of the H2 TCP listener. A client opens one H3 connection per TCP
-flow; there is no automatic H3 selection, carrier fallback, or connection pool.
+flow or fixed-target native UDP association; no H3 connection pool is used.
+The explicit `quiche_h3` selector never falls back.
 
 For a server name with multiple resolved addresses, H3 tries them in resolver
-order after an unsuccessful QUIC/TLS connection attempt. Resolution and all
+order after a network failure before any peer response. TLS/protocol errors
+stop address iteration. Resolution and all
 attempts share the existing `advanced.connect_timeout_ms` budget. A silent
 first address can still consume that budget; there is no parallel address race.
 Every attempt uses the configured TLS server name and trust roots. Any configured
@@ -260,10 +262,9 @@ build rejects the option before writing either file. `maverick version` includes
 capability, not the carrier selected by a configuration. Old binaries reject an
 explicitly configured new field instead of silently using another carrier.
 
-H3 supports SOCKS TCP and HTTP CONNECT. Fronting/WebSocket combinations, the
-local DNS listener, TUN, and `rustls_default` are rejected. SOCKS UDP ASSOCIATE
-is rejected locally with reply `0x07` (Command not supported), without opening
-a server connection or UDP association. Export to the existing Profile
+H3 supports SOCKS TCP, HTTP CONNECT and native SOCKS UDP. Fronting/WebSocket
+combinations, the local DNS listener, TUN, and `rustls_default` are rejected.
+Export to the existing Profile
 URI format is rejected for H3 configurations because that format cannot retain
 this transport choice. Certificate CA/hostname/pin checks and exporter-bound
 authentication remain required when configured.
@@ -290,7 +291,61 @@ best effort; forced process exit or lost datagrams still relies on peer failure
 or idle detection.
 
 H3 is Beta and default-off. Local validation does not authorize a field trial
-or claim browser equivalence, native Datagram support, or better performance.
+or claim browser equivalence or better performance.
+
+### Native UDP and automatic new connections
+
+Native UDP uses QUIC DATAGRAM with HTTP request association. Each destination
+has an authenticated fixed-target session with independent send/receive. It
+supports multiple replies per request and empty datagrams. The maximum payload
+is 1200 bytes, further limited by the negotiated peer/path capacity. Oversized
+packets and full queues drop; there is no fragmentation or retransmission.
+SOCKS has at most 64 target sessions per control connection, additionally limited
+by `max_concurrent_flows` (the control permit covers its first target). Server
+user limits and egress checks apply to every target. `udp_idle_timeout_ms`
+expires an inactive target; control closure cancels every child. Legacy H2 UDP
+keeps its reliable request/response compatibility semantics.
+
+For a dual listener and automatic TCP selection, build with `experimental-h3`
+and generate a pair using `gen-config --auto-h3`, or explicitly set:
+
+```yaml
+# client advanced settings
+advanced:
+  auto_h3: true
+```
+
+```yaml
+# server advanced settings
+advanced:
+  dual_h2_h3: true
+```
+
+Both flags default to false and conflict with `quiche_h3: true`. Dual mode binds
+TCP/H2 and UDP/H3 on the same `listen` port, including the same OS-assigned port
+when zero is requested. Authentication, replay, connection/user limits and
+metrics are shared; startup bind failure releases both endpoints, and shutdown
+stops both. Dual mode and auto mode reject fronting, WebSocket and `end_to_end`.
+Use protected H2 configurations separately for TLS-terminating intermediaries.
+
+For each new TCP flow, the client prefers H3 within at most one second or half
+`connect_timeout_ms`, whichever is smaller (minimum 1 ms). Only an explicit
+network failure/timeout **before any peer response** permits H2. Partial TLS
+handshake timeouts, certificate/hostname/pin errors, protocol rejection and
+Maverick authentication failures do not. The overall automatic open has the
+existing `connect_timeout_ms` deadline. A 30-second negative reachability cache
+skips repeated UDP probes; the next new flow after expiry probes again. Native
+UDP always requires H3, even when TCP is currently choosing H2. This does not
+convert application TCP into UDP or move an established session. `mode: auto`
+alone does not enable carrier selection.
+
+Rust callers can use `maverick_client::h3::NativeUdpAssociation` for fixed-target
+`send`/`recv`, `max_payload` and `close`; `send` returning true means queued,
+not delivered. The one-packet `udp::relay_udp_packet` helper also chooses native
+UDP when H3/auto is configured. The older `UdpAssociation` API remains H2-only.
+Public `FrameChannel`/`TransportChannel` now include datagram channels; callers
+should construct them through `h3_channel::channel()`. Existing TCP wire framing
+is unchanged. See [the wire contract](docs/NATIVE_UDP_AND_SELECTION.md).
 
 The owner-pilot fronting path is browser-like TLS/H2 to a Cloudflare edge, with
 H2 forwarded to the origin. It is off by default, rejected in `stable` mode,
@@ -325,6 +380,19 @@ client drains and validates that trailer while remaining compatible with
 Alpha.3 servers that ended terminal DATA without trailers.
 
 ## Origin-pinned end-to-end H2
+
+Generate a new protected intermediary pair with:
+
+```sh
+maverick gen-config --relay --origin-name origin.example.invalid --origin-cert origin.pem
+```
+
+Supply an owner-verified public origin leaf certificate to derive its mandatory
+pin; add `--origin-ca ca.pem` for private roots. Generation fails without the
+origin identity and never fetches trust through the intermediary. Install the
+matching origin certificate/key in the server's existing TLS fields, then set
+the outer endpoint normally. Bare generation still means direct H2. The relay
+option cannot be combined with H3/automatic generation.
 
 An H2 intermediary can terminate outer TLS while forwarding a separate inner
 TLS 1.3 connection to the Maverick origin. Set this on the client:
@@ -393,8 +461,8 @@ upstream.
 
 ## UDP
 
-UDP relay is implemented through SOCKS5 UDP ASSOCIATE using authenticated
-`OpenUdp` / `UdpPacket` flows. One UDP ASSOCIATE control connection owns one
+With H2, UDP relay uses SOCKS5 UDP ASSOCIATE and authenticated
+`OpenUdp` / `UdpPacket` request/response flows. One UDP ASSOCIATE control connection owns one
 lazy Maverick UDP association and reuses it for later datagrams. The timeout is
 bounded by:
 
@@ -403,6 +471,8 @@ advanced:
   udp_idle_timeout_ms: 30000
 ```
 
+With H3 or automatic selection enabled, SOCKS uses the independent native
+datagram path described [above](#native-udp-and-automatic-new-connections).
 UDP remains experimental and does not claim high performance for games,
 realtime voice, or loss-sensitive workloads.
 

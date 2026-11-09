@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const SERVER_READY: &str = "Maverick H3 server listening";
+const DUAL_SERVER_READY: &str = "Maverick H2/H3 server listening";
 const H2_SERVER_READY: &str = "Maverick server listening";
 const SOCKS_READY: &str = "Maverick SOCKS5 client listening";
 const HTTP_READY: &str = "Maverick HTTP CONNECT client listening";
@@ -86,6 +87,7 @@ impl Cli {
                 for marker in [
                     SERVER_READY,
                     H2_SERVER_READY,
+                    DUAL_SERVER_READY,
                     SOCKS_READY,
                     HTTP_READY,
                     METRICS_READY,
@@ -422,82 +424,10 @@ async fn rejected_before_target(socks: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn configured_h3_rejects_udp_associate_without_contacting_server() -> Result<()> {
-    timeout(Duration::from_secs(30), async {
-        let fixture = Fixture::for_transport(true, 1)?;
-        let spy = std::net::UdpSocket::bind("127.0.0.1:0")?;
-        spy.set_nonblocking(true)?;
-        let server_address = spy.local_addr()?;
-        fixture.client_config("client.yaml", server_address, true, Fault::None)?;
-        let client_path = fixture.directory.path().join("client.yaml");
-        let client_config = std::fs::read_to_string(&client_path)?.replacen(
-            "advanced:\n",
-            "advanced:\n  max_concurrent_flows: 1\n",
-            1,
-        );
-        std::fs::write(client_path, client_config)?;
-        let mut client = Cli::start(fixture.directory.path(), "client", "client.yaml")?;
-        let socks = client.ready(SOCKS_READY).await?;
-        client.ready(HTTP_READY).await?;
-
-        let mut stream = TcpStream::connect(socks).await?;
-        stream.write_all(&[5, 1, 0]).await?;
-        let mut greeting = [0; 2];
-        stream.read_exact(&mut greeting).await?;
-        ensure!(greeting == [5, 0], "SOCKS greeting failed");
-        stream.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
-        let mut reply = [0; 10];
-        stream.read_exact(&mut reply).await?;
-        ensure!(
-            reply == [5, 7, 0, 1, 0, 0, 0, 0, 0, 0],
-            "H3 UDP ASSOCIATE did not report command not supported: status {}",
-            reply[1]
-        );
-        let mut byte = [0];
-        ensure!(
-            stream.read(&mut byte).await? == 0,
-            "rejected SOCKS connection remained open"
-        );
-        ensure!(
-            matches!(
-                spy.recv_from(&mut byte),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-            ),
-            "H3 UDP rejection contacted the configured server"
-        );
-        drop(spy);
-
-        // Start the real server at the OS-assigned endpoint, then reuse the
-        // same client with its single local flow slot for ordinary TCP.
-        fixture.server_config(true)?;
-        let server_path = fixture.directory.path().join("server.yaml");
-        let server_config = std::fs::read_to_string(&server_path)?.replacen(
-            "listen: '127.0.0.1:0'",
-            &format!("listen: '{server_address}'"),
-            1,
-        );
-        std::fs::write(server_path, server_config)?;
-        let mut server = Cli::start(fixture.directory.path(), "server", "server.yaml")?;
-        ensure!(
-            server.ready(SERVER_READY).await? == server_address,
-            "H3 server did not bind the configured endpoint"
-        );
-        let target = TcpListener::bind("127.0.0.1:0").await?;
-        tokio::try_join!(
-            async { echo(target.accept().await?.0).await },
-            exchange(
-                socks,
-                target.local_addr()?,
-                false,
-                b"TCP after unsupported UDP request"
-            )
-        )?;
-        Ok::<_, anyhow::Error>(())
-    })
-    .await
-    .context("H3 UDP rejection and TCP recovery test timed out")?
-}
+#[path = "support/native_udp.rs"]
+mod native_udp;
+#[path = "support/selection.rs"]
+mod selection;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_handle_shutdown_releases_h3_flow_and_allows_restart() -> Result<()> {

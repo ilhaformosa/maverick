@@ -76,6 +76,7 @@ fn generated_pair(directory: &Path, h3: bool) -> Result<()> {
         server.advanced.quiche_h3 == h3,
         "generated server selected the wrong carrier"
     );
+    ensure!(!client.advanced.auto_h3 && !server.advanced.dual_h2_h3);
     ensure!(
         client.server.credential_id == server.users[0].id,
         "generated credential IDs differ"
@@ -104,6 +105,94 @@ async fn generated_default_pair_remains_h2() -> Result<()> {
         "default configuration generation failed"
     );
     generated_pair(directory.path(), false)
+}
+
+#[tokio::test]
+async fn relay_generation_requires_owner_supplied_origin_trust() -> Result<()> {
+    let directory = TempDir::new()?;
+    for args in [
+        vec!["gen-config", "--relay"],
+        vec!["gen-config", "--relay", "--origin-name", "localhost"],
+    ] {
+        ensure!(!cli(directory.path(), &args, None).await?.status.success());
+        ensure!(!directory.path().join("client.generated.yaml").exists());
+        ensure!(!directory.path().join("server.generated.yaml").exists());
+    }
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+    private_file(&directory.path().join("origin.pem"), &cert.cert.pem())?;
+    let result = cli(
+        directory.path(),
+        &[
+            "gen-config",
+            "--relay",
+            "--origin-name",
+            "localhost",
+            "--origin-cert",
+            "origin.pem",
+            "--origin-ca",
+            "origin.pem",
+        ],
+        None,
+    )
+    .await?;
+    ensure!(result.status.success(), "protected relay generation failed");
+    generated_pair(directory.path(), false)?;
+    let client = ClientConfig::from_yaml_str(&fs::read_to_string(
+        directory.path().join("client.generated.yaml"),
+    )?)?;
+    let server = ServerConfig::from_yaml_str(&fs::read_to_string(
+        directory.path().join("server.generated.yaml"),
+    )?)?;
+    let inner = client
+        .advanced
+        .end_to_end
+        .context("relay generator omitted origin protection")?;
+    ensure!(
+        inner.server_name == "localhost"
+            && inner.ca_cert.as_deref() == Some(Path::new("origin.pem"))
+    );
+    let pin = cli(
+        directory.path(),
+        &["pin-cert", "--cert", "origin.pem"],
+        None,
+    )
+    .await?;
+    ensure!(pin.status.success() && inner.cert_pin == String::from_utf8(pin.stdout)?.trim());
+    ensure!(server.advanced.end_to_end);
+    Ok(())
+}
+
+#[tokio::test]
+async fn auto_generation_is_explicit_and_requires_h3_build() -> Result<()> {
+    let directory = TempDir::new()?;
+    let output = cli(directory.path(), &["gen-config", "--auto-h3"], None).await?;
+    if !cfg!(feature = "experimental-h3") {
+        ensure!(!output.status.success());
+        ensure!(!directory.path().join("client.generated.yaml").exists());
+        ensure!(!directory.path().join("server.generated.yaml").exists());
+        return Ok(());
+    }
+    ensure!(output.status.success());
+    let client = ClientConfig::from_yaml_str(&fs::read_to_string(
+        directory.path().join("client.generated.yaml"),
+    )?)?;
+    let server = ServerConfig::from_yaml_str(&fs::read_to_string(
+        directory.path().join("server.generated.yaml"),
+    )?)?;
+    ensure!(client.advanced.auto_h3 && server.advanced.dual_h2_h3);
+    ensure!(!client.advanced.quiche_h3 && !server.advanced.quiche_h3);
+    let export = cli(
+        directory.path(),
+        &["config-uri", "export", "--client", "client.generated.yaml"],
+        None,
+    )
+    .await?;
+    ensure!(
+        !export.status.success()
+            && String::from_utf8_lossy(&export.stderr).contains("advanced.auto_h3"),
+        "URI lost automatic carrier policy"
+    );
+    Ok(())
 }
 
 #[tokio::test]

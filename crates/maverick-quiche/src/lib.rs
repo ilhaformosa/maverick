@@ -1,4 +1,4 @@
-//! Explicit, single-request HTTP/3 transport for Maverick TCP sessions.
+//! Explicit, single-request HTTP/3 transport for Maverick sessions.
 //! Authentication and target policy remain in the client/server session layers.
 
 #![forbid(unsafe_code)]
@@ -24,6 +24,35 @@ const MAX_UDP: usize = 1_350;
 const CONNECTION_ID_LEN: usize = 16;
 const PACKET_QUEUE: usize = 64;
 const SERVER_RECEIVE_BUFFER: usize = 2 * 1024 * 1024;
+
+/// No peer response was received before a network failure/deadline. Only this
+/// typed failure is eligible for optional H2 selection; TLS errors never are.
+#[derive(Debug)]
+pub struct NetworkUnavailable;
+
+impl std::fmt::Display for NetworkUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("H3 network unavailable before peer response")
+    }
+}
+
+impl std::error::Error for NetworkUnavailable {}
+
+fn network_error(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::NetworkUnreachable
+                | std::io::ErrorKind::HostUnreachable
+                | std::io::ErrorKind::TimedOut
+        )
+    }) {
+        error.context(NetworkUnavailable)
+    } else {
+        error
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Limits {
@@ -102,7 +131,10 @@ pub async fn connect(
         (false, false) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
     };
     let socket = UdpSocket::bind(SocketAddr::new(bind_ip, 0)).await?;
-    socket.connect(peer).await?;
+    socket
+        .connect(peer)
+        .await
+        .map_err(|e| network_error(e.into()))?;
     let mut io = PacketIo::direct(socket, peer)?;
     let mut config = transport_config(tls, limits)?;
     let id = random_id()?;
@@ -164,7 +196,7 @@ struct Route {
     primary: bool,
 }
 
-/// Serve one UDP listener. Each connection owns one request/TCP flow and one
+/// Serve one UDP listener. Each connection owns one request/session and one
 /// bounded packet queue. Normal stop notifies and joins its drivers; dropping
 /// this task aborts them.
 pub async fn serve(
@@ -300,6 +332,7 @@ fn transport_config(tls: SslContextBuilder, limits: Limits) -> Result<quiche::Co
     config.set_max_idle_timeout(limits.idle_timeout.as_millis().min(u128::from(u64::MAX)) as u64);
     config.set_max_recv_udp_payload_size(MAX_UDP);
     config.set_max_send_udp_payload_size(MAX_UDP);
+    config.enable_dgram(true, h3_channel::DATAGRAM_QUEUE, h3_channel::DATAGRAM_QUEUE);
     // One default Maverick frame of stream credit avoids the measured 8 KiB
     // flow-control bottleneck. Keep total receive credit bounded at 128 KiB.
     config.set_initial_max_data(131_072);
@@ -439,7 +472,8 @@ async fn handshake(
     io: &mut PacketIo,
     deadline: Duration,
 ) -> Result<()> {
-    tokio::time::timeout(deadline, async {
+    let mut peer_responded = false;
+    let result = tokio::time::timeout(deadline, async {
         loop {
             io.flush(conn).await?;
             ensure!(
@@ -451,13 +485,22 @@ async fn handshake(
             }
             let wait = conn.timeout().unwrap_or(Duration::from_secs(1));
             tokio::select! {
-                received = io.recv() => io.receive(conn, &mut received?)?,
+                received = io.recv() => {
+                    let mut packet = received?;
+                    peer_responded = true;
+                    io.receive(conn, &mut packet)?;
+                },
                 _ = tokio::time::sleep(wait) => conn.on_timeout(),
             }
         }
     })
-    .await
-    .context("QUIC handshake timed out")?
+    .await;
+    match result {
+        Ok(Err(error)) if !peer_responded => Err(network_error(error)),
+        Err(_) if !peer_responded => Err(NetworkUnavailable.into()),
+        Ok(result) => result,
+        Err(error) => Err(error).context("QUIC handshake timed out after peer response"),
+    }
 }
 
 struct Driver {
@@ -485,6 +528,7 @@ impl Driver {
         let mut headers = false;
         let mut response_pending = false;
         let mut can_send = !self.server;
+        let mut datagrams_open = true;
         let inbound = self.app.inbound.clone();
         loop {
             loop {
@@ -552,6 +596,46 @@ impl Driver {
                         can_send = true;
                     }
                     Err(h3::Error::StreamBlocked | h3::Error::Done) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            if self.h3.dgram_enabled_by_peer(&self.conn) {
+                let capacity = self
+                    .conn
+                    .dgram_max_writable_len()
+                    .map(|n| n.saturating_sub(1).min(h3_channel::MAX_NATIVE_UDP_PAYLOAD));
+                self.app.datagrams.available.send_if_modified(|current| {
+                    if *current == capacity {
+                        false
+                    } else {
+                        *current = capacity;
+                        true
+                    }
+                });
+            }
+            // Unreliable traffic cannot block reliable control or grow a queue.
+            // The session enables delivery only after authentication/target approval.
+            let mut datagram_buffer = [0; MAX_UDP];
+            for _ in 0..h3_channel::DATAGRAM_QUEUE {
+                match self.conn.dgram_recv(&mut datagram_buffer) {
+                    Ok(size) => {
+                        let packet = &datagram_buffer[..size];
+                        if self
+                            .app
+                            .datagrams
+                            .enabled
+                            .load(std::sync::atomic::Ordering::Acquire)
+                        {
+                            if let Some(payload) = http_datagram_payload(packet) {
+                                let _ = self
+                                    .app
+                                    .datagrams
+                                    .inbound
+                                    .try_send(Bytes::copy_from_slice(payload));
+                            }
+                        }
+                    }
+                    Err(quiche::Error::Done) => break,
                     Err(error) => return Err(error.into()),
                 }
             }
@@ -654,6 +738,23 @@ impl Driver {
                         }
                     }
                 }
+                packet = self.app.datagrams.outbound.recv(), if datagrams_open && can_send => {
+                    match packet {
+                        Some(packet) if packet.len() <= h3_channel::MAX_NATIVE_UDP_PAYLOAD
+                            && self.app.datagrams.enabled.load(std::sync::atomic::Ordering::Acquire)
+                            && self.h3.dgram_enabled_by_peer(&self.conn) => {
+                            let mut wire = Vec::with_capacity(packet.len() + 1);
+                            wire.push(0); // RFC 9297 Quarter Stream ID for request 0.
+                            wire.extend_from_slice(&packet);
+                            match self.conn.dgram_send(&wire) {
+                                Ok(()) | Err(quiche::Error::Done | quiche::Error::BufferTooShort) => {}
+                                Err(error) => return Err(error.into()),
+                            }
+                        }
+                        Some(_) => {}
+                        None => datagrams_open = false,
+                    }
+                }
                 permit = inbound.reserve(), if pending_in.is_some() => {
                     match permit {
                         Ok(permit) => {
@@ -666,5 +767,64 @@ impl Driver {
                 }
             }
         }
+    }
+}
+
+fn http_datagram_payload(packet: &[u8]) -> Option<&[u8]> {
+    let first = *packet.first()?;
+    let length = 1usize << (first >> 6);
+    if first & 0x3f != 0 || packet.len() < length || packet[1..length].iter().any(|b| *b != 0) {
+        return None;
+    }
+    let payload = &packet[length..];
+    (payload.len() <= h3_channel::MAX_NATIVE_UDP_PAYLOAD).then_some(payload)
+}
+
+#[cfg(test)]
+mod datagram_tests {
+    use super::*;
+
+    #[test]
+    fn only_request_zero_datagrams_fit_the_native_envelope() {
+        assert_eq!(http_datagram_payload(&[0]), Some(&[][..]));
+        for prefix in [
+            vec![0],
+            vec![0x40, 0],
+            vec![0x80, 0, 0, 0],
+            vec![0xc0, 0, 0, 0, 0, 0, 0, 0],
+        ] {
+            let mut wire = prefix;
+            wire.extend_from_slice(&[5; h3_channel::MAX_NATIVE_UDP_PAYLOAD]);
+            assert_eq!(
+                http_datagram_payload(&wire).unwrap().len(),
+                h3_channel::MAX_NATIVE_UDP_PAYLOAD
+            );
+            wire.push(5);
+            assert!(http_datagram_payload(&wire).is_none());
+        }
+        for invalid in [
+            &[][..],
+            &[1, 9],
+            &[0x40],
+            &[0x40, 1],
+            &[0x80, 0, 0],
+            &[0xc0, 0, 0, 0, 0, 0, 0, 1],
+        ] {
+            assert!(http_datagram_payload(invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn protocol_errors_are_not_network_unavailability() {
+        for error in [quiche::Error::TlsFail, quiche::Error::InvalidTransportParam] {
+            assert!(network_error(error.into())
+                .downcast_ref::<NetworkUnavailable>()
+                .is_none());
+        }
+        assert!(
+            network_error(std::io::Error::from(std::io::ErrorKind::ConnectionRefused).into())
+                .downcast_ref::<NetworkUnavailable>()
+                .is_some()
+        );
     }
 }

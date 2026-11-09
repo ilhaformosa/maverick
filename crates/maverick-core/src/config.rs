@@ -305,11 +305,14 @@ impl ClientConfig {
             return Err(Error::Config("only config version 1 is supported".into()));
         }
         reject_retired_v1_h3(self.advanced.experimental_h3)?;
+        if self.advanced.quiche_h3 && self.advanced.auto_h3 {
+            return Err(Error::Config("choose either quiche_h3 or auto_h3".into()));
+        }
         validate_quiche_h3(
-            self.advanced.quiche_h3,
+            self.advanced.quiche_h3 || self.advanced.auto_h3,
             self.advanced.tls_terminating_fronting_enabled(),
         )?;
-        if self.advanced.quiche_h3 {
+        if self.advanced.quiche_h3 || self.advanced.auto_h3 {
             if self.advanced.stealth.tls_fingerprint != TlsFingerprintMode::BrowserMimic {
                 return Err(Error::Config(
                     "advanced.quiche_h3 requires the browser_mimic TLS profile".into(),
@@ -375,7 +378,7 @@ impl ClientConfig {
         )?;
         if let Some(inner) = &self.advanced.end_to_end {
             validate_end_to_end(
-                self.advanced.quiche_h3,
+                self.advanced.quiche_h3 || self.advanced.auto_h3,
                 self.advanced.cloudflare_ws_enabled(),
                 self.auth.channel_binding.enabled,
             )?;
@@ -767,8 +770,13 @@ impl ServerConfig {
             return Err(Error::Config("only config version 1 is supported".into()));
         }
         reject_retired_v1_h3(self.advanced.experimental_h3)?;
+        if self.advanced.quiche_h3 && self.advanced.dual_h2_h3 {
+            return Err(Error::Config(
+                "choose either quiche_h3 or dual_h2_h3".into(),
+            ));
+        }
         validate_quiche_h3(
-            self.advanced.quiche_h3,
+            self.advanced.quiche_h3 || self.advanced.dual_h2_h3,
             self.advanced.tls_terminating_fronting_enabled(),
         )?;
         self.log.validate()?;
@@ -892,7 +900,7 @@ impl ServerConfig {
         )?;
         if self.advanced.end_to_end {
             validate_end_to_end(
-                self.advanced.quiche_h3,
+                self.advanced.quiche_h3 || self.advanced.dual_h2_h3,
                 self.advanced.cloudflare_ws_enabled(),
                 self.auth.channel_binding.enabled,
             )?;
@@ -1309,6 +1317,8 @@ pub struct ClientAdvancedConfig {
     pub experimental_h3: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub quiche_h3: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_h3: bool,
     #[serde(default)]
     pub experimental_cloudflare_ws: bool,
     #[serde(default)]
@@ -1335,6 +1345,7 @@ impl Default for ClientAdvancedConfig {
             allow_non_loopback_listeners: false,
             experimental_h3: false,
             quiche_h3: false,
+            auto_h3: false,
             experimental_cloudflare_ws: false,
             experimental_ech: false,
             experimental_tun: false,
@@ -1453,6 +1464,8 @@ pub struct ServerAdvancedConfig {
     pub experimental_h3: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub quiche_h3: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dual_h2_h3: bool,
     #[serde(default)]
     pub experimental_cloudflare_ws: bool,
     #[serde(default)]
@@ -1486,6 +1499,7 @@ impl Default for ServerAdvancedConfig {
             egress: ServerEgressPolicyConfig::default(),
             experimental_h3: false,
             quiche_h3: false,
+            dual_h2_h3: false,
             experimental_cloudflare_ws: false,
             experimental_ech: false,
             crypto: CryptoPolicyConfig::default(),
@@ -2317,6 +2331,44 @@ advanced:
 "#,
             secret.expose_secret()
         )
+    }
+
+    #[test]
+    fn automatic_h3_and_dual_listener_are_explicit_and_validate_trust_routes() {
+        let mut client =
+            client_config_with_server(client_server_config("u_test", SecretString::generate()));
+        let mut server = server_config_with_user("u_test", "/assets/upload");
+        assert!(!client.advanced.auto_h3 && !server.advanced.dual_h2_h3);
+        client.advanced.auto_h3 = true;
+        server.advanced.dual_h2_h3 = true;
+        if cfg!(feature = "experimental-h3") {
+            client.advanced.stealth.tls_fingerprint = TlsFingerprintMode::BrowserMimic;
+            assert_eq!(client.validate().is_ok(), browser_tls_profile_supported());
+            server.validate().unwrap();
+            client.advanced.quiche_h3 = true;
+            server.advanced.quiche_h3 = true;
+            assert!(client.validate().is_err());
+            assert!(server.validate().is_err());
+            client.advanced.quiche_h3 = false;
+            server.advanced.quiche_h3 = false;
+            client.advanced.stealth.cdn_fronting.enabled = true;
+            server.advanced.stealth.cdn_fronting.enabled = true;
+            assert!(client.validate().is_err());
+            assert!(server.validate().is_err());
+            client.advanced.stealth.cdn_fronting.enabled = false;
+            server.advanced.stealth.cdn_fronting.enabled = false;
+            client.advanced.end_to_end = Some(EndToEndClientConfig {
+                server_name: "localhost".into(),
+                ca_cert: None,
+                cert_pin: format!("sha256/{}", "A".repeat(43)),
+            });
+            server.advanced.end_to_end = true;
+            assert!(client.validate().is_err());
+            assert!(server.validate().is_err());
+        } else {
+            assert!(client.validate().is_err());
+            assert!(server.validate().is_err());
+        }
     }
 
     #[test]

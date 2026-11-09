@@ -751,18 +751,19 @@ pub async fn relay_udp_packet(
     ))
 }
 
-async fn bind_udp_for_target(target: SocketAddr) -> Result<UdpSocket> {
-    let bind_addr = if target.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
+pub(crate) async fn bind_udp_for_target(target: SocketAddr) -> Result<UdpSocket> {
+    let bind_addr = match (target.is_ipv4(), target.ip().is_loopback()) {
+        (true, true) => "127.0.0.1:0",
+        (false, true) => "[::1]:0",
+        (true, false) => "0.0.0.0:0",
+        (false, false) => "[::]:0",
     };
     UdpSocket::bind(bind_addr)
         .await
         .with_context(|| format!("bind UDP relay socket for {target}"))
 }
 
-async fn first_allowed_addr(
+pub(crate) async fn first_allowed_addr(
     authority: &str,
     timeout_ms: u64,
     egress: &ServerEgressPolicyConfig,

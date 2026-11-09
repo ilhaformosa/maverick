@@ -2,10 +2,19 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_generated_h3_configs_relay_and_cleanup() -> Result<()> {
+    generated_pair_relays(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_generated_auto_configs_relay_and_cleanup() -> Result<()> {
+    generated_pair_relays(true).await
+}
+
+async fn generated_pair_relays(auto: bool) -> Result<()> {
     timeout(Duration::from_secs(90), async {
         let fixture = Fixture::new()?;
         let output = Command::new(env!("CARGO_BIN_EXE_maverick"))
-            .args(["gen-config", "--quiche-h3"])
+            .args(["gen-config", if auto { "--auto-h3" } else { "--quiche-h3" }])
             .current_dir(fixture.directory.path())
             .output()
             .context("run public H3 config generator")?;
@@ -30,7 +39,7 @@ async fn public_generated_h3_configs_relay_and_cleanup() -> Result<()> {
             );
         let parsed_server = maverick_core::ServerConfig::from_yaml_str(&server_config)?;
         ensure!(
-            parsed_server.advanced.quiche_h3,
+            parsed_server.advanced.quiche_h3 != auto && parsed_server.advanced.dual_h2_h3 == auto,
             "generator did not enable server H3"
         );
         let loopback: SocketAddr = "127.0.0.1:0".parse()?;
@@ -44,7 +53,13 @@ async fn public_generated_h3_configs_relay_and_cleanup() -> Result<()> {
         );
         std::fs::write(&server_path, server_config)?;
         let mut server = Cli::start(fixture.directory.path(), "server", "server.generated.yaml")?;
-        let address = server.ready(SERVER_READY).await?;
+        let address = server
+            .ready(if auto {
+                DUAL_SERVER_READY
+            } else {
+                SERVER_READY
+            })
+            .await?;
         let metrics = server.ready(METRICS_READY).await?;
 
         let client_path = fixture.directory.path().join("client.generated.yaml");
@@ -65,7 +80,7 @@ async fn public_generated_h3_configs_relay_and_cleanup() -> Result<()> {
             .replacen("ca_cert: null", "ca_cert: \"ca.pem\"", 1);
         let parsed_client = maverick_core::ClientConfig::from_yaml_str(&client_config)?;
         ensure!(
-            parsed_client.advanced.quiche_h3,
+            parsed_client.advanced.quiche_h3 != auto && parsed_client.advanced.auto_h3 == auto,
             "generator did not enable client H3"
         );
         ensure!(

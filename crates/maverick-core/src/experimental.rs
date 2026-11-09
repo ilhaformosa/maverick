@@ -81,7 +81,7 @@ pub struct ExperimentalTrackDescriptor {
 pub const EXPERIMENTAL_TRACK_REGISTRY: &[ExperimentalTrackDescriptor] = &[
     ExperimentalTrackDescriptor {
         track: ExperimentalTrackId::H3QuicCarrier,
-        title: "Explicit quiche H3/TCP carrier",
+        title: "Opt-in quiche H3 TCP/native UDP carrier",
         status: ExperimentalTrackStatus::RuntimeExperimental,
         build_gate: Some("experimental-h3"),
         runtime_gate: Some("advanced.quiche_h3"),

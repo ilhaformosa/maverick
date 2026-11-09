@@ -14,8 +14,9 @@ historical evidence; a result applies to its tested revision and workload.
 | Published release | Immutable `v1.2.0-rc.2`, prerelease/non-Latest, Direct H2 |
 | Default source build and configuration | Browser-like TLS 1.3 + HTTP/2; H3 disabled |
 | Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3; local terminating-relay validation; not published |
-| Explicit H3 | Ordinary client/server commands support direct TCP through SOCKS5 and HTTP CONNECT when the build feature and both configurations enable it |
-| Configuration/authentication | Runnable config v1; existing authentication v1/v2 and frame formats retained; config v2 is policy-only |
+| Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |
+| Dual/automatic transport | Opt-in H2/H3 server on one port; new TCP flows prefer H3 and may select H2 only after pre-response network failure; active flows never migrate |
+| Configuration/authentication | Runnable config v1; existing authentication v1/v2; native H3 UDP adds an explicit control-frame extension; config v2 is policy-only |
 | SDK | Client/server wrappers and profile tooling; local startup is distinguished from unverified remote connectivity; no dedicated H3 feature entry |
 | Field validation | Deferred by the owner; no new real-network trial authorized |
 | Stable | Not published; exact-RC field use and owner rollback remain incomplete |
@@ -75,11 +76,39 @@ and using it, while preserving default H2 behavior:
 
 The old-code custom-CA loss and partial-pair cases were reproduced before their
 fixes. Local validation passed the complete shared product/rustls/H3/candidate
-checks and dependency inventory. Six public-command handoff cases run in each
+checks and dependency inventory. Public-command handoff cases run in each
 build variant; an additional ordinary-process H3 case uses the generated pair
 for SOCKS/HTTP payloads, half-close and cleanup. PR/main quality gates remain
 required. This does not add a configuration version, change transport defaults
 or update the immutable public RC.2 artifacts.
+
+## Native UDP and New-Connection Selection
+
+`gen-config --relay --origin-name NAME --origin-cert CERT` now requires
+owner-supplied origin identity and generates protected H2 on both sides. An
+optional `--origin-ca` supplies private roots. Bare generation remains direct H2.
+`gen-config --auto-h3` generates an opt-in automatic client and dual server.
+Neither H3 nor automatic selection is enabled by omission.
+
+The dual server binds TCP and UDP on the same port before announcing readiness,
+with shared replay, authentication, connection and user-flow budgets. A failed
+second bind releases the first. Normal shutdown stops both carriers.
+
+For new TCP flows, automatic selection gives H3 at most one second (or half the
+configured connection budget). Only a typed network failure before a peer
+response permits H2; a 30-second negative cache avoids repeated blocked-UDP
+probes. The next connection after expiry tries H3 again. Every TLS, pin,
+authentication or protocol failure is terminal. Existing flows stay on their
+original carrier; native UDP never falls back to reliable H2 UDP.
+
+Local product regressions cover independent UDP replies, multiple targets,
+empty/maximum/oversized payloads, packet loss/reordering, egress/auth rejection,
+single-slot admission, idle/control cancellation and TCP reuse. Selection tests
+exercise shared dual limits, atomic bind/restart, H3 preference, cached H2
+selection with an existing H3 flow still active, H3 recovery after cache expiry,
+and no H2 contact after identity,
+authentication or protocol failures. Existing shared checks remain required.
+See [the wire and selection contract](docs/NATIVE_UDP_AND_SELECTION.md).
 
 ## Default H2 Startup and Duplex Relay
 
@@ -165,16 +194,17 @@ not prove reuse. Warm-cache size, restore, rebuild and whole-workflow results
 are recorded with [PR #92](https://github.com/ilhaformosa/maverick/pull/92).
 All existing checks remain, and no fixed speedup is promised.
 
-## Explicit H3 TCP
+## Explicit H3 TCP and Native UDP
 
 Build with `--features experimental-h3` and set `advanced.quiche_h3: true` on
 both endpoints. Omission keeps H2; the retired `advanced.experimental_h3` flag
 still rejects. Existing endpoint, certificate, credential and timeout fields
-are reused. One QUIC connection and one H3 request carry one TCP flow; there is
-no connection pool, automatic H3 selection or carrier fallback.
+are reused. One QUIC connection and one H3 request carry one TCP flow or one
+fixed-target native UDP association; there is no H3 connection pool.
+`auto_h3` (client) and `dual_h2_h3` (server) are separate default-off options.
 
-The H3 dialer tries resolved server addresses in order after a QUIC/TLS
-connection error, instead of discarding every address after the first.
+The H3 dialer tries resolved server addresses in order after a network
+failure before any peer response, instead of discarding every address after the first.
 Resolution and all attempts share the original connection timeout. A silent
 first address may still consume it; parallel dialing is not implemented.
 TLS server-name/trust checks apply to each attempt, and the first established
@@ -189,8 +219,9 @@ pin, then applies existing exporter-bound authentication v1/v2, replay checks,
 user/flow limits, egress policy and shaping. The server retains bounded packet
 queues, global/per-source admission and the pre-auth permit through authentication.
 Fronting/WebSocket, local DNS/TUN and rustls selection are rejected. SOCKS UDP
-ASSOCIATE is rejected locally with Command not supported (`0x07`), before
-contacting the server. The rejection releases the local flow slot for subsequent TCP.
+uses authenticated fixed-target HTTP Datagrams over QUIC, independently in both
+directions. Payloads are capped at 1200 bytes and the negotiated path limit;
+full queues/oversized packets drop, with no application retransmission.
 H3 authentication failures close the session without H2 fallback
 content. Profile URI v1 cannot represent H3; v1-to-v2 policy projection also
 reports the unsupported choice.
@@ -316,9 +347,11 @@ deferred. Network-setting changes, spending, provider resources and Stable
 publication are not authorized by this development work. [AGENTS.md](AGENTS.md)
 and [SECURITY.md](SECURITY.md) retain their applicable boundaries.
 
-Native Datagram/CONNECT-UDP follows end-to-end protection. Auto H3, runnable
-Config v2/migration, auth v3, TUN and additional providers still need a concrete
-requirement. Broad Chrome
+The owner additionally authorized native UDP, default-protected intermediary
+generation, dual listeners and new-connection automatic selection. These source
+capabilities remain default-off where they enable H3. Standard CONNECT-UDP,
+runnable Config v2/migration, auth v3, TUN and additional providers still need
+a concrete requirement. Broad Chrome
 qualification and weak-network/field evidence apply to their corresponding
 claims, not every local TCP edit. Phase 3 recovery, giant branch convergence and
 the Quinn product backend remain retired. Historical audits and Beta.4 field

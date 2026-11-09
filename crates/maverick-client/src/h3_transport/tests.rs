@@ -353,6 +353,30 @@ async fn pin_mismatch_stops_before_the_next_address_or_application_frame() -> Re
 }
 
 #[tokio::test]
+async fn tls_identity_failure_does_not_try_a_later_unreachable_address() -> Result<()> {
+    timeout(Duration::from_secs(10), async {
+        let peer = Peer::start().await?;
+        let later = UdpSocket::bind("127.0.0.1:0").await?;
+        let mut config = peer.config();
+        config.server.server_name = "wrong.localhost".into();
+        let addresses = [peer.address, later.local_addr()?];
+        let error = connect_to(&config, addresses.as_slice())
+            .await
+            .err()
+            .context("wrong hostname accepted")?;
+        assert!(error
+            .downcast_ref::<maverick_quiche::NetworkUnavailable>()
+            .is_none());
+        assert_eq!(
+            later.try_recv(&mut [0; 1350]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        peer.shutdown().await
+    })
+    .await?
+}
+
+#[tokio::test]
 async fn silent_first_address_keeps_the_original_total_budget() -> Result<()> {
     let peer = Peer::start().await?;
     let silent = UdpSocket::bind("127.0.0.1:0").await?;
@@ -374,7 +398,9 @@ async fn silent_first_address_keeps_the_original_total_budget() -> Result<()> {
         .await
         .context("each address received a fresh connection timeout")?;
     let error = result.err().context("silent peer unexpectedly connected")?;
-    assert_eq!(error.to_string(), "H3 connection timed out");
+    assert!(error
+        .downcast_ref::<maverick_quiche::NetworkUnavailable>()
+        .is_some());
     assert_eq!(
         later.try_recv(&mut packet).unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock

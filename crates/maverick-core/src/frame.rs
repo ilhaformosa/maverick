@@ -127,7 +127,7 @@ impl Frame {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum TargetAddr {
     Domain(String),
     Ipv4(Ipv4Addr),

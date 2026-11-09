@@ -60,12 +60,16 @@ pub(crate) struct H2PoolShutdownSnapshot {
 pub(crate) struct ClientTunnelPool {
     config: Arc<ClientConfig>,
     h2: H2ConnectionManager,
+    #[cfg(feature = "experimental-h3")]
+    h3_unavailable_until: Mutex<Option<Instant>>,
 }
 
 impl ClientTunnelPool {
     pub(crate) fn new(config: Arc<ClientConfig>) -> Self {
         Self {
             h2: H2ConnectionManager::new(Arc::clone(&config)),
+            #[cfg(feature = "experimental-h3")]
+            h3_unavailable_until: Mutex::new(None),
             config,
         }
     }
@@ -75,11 +79,43 @@ impl ClientTunnelPool {
     }
 
     pub(crate) async fn open(&self) -> Result<ClientTunnel> {
+        #[cfg(feature = "experimental-h3")]
+        if self.config.advanced.auto_h3 {
+            self.config.validate()?;
+            return timeout(
+                Duration::from_millis(self.config.advanced.connect_timeout_ms),
+                self.open_auto(),
+            )
+            .await
+            .context("automatic connection selection timed out")?;
+        }
         match transport::default_transport_kind(&self.config) {
             TransportKind::H2 => self.open_h2().await,
             TransportKind::CloudflareWs => tunnel::open(&self.config).await,
             TransportKind::H3 => tunnel::open(&self.config).await,
         }
+    }
+
+    #[cfg(feature = "experimental-h3")]
+    async fn open_auto(&self) -> Result<ClientTunnel> {
+        let skip_h3 = self
+            .h3_unavailable_until
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|until| until > Instant::now());
+        if !skip_h3 {
+            if let Some(connection) = crate::h3_transport::auto_connect(&self.config).await? {
+                debug!("automatic selection chose H3 for new TCP connection");
+                return crate::h3::open(&self.config, connection.channel, connection.binding).await;
+            }
+            *self
+                .h3_unavailable_until
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) =
+                Some(Instant::now() + Duration::from_secs(30));
+        }
+        debug!("automatic selection chose H2 for new TCP connection");
+        self.open_h2().await
     }
 
     async fn open_h2(&self) -> Result<ClientTunnel> {

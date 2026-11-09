@@ -13,6 +13,23 @@ pub async fn relay_udp_packet(
     config: &ClientConfig,
     packet: UdpPacketPayload,
 ) -> Result<UdpPacketPayload> {
+    #[cfg(feature = "experimental-h3")]
+    if config.advanced.quiche_h3 || config.advanced.auto_h3 {
+        let mut association =
+            crate::h3::NativeUdpAssociation::open(config, packet.target.clone(), packet.port)
+                .await?;
+        anyhow::ensure!(
+            association.send(packet.data)?,
+            "native UDP payload exceeds capacity or queue is full"
+        );
+        let data = timeout(
+            Duration::from_millis(config.advanced.udp_idle_timeout_ms),
+            association.recv(),
+        )
+        .await??;
+        let _ = association.close().await;
+        return Ok(UdpPacketPayload::new(packet.target, packet.port, data));
+    }
     let mut association = UdpAssociation::open(config).await?;
     let response = association.relay_packet(packet).await;
     let _ = association.close().await;
@@ -27,6 +44,10 @@ pub struct UdpAssociation {
 
 impl UdpAssociation {
     pub async fn open(config: &ClientConfig) -> Result<Self> {
+        anyhow::ensure!(
+            !config.advanced.quiche_h3 && !config.advanced.auto_h3,
+            "use NativeUdpAssociation for fixed-target native H3 UDP"
+        );
         Self::open_with_tunnel(config, tunnel::open(config).await?).await
     }
 

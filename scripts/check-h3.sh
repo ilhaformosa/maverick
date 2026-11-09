@@ -13,6 +13,8 @@ cargo test --locked -p maverick-client --features experimental-h3 tunnel::relay_
 cargo test --locked -p maverick-server --features experimental-h3 h3::tests
 cargo test --locked -p maverick-server --features experimental-h3 relay::tests::h2_
 cargo test --locked -p maverick-core --no-default-features quiche_h3
+cargo test --locked -p maverick-core --features experimental-h3,browser-tls automatic_h3
+cargo test --locked -p maverick-quiche --lib
 cargo test --locked -p maverick-cli --features experimental-h3 quiche_h3
 cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product
 cargo test --locked -p maverick-cli --features experimental-h3 --test user_smoke

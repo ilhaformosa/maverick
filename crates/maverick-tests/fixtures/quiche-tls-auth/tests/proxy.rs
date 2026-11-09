@@ -315,6 +315,7 @@ async fn transport_loss_after_response_eof_ends_silent_local_upload() -> anyhow:
         let FrameChannel {
             outbound,
             mut inbound,
+            datagrams,
         } = connection.client;
         let (forward, forwarded) = mpsc::channel(1);
         let (consumed, response_eof) = oneshot::channel();
@@ -360,6 +361,7 @@ async fn transport_loss_after_response_eof_ends_silent_local_upload() -> anyhow:
                 FrameChannel {
                     outbound,
                     inbound: forwarded,
+                    datagrams,
                 },
                 connection.client_binding,
             )

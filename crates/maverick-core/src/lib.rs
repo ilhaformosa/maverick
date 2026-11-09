@@ -3,8 +3,8 @@
 //! Maverick is an experimental prototype. It uses TLS 1.3 + HTTP/2 for
 //! default transport encryption and HMAC-SHA256 for in-channel client
 //! authentication. The old config-v1 `experimental_h3` selector is retired;
-//! the explicit, default-off `quiche_h3` selector supports the optional H3/TCP
-//! carrier when the build enables `experimental-h3`.
+//! the default-off `quiche_h3`, `auto_h3` and `dual_h2_h3` settings enable
+//! H3 TCP/native UDP and new-connection selection with `experimental-h3`.
 
 #![forbid(unsafe_code)]
 

@@ -200,6 +200,10 @@ pub async fn start_server(config: ServerConfig) -> Result<ServerHandle> {
     config.validate().map_err(anyhow::Error::from)?;
     validate_runtime_features(&config)?;
     #[cfg(feature = "experimental-h3")]
+    if config.advanced.dual_h2_h3 {
+        return h3::start_dual(config).await;
+    }
+    #[cfg(feature = "experimental-h3")]
     if config.advanced.quiche_h3 {
         return h3::start(config).await;
     }
@@ -228,9 +232,14 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     config.validate().map_err(anyhow::Error::from)?;
     validate_runtime_features(&config)?;
     #[cfg(feature = "experimental-h3")]
-    if config.advanced.quiche_h3 {
-        let handle = h3::start(config).await?;
-        info!(listen = %handle.local_addr, "Maverick H3 server listening");
+    if config.advanced.quiche_h3 || config.advanced.dual_h2_h3 {
+        let dual = config.advanced.dual_h2_h3;
+        let handle = start_server(config).await?;
+        if dual {
+            info!(listen = %handle.local_addr, "Maverick H2/H3 server listening");
+        } else {
+            info!(listen = %handle.local_addr, "Maverick H3 server listening");
+        }
         if let Some(address) = handle.metrics_addr {
             info!(listen = %address, "Maverick local metrics listening");
         }
@@ -257,7 +266,7 @@ fn validate_runtime_features(config: &ServerConfig) -> Result<()> {
     config.validate().map_err(anyhow::Error::from)?;
     #[cfg(not(feature = "experimental-h3"))]
     anyhow::ensure!(
-        !config.advanced.quiche_h3,
+        !config.advanced.quiche_h3 && !config.advanced.dual_h2_h3,
         "advanced.quiche_h3 requires the experimental-h3 build feature"
     );
     Ok(())
@@ -2345,6 +2354,19 @@ mod retirement_tests {
                 ..ServerAdvancedConfig::default()
             },
         }
+    }
+
+    #[cfg(not(feature = "experimental-h3"))]
+    #[tokio::test]
+    async fn new_h3_modes_require_runtime_feature() {
+        let mut config = retired_h3_config("127.0.0.1:0".parse().unwrap());
+        config.advanced.experimental_h3 = false;
+        config.advanced.dual_h2_h3 = true;
+        let error = start_server(config)
+            .await
+            .err()
+            .expect("dual H3 started without server runtime support");
+        assert!(error.to_string().contains("experimental-h3 build feature"));
     }
 
     #[tokio::test]

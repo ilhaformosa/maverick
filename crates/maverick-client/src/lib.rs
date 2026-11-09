@@ -267,7 +267,7 @@ pub async fn start_client(config: ClientConfig) -> Result<ClientHandle> {
     config.validate().map_err(anyhow::Error::from)?;
     #[cfg(not(feature = "experimental-h3"))]
     anyhow::ensure!(
-        !config.advanced.quiche_h3,
+        !config.advanced.quiche_h3 && !config.advanced.auto_h3,
         "advanced.quiche_h3 requires the experimental-h3 build feature"
     );
     #[cfg(not(feature = "tun-runtime"))]
@@ -514,6 +514,23 @@ mod build_gate_tests {
             log: LogConfig::default(),
             advanced: ClientAdvancedConfig::default(),
         }
+    }
+
+    #[cfg(not(feature = "experimental-h3"))]
+    #[tokio::test]
+    async fn new_h3_modes_require_runtime_feature() {
+        let mut config = test_client_config();
+        config.advanced.auto_h3 = true;
+        config.advanced.stealth.tls_fingerprint =
+            maverick_core::config::TlsFingerprintMode::BrowserMimic;
+        let error = match start_client(config).await {
+            Ok(handle) => {
+                handle.shutdown().await.unwrap();
+                panic!("automatic H3 started without client runtime support");
+            }
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("experimental-h3 build feature"));
     }
 
     #[test]

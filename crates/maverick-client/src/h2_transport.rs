@@ -55,6 +55,9 @@ pub async fn connect(config: &ClientConfig) -> Result<H2TunnelRequestSender> {
 
 pub(crate) async fn connect_with_status(config: &ClientConfig) -> Result<H2Connection> {
     crate::reject_retired_v1_h3(config)?;
+    if config.advanced.end_to_end.is_some() {
+        config.validate()?;
+    }
     timeout(
         Duration::from_millis(config.advanced.connect_timeout_ms),
         connect_inner(config),

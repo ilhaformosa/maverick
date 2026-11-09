@@ -469,3 +469,79 @@ async fn protected_client_does_not_downgrade_to_legacy_origin() -> Result<()> {
     .await
     .context("protection mismatch test timed out")?
 }
+
+#[tokio::test]
+async fn public_transport_apis_reject_incompatible_protection_before_connecting() -> Result<()> {
+    timeout(DEADLINE, async {
+        let legacy = MaverickHarness::start_with_options(HarnessOptions {
+            experimental_cloudflare_ws: true,
+            ..Default::default()
+        })
+        .await?;
+        let mut protected = legacy.client_config();
+        protected.advanced.end_to_end = Some(maverick_core::config::EndToEndClientConfig {
+            server_name: "origin.invalid".into(),
+            ca_cert: None,
+            cert_pin: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        });
+        ensure!(
+            protected.validate().is_err(),
+            "fixture must be an unsupported combination"
+        );
+        // Low-level callers can construct ClientConfig without start_client.
+        // The legacy endpoint must not receive authentication under an ignored
+        // protection setting, even though it accepts the outer credential.
+        ensure!(
+            maverick_client::tunnel::open(&protected).await.is_err(),
+            "public tunnel API ignored end-to-end protection"
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        protected.server.address = listener.local_addr()?.to_string();
+        ensure!(
+            maverick_client::ws_transport::connect(&protected)
+                .await
+                .is_err(),
+            "public WebSocket API ignored protection"
+        );
+        ensure!(
+            maverick_client::h2_transport::connect(&protected)
+                .await
+                .is_err(),
+            "public H2 API accepted incompatible protection"
+        );
+        protected.advanced.experimental_cloudflare_ws = false;
+        protected.advanced.stealth.cdn_fronting.enabled = false;
+        protected.validate()?;
+        ensure!(
+            maverick_client::ws_transport::connect(&protected)
+                .await
+                .is_err(),
+            "direct WebSocket API ignored a valid H2 protection setting"
+        );
+        #[cfg(feature = "experimental-h3")]
+        {
+            let (channel, mut wire) = maverick_core::h3_channel::channel();
+            let binding = maverick_core::auth::TlsChannelBinding::new([0; 32]);
+            ensure!(
+                maverick_client::h3::open(&protected, channel, binding)
+                    .await
+                    .is_err(),
+                "direct H3 API ignored a valid H2 protection setting"
+            );
+            ensure!(
+                wire.outbound.try_recv().is_err(),
+                "H3 emitted authentication before rejecting protection"
+            );
+        }
+        ensure!(
+            timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err(),
+            "invalid protected configuration opened a socket"
+        );
+        legacy.shutdown().await?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("public API protection test timed out")?
+}

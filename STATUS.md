@@ -37,13 +37,19 @@ exporter. The server requires the protected envelope when configured, and a
 protected client never retries as an unprotected session. Direct defaults and
 published RC.2 are unchanged; H3 stays direct and default-off.
 
-Six local terminating-relay integration cases cover auth v1/v2, both half-close
+Seven local integration cases cover auth v1/v2, both half-close
 orders, concurrent transfers, encrypted-body observations, wrong inner identity,
 handshake/record tampering, replay, pool reuse, shutdown cleanup and protection
 mismatch. The default product suite, rustls suite, H3 checks, retained candidate
 checks and dependency inventory passed locally; PR/main gates remain required.
 No new registry dependency version was introduced. This is not an independent
 release security review, a real-CDN qualification or a native Datagram claim.
+
+Low-level public carrier APIs also reject incompatible protection before
+opening a socket or emitting authentication; callers cannot bypass this by
+constructing a config directly instead of using ordinary startup. A regression
+reproduced ignored protection through the legacy WebSocket tunnel API. Explicit
+H3 frame-channel and server constructors reject the H2-only envelope as well.
 
 The intermediary still sees outer metadata, origin ClientHello/SNI, timing and
 volume and can deny service. Historical unprotected trusted-provider routes

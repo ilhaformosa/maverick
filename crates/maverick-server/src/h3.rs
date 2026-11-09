@@ -11,6 +11,10 @@ pub struct Server {
 
 impl Server {
     pub fn new(config: ServerConfig) -> Result<Self> {
+        anyhow::ensure!(
+            !config.advanced.end_to_end,
+            "end-to-end protection requires the H2 transport"
+        );
         validate_runtime_features(&config)?;
         Ok(Self {
             state: server_state(config)?,
@@ -465,6 +469,24 @@ mod tests {
             cover_traffic: RuntimeCoverTraffic::disabled(),
             shaping_metrics: None,
         }
+    }
+
+    #[test]
+    fn h3_endpoint_rejects_h2_protection_before_loading_keys() -> Result<()> {
+        let secret = SecretString::generate();
+        let config = ServerConfig::from_yaml_str(&format!(
+            "version: 1\nlisten: '127.0.0.1:0'\ntls:\n  cert_path: unavailable-cert.pem\n  key_path: unavailable-key.pem\nmaverick:\n  tunnel_path: /protected\nusers:\n  - id: test-user\n    secret: '{}'\nfallback:\n  type: static\n  static_dir: public\nadvanced:\n  end_to_end: true\n",
+            secret.expose_secret(),
+        ))?;
+        let error = match Server::new(config) {
+            Ok(_) => anyhow::bail!("H3 endpoint accepted H2 protection"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "end-to-end protection requires the H2 transport"
+        );
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]

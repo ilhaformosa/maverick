@@ -15,6 +15,10 @@ pub type WsClientStream = WebSocketStream<TlsStream<TcpStream>>;
 
 pub async fn connect(config: &ClientConfig) -> Result<CloudflareWsTunnel> {
     crate::reject_retired_v1_h3(config)?;
+    anyhow::ensure!(
+        config.advanced.end_to_end.is_none(),
+        "end-to-end protection requires the H2 transport"
+    );
     timeout(
         Duration::from_millis(config.advanced.connect_timeout_ms),
         connect_inner(config),

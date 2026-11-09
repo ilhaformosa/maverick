@@ -37,6 +37,10 @@ pub async fn open(
     mut channel: FrameChannel,
     binding: TlsChannelBinding,
 ) -> Result<ClientTunnel> {
+    anyhow::ensure!(
+        config.advanced.end_to_end.is_none(),
+        "end-to-end protection requires the H2 transport"
+    );
     config.validate()?;
     let budget = Duration::from_millis(config.advanced.connect_timeout_ms);
     let max_frame_size = timeout(budget, async {

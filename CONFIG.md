@@ -350,6 +350,9 @@ roots or pins. Existing credentials and tunnel path stay unchanged and travel
 only after inner verification. Both endpoints require enabled channel binding;
 authentication uses the inner TLS exporter. A protected listener rejects a
 plain tunnel and a protected client never retries without inner TLS.
+Public transport APIs enforce this boundary even for directly constructed Rust
+configs: WebSocket/H3 entry points reject the H2-only protection setting and
+H2 validates protected configuration before dialing.
 
 The outer POST uses `application/octet-stream`; the intermediary must support
 simultaneous streaming in both directions. HTTP-body boundaries are irrelevant

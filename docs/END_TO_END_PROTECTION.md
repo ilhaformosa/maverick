@@ -52,6 +52,8 @@ A protected listener accepts only this outer envelope at its tunnel path.
 Protection is not negotiated from an unauthenticated header. Neither endpoint
 retries a failed inner handshake as plaintext or recursively accepts nested
 envelopes. Unrelated outer requests retain ordinary HTTP fallback handling.
+Public low-level carrier APIs enforce the same boundary without relying on the
+caller having used CLI/SDK configuration validation first.
 
 ## Configuration and compatibility
 

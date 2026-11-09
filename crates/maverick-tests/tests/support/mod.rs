@@ -28,6 +28,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 #[derive(Debug, Clone)]
 pub struct HarnessOptions {
+    pub end_to_end: bool,
     pub dns_upstream: Option<SocketAddr>,
     pub metrics: bool,
     pub http_connect: bool,
@@ -65,6 +66,7 @@ pub struct HarnessOptions {
 impl Default for HarnessOptions {
     fn default() -> Self {
         Self {
+            end_to_end: false,
             dns_upstream: None,
             metrics: false,
             http_connect: false,
@@ -175,6 +177,7 @@ impl MaverickHarness {
             CdnFrontingCarrier::WebSocket
         };
         let mut server_advanced = ServerAdvancedConfig {
+            end_to_end: options.end_to_end,
             experimental_h3: options.experimental_h3,
             experimental_cloudflare_ws: options.experimental_cloudflare_ws,
             ..ServerAdvancedConfig::default()
@@ -287,6 +290,16 @@ impl MaverickHarness {
         };
         let server = start_server(server_config).await?;
         let mut client_advanced = ClientAdvancedConfig::default();
+        if options.end_to_end {
+            client_advanced.end_to_end = Some(maverick_core::config::EndToEndClientConfig {
+                server_name: "localhost".into(),
+                ca_cert: Some(cert_path.clone()),
+                cert_pin: format!(
+                    "sha256/{}",
+                    URL_SAFE_NO_PAD.encode(Sha256::digest(&cert_der))
+                ),
+            });
+        }
         if let Some(max_concurrent_flows) = options.client_max_concurrent_flows {
             client_advanced.max_concurrent_flows = max_concurrent_flows;
         }

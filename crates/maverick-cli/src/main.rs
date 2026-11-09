@@ -1930,6 +1930,7 @@ fn export_config_uri(path: &Path, include_secret: bool, qr: bool) -> Result<()> 
     // connection's carrier, authentication or trust requirements.
     let rotation = &cfg.auth.rotation;
     for (unsupported, field) in [
+        (cfg.advanced.end_to_end.is_some(), "advanced.end_to_end"),
         (cfg.advanced.quiche_h3, "advanced.quiche_h3"),
         (cfg.server.ca_cert.is_some(), "server.ca_cert"),
         (

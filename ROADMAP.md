@@ -1,6 +1,6 @@
 # Maverick Roadmap
 
-Date: 2026-11-07
+Date: 2026-11-09
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
@@ -72,7 +72,28 @@ Explicit server-handle shutdown cancels unfinished setup and notifies active
 H3 peers before joining their drivers. Keep same-endpoint restart and subsequent
 TCP use covered, with forced process termination distinct from this API path.
 
-## Next — Follow Concrete Ordinary-Use Evidence
+## Next — End-to-End Protection and Complete Protocol Capabilities
+
+The owner requires intermediary confidentiality. Follow the
+[end-to-end contract](docs/END_TO_END_PROTECTION.md), then deliver:
+
+The first protected H2 implementation and its bounded local acceptance are
+complete; STATUS.md records the behavior and limitations. Next deliver:
+
+1. Native UDP with maintained QUIC/HTTP Datagram capabilities. Establish its
+   end-to-end trust boundary before selecting the wire format; verify actual
+   duplex delivery, loss, cancellation, limits and target ownership.
+2. Evidence-based anti-identification, DNS/ECH, performance and reliability
+   improvements, each with a concrete problem and bounded acceptance.
+3. A new exact candidate with applicable independent security, compatibility,
+   artifact, supply-chain and native rollback evidence.
+
+External client development, endpoint/IP-block recovery, node distribution and relay infrastructure
+management are outside scope. Field trials remain deferred. Ordinary resolved
+address attempts and connection cleanup remain product work. Do not restore
+archived prerequisite chains or add a new crypto framework.
+
+## Continuing Execution Discipline
 
 Judge further CI changes by restore, rebuild and whole-workflow time together.
 A smaller archive alone does not establish a faster PR; runner variation and
@@ -96,8 +117,9 @@ security, compatibility, artifact, supply-chain and native rollback evidence;
 do not replace RC.2 assets or count older evidence as a newer candidate's pass.
 See the [release contract](docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md).
 
-Native Datagram/CONNECT-UDP, Auto H3, complete runnable Config v2/migration,
-auth v3, TUN and additional providers remain separate future capabilities.
+Native Datagram/CONNECT-UDP follows protection work above. Auto H3, complete
+runnable Config v2/migration, auth v3, TUN and additional providers are not
+automatic prerequisites for this work.
 Browser equivalence, field performance and production claims need evidence for
 those claims. Paid audit, signing or provenance work belongs to a specific
 approved release need.

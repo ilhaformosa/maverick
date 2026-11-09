@@ -1430,6 +1430,7 @@ dependencies = [
  "base64",
  "bytes",
  "criterion",
+ "h2",
  "hkdf",
  "hmac",
  "proptest",

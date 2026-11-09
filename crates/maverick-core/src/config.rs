@@ -370,9 +370,22 @@ impl ClientConfig {
         self.advanced.shaping.validate()?;
         self.advanced.validate(self.mode)?;
         self.auth.channel_binding.validate_transport_support(
-            self.advanced.tls_terminating_fronting_enabled(),
+            self.advanced.tls_terminating_fronting_enabled() && self.advanced.end_to_end.is_none(),
             self.advanced.experimental_h3,
         )?;
+        if let Some(inner) = &self.advanced.end_to_end {
+            validate_end_to_end(
+                self.advanced.quiche_h3,
+                self.advanced.cloudflare_ws_enabled(),
+                self.auth.channel_binding.enabled,
+            )?;
+            if inner.server_name.is_empty() {
+                return Err(Error::Config(
+                    "advanced.end_to_end.server_name must not be empty".into(),
+                ));
+            }
+            validate_cert_pin(&inner.cert_pin)?;
+        }
         if let Some(dns) = &self.local.dns {
             if dns.enabled {
                 let listen = dns.listen.ok_or_else(|| {
@@ -874,9 +887,16 @@ impl ServerConfig {
         self.advanced.shaping.validate()?;
         self.advanced.validate(self.maverick.mode_default)?;
         self.auth.channel_binding.validate_transport_support(
-            self.advanced.tls_terminating_fronting_enabled(),
+            self.advanced.tls_terminating_fronting_enabled() && !self.advanced.end_to_end,
             self.advanced.experimental_h3,
         )?;
+        if self.advanced.end_to_end {
+            validate_end_to_end(
+                self.advanced.quiche_h3,
+                self.advanced.cloudflare_ws_enabled(),
+                self.auth.channel_binding.enabled,
+            )?;
+        }
         Ok(())
     }
 }
@@ -1244,7 +1264,31 @@ impl LogConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndToEndClientConfig {
+    pub server_name: String,
+    #[serde(default)]
+    pub ca_cert: Option<PathBuf>,
+    pub cert_pin: String,
+}
+
+fn validate_end_to_end(h3: bool, websocket: bool, channel_binding: bool) -> Result<()> {
+    if h3 || websocket {
+        return Err(Error::Config(
+            "advanced.end_to_end requires the H2 carrier".into(),
+        ));
+    }
+    if !channel_binding {
+        return Err(Error::Config(
+            "advanced.end_to_end requires auth.channel_binding.enabled".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientAdvancedConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_to_end: Option<EndToEndClientConfig>,
     #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
     #[serde(default = "default_idle_timeout_secs")]
@@ -1280,6 +1324,7 @@ pub struct ClientAdvancedConfig {
 impl Default for ClientAdvancedConfig {
     fn default() -> Self {
         Self {
+            end_to_end: None,
             connect_timeout_ms: default_connect_timeout_ms(),
             idle_timeout_secs: default_idle_timeout_secs(),
             max_concurrent_flows: default_max_concurrent_flows(),
@@ -1364,6 +1409,8 @@ impl ClientAdvancedConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerAdvancedConfig {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub end_to_end: bool,
     #[serde(default = "default_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
     #[serde(default = "default_connect_timeout_ms")]
@@ -1417,6 +1464,7 @@ pub struct ServerAdvancedConfig {
 impl Default for ServerAdvancedConfig {
     fn default() -> Self {
         Self {
+            end_to_end: false,
             idle_timeout_secs: default_idle_timeout_secs(),
             tcp_connect_timeout_ms: default_connect_timeout_ms(),
             handshake_timeout_ms: default_handshake_timeout_ms(),
@@ -2177,6 +2225,43 @@ mod tests {
             log: LogConfig::default(),
             advanced: ServerAdvancedConfig::default(),
         }
+    }
+
+    #[test]
+    fn end_to_end_preserves_identity_and_rejects_unsupported_choices() {
+        let secret = SecretString::generate();
+        let yaml = canonical_client_yaml(&secret).replace("advanced:\n", "advanced:\n  end_to_end:\n    server_name: origin.invalid\n    cert_pin: sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n");
+        let config = ClientConfig::from_yaml_str(&yaml).unwrap();
+        assert!(config.advanced.end_to_end.is_some());
+        assert_eq!(
+            v2::project_v1_client_policy(&config).unwrap_err(),
+            v2::V1ClientPolicyProjectionBlocker::EndToEndConfigured
+        );
+        let mut invalid = config.clone();
+        invalid
+            .advanced
+            .end_to_end
+            .as_mut()
+            .unwrap()
+            .cert_pin
+            .clear();
+        assert!(invalid.validate().is_err());
+        let mut invalid = config.clone();
+        invalid.auth.channel_binding.enabled = false;
+        assert!(invalid.validate().is_err());
+        assert!(
+            ClientConfig::from_yaml_str(&yaml.replace("    cert_pin:", "    wrong_pin:")).is_err()
+        );
+        assert!(validate_end_to_end(true, false, true).is_err());
+        assert!(validate_end_to_end(false, true, true).is_err());
+        let server = canonical_server_yaml(&secret)
+            .replace("advanced:\n", "advanced:\n  end_to_end: true\n");
+        assert!(
+            ServerConfig::from_yaml_str(&server)
+                .unwrap()
+                .advanced
+                .end_to_end
+        );
     }
 
     fn canonical_client_yaml(secret: &SecretString) -> String {

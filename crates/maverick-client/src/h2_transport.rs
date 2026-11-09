@@ -64,10 +64,76 @@ pub(crate) async fn connect_with_status(config: &ClientConfig) -> Result<H2Conne
 }
 
 async fn connect_inner(config: &ClientConfig) -> Result<H2Connection> {
-    match config.advanced.stealth.tls_fingerprint {
+    let outer = match config.advanced.stealth.tls_fingerprint {
         TlsFingerprintMode::RustlsDefault => connect_rustls_inner(config).await,
         TlsFingerprintMode::BrowserMimic => connect_browser_mimic_inner(config).await,
+    }?;
+    if config.advanced.end_to_end.is_some() {
+        connect_end_to_end(config, outer).await
+    } else {
+        Ok(outer)
     }
+}
+
+async fn connect_end_to_end(config: &ClientConfig, outer: H2Connection) -> Result<H2Connection> {
+    use maverick_core::h2_io::{H2Io, CONTENT_TYPE};
+    let inner = config
+        .advanced
+        .end_to_end
+        .as_ref()
+        .context("missing inner TLS identity")?;
+    let mut sender = outer.transport.sender.ready().await?;
+    let request = http::Request::builder()
+        .method("POST")
+        .uri(format!(
+            "https://{}{}",
+            config.server.server_name, config.server.tunnel_path
+        ))
+        .header(http::header::CONTENT_TYPE, CONTENT_TYPE)
+        .body(())?;
+    let (response, send) = sender.send_request(request, false)?;
+    let response = response.await.context("protected H2 envelope rejected")?;
+    anyhow::ensure!(
+        response.status() == http::StatusCode::OK,
+        "protected H2 envelope rejected"
+    );
+    anyhow::ensure!(
+        response
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .is_some_and(|v| v == CONTENT_TYPE),
+        "protected H2 envelope content type mismatch"
+    );
+    let io = H2Io::new(response.into_body(), send);
+    // Outer and inner identities are independent. Never inherit the provider's
+    // roots or pin for origin verification.
+    let mut origin = config.clone();
+    origin.server.server_name.clone_from(&inner.server_name);
+    origin.server.ca_cert.clone_from(&inner.ca_cert);
+    origin.server.cert_pin = Some(inner.cert_pin.clone());
+    let mut tls_config = rustls_client_config(&origin)?;
+    tls_config.alpn_protocols = vec![b"h2".to_vec()];
+    tls_config.enable_early_data = false;
+    let tls = TlsConnector::from(Arc::new(tls_config))
+        .connect(ServerName::try_from(inner.server_name.clone())?, io)
+        .await
+        .context("end-to-end origin TLS verification failed")?;
+    anyhow::ensure!(
+        tls.get_ref().1.alpn_protocol() == Some(b"h2"),
+        "inner TLS requires h2 ALPN"
+    );
+    let channel_binding = rustls_client_channel_binding(tls.get_ref().1, true)?;
+    let (sender, connection_closed) =
+        finish_h2_handshake(tls, H2FingerprintProfile::MaverickDefault).await?;
+    Ok(H2Connection {
+        transport: H2TunnelRequestSender {
+            sender,
+            channel_binding,
+        },
+        connection_closed,
+        observed_outer_tls_version: outer.observed_outer_tls_version,
+        observed_outer_tls_group: outer.observed_outer_tls_group,
+    })
 }
 
 async fn connect_rustls_inner(config: &ClientConfig) -> Result<H2Connection> {

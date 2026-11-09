@@ -24,6 +24,13 @@ through complete, runnable, and migratable Product Config v2. This note does
 not alter the API, wire, resource, ownership, or acceptance requirements in
 this contract.
 
+2026-11-09 sequencing update: the owner-approved [roadmap](../ROADMAP.md) puts
+end-to-end protection before native UDP. The old Config v2 prerequisite above
+is not an automatic implementation dependency. Select the protected Datagram
+carrier and any necessary wire/config compatibility changes from concrete
+requirements. The ownership and delivery distinctions below remain applicable;
+the historical Quinn implementation remains retired.
+
 ## Terms
 
 | Term | Meaning |

@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-11-07
+Date: 2026-11-09
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
@@ -13,18 +13,42 @@ historical evidence; a result applies to its tested revision and workload.
 | Stage | Experimental Beta; not production-ready |
 | Published release | Immutable `v1.2.0-rc.2`, prerelease/non-Latest, Direct H2 |
 | Default source build and configuration | Browser-like TLS 1.3 + HTTP/2; H3 disabled |
+| Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3; local terminating-relay validation; not published |
 | Explicit H3 | Ordinary client/server commands support direct TCP through SOCKS5 and HTTP CONNECT when the build feature and both configurations enable it |
 | Configuration/authentication | Runnable config v1; existing authentication v1/v2 and frame formats retained; config v2 is policy-only |
 | SDK | Client/server wrappers and profile tooling; local startup is distinguished from unverified remote connectivity; no dedicated H3 feature entry |
 | Field validation | Deferred by the owner; no new real-network trial authorized |
 | Stable | Not published; exact-RC field use and owner rollback remain incomplete |
 
-The provider-fronted H2 and older WebSocket routes remain Beta compatibility
-paths, outside the first Direct-H2 Stable claim. A TLS-terminating provider can
+The historical provider-fronted H2 without inner TLS and older WebSocket routes
+remain Beta compatibility paths, outside the first Direct-H2 Stable claim. A TLS-terminating provider can
 observe Maverick authentication and tunnel traffic; this is not native ECH or
 provider-independent privacy. Prior provider-pilot browsing observations and
 video/large-image usability problems are historical, not validation of current
 source.
+
+## Origin-pinned H2 Intermediary Protection
+
+The protected source path carries existing Maverick H2 sessions inside a
+separate TLS 1.3 connection through an outer H2 POST. Clients verify independent
+origin CA/hostname trust and a mandatory leaf certificate pin before sending
+Maverick authentication or proxy requests. Authentication uses the inner TLS
+exporter. The server requires the protected envelope when configured, and a
+protected client never retries as an unprotected session. Direct defaults and
+published RC.2 are unchanged; H3 stays direct and default-off.
+
+Six local terminating-relay integration cases cover auth v1/v2, both half-close
+orders, concurrent transfers, encrypted-body observations, wrong inner identity,
+handshake/record tampering, replay, pool reuse, shutdown cleanup and protection
+mismatch. The default product suite, rustls suite, H3 checks, retained candidate
+checks and dependency inventory passed locally; PR/main gates remain required.
+No new registry dependency version was introduced. This is not an independent
+release security review, a real-CDN qualification or a native Datagram claim.
+
+The intermediary still sees outer metadata, origin ClientHello/SNI, timing and
+volume and can deny service. Historical unprotected trusted-provider routes
+remain separate compatibility modes. See [configuration](CONFIG.md#origin-pinned-end-to-end-h2)
+and [protocol boundaries](docs/END_TO_END_PROTECTION.md).
 
 ## Configuration Handoff
 
@@ -273,14 +297,22 @@ rules remain. This was per-alert review, not a new exhaustive security audit.
 
 ## Authorization and Deferred Scope
 
+On 2026-11-09 the owner authorized end-to-end design, implementation and
+verification, followed by native UDP and evidence-based privacy, reliability
+and delivery work. Intermediary confidentiality is mandatory; external client development and
+endpoint/IP-block recovery are excluded. The first implementation follows
+[END_TO_END_PROTECTION.md](docs/END_TO_END_PROTECTION.md). The first protected H2 slice has local validation as recorded above. H3 stays
+default-off; field trials stay deferred.
+
 Routine technical, commit and PR decisions are delegated, including focused
 configuration handoff and default-off H3 development. Field trials remain
 deferred. Network-setting changes, spending, provider resources and Stable
 publication are not authorized by this development work. [AGENTS.md](AGENTS.md)
 and [SECURITY.md](SECURITY.md) retain their applicable boundaries.
 
-Native Datagram/CONNECT-UDP, Auto H3, runnable Config v2/migration, auth v3,
-TUN and additional providers need their own concrete requirement. Broad Chrome
+Native Datagram/CONNECT-UDP follows end-to-end protection. Auto H3, runnable
+Config v2/migration, auth v3, TUN and additional providers still need a concrete
+requirement. Broad Chrome
 qualification and weak-network/field evidence apply to their corresponding
 claims, not every local TCP edit. Phase 3 recovery, giant branch convergence and
 the Quinn product backend remain retired. Historical audits and Beta.4 field

@@ -53,6 +53,17 @@ authentication close the connection; H2 fallback-content behavior and browser
 fingerprint observations do not transfer to H3. It does not support provider
 fronting, native Datagram or automatic carrier fallback.
 
+## Origin-pinned Intermediary Protection
+
+The explicitly configured origin-pinned H2 envelope places existing Maverick
+authentication, proxy destinations and frames inside a separate TLS 1.3 session
+whose private key remains at the origin. Outer TLS termination does not grant
+access to this inner content. The client verifies CA, hostname and a separately
+obtained origin pin; the endpoints use inner exporter binding without 0-RTT or
+plaintext fallback. Historical unprotected provider modes do not inherit this
+property. Intermediaries still see the origin ClientHello, timing and volume,
+and can deny service. See [design and limits](docs/END_TO_END_PROTECTION.md).
+
 ## Explicit Non-Claims
 
 Maverick does not currently protect against or prove:

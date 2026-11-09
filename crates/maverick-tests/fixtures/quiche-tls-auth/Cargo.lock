@@ -784,6 +784,7 @@ version = "1.2.0-rc.2"
 dependencies = [
  "base64",
  "bytes",
+ "h2",
  "hkdf",
  "hmac",
  "rand",

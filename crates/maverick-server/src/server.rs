@@ -123,6 +123,7 @@ struct ServerState {
     fallback_admission: Arc<Semaphore>,
     auth_failures: Arc<Mutex<AuthFailureTracker>>,
     dummy_auth_secret: SecretString,
+    inner_acceptor: Option<tokio_rustls::TlsAcceptor>,
 }
 
 struct ActiveConnectionMetricGuard {
@@ -435,7 +436,13 @@ fn server_state(config: ServerConfig) -> Result<ServerState> {
     ));
     let pre_auth_admission = Arc::new(Semaphore::new(pre_auth_admission_limit(&config)));
     let fallback_admission = Arc::new(Semaphore::new(fallback_admission_limit(&config)));
+    let inner_acceptor = config
+        .advanced
+        .end_to_end
+        .then(|| h2_acceptor::acceptor(&config))
+        .transpose()?;
     Ok(ServerState {
+        inner_acceptor,
         replay: Arc::new(replay_caches(&config)),
         users: Arc::new(UserStore::new(&config.users)?),
         fallback: FallbackHandler::from_config(&config.fallback),
@@ -564,103 +571,185 @@ async fn handle_tcp(
         state.config.auth.channel_binding.enabled
             && !state.config.advanced.tls_terminating_fronting_enabled(),
     )?;
-    let mut h2 = timeout(
-        handshake_timeout,
-        h2::server::Builder::new()
-            .max_concurrent_streams(state.config.advanced.h2_max_concurrent_streams)
-            .max_concurrent_reset_streams(
-                state.config.advanced.h2_max_concurrent_reset_streams as usize,
-            )
-            .max_pending_accept_reset_streams(
-                state.config.advanced.h2_max_pending_accept_reset_streams as usize,
-            )
-            .max_local_error_reset_streams(Some(
-                state.config.advanced.h2_max_local_error_reset_streams as usize,
-            ))
-            .initial_window_size(1024 * 1024)
-            .initial_connection_window_size(4 * 1024 * 1024)
-            .handshake(tls),
+    let protected_outer = state.config.advanced.end_to_end;
+    serve_h2(
+        tls,
+        peer,
+        state,
+        pre_auth_permit,
+        channel_binding,
+        protected_outer,
     )
     .await
-    .context("h2 server handshake timed out")?
-    .context("h2 server handshake failed")?;
-    let _connection_permit = pre_auth_permit;
-    let idle_timeout = Duration::from_secs(state.config.advanced.idle_timeout_secs);
-    let active_streams = ActiveStreamTracker::default();
-    let mut stream_tasks = JoinSet::new();
-    loop {
-        drain_finished_tasks(&mut stream_tasks)?;
-        let result = if active_streams.active_count() == 0 {
-            tokio::select! {
-                result = h2.accept() => result,
-                _ = sleep(idle_timeout) => {
-                    debug!("h2 connection idle timeout elapsed");
-                    break;
-                }
-            }
-        } else {
-            tokio::select! {
-                result = h2.accept() => result,
-                _ = sleep(idle_timeout) => {
-                    continue;
-                }
-            }
-        };
-        let result = match result {
-            Some(result) => result,
-            None => break,
-        };
-        let (request, respond) = result?;
-        let state = state.clone();
-        let Some(pre_auth_permit) = try_pre_auth_admission(&state) else {
-            if state.config.advanced.stealth.active_probe_resistance {
-                let method = request.method().clone();
-                let path = request
-                    .uri()
-                    .path_and_query()
-                    .map(|value| value.as_str().to_owned())
-                    .unwrap_or_else(|| request.uri().path().to_owned());
-                let headers = fallback_request_headers(request.headers());
-                if let Err(err) = send_fallback(respond, &state, &method, &path, &headers).await {
-                    debug!(
-                        peer_ip = %redact_ip(peer.ip()),
-                        error = %err,
-                        "h2 pre-auth admission fallback failed"
-                    );
+}
+
+fn serve_h2<T>(
+    tls: T,
+    peer: SocketAddr,
+    state: ServerState,
+    pre_auth_permit: PreAuthPermit,
+    channel_binding: Option<TlsChannelBinding>,
+    protected_outer: bool,
+) -> futures::future::BoxFuture<'static, Result<()>>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    Box::pin(async move {
+        let handshake_timeout = Duration::from_millis(state.config.advanced.handshake_timeout_ms);
+        let mut h2 = timeout(
+            handshake_timeout,
+            h2::server::Builder::new()
+                .max_concurrent_streams(state.config.advanced.h2_max_concurrent_streams)
+                .max_concurrent_reset_streams(
+                    state.config.advanced.h2_max_concurrent_reset_streams as usize,
+                )
+                .max_pending_accept_reset_streams(
+                    state.config.advanced.h2_max_pending_accept_reset_streams as usize,
+                )
+                .max_local_error_reset_streams(Some(
+                    state.config.advanced.h2_max_local_error_reset_streams as usize,
+                ))
+                .initial_window_size(1024 * 1024)
+                .initial_connection_window_size(4 * 1024 * 1024)
+                .handshake(tls),
+        )
+        .await
+        .context("h2 server handshake timed out")?
+        .context("h2 server handshake failed")?;
+        let _connection_permit = pre_auth_permit;
+        let idle_timeout = Duration::from_secs(state.config.advanced.idle_timeout_secs);
+        let active_streams = ActiveStreamTracker::default();
+        let mut stream_tasks = JoinSet::new();
+        loop {
+            drain_finished_tasks(&mut stream_tasks)?;
+            let result = if active_streams.active_count() == 0 {
+                tokio::select! {
+                    result = h2.accept() => result,
+                    _ = sleep(idle_timeout) => {
+                        debug!("h2 connection idle timeout elapsed");
+                        break;
+                    }
                 }
             } else {
-                drop(respond);
-            }
-            drop(request);
-            debug!(
-                peer_ip = %redact_ip(peer.ip()),
-                "h2 pre-auth admission limit reached"
-            );
-            continue;
-        };
-        let stream_guard = active_streams.enter();
-        stream_tasks.spawn(async move {
-            let _stream_guard = stream_guard;
-            let metrics = Arc::clone(&state.metrics);
-            if let Err(err) = handle_request(
-                request,
-                respond,
-                peer,
-                state,
-                pre_auth_permit,
-                channel_binding,
-            )
-            .await
-            {
-                metrics.record_h2_request_error(&err);
-                debug!(error = %err, "h2 request ended");
-            }
-        });
+                tokio::select! {
+                    result = h2.accept() => result,
+                    _ = sleep(idle_timeout) => {
+                        continue;
+                    }
+                }
+            };
+            let result = match result {
+                Some(result) => result,
+                None => break,
+            };
+            let (request, respond) = result?;
+            let state = state.clone();
+            let Some(pre_auth_permit) = try_pre_auth_admission(&state) else {
+                if state.config.advanced.stealth.active_probe_resistance {
+                    let method = request.method().clone();
+                    let path = request
+                        .uri()
+                        .path_and_query()
+                        .map(|value| value.as_str().to_owned())
+                        .unwrap_or_else(|| request.uri().path().to_owned());
+                    let headers = fallback_request_headers(request.headers());
+                    if let Err(err) = send_fallback(respond, &state, &method, &path, &headers).await
+                    {
+                        debug!(
+                            peer_ip = %redact_ip(peer.ip()),
+                            error = %err,
+                            "h2 pre-auth admission fallback failed"
+                        );
+                    }
+                } else {
+                    drop(respond);
+                }
+                drop(request);
+                debug!(
+                    peer_ip = %redact_ip(peer.ip()),
+                    "h2 pre-auth admission limit reached"
+                );
+                continue;
+            };
+            let stream_guard = active_streams.enter();
+            stream_tasks.spawn(async move {
+                let _stream_guard = stream_guard;
+                let metrics = Arc::clone(&state.metrics);
+                let result = if protected_outer
+                    && request.method() == Method::POST
+                    && request.uri().path() == state.config.maverick.tunnel_path
+                {
+                    handle_protected_request(request, respond, peer, state, pre_auth_permit).await
+                } else {
+                    handle_request(
+                        request,
+                        respond,
+                        peer,
+                        state,
+                        pre_auth_permit,
+                        channel_binding,
+                    )
+                    .await
+                };
+                if let Err(err) = result {
+                    metrics.record_h2_request_error(&err);
+                    debug!(error = %err, "h2 request ended");
+                }
+            });
+        }
+        while let Some(joined) = stream_tasks.join_next().await {
+            joined?;
+        }
+        Ok(())
+    })
+}
+
+async fn handle_protected_request(
+    request: Request<h2::RecvStream>,
+    mut respond: SendResponse<Bytes>,
+    peer: SocketAddr,
+    state: ServerState,
+    pre_auth_permit: PreAuthPermit,
+) -> Result<()> {
+    use maverick_core::h2_io::{H2Io, CONTENT_TYPE};
+    if !request
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .is_some_and(|v| v == CONTENT_TYPE)
+    {
+        return send_fallback(
+            respond,
+            &state,
+            request.method(),
+            request.uri().path(),
+            &fallback_request_headers(request.headers()),
+        )
+        .await;
     }
-    while let Some(joined) = stream_tasks.join_next().await {
-        joined?;
-    }
-    Ok(())
+    let acceptor = state
+        .inner_acceptor
+        .as_ref()
+        .context("inner TLS not configured")?
+        .clone();
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, CONTENT_TYPE)
+        .body(())?;
+    let send = respond.send_response(response, false)?;
+    let io = H2Io::new(request.into_body(), send);
+    let tls = timeout(
+        Duration::from_millis(state.config.advanced.handshake_timeout_ms),
+        acceptor.accept(io),
+    )
+    .await
+    .context("inner TLS accept timed out")?
+    .context("inner TLS accept failed")?;
+    anyhow::ensure!(
+        tls.get_ref().1.alpn_protocol() == Some(b"h2"),
+        "inner TLS requires h2 ALPN"
+    );
+    let binding = rustls_server_channel_binding(tls.get_ref().1, true)?;
+    serve_h2(tls, peer, state, pre_auth_permit, binding, false).await
 }
 
 async fn handle_ws_tcp(
@@ -934,7 +1023,9 @@ fn selected_client_feature_flags(
     channel_binding: Option<TlsChannelBinding>,
 ) -> Option<u64> {
     let requested_channel_binding = requested & FEATURE_TLS_CHANNEL_BINDING != 0;
-    if state.config.auth.channel_binding.require && !requested_channel_binding {
+    if (state.config.auth.channel_binding.require || state.config.advanced.end_to_end)
+        && !requested_channel_binding
+    {
         return None;
     }
     if !requested_channel_binding {

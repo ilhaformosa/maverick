@@ -44,10 +44,15 @@ startup uses `server -c server.generated.yaml` and
 `client -c client.generated.yaml`. Field validation remains deferred.
 
 H3 supports direct TCP through SOCKS5 and HTTP CONNECT, using existing
-certificate/hostname/pin verification and authentication v1/v2. Both ends must
-select `advanced.quiche_h3: true`; omission keeps H2. Fronting, local DNS/TUN,
-rustls selection and SOCKS UDP associations are unsupported. There is no
-automatic selection or fallback. Profile URI v1 cannot carry H3 or every
+certificate/hostname/pin verification and authentication v1/v2, plus native UDP
+through SOCKS5 (up to 1200 bytes per datagram, subject to the path limit).
+`gen-config --quiche-h3` selects H3 explicitly. Alternatively,
+`gen-config --auto-h3` generates a dual H2/H3 server and a client that chooses
+for new TCP connections only. Network unavailability may select H2; TLS, pin,
+authentication and protocol failures never do. Existing flows never migrate.
+Omission keeps H2; native UDP never falls back to reliable H2 UDP. Fronting,
+local DNS/TUN and rustls selection remain unsupported with H3.
+Profile URI v1 cannot carry H3 or every
 connection/authentication/trust setting; unsupported exports are rejected
 instead of silently changing policy. See [CONFIG.md](CONFIG.md#transport).
 
@@ -55,7 +60,9 @@ These are source-build capabilities. Published RC.2 files remain immutable and
 do not include H3 or subsequent source changes.
 
 For an H2 intermediary that terminates outer TLS, source builds provide explicit
-origin-pinned inner TLS through `advanced.end_to_end`. The client verifies a
+origin-pinned inner TLS through `advanced.end_to_end`. Generate the protected
+pair using `gen-config --relay --origin-name origin.example.invalid --origin-cert origin.pem`, optionally with `--origin-ca ca.pem`.
+The owner-supplied public certificate determines the mandatory pin. The client verifies a
 separate origin CA/hostname/pin before sending authentication, proxy targets or
 payloads; protection failures never retry in the historical unprotected mode.
 See [configuration](CONFIG.md#origin-pinned-end-to-end-h2) and the

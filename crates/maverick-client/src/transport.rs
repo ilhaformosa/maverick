@@ -89,7 +89,7 @@ pub fn default_transport_kind(config: &ClientConfig) -> TransportKind {
 }
 
 fn default_transport_decision(config: &ClientConfig) -> DefaultTransportDecision {
-    if config.advanced.quiche_h3 {
+    if config.advanced.quiche_h3 || config.advanced.auto_h3 {
         return DefaultTransportDecision {
             kind: TransportKind::H3,
             provenance: DefaultTransportProvenance::LegacyV1,
@@ -133,6 +133,21 @@ pub fn transport_debug_snapshot(config: &ClientConfig) -> GuiTransportDebugSnaps
 
 pub async fn connect(config: &ClientConfig) -> Result<TunnelRequestSender> {
     crate::reject_retired_v1_h3(config)?;
+    #[cfg(feature = "experimental-h3")]
+    if config.advanced.auto_h3 {
+        config.validate()?;
+        return tokio::time::timeout(
+            std::time::Duration::from_millis(config.advanced.connect_timeout_ms),
+            async {
+                match crate::h3_transport::auto_connect(config).await? {
+                    Some(connection) => Ok(TunnelRequestSender::H3(connection)),
+                    None => H2Transport.connect(config).await,
+                }
+            },
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("automatic connection selection timed out"))?;
+    }
     match default_transport_kind(config) {
         TransportKind::H2 => H2Transport.connect(config).await,
         TransportKind::CloudflareWs => Ok(TunnelRequestSender::CloudflareWs(Box::new(

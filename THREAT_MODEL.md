@@ -46,12 +46,17 @@ Cloudflare to the origin. It is not end-to-end encrypted against Cloudflare:
 the provider can observe Maverick authentication and tunnel payload before
 forwarding it.
 
-The explicit quiche H3/TCP source path uses the same credential and target
+The explicit quiche H3 TCP/native UDP source path uses the same credential and target
 policy, verified certificates and TLS exporter binding. It is local-validated
 only, default-off and not part of published RC.2. Unknown H3 requests and failed
 authentication close the connection; H2 fallback-content behavior and browser
 fingerprint observations do not transfer to H3. It does not support provider
-fronting, native Datagram or automatic carrier fallback.
+fronting. Native UDP uses authenticated fixed-target datagrams with bounded
+queues and existing egress/user limits. Opt-in automatic TCP selection permits
+H2 only after a network failure before any peer response; TLS, pin, protocol
+and authentication failures are terminal. Both carriers verify the same origin
+identity; live flows are never moved. Dual listeners share replay/admission
+state. See [the protocol boundary](docs/NATIVE_UDP_AND_SELECTION.md).
 
 ## Origin-pinned Intermediary Protection
 

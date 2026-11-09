@@ -1,4 +1,4 @@
-//! Opt-in TCP session endpoint for a TLS-verified H3 frame channel.
+//! Opt-in TCP/native UDP session endpoint for a TLS-verified H3 frame channel.
 //! Used by the explicit quiche listener and the isolated transport tests.
 
 use super::*;
@@ -125,7 +125,12 @@ impl Server {
         )
         .await;
         let open = match open {
-            Ok(Ok(Some(frame))) if frame.frame_type == FrameType::OpenTcp => frame,
+            Ok(Ok(Some(frame)))
+                if frame.frame_type == FrameType::OpenTcp
+                    || (frame.frame_type == FrameType::OpenUdp && frame.flags == 1) =>
+            {
+                frame
+            }
             _ => {
                 return send(
                     &tunnel.outbound,
@@ -137,6 +142,9 @@ impl Server {
                 .await
             }
         };
+        if open.frame_type == FrameType::OpenUdp {
+            return serve_native_udp(tunnel, open, max, &policy, &user, state).await;
+        }
         let target = match OpenTcpPayload::decode(&open.payload) {
             Ok(target) => target,
             Err(_) => {
@@ -249,6 +257,7 @@ where
     let FrameChannel {
         outbound,
         mut inbound,
+        ..
     } = tunnel;
     let (activity, mut progress) = tokio::sync::watch::channel(());
     let upstream = async {
@@ -342,7 +351,7 @@ where
 }
 
 /// Starts the ordinary server command on UDP when explicitly configured for H3.
-pub(super) async fn start(config: ServerConfig) -> Result<ServerHandle> {
+fn tls_context(config: &ServerConfig) -> Result<boring::ssl::SslContextBuilder> {
     use boring::ssl::{SslContext, SslFiletype, SslMethod, SslVersion};
     let mut tls = SslContext::builder(SslMethod::tls())?;
     tls.set_min_proto_version(Some(SslVersion::TLS1_3))?;
@@ -353,6 +362,11 @@ pub(super) async fn start(config: ServerConfig) -> Result<ServerHandle> {
         .context("load H3 private key")?;
     tls.check_private_key()
         .context("H3 certificate/key mismatch")?;
+    Ok(tls)
+}
+
+pub(super) async fn start(config: ServerConfig) -> Result<ServerHandle> {
+    let tls = tls_context(&config)?;
     let server = Server::new(config.clone())?;
     let socket = tokio::net::UdpSocket::bind(config.listen).await?;
     let local_addr = socket.local_addr()?;
@@ -369,6 +383,61 @@ pub(super) async fn start(config: ServerConfig) -> Result<ServerHandle> {
         metrics_listener,
         shutdown_rx,
     ));
+    Ok(ServerHandle {
+        local_addr,
+        metrics_addr,
+        shutdown: Some(shutdown_tx),
+        join,
+    })
+}
+
+/// Bind both carriers before publishing readiness. They share authentication,
+/// replay, connection and per-user admission state.
+pub(super) async fn start_dual(config: ServerConfig) -> Result<ServerHandle> {
+    let acceptor = h2_acceptor::acceptor(&config)?;
+    let tls = tls_context(&config)?;
+    let state = server_state(config)?;
+    let tcp = TcpListener::bind(state.config.listen).await?;
+    let local_addr = tcp.local_addr()?;
+    let udp = tokio::net::UdpSocket::bind(local_addr).await?;
+    let metrics = bind_metrics_listener(&state.config).await?;
+    let metrics_addr = metrics.as_ref().map(TcpListener::local_addr).transpose()?;
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let (h2_stop, h2_rx) = oneshot::channel();
+    let (h3_stop, h3_rx) = oneshot::channel();
+    let join = tokio::spawn(async move {
+        let h3 = serve_listener(
+            udp,
+            tls,
+            Server {
+                state: state.clone(),
+            },
+            None,
+            h3_rx,
+        );
+        let h2 = super::serve(tcp, metrics, acceptor, state, h2_rx);
+        tokio::pin!(h2, h3);
+        enum End {
+            Stop,
+            H2(Result<()>),
+            H3(Result<()>),
+        }
+        let end = tokio::select! {
+            _ = &mut shutdown_rx => End::Stop,
+            result = &mut h2 => End::H2(result),
+            result = &mut h3 => End::H3(result),
+        };
+        let _ = h2_stop.send(());
+        let _ = h3_stop.send(());
+        match end {
+            End::Stop => {
+                let (a, b) = tokio::join!(h2, h3);
+                a.and(b)
+            }
+            End::H2(result) => result.and(h3.await),
+            End::H3(result) => result.and(h2.await),
+        }
+    });
     Ok(ServerHandle {
         local_addr,
         metrics_addr,
@@ -451,6 +520,155 @@ async fn serve_listener(
         join.await??;
     }
     result.and(driver_result)
+}
+
+async fn serve_native_udp(
+    tunnel: FrameChannel,
+    open: Frame,
+    max: usize,
+    policy: &relay::TunnelRelayPolicy,
+    user: &UserPolicy,
+    state: &ServerState,
+) -> Result<()> {
+    let FrameChannel {
+        outbound,
+        mut inbound,
+        mut datagrams,
+    } = tunnel;
+    let target = match OpenTcpPayload::decode(&open.payload) {
+        Ok(target) if target.initial_data.is_empty() => target,
+        _ => {
+            return send(
+                &outbound,
+                relay::error_frame(open.flow_id, ErrorCode::ProtocolError),
+                true,
+                max,
+                policy,
+            )
+            .await
+        }
+    };
+    let Some(_flow) = try_user_flow_permit(state, user) else {
+        return send(
+            &outbound,
+            relay::error_frame(open.flow_id, ErrorCode::FlowLimitExceeded),
+            true,
+            max,
+            policy,
+        )
+        .await;
+    };
+    let setup = async {
+        let capacity = datagrams.ready().await?;
+        let address = relay::first_allowed_addr(
+            &target.target.to_authority(target.port),
+            state.config.advanced.tcp_connect_timeout_ms,
+            &state.config.advanced.egress,
+        )
+        .await?;
+        let socket = relay::bind_udp_for_target(address).await?;
+        socket.connect(address).await?;
+        Ok::<_, anyhow::Error>((socket, capacity))
+    };
+    let opened = tokio::select! {
+        _ = outbound.closed() => return Ok(()),
+        result = timeout(Duration::from_millis(state.config.advanced.handshake_timeout_ms), setup) => result,
+    };
+    let (socket, capacity) = match opened {
+        Ok(Ok(value)) => value,
+        _ => {
+            return send(
+                &outbound,
+                relay::error_frame(open.flow_id, ErrorCode::TargetConnectFailed),
+                true,
+                max,
+                policy,
+            )
+            .await
+        }
+    };
+    let capacity = capacity.min(h3_channel::MAX_NATIVE_UDP_PAYLOAD);
+    anyhow::ensure!(capacity > 0, "native datagrams unavailable");
+    datagrams.enable();
+    send(
+        &outbound,
+        Frame::new(
+            FrameType::WindowUpdate,
+            1,
+            open.flow_id,
+            Bytes::copy_from_slice(&(capacity as u16).to_be_bytes()),
+        ),
+        false,
+        max,
+        policy,
+    )
+    .await?;
+    let (activity, mut progress) = tokio::sync::watch::channel(());
+    let upload = async {
+        while let Some(packet) = datagrams.inbound.recv().await {
+            if packet.len() > capacity {
+                continue;
+            }
+            if let Some(rate) = &policy.rate_limiter {
+                rate.throttle(packet.len()).await;
+            }
+            socket.send(&packet).await?;
+            activity.send_replace(());
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    let download = async {
+        let mut buffer = [0; h3_channel::MAX_NATIVE_UDP_PAYLOAD + 1];
+        loop {
+            let count = socket.recv(&mut buffer).await?;
+            if count > capacity {
+                continue;
+            }
+            if let Some(rate) = &policy.rate_limiter {
+                rate.throttle(count).await;
+            }
+            match datagrams
+                .outbound
+                .try_send(Bytes::copy_from_slice(&buffer[..count]))
+            {
+                Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
+            activity.send_replace(());
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    let control = async {
+        let frame = h3_channel::read_frame(&mut inbound, max).await?;
+        anyhow::ensure!(
+            frame
+                .is_none_or(|frame| frame.frame_type == FrameType::CloseFlow
+                    && frame.flow_id == open.flow_id),
+            "unexpected native UDP control frame"
+        );
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::pin!(upload, download, control);
+    let result = loop {
+        tokio::select! {
+            result = &mut upload => break result,
+            result = &mut download => break result,
+            result = &mut control => break result,
+            _ = outbound.closed() => break Ok(()),
+            changed = timeout(Duration::from_millis(state.config.advanced.udp_idle_timeout_ms), progress.changed()) => {
+                if !matches!(changed, Ok(Ok(()))) { break Ok(()); }
+            }
+        }
+    };
+    let _ = send(
+        &outbound,
+        Frame::new(FrameType::CloseFlow, 0, open.flow_id, Bytes::new()),
+        true,
+        max,
+        policy,
+    )
+    .await;
+    result
 }
 
 #[cfg(test)]

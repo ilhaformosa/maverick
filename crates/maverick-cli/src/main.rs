@@ -72,9 +72,23 @@ enum Commands {
     },
     /// Write example client/server config files to the current directory.
     GenConfig {
-        /// Generate explicit H3/TCP configurations; requires experimental-h3.
+        /// Generate explicit H3 TCP/native UDP configurations; requires experimental-h3.
         #[arg(long)]
         quiche_h3: bool,
+        /// Generate a dual server and opt-in new-connection carrier selection.
+        #[arg(long, conflicts_with_all = ["quiche_h3", "relay"])]
+        auto_h3: bool,
+        /// Generate an H2 intermediary pair with mandatory origin protection.
+        #[arg(long, conflicts_with = "quiche_h3", requires_all = ["origin_name", "origin_cert"])]
+        relay: bool,
+        #[arg(long, requires = "relay")]
+        origin_name: Option<String>,
+        /// Owner-verified public leaf certificate, used to derive the origin pin.
+        #[arg(long, requires = "relay")]
+        origin_cert: Option<PathBuf>,
+        /// Optional private CA roots for the inner origin.
+        #[arg(long, requires = "relay")]
+        origin_ca: Option<PathBuf>,
     },
     /// Validate a client or server config file.
     CheckConfig {
@@ -260,10 +274,17 @@ async fn main() -> Result<()> {
             println!("{}", cert_pin_from_pem(&input)?);
             Ok(())
         }
-        Commands::GenConfig { quiche_h3 } => {
+        Commands::GenConfig {
+            quiche_h3,
+            auto_h3,
+            relay,
+            origin_name,
+            origin_cert,
+            origin_ca,
+        } => {
             anyhow::ensure!(
-                !quiche_h3 || cfg!(feature = "experimental-h3"),
-                "--quiche-h3 requires a build with --features experimental-h3"
+                !(quiche_h3 || auto_h3) || cfg!(feature = "experimental-h3"),
+                "--quiche-h3/--auto-h3 require a build with --features experimental-h3"
             );
             // Check both outputs before generating a new pair of credentials.
             // create_new below still prevents overwriting a concurrent writer.
@@ -274,16 +295,36 @@ async fn main() -> Result<()> {
                 );
             }
             let secret = SecretString::generate();
-            write_secret_config_file(
-                GENERATED_CLIENT_CONFIG,
-                example_client_config(secret.expose_secret(), quiche_h3),
-            )
-            .with_context(|| format!("write {GENERATED_CLIENT_CONFIG}"))?;
-            write_secret_config_file(
-                GENERATED_SERVER_CONFIG,
-                example_server_config(secret.expose_secret(), quiche_h3),
-            )
-            .with_context(|| format!("write {GENERATED_SERVER_CONFIG}"))?;
+            let mut client = example_client_config(secret.expose_secret(), quiche_h3);
+            let mut server = example_server_config(secret.expose_secret(), quiche_h3);
+            if auto_h3 {
+                client = client.replacen("advanced:\n", "advanced:\n  auto_h3: true\n", 1);
+                server = server.replacen("advanced:\n", "advanced:\n  dual_h2_h3: true\n", 1);
+            }
+            if relay {
+                let name = origin_name.context("--relay requires --origin-name")?;
+                let certificate = fs::read(origin_cert.context("--relay requires --origin-cert")?)
+                    .context("read owner-supplied origin certificate")?;
+                let pin = cert_pin_from_pem(&certificate)?;
+                let ca = match origin_ca {
+                    Some(path) => {
+                        yaml_double_quoted(path.to_str().context("origin CA path must be UTF-8")?)
+                    }
+                    None => "null".into(),
+                };
+                client = client.replacen("advanced:\n", &format!(
+                    "advanced:\n  end_to_end:\n    server_name: {}\n    ca_cert: {ca}\n    cert_pin: {}\n",
+                    yaml_double_quoted(&name), yaml_double_quoted(&pin)), 1);
+                server = server.replacen("advanced:\n", "advanced:\n  end_to_end: true\n", 1);
+                ClientConfig::from_yaml_str(&client)
+                    .map_err(|_| anyhow::anyhow!("invalid protected client configuration"))?;
+                ServerConfig::from_yaml_str(&server)
+                    .map_err(|_| anyhow::anyhow!("invalid protected server configuration"))?;
+            }
+            write_secret_config_file(GENERATED_CLIENT_CONFIG, client)
+                .with_context(|| format!("write {GENERATED_CLIENT_CONFIG}"))?;
+            write_secret_config_file(GENERATED_SERVER_CONFIG, server)
+                .with_context(|| format!("write {GENERATED_SERVER_CONFIG}"))?;
             println!("wrote {GENERATED_CLIENT_CONFIG} and {GENERATED_SERVER_CONFIG}");
             Ok(())
         }
@@ -1932,6 +1973,7 @@ fn export_config_uri(path: &Path, include_secret: bool, qr: bool) -> Result<()> 
     for (unsupported, field) in [
         (cfg.advanced.end_to_end.is_some(), "advanced.end_to_end"),
         (cfg.advanced.quiche_h3, "advanced.quiche_h3"),
+        (cfg.advanced.auto_h3, "advanced.auto_h3"),
         (cfg.server.ca_cert.is_some(), "server.ca_cert"),
         (
             !cfg.auth.channel_binding.enabled || cfg.auth.channel_binding.require,

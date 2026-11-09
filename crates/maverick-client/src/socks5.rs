@@ -177,6 +177,10 @@ pub(crate) async fn serve_udp_associate_with_pool(
     control_peer: Option<SocketAddr>,
 ) -> Result<()> {
     crate::reject_retired_v1_h3(tunnel_pool.config())?;
+    #[cfg(feature = "experimental-h3")]
+    if tunnel_pool.config().advanced.quiche_h3 || tunnel_pool.config().advanced.auto_h3 {
+        return serve_native_udp_associate(control, tunnel_pool, _flow_permit, control_peer).await;
+    }
     let socket = UdpSocket::bind("127.0.0.1:0").await?;
     let bind_addr = socket.local_addr()?;
     write_udp_associate_success(&mut control, bind_addr).await?;
@@ -343,6 +347,100 @@ fn encode_udp_response(packet: &UdpPacketPayload) -> Result<Bytes> {
     out.put_u16(packet.port);
     out.extend_from_slice(&packet.data);
     Ok(out.freeze())
+}
+
+#[cfg(feature = "experimental-h3")]
+async fn serve_native_udp_associate(
+    mut control: TcpStream,
+    pool: Arc<ClientTunnelPool>,
+    flow_permit: OwnedSemaphorePermit,
+    control_peer: Option<SocketAddr>,
+) -> Result<()> {
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+    const TARGET_LIMIT: usize = 64;
+    let budget = Arc::clone(flow_permit.semaphore());
+    let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+    write_udp_associate_success(&mut control, socket.local_addr()?).await?;
+    let mut children: HashMap<(TargetAddr, u16), mpsc::Sender<Bytes>> = HashMap::new();
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut base_slot_free = true;
+    let mut control_buf = [0];
+    let mut buffer = [0; 65_535];
+    let mut associated_peer = None;
+    loop {
+        tokio::select! {
+            count = control.read(&mut control_buf) => {
+                if count? == 0 { break; }
+            }
+            joined = tasks.join_next(), if !tasks.is_empty() => {
+                if let Some(joined) = joined {
+                    let (key, base) = joined?;
+                    children.remove(&key);
+                    if base { base_slot_free = true; }
+                }
+            }
+            received = socket.recv_from(&mut buffer) => {
+                let (size, peer) = received?;
+                let Ok(packet) = decode_udp_request(&buffer[..size]) else { continue };
+                if packet.data.len() > maverick_core::h3_channel::MAX_NATIVE_UDP_PAYLOAD
+                    || !accept_udp_peer(&mut associated_peer, peer, control_peer) { continue; }
+                let key = (packet.target.clone(), packet.port);
+                if !children.contains_key(&key) {
+                    if children.len() >= TARGET_LIMIT { continue; }
+                    let base = base_slot_free;
+                    let extra = if base { None } else {
+                        match Arc::clone(&budget).try_acquire_owned() {
+                            Ok(permit) => Some(permit),
+                            Err(_) => continue,
+                        }
+                    };
+                    if base { base_slot_free = false; }
+                    let (sender, mut incoming) = mpsc::channel(32);
+                    children.insert(key.clone(), sender);
+                    let config = pool.config().clone();
+                    let local = Arc::clone(&socket);
+                    let child_key = key.clone();
+                    tasks.spawn(async move {
+                        let _extra = extra;
+                        let result = async {
+                            let mut association = crate::h3::NativeUdpAssociation::open(&config,
+                                child_key.0.clone(), child_key.1).await?;
+                            loop {
+                                tokio::select! {
+                                    packet = incoming.recv() => {
+                                        let Some(packet) = packet else { break };
+                                        let _ = association.send(packet)?;
+                                    }
+                                    received = tokio::time::timeout(
+                                        std::time::Duration::from_millis(config.advanced.udp_idle_timeout_ms), association.recv()) => {
+                                        match received {
+                                            Ok(Ok(data)) => {
+                                                let response = UdpPacketPayload::new(child_key.0.clone(), child_key.1, data);
+                                                local.send_to(&encode_udp_response(&response)?, peer).await?;
+                                            }
+                                            Ok(Err(error)) => return Err(error),
+                                            Err(_) => break,
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = association.close().await;
+                            Ok::<_, anyhow::Error>(())
+                        }.await;
+                        if let Err(error) = result { tracing::debug!(error = %error, "native UDP association ended"); }
+                        (child_key, base)
+                    });
+                }
+                if let Some(sender) = children.get(&key) {
+                    let _ = sender.try_send(packet.data);
+                }
+            }
+        }
+    }
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    Ok(())
 }
 
 #[cfg(test)]

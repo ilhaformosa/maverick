@@ -44,7 +44,7 @@ and the associated PR for baseline and warm-run evidence.
 ## Delivered — H3 Connection Setup
 
 The H3 client previously discarded every resolved server address after the
-first. It now tries subsequent addresses after a failed QUIC/TLS attempt,
+first. It now tries subsequent addresses after a pre-response network failure,
 within the original total connection budget. Focused loopback regressions cover
 TLS/frame transfer, certificate-pin rejection, timeout and socket release;
 ordinary CLI authentication and forwarding coverage remains in the shared gates.
@@ -64,28 +64,28 @@ Established relays waiting for target response data likewise end on transport
 loss, including after upload FIN, while retaining target-first half-close.
 Client relays waiting for local upload after response completion also end on
 transport loss. Keep normal half-close in both directions covered alongside it.
-Unsupported SOCKS UDP requests receive the corresponding local rejection
-without dialing the server; ordinary CLI coverage checks subsequent TCP reuse
-with one local flow slot.
+SOCKS UDP now uses the native datagram path below; admission, control-close
+cleanup and subsequent TCP reuse remain covered.
 
 Explicit server-handle shutdown cancels unfinished setup and notifies active
 H3 peers before joining their drivers. Keep same-endpoint restart and subsequent
 TCP use covered, with forced process termination distinct from this API path.
 
-## Next — End-to-End Protection and Complete Protocol Capabilities
+## Delivered — Protected Generation, Native UDP and New Connections
 
-The owner requires intermediary confidentiality. Follow the
-[end-to-end contract](docs/END_TO_END_PROTECTION.md), then deliver:
+The authorized sequence is implemented: generated intermediary configurations
+require owner-verified origin protection; direct H3 carries native UDP; an
+opt-in dual server shares policy/admission across H2/H3; automatic clients choose
+only for new TCP connections. TLS/authentication/protocol failures never cause
+fallback, and native UDP never silently becomes reliable H2 UDP. H3 remains
+default-off. See the [protection contract](docs/END_TO_END_PROTECTION.md) and
+[UDP/selection contract](docs/NATIVE_UDP_AND_SELECTION.md).
 
-The first protected H2 implementation and its bounded local acceptance are
-complete; STATUS.md records the behavior and limitations. Next deliver:
+## Next — Evidence and Delivery
 
-1. Native UDP with maintained QUIC/HTTP Datagram capabilities. Establish its
-   end-to-end trust boundary before selecting the wire format; verify actual
-   duplex delivery, loss, cancellation, limits and target ownership.
-2. Evidence-based anti-identification, DNS/ECH, performance and reliability
+1. Evidence-based anti-identification, DNS/ECH, performance and reliability
    improvements, each with a concrete problem and bounded acceptance.
-3. A new exact candidate with applicable independent security, compatibility,
+2. A new exact candidate with applicable independent security, compatibility,
    artifact, supply-chain and native rollback evidence.
 
 External client development, endpoint/IP-block recovery, node distribution and relay infrastructure
@@ -101,8 +101,8 @@ parallel CodeQL/macOS work can limit the benefit. Do not repeat the completed
 cache experiment without a relevant change or unresolved failure, or add a
 recurring benchmark. Preserve every quality check.
 
-Concrete ordinary-use failures still take priority. H3 pooling, automatic
-carrier choice and further CPU work need a measured problem. A remote-status
+Concrete ordinary-use failures still take priority. H3 pooling and further CPU
+work need a measured problem. New-connection selection is authorized above. A remote-status
 capability needs defined observations and freshness; local listeners or
 cumulative counters cannot establish health. Add an explicit SDK H3 feature
 and builder only when that becomes the chosen delivery entry, with a real SDK
@@ -117,8 +117,8 @@ security, compatibility, artifact, supply-chain and native rollback evidence;
 do not replace RC.2 assets or count older evidence as a newer candidate's pass.
 See the [release contract](docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md).
 
-Native Datagram/CONNECT-UDP follows protection work above. Auto H3, complete
-runnable Config v2/migration, auth v3, TUN and additional providers are not
+Standard CONNECT-UDP, complete runnable Config v2/migration, auth v3, TUN
+and additional providers are not
 automatic prerequisites for this work.
 Browser equivalence, field performance and production claims need evidence for
 those claims. Paid audit, signing or provenance work belongs to a specific

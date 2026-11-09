@@ -69,11 +69,15 @@ distinct from the historical trusted-provider path above: it adds origin CA,
 hostname and mandatory pin verification, and never retries as a plain tunnel.
 It does not enable terminating-relay H3 or turn inner TLS into native Datagram.
 
-## Explicit H3 TCP Path
+## Explicit H3 TCP and Native UDP Path
 
 An H3-enabled build and `advanced.quiche_h3: true` select the new carrier. Each
-TCP flow uses one QUIC connection and one H3 request; no pool, native Datagram,
-automatic fallback or provider-fronted H3 is installed. Server UDP acceptance
+TCP flow or fixed-target native UDP association uses one QUIC connection and
+one H3 request; no H3 pool or provider-fronted H3 is installed. HTTP Datagrams
+carry native UDP separately from reliable control frames. Opt-in dual servers
+share admission state; opt-in clients select H2 only after pre-response H3
+network unavailability for a new TCP flow. See the
+[wire/selection contract](NATIVE_UDP_AND_SELECTION.md). Server UDP acceptance
 uses bounded packet queues and existing global, per-source and pre-auth limits.
 After verified TLS, existing Maverick authentication and egress policy run.
 The default build and configuration continue to select H2.

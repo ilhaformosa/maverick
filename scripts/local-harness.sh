@@ -95,6 +95,7 @@ active_docs=(
   docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md
   docs/TRANSPORT_ARCHITECTURE.md
   docs/END_TO_END_PROTECTION.md
+  docs/NATIVE_UDP_AND_SELECTION.md
   docs/TEST_SERVER_PREPARATION.md
   docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md
   docs/archive/README.md
@@ -111,7 +112,7 @@ active_privacy_status=0
 rg -q "$active_privacy_pattern" \
   AGENTS.md README.md STATUS.md ROADMAP.md CONFIG.md THREAT_MODEL.md SECURITY.md \
   docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md \
-  docs/TRANSPORT_ARCHITECTURE.md docs/END_TO_END_PROTECTION.md docs/TEST_SERVER_PREPARATION.md \
+  docs/TRANSPORT_ARCHITECTURE.md docs/END_TO_END_PROTECTION.md docs/NATIVE_UDP_AND_SELECTION.md docs/TEST_SERVER_PREPARATION.md \
   docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md scripts/user-smoke.sh \
   scripts/build-pilot.sh scripts/generate-cyclonedx-sbom.sh \
   scripts/prepare-test-server.sh scripts/test-cyclonedx-sbom.sh \

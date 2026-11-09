@@ -185,7 +185,7 @@ pub fn project_v1_client_policy(
     if config.advanced.end_to_end.is_some() {
         return Err(V1ClientPolicyProjectionBlocker::EndToEndConfigured);
     }
-    if config.advanced.experimental_h3 || config.advanced.quiche_h3 {
+    if config.advanced.experimental_h3 || config.advanced.quiche_h3 || config.advanced.auto_h3 {
         return Err(V1ClientPolicyProjectionBlocker::H3Configured);
     }
     if config.advanced.cloudflare_ws_enabled() {

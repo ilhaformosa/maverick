@@ -8,6 +8,7 @@ repository.workspace = true
 [features]
 default = []
 experimental-h3 = ["dep:tokio"]
+h2-io = ["dep:h2", "dep:tokio"]
 browser-tls = []
 ech = []
 hpke-experimental = []
@@ -17,6 +18,7 @@ ml-kem-hybrid = []
 [dependencies]
 base64.workspace = true
 bytes.workspace = true
+h2 = { workspace = true, optional = true }
 hkdf.workspace = true
 hmac.workspace = true
 rand.workspace = true

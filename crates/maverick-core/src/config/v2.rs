@@ -145,6 +145,8 @@ pub enum V1ClientPolicyProjectionBlocker {
     /// shape. Canonical v1 validation now retires H3 first, so current callers
     /// receive [`Self::InvalidSourceConfig`] instead.
     H3Configured,
+    /// Origin-pinned inner TLS cannot be represented by this policy projection.
+    EndToEndConfigured,
     /// A WebSocket carrier is outside the first policy-only projection.
     WebSocketConfigured,
     /// A TLS-terminating front is outside the first policy-only projection.
@@ -179,6 +181,9 @@ pub fn project_v1_client_policy(
         Mode::Auto => {}
         Mode::Stable => return Err(V1ClientPolicyProjectionBlocker::StableMode),
         Mode::Private => return Err(V1ClientPolicyProjectionBlocker::PrivateMode),
+    }
+    if config.advanced.end_to_end.is_some() {
+        return Err(V1ClientPolicyProjectionBlocker::EndToEndConfigured);
     }
     if config.advanced.experimental_h3 || config.advanced.quiche_h3 {
         return Err(V1ClientPolicyProjectionBlocker::H3Configured);

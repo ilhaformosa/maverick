@@ -17,6 +17,8 @@ pub mod error;
 pub mod experimental;
 pub mod frame;
 pub mod grpc;
+#[cfg(feature = "h2-io")]
+pub mod h2_io;
 #[cfg(feature = "experimental-h3")]
 pub mod h3_channel;
 #[cfg(feature = "noise-experimental")]

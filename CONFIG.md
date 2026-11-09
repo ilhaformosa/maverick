@@ -324,6 +324,49 @@ transport failure must not be presented as a successful gRPC response. The
 client drains and validates that trailer while remaining compatible with
 Alpha.3 servers that ended terminal DATA without trailers.
 
+## Origin-pinned end-to-end H2
+
+An H2 intermediary can terminate outer TLS while forwarding a separate inner
+TLS 1.3 connection to the Maverick origin. Set this on the client:
+
+```yaml
+advanced:
+  end_to_end:
+    server_name: origin.example.invalid
+    ca_cert: origin-ca.pem # optional when the origin uses a public CA
+    cert_pin: sha256/<owner-verified-base64url-sha256>
+```
+
+Set `advanced.end_to_end: true` on the server. Its existing `tls.cert_path`
+and `tls.key_path` identify the inner origin as well as the outer listener.
+Keep that private key solely at the origin. Obtain the inner pin independently
+of the intermediary with the existing `pin-cert --cert` command. CA, hostname
+and pin validation all apply. Replacing the origin certificate requires an
+explicit pin update; no automatic trust or pin update is provided.
+
+The client's existing `server.address`, `server_name`, `ca_cert` and `cert_pin`
+continue to describe **outer** TLS. `advanced.end_to_end` never inherits those
+roots or pins. Existing credentials and tunnel path stay unchanged and travel
+only after inner verification. Both endpoints require enabled channel binding;
+authentication uses the inner TLS exporter. A protected listener rejects a
+plain tunnel and a protected client never retries without inner TLS.
+
+The outer POST uses `application/octet-stream`; the intermediary must support
+simultaneous streaming in both directions. HTTP-body boundaries are irrelevant
+to the inner TLS byte stream. This path is H2-only: combining it with H3 or
+WebSocket is rejected. H3 remains direct and default-off. Profile URI v1 and
+Config v2 policy projection reject protection they cannot preserve; use YAML.
+Rust callers constructing advanced-settings struct literals must supply the
+new field or use `..Default::default()`; omitted YAML fields remain compatible.
+
+With this option omitted, historical trusted-provider configurations retain
+their old behavior and still expose the Maverick layer to that provider. They
+do not meet the end-to-end requirement and are not fallback routes. A protected
+connection hides authentication, proxy destinations and payloads from the
+intermediary, but not the origin TLS name, outer metadata, timing or byte counts.
+Local tests do not establish compatibility with any real CDN or network.
+See [the protocol and acceptance contract](docs/END_TO_END_PROTECTION.md).
+
 ## Fallback
 
 Maverick supports static fallback and bounded HTTP reverse-proxy fallback.

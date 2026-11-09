@@ -20,7 +20,7 @@ http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-maverick-core = { path = "../maverick-core" }
+maverick-core = { path = "../maverick-core", features = ["h2-io"] }
 maverick-quiche = { path = "../maverick-quiche", optional = true }
 rustls.workspace = true
 time.workspace = true

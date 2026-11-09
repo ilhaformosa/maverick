@@ -41,12 +41,21 @@ path. It includes exporter channel binding, GREASE, extension permutation, and
 pinned browser-reference settings, but measured differences remain. It is not
 an exact browser-equivalence claim.
 
-The CDN-fronted H2 carrier keeps the browser-like client TLS profile but
+Without `advanced.end_to_end`, the legacy CDN-fronted H2 carrier keeps the
+browser-like client TLS profile but
 terminates TLS at the provider edge. Maverick therefore disables exporter
 channel binding for fronted H2 and WebSocket; client-edge and edge-origin TLS
 exporters cannot match. The provider can observe authentication and tunnel
 payload. Set `trusted_tls_terminating_provider: true` only after accepting that
 tradeoff. Loopback tests do not prove real-provider behavior.
+
+The origin-pinned end-to-end H2 option instead puts Maverick sessions inside
+TLS 1.3 to the origin and binds authentication to its inner exporter. Its
+mandatory origin pin must be obtained independently of the intermediary;
+normal CA and hostname checks still apply. Keep the origin private key out of
+the intermediary's control. There is no 0-RTT or unprotected fallback. This
+protects content, not timing, volume, origin SNI or availability. See
+[the protection contract](docs/END_TO_END_PROTECTION.md).
 
 `--no-default-features` builds retain the explicit rustls fallback for
 development and compatibility checks. A client config may also explicitly set

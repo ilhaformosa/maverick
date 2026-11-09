@@ -380,6 +380,8 @@ jobs:
         run: ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-before.json"
       - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - run: cargo fetch --locked --target "$MAVERICK_SBOM_TARGET"
+      - name: Verify origin-pinned TLS through a terminating intermediary
+        run: cargo test --locked -p maverick-tests --test end_to_end
       - name: Verify upstream H3 authentication and local TCP proxy
         run: ./scripts/check.sh h3
       - name: Evaluate the default-off quiche candidate

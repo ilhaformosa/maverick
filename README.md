@@ -54,6 +54,15 @@ instead of silently changing policy. See [CONFIG.md](CONFIG.md#transport).
 These are source-build capabilities. Published RC.2 files remain immutable and
 do not include H3 or subsequent source changes.
 
+For an H2 intermediary that terminates outer TLS, source builds provide explicit
+origin-pinned inner TLS through `advanced.end_to_end`. The client verifies a
+separate origin CA/hostname/pin before sending authentication, proxy targets or
+payloads; protection failures never retry in the historical unprotected mode.
+See [configuration](CONFIG.md#origin-pinned-end-to-end-h2) and the
+[protocol boundary](docs/END_TO_END_PROTECTION.md). This is locally tested
+streaming H2, not real-provider qualification or native UDP. The intermediary
+can still observe the origin TLS name, timing and volume.
+
 ## Embedded SDK State
 
 `GuiClientRuntime::connect()` starts local listeners. Its diagnostics report

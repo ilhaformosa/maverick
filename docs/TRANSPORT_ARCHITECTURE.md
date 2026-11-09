@@ -60,6 +60,15 @@ real-network pilot. General browsing was smooth, but video playback, large-image
 loading, and weak-network completion behavior exposed open usability problems.
 `STATUS.md` is authoritative for the result and claim boundary.
 
+## Protected H2 Intermediary Path
+
+The new [origin-pinned H2 envelope](END_TO_END_PROTECTION.md) provides a separate
+TLS 1.3 connection inside an outer HTTP body for untrusted terminating relays.
+It reuses the H2 session loop and existing auth with the inner exporter. This is
+distinct from the historical trusted-provider path above: it adds origin CA,
+hostname and mandatory pin verification, and never retries as a plain tunnel.
+It does not enable terminating-relay H3 or turn inner TLS into native Datagram.
+
 ## Explicit H3 TCP Path
 
 An H3-enabled build and `advanced.quiche_h3: true` select the new carrier. Each

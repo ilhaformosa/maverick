@@ -26,7 +26,7 @@ bytes.workspace = true
 futures.workspace = true
 h2.workspace = true
 http.workspace = true
-maverick-core = { path = "../maverick-core", default-features = false }
+maverick-core = { path = "../maverick-core", default-features = false, features = ["h2-io"] }
 maverick-quiche = { path = "../maverick-quiche", optional = true }
 maverick-tun = { path = "../maverick-tun", optional = true }
 rustls.workspace = true

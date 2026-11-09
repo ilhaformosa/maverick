@@ -369,6 +369,7 @@ async fn profile_export_rejects_unrepresentable_connection_policies() -> Result<
         "rustls_default"
     };
     let mut cases = vec![
+        ("advanced.end_to_end", "advanced:\n  end_to_end:\n    server_name: origin.invalid\n    cert_pin: sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n".to_owned()),
         ("server.ca_cert", "  ca_cert: /private/synthetic-ca.pem\n".to_owned()),
         ("auth.channel_binding", "auth:\n  channel_binding:\n    enabled: true\n    require: true\n".to_owned()),
         ("auth.channel_binding", "auth:\n  channel_binding:\n    enabled: false\n".to_owned()),

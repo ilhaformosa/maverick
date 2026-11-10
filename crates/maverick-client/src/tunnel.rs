@@ -6,7 +6,7 @@ use futures::{future::poll_fn, SinkExt, StreamExt};
 use http::Request;
 use maverick_core::auth::{
     ClientHello, ClientHelloV2, ClientHelloV2Params, ServerHello, ServerHelloV2, TlsChannelBinding,
-    AUTH_V2_PROTOCOL_VERSION, FEATURE_TLS_CHANNEL_BINDING, PROTOCOL_VERSION,
+    AUTH_V2_PROTOCOL_VERSION, FEATURE_TLS_CHANNEL_BINDING, FEATURE_UDP_SESSION, PROTOCOL_VERSION,
 };
 use maverick_core::config::{parse_auth_epoch, select_client_credential_at_unix};
 use maverick_core::frame::{Frame, FrameType, DEFAULT_MAX_FRAME_SIZE, MAX_NEGOTIATED_FRAME_SIZE};
@@ -37,6 +37,7 @@ pub enum ClientTunnel {
 }
 
 pub struct H2ClientTunnel {
+    pub(crate) udp_sessions: bool,
     pub send_stream: h2::SendStream<Bytes>,
     pub recv_stream: h2::RecvStream,
     pub recv_buf: BytesMut,
@@ -355,6 +356,7 @@ async fn open_h2(
         bail!("server returned non-success status: {}", response.status());
     }
     let mut tunnel = H2ClientTunnel {
+        udp_sessions: false,
         send_stream,
         recv_stream: response.into_body(),
         recv_buf: BytesMut::new(),
@@ -380,8 +382,9 @@ async fn open_h2(
     if server_frame.frame_type != FrameType::ServerHello {
         bail!("missing ServerHello");
     }
-    tunnel.max_frame_size =
-        validate_negotiated_max_frame_size(hello.verify_server_hello(&server_frame.payload)?)?;
+    let (maximum, features) = hello.verify_server_parameters(&server_frame.payload)?;
+    tunnel.max_frame_size = validate_negotiated_max_frame_size(maximum)?;
+    tunnel.udp_sessions = features & FEATURE_UDP_SESSION != 0;
     Ok(ClientTunnel::H2(Box::new(tunnel)))
 }
 
@@ -505,6 +508,11 @@ impl ClientHandshake {
     }
 
     pub(crate) fn verify_server_hello(&self, payload: &[u8]) -> Result<u32> {
+        self.verify_server_parameters(payload)
+            .map(|(maximum, _)| maximum)
+    }
+
+    pub(crate) fn verify_server_parameters(&self, payload: &[u8]) -> Result<(u32, u64)> {
         match &self.message {
             ClientHandshakeMessage::V1(hello) => {
                 let server_hello = ServerHello::decode(payload)?;
@@ -527,7 +535,10 @@ impl ClientHandshake {
                 {
                     bail!("invalid ServerHello");
                 }
-                Ok(server_hello.max_frame_size)
+                Ok((
+                    server_hello.max_frame_size,
+                    server_hello.feature_flags_selected,
+                ))
             }
             ClientHandshakeMessage::V2(hello) => {
                 let server_hello = ServerHelloV2::decode(payload)?;
@@ -552,7 +563,10 @@ impl ClientHandshake {
                 {
                     bail!("invalid ServerHello v2");
                 }
-                Ok(server_hello.max_frame_size)
+                Ok((
+                    server_hello.max_frame_size,
+                    server_hello.feature_flags_selected,
+                ))
             }
         }
     }
@@ -562,16 +576,21 @@ fn client_feature_flags(
     config: &ClientConfig,
     channel_binding: Option<TlsChannelBinding>,
 ) -> Result<u64> {
+    let features = if config.advanced.cloudflare_ws_enabled() {
+        0
+    } else {
+        FEATURE_UDP_SESSION
+    };
     if !config.auth.channel_binding.enabled {
-        return Ok(0);
+        return Ok(features);
     }
     if channel_binding.is_some() {
-        return Ok(FEATURE_TLS_CHANNEL_BINDING);
+        return Ok(features | FEATURE_TLS_CHANNEL_BINDING);
     }
     if config.auth.channel_binding.require {
         bail!("auth.channel_binding.require needs a transport with TLS channel binding support");
     }
-    Ok(0)
+    Ok(features)
 }
 
 fn selected_channel_binding(
@@ -910,6 +929,7 @@ mod tests {
 
         let config = client_config(SecretString::generate());
         let tunnel = ClientTunnel::H2(Box::new(H2ClientTunnel {
+            udp_sessions: false,
             send_stream,
             recv_stream,
             recv_buf: BytesMut::new(),
@@ -998,6 +1018,7 @@ mod tests {
         let pool =
             crate::connection_manager::ClientTunnelPool::new(std::sync::Arc::new(config.clone()));
         let mut tunnel = ClientTunnel::H2(Box::new(H2ClientTunnel {
+            udp_sessions: false,
             send_stream: request_body,
             recv_stream: response.into_body(),
             recv_buf: BytesMut::new(),
@@ -1239,6 +1260,7 @@ mod tests {
         let pool =
             crate::connection_manager::ClientTunnelPool::new(std::sync::Arc::new(config.clone()));
         let mut tunnel = ClientTunnel::H2(Box::new(H2ClientTunnel {
+            udp_sessions: false,
             send_stream: request_body,
             recv_stream: response.into_body(),
             recv_buf: BytesMut::new(),

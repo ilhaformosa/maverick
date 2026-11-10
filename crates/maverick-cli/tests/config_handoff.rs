@@ -97,14 +97,53 @@ fn generated_pair(directory: &Path, h3: bool) -> Result<()> {
 }
 
 #[tokio::test]
-async fn generated_default_pair_remains_h2() -> Result<()> {
+async fn generated_fixed_h2_pair_remains_h2() -> Result<()> {
     let directory = TempDir::new()?;
-    let output = cli(directory.path(), &["gen-config"], None).await?;
+    let output = cli(directory.path(), &["gen-config", "--h2"], None).await?;
     ensure!(
         output.status.success(),
         "default configuration generation failed"
     );
     generated_pair(directory.path(), false)
+}
+
+#[tokio::test]
+async fn generated_direct_defaults_are_dual_auto_with_explicit_udp_policy() -> Result<()> {
+    let directory = TempDir::new()?;
+    let output = cli(directory.path(), &["gen-config"], None).await?;
+    if !cfg!(feature = "experimental-h3") {
+        ensure!(!output.status.success());
+        ensure!(!directory.path().join("client.generated.yaml").exists());
+        ensure!(!directory.path().join("server.generated.yaml").exists());
+        return Ok(());
+    }
+    ensure!(output.status.success());
+    let client = ClientConfig::from_yaml_str(&fs::read_to_string(
+        directory.path().join("client.generated.yaml"),
+    )?)?;
+    let server = ServerConfig::from_yaml_str(&fs::read_to_string(
+        directory.path().join("server.generated.yaml"),
+    )?)?;
+    ensure!(client.advanced.auto_h3 && server.advanced.dual_h2_h3);
+    ensure!(client.advanced.udp_policy == Some(maverick_core::config::UdpPolicy::AllowReliable));
+    ensure!(!client.advanced.quiche_h3 && !server.advanced.quiche_h3);
+    ensure!(client.server.secret.expose_secret() == server.users[0].secret.expose_secret());
+    Ok(())
+}
+
+#[tokio::test]
+async fn generation_rejects_incompatible_udp_policy_without_outputs() -> Result<()> {
+    let directory = TempDir::new()?;
+    let output = cli(
+        directory.path(),
+        &["gen-config", "--h2", "--udp-policy", "native_required"],
+        None,
+    )
+    .await?;
+    ensure!(!output.status.success());
+    ensure!(!directory.path().join("client.generated.yaml").exists());
+    ensure!(!directory.path().join("server.generated.yaml").exists());
+    Ok(())
 }
 
 #[tokio::test]
@@ -205,9 +244,7 @@ async fn server_frame_size_is_checked_before_startup() -> Result<()> {
     for &h3 in carriers {
         let directory = TempDir::new()?;
         let mut generate = vec!["gen-config"];
-        if h3 {
-            generate.push("--quiche-h3");
-        }
+        generate.push(if h3 { "--quiche-h3" } else { "--h2" });
         let output = cli(directory.path(), &generate, None).await?;
         ensure!(output.status.success(), "configuration generation failed");
         let source = fs::read_to_string(directory.path().join("server.generated.yaml"))?;
@@ -287,7 +324,7 @@ async fn generation_refuses_existing_pair_member_without_partial_writes() -> Res
         let directory = TempDir::new()?;
         let original = "existing owner configuration\n";
         private_file(&directory.path().join(existing), original)?;
-        let output = cli(directory.path(), &["gen-config"], None).await?;
+        let output = cli(directory.path(), &["gen-config", "--h2"], None).await?;
         ensure!(
             !output.status.success(),
             "generation accepted an existing configuration"

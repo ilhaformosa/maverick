@@ -19,6 +19,8 @@ pub const CLIENT_HELLO_V2_AUTH_LABEL: &[u8] = b"Maverick v2 client hello";
 pub const SERVER_HELLO_V2_AUTH_LABEL: &[u8] = b"Maverick v2 server hello";
 pub const AUTH_V1_MAX_CREDENTIAL_ID_LEN: usize = 512;
 pub const AUTH_V2_MAX_CREDENTIAL_HINT_LEN: usize = 512;
+/// Authenticated support for fixed-target, bidirectional UDP sessions.
+pub const FEATURE_UDP_SESSION: u64 = 1 << 62;
 pub const FEATURE_TLS_CHANNEL_BINDING: u64 = 1 << 63;
 pub const TLS_CHANNEL_BINDING_EXPORTER_LABEL: &[u8] = b"maverick tls channel binding v1";
 

@@ -34,8 +34,11 @@ pub use maverick_client::connection_manager::H2ConnectionPoolSnapshot;
 #[cfg(feature = "experimental-h3")]
 pub use maverick_client::connector::NativeUdpSession;
 pub use maverick_client::connector::{
-    Bytes, ProxyConnector, TargetAddr, TcpSession, UdpPacketPayload,
+    Bytes, ProxyConnector, TargetAddr, TcpSession, UdpCapabilityUnsupported, UdpCarrier,
+    UdpPacketPayload, UdpSession,
 };
+pub use maverick_client::transport::TransportKind;
+pub use maverick_core::config::UdpPolicy;
 
 mod platform_helper_ipc;
 pub use platform_helper_ipc::{

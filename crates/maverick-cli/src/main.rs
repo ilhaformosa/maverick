@@ -72,10 +72,16 @@ enum Commands {
     },
     /// Write example client/server config files to the current directory.
     GenConfig {
+        /// Generate fixed H2 TCP/reliable UDP configurations.
+        #[arg(long, conflicts_with_all = ["quiche_h3", "auto_h3", "relay"])]
+        h2: bool,
+        /// UDP behavior; omission chooses native_required for fixed H3, allow_reliable otherwise.
+        #[arg(long, value_parser = ["native_required", "allow_reliable"])]
+        udp_policy: Option<String>,
         /// Generate explicit H3 TCP/native UDP configurations; requires experimental-h3.
         #[arg(long)]
         quiche_h3: bool,
-        /// Generate a dual server and opt-in new-connection carrier selection.
+        /// Generate a dual server and automatic client (the direct default).
         #[arg(long, conflicts_with_all = ["quiche_h3", "relay"])]
         auto_h3: bool,
         /// Generate an H2 intermediary pair with mandatory origin protection.
@@ -275,6 +281,8 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::GenConfig {
+            h2,
+            udp_policy,
             quiche_h3,
             auto_h3,
             relay,
@@ -282,9 +290,10 @@ async fn main() -> Result<()> {
             origin_cert,
             origin_ca,
         } => {
+            let auto_h3 = auto_h3 || (!h2 && !quiche_h3 && !relay);
             anyhow::ensure!(
                 !(quiche_h3 || auto_h3) || cfg!(feature = "experimental-h3"),
-                "--quiche-h3/--auto-h3 require a build with --features experimental-h3"
+                "default dual/auto and --quiche-h3/--auto-h3 require a build with --features experimental-h3; use --h2 for an H2-only build"
             );
             // Check both outputs before generating a new pair of credentials.
             // create_new below still prevents overwriting a concurrent writer.
@@ -297,6 +306,16 @@ async fn main() -> Result<()> {
             let secret = SecretString::generate();
             let mut client = example_client_config(secret.expose_secret(), quiche_h3);
             let mut server = example_server_config(secret.expose_secret(), quiche_h3);
+            let policy = udp_policy.as_deref().unwrap_or(if quiche_h3 {
+                "native_required"
+            } else {
+                "allow_reliable"
+            });
+            client = client.replacen(
+                "advanced:\n",
+                &format!("advanced:\n  udp_policy: {policy}\n"),
+                1,
+            );
             if auto_h3 {
                 client = client.replacen("advanced:\n", "advanced:\n  auto_h3: true\n", 1);
                 server = server.replacen("advanced:\n", "advanced:\n  dual_h2_h3: true\n", 1);
@@ -321,6 +340,13 @@ async fn main() -> Result<()> {
                 ServerConfig::from_yaml_str(&server)
                     .map_err(|_| anyhow::anyhow!("invalid protected server configuration"))?;
             }
+            ClientConfig::from_yaml_str(&client).map_err(|_| {
+                anyhow::anyhow!(
+                    "generated client policy is incompatible with the selected transport"
+                )
+            })?;
+            ServerConfig::from_yaml_str(&server)
+                .map_err(|_| anyhow::anyhow!("generated server configuration is invalid"))?;
             write_secret_config_file(GENERATED_CLIENT_CONFIG, client)
                 .with_context(|| format!("write {GENERATED_CLIENT_CONFIG}"))?;
             write_secret_config_file(GENERATED_SERVER_CONFIG, server)
@@ -424,7 +450,7 @@ async fn main() -> Result<()> {
                 ""
             };
             println!(
-                "features: tls13,h2,{browser_tls}cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke{h3}"
+                "features: tls13,h2,{browser_tls}cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke,udp-sessions,udp-policy{h3}"
             );
             Ok(())
         }
@@ -1974,6 +2000,7 @@ fn export_config_uri(path: &Path, include_secret: bool, qr: bool) -> Result<()> 
         (cfg.advanced.end_to_end.is_some(), "advanced.end_to_end"),
         (cfg.advanced.quiche_h3, "advanced.quiche_h3"),
         (cfg.advanced.auto_h3, "advanced.auto_h3"),
+        (cfg.advanced.udp_policy.is_some(), "advanced.udp_policy"),
         (cfg.server.ca_cert.is_some(), "server.ca_cert"),
         (
             !cfg.auth.channel_binding.enabled || cfg.auth.channel_binding.require,
@@ -3104,6 +3131,60 @@ advanced:
     )
 }
 
+async fn check_udp_session(mut config: ClientConfig) -> Result<()> {
+    use maverick_client::connector::{Bytes, ProxyConnector, TargetAddr};
+    use maverick_core::config::UdpPolicy;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        config.advanced.udp_policy = Some(if config.advanced.quiche_h3 {
+            UdpPolicy::NativeRequired
+        } else {
+            UdpPolicy::AllowReliable
+        });
+        let connector = ProxyConnector::new(config)?;
+        let target = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+        let mut session = connector
+            .open_udp(
+                TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+                target.local_addr()?.port(),
+            )
+            .await?;
+        let mut data = [0; 64];
+        let mut peer = None;
+        for _ in 0..2 {
+            anyhow::ensure!(
+                session.send(Bytes::from_static(b"udp-session-smoke"))?,
+                "UDP smoke packet not queued"
+            );
+            let (size, source) = target.recv_from(&mut data).await?;
+            anyhow::ensure!(
+                &data[..size] == b"udp-session-smoke",
+                "UDP smoke upload mismatch"
+            );
+            if let Some(peer) = peer {
+                anyhow::ensure!(peer == source, "UDP source port changed");
+            }
+            peer = Some(source);
+        }
+        for _ in 0..2 {
+            target
+                .send_to(
+                    b"independent-reply",
+                    peer.context("missing UDP smoke source")?,
+                )
+                .await?;
+            anyhow::ensure!(
+                session.recv().await?.as_ref() == b"independent-reply",
+                "UDP smoke response mismatch"
+            );
+        }
+        session.close().await?;
+        connector.close();
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("UDP session smoke timed out")?
+}
+
 async fn bench_local(
     bytes: usize,
     concurrency: usize,
@@ -3238,6 +3319,7 @@ async fn bench_local(
     }
 
     let tls_fingerprint = client_advanced.stealth.tls_fingerprint;
+    let udp_check_config = client_config(secret.clone(), client_advanced.clone());
     let client = start_client(client_config(secret, client_advanced)).await?;
 
     let proxied =
@@ -3270,6 +3352,8 @@ async fn bench_local(
     if verify_wrong_credential {
         println!("carrier: {}", if quiche_h3 { "h3" } else { "h2" });
         println!("correct_credential_roundtrip: PASS");
+        check_udp_session(udp_check_config).await?;
+        println!("udp_session_roundtrip: PASS");
     }
 
     client.shutdown().await?;

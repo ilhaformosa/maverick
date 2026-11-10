@@ -13,6 +13,10 @@ pub async fn relay_udp_packet(
     config: &ClientConfig,
     packet: UdpPacketPayload,
 ) -> Result<UdpPacketPayload> {
+    if config.advanced.udp_policy.is_some() {
+        let pool = ClientTunnelPool::new(std::sync::Arc::new(config.clone()));
+        return crate::udp_session::exchange(&pool, packet).await;
+    }
     #[cfg(feature = "experimental-h3")]
     if config.advanced.quiche_h3 || config.advanced.auto_h3 {
         let mut association =

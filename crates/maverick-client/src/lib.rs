@@ -22,6 +22,7 @@ pub mod transport;
 mod tun_runtime;
 pub mod tunnel;
 pub mod udp;
+pub mod udp_session;
 pub mod ws_transport;
 
 use std::net::SocketAddr;

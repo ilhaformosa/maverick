@@ -177,9 +177,12 @@ pub(crate) async fn serve_udp_associate_with_pool(
     control_peer: Option<SocketAddr>,
 ) -> Result<()> {
     crate::reject_retired_v1_h3(tunnel_pool.config())?;
+    if tunnel_pool.config().advanced.udp_policy.is_some() {
+        return serve_session_udp_associate(control, tunnel_pool, _flow_permit, control_peer).await;
+    }
     #[cfg(feature = "experimental-h3")]
     if tunnel_pool.config().advanced.quiche_h3 || tunnel_pool.config().advanced.auto_h3 {
-        return serve_native_udp_associate(control, tunnel_pool, _flow_permit, control_peer).await;
+        return serve_session_udp_associate(control, tunnel_pool, _flow_permit, control_peer).await;
     }
     let socket = UdpSocket::bind("127.0.0.1:0").await?;
     let bind_addr = socket.local_addr()?;
@@ -349,8 +352,7 @@ fn encode_udp_response(packet: &UdpPacketPayload) -> Result<Bytes> {
     Ok(out.freeze())
 }
 
-#[cfg(feature = "experimental-h3")]
-async fn serve_native_udp_associate(
+async fn serve_session_udp_associate(
     mut control: TcpStream,
     pool: Arc<ClientTunnelPool>,
     flow_permit: OwnedSemaphorePermit,
@@ -361,6 +363,9 @@ async fn serve_native_udp_associate(
     const TARGET_LIMIT: usize = 64;
     let budget = Arc::clone(flow_permit.semaphore());
     let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+    let options = socket2::SockRef::from(socket.as_ref());
+    options.set_send_buffer_size(131_072)?;
+    options.set_recv_buffer_size(131_072)?;
     write_udp_associate_success(&mut control, socket.local_addr()?).await?;
     let mut children: HashMap<(TargetAddr, u16), mpsc::Sender<Bytes>> = HashMap::new();
     let mut tasks = tokio::task::JoinSet::new();
@@ -383,7 +388,10 @@ async fn serve_native_udp_associate(
             received = socket.recv_from(&mut buffer) => {
                 let (size, peer) = received?;
                 let Ok(packet) = decode_udp_request(&buffer[..size]) else { continue };
-                if packet.data.len() > maverick_core::h3_channel::MAX_NATIVE_UDP_PAYLOAD
+                let packet_limit = if pool.config().advanced.udp_policy.is_none() {
+                    maverick_core::frame::MAX_NATIVE_UDP_PAYLOAD
+                } else { maverick_core::frame::MAX_RELIABLE_UDP_PAYLOAD };
+                if packet.data.len() > packet_limit
                     || !accept_udp_peer(&mut associated_peer, peer, control_peer) { continue; }
                 let key = (packet.target.clone(), packet.port);
                 if !children.contains_key(&key) {
@@ -398,13 +406,14 @@ async fn serve_native_udp_associate(
                     if base { base_slot_free = false; }
                     let (sender, mut incoming) = mpsc::channel(32);
                     children.insert(key.clone(), sender);
-                    let config = pool.config().clone();
+                    let child_pool = Arc::clone(&pool);
                     let local = Arc::clone(&socket);
                     let child_key = key.clone();
                     tasks.spawn(async move {
                         let _extra = extra;
+                        let config = child_pool.config();
                         let result = async {
-                            let mut association = crate::h3::NativeUdpAssociation::open(&config,
+                            let mut association = crate::udp_session::DatagramSession::open_for_socks(&child_pool,
                                 child_key.0.clone(), child_key.1).await?;
                             loop {
                                 tokio::select! {
@@ -417,7 +426,10 @@ async fn serve_native_udp_associate(
                                         match received {
                                             Ok(Ok(data)) => {
                                                 let response = UdpPacketPayload::new(child_key.0.clone(), child_key.1, data);
-                                                local.send_to(&encode_udp_response(&response)?, peer).await?;
+                                                let encoded = encode_udp_response(&response)?;
+                                                // The local IPv4 UDP packet includes the SOCKS header.
+                                                if encoded.len() > maverick_core::frame::MAX_RELIABLE_UDP_PAYLOAD { continue; }
+                                                local.send_to(&encoded, peer).await?;
                                             }
                                             Ok(Err(error)) => return Err(error),
                                             Err(_) => break,
@@ -428,7 +440,7 @@ async fn serve_native_udp_associate(
                             let _ = association.close().await;
                             Ok::<_, anyhow::Error>(())
                         }.await;
-                        if let Err(error) = result { tracing::debug!(error = %error, "native UDP association ended"); }
+                        if let Err(error) = result { tracing::debug!(error = %error, "UDP association ended"); }
                         (child_key, base)
                     });
                 }

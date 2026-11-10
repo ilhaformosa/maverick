@@ -242,7 +242,7 @@ jobs:
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level full \
             --source-root .
-      - name: Exercise RC.2 upgrade and Beta.4 rollback on GNU/Linux
+      - name: Exercise current-candidate upgrade and Beta.4 rollback on GNU/Linux
         env:
           GH_TOKEN: ${{ github.token }}
           MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
@@ -416,7 +416,7 @@ jobs:
             --expected-target "$MAVERICK_SBOM_TARGET" \
             --verification-level full \
             --source-root .
-      - name: Exercise RC.2 upgrade and Beta.4 rollback on macOS
+      - name: Exercise current-candidate upgrade and Beta.4 rollback on macOS
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -308,6 +308,19 @@ impl ClientConfig {
         if self.advanced.quiche_h3 && self.advanced.auto_h3 {
             return Err(Error::Config("choose either quiche_h3 or auto_h3".into()));
         }
+        if self.advanced.udp_policy.is_some() && self.advanced.cloudflare_ws_enabled() {
+            return Err(Error::Config(
+                "UDP session policy requires H2 or H3, not WebSocket".into(),
+            ));
+        }
+        if self.advanced.udp_policy == Some(UdpPolicy::NativeRequired)
+            && !self.advanced.quiche_h3
+            && !self.advanced.auto_h3
+        {
+            return Err(Error::Config(
+                "native_required UDP needs H3 or automatic transport".into(),
+            ));
+        }
         validate_quiche_h3(
             self.advanced.quiche_h3 || self.advanced.auto_h3,
             self.advanced.tls_terminating_fronting_enabled(),
@@ -1293,8 +1306,18 @@ fn validate_end_to_end(h3: bool, websocket: bool, channel_binding: bool) -> Resu
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UdpPolicy {
+    NativeRequired,
+    AllowReliable,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientAdvancedConfig {
+    /// None preserves legacy UDP behavior for existing configurations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_policy: Option<UdpPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_to_end: Option<EndToEndClientConfig>,
     #[serde(default = "default_connect_timeout_ms")]
@@ -1334,6 +1357,7 @@ pub struct ClientAdvancedConfig {
 impl Default for ClientAdvancedConfig {
     fn default() -> Self {
         Self {
+            udp_policy: None,
             end_to_end: None,
             connect_timeout_ms: default_connect_timeout_ms(),
             idle_timeout_secs: default_idle_timeout_secs(),

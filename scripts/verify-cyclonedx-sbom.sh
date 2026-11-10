@@ -303,6 +303,12 @@ if [[ "$verification_level" == "full" ]]; then
     ! -L "$snapshot_root/crates/maverick-cli/Cargo.toml" ]] || fail source
   [[ ! -e "$snapshot_root/.git" ]] || fail source
 
+  metadata_features="maverick-cli/browser-tls"
+  root_features='["browser-tls"]'
+  if [[ "$expected_version" == "1.2.0-rc.3" ]]; then
+    metadata_features="maverick-cli/experimental-h3"
+    root_features='["browser-tls","experimental-h3"]'
+  fi
   metadata_file="$private_tmp/metadata.json"
   CARGO_NET_OFFLINE=true "$cargo_bin" metadata \
     --format-version 1 \
@@ -311,17 +317,17 @@ if [[ "$verification_level" == "full" ]]; then
     --offline \
     --filter-platform "$expected_target" \
     --no-default-features \
-    --features maverick-cli/browser-tls \
+    --features "$metadata_features" \
     >"$metadata_file" 2>/dev/null || fail metadata
   chmod 0600 "$metadata_file" >/dev/null 2>&1 || fail metadata
 
-  jq -e --arg version "$expected_version" '
+  jq -e --arg version "$expected_version" --argjson features "$root_features" '
     . as $m |
     ($m.resolve.root // "") as $root |
     ([.packages[] | select(.id == $root)] | length == 1) and
     ([.packages[] | select(.id == $root)][0].name == "maverick-cli") and
     ([.packages[] | select(.id == $root)][0].version == $version) and
-    ([.resolve.nodes[] | select(.id == $root)][0].features == ["browser-tls"])
+    ([.resolve.nodes[] | select(.id == $root)][0].features == $features)
   ' "$metadata_file" >/dev/null 2>&1 || fail metadata-root
 
   expected_components="$private_tmp/expected-components"

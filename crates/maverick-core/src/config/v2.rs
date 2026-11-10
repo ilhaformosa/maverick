@@ -147,6 +147,8 @@ pub enum V1ClientPolicyProjectionBlocker {
     H3Configured,
     /// Origin-pinned inner TLS cannot be represented by this policy projection.
     EndToEndConfigured,
+    /// Explicit UDP semantics cannot be represented by this policy projection.
+    UdpPolicyConfigured,
     /// A WebSocket carrier is outside the first policy-only projection.
     WebSocketConfigured,
     /// A TLS-terminating front is outside the first policy-only projection.
@@ -184,6 +186,9 @@ pub fn project_v1_client_policy(
     }
     if config.advanced.end_to_end.is_some() {
         return Err(V1ClientPolicyProjectionBlocker::EndToEndConfigured);
+    }
+    if config.advanced.udp_policy.is_some() {
+        return Err(V1ClientPolicyProjectionBlocker::UdpPolicyConfigured);
     }
     if config.advanced.experimental_h3 || config.advanced.quiche_h3 || config.advanced.auto_h3 {
         return Err(V1ClientPolicyProjectionBlocker::H3Configured);

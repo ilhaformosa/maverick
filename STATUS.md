@@ -8,21 +8,30 @@ historical evidence; a result applies to its tested revision and workload.
 
 ## Current Product
 
+The latest owner decision requires full H2/H3 and TCP/UDP support for Stable,
+not a Direct-H2-only claim. The persistent development goal covers the
+complete transport candidate; field trials, actual deployment and publication
+remain deferred. The table below describes the current source implementation, not
+completion of full candidate qualification. Focused implementation evidence is
+recorded below. A distributable candidate must also have the complete gates
+and exact artifact evidence for its SOURCE.txt revision; see the associated
+Git/PR/Actions records, not results from a different commit.
+
 | Area | Current state |
 |---|---|
 | Stage | Experimental Beta; not production-ready |
 | Published release | Immutable `v1.2.0-rc.2`, prerelease/non-Latest, Direct H2 |
-| Default source build and configuration | Browser-like TLS 1.3 + HTTP/2; H3 disabled |
+| Build/configuration defaults | Full candidate packages include H2/H3; new direct generation uses dual/auto with `allow_reliable`; omitted existing settings retain their prior meaning |
 | Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3; local terminating-relay validation; not published |
 | Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |
-| Dual/automatic transport | Opt-in H2/H3 server on one port; new TCP flows prefer H3 and may select H2 only after pre-response network failure; active flows never migrate |
+| Dual/automatic transport | H2/H3 on one port; core-owned new TCP/UDP selection, shared temporary avoidance/retry and explicit UDP policy; active sessions never migrate |
 | Configuration/authentication | Runnable config v1; existing authentication v1/v2; native H3 UDP adds an explicit control-frame extension; config v2 is policy-only |
-| SDK | Listener-free TCP/UDP connector, explicit H3 feature, complete auth/advanced builders and protected stored profiles; local listener state remains distinct from remote connectivity |
+| SDK | Listener-free TCP/UDP connector; persistent selected UDP sessions expose carrier, payload cap, independent send/receive and close; local listener state is not remote health |
 | Field validation | Deferred by the owner; no new real-network trial authorized |
 | Stable | Not published; exact-RC field use and owner rollback remain incomplete |
 
 The historical provider-fronted H2 without inner TLS and older WebSocket routes
-remain Beta compatibility paths, outside the first Direct-H2 Stable claim. A TLS-terminating provider can
+remain legacy compatibility paths, outside the supported protected-route claim. A TLS-terminating provider can
 observe Maverick authentication and tunnel traffic; this is not native ECH or
 provider-independent privacy. Prior provider-pilot browsing observations and
 video/large-image usability problems are historical, not validation of current
@@ -30,13 +39,48 @@ source.
 
 ## Integration and Service Delivery
 
+### RC.3 implementation and qualification boundaries
+
+Scope: general H2 UDP sessions; core/SDK selection for new TCP/UDP sessions;
+explicit native-required or reliable-compatible UDP policy; full-featured
+candidate packages and new direct dual/auto configuration defaults. Omitted
+policy retains existing behavior. New protected relay configs require inner
+origin TLS and use H2 only. TLS-terminating H3 fronting is not supported.
+
+The protocol owns wire/security/compatibility rules; the official client core
+and SDK own selection, reachability avoidance/retry and sessions; the server
+owns dual entry and target sockets. Integrators supply user policy and UI, not
+a replacement selector. Performance ranking is frozen. Active session migration
+is excluded permanently. See ROADMAP.md and the UDP/selection contract.
+
+Baseline `3b1db6a` passed local checks, final PR 8/8 and main 6/6, including native
+artifact/SBOM/rollback checks. Those H2-only archives do not qualify RC.3.
+The new implementation uses authenticated capability bit 62 and fixed-target
+H2 UDP (OpenUdp/UdpPacket flags 2), with one connected target socket per session.
+Legacy flags 0 and configuration omission retain request/response behavior.
+
+Focused local tests pass for continuous/multiple UDP messages, stable source
+ports, empty/maximum packets, native and reliable carriers, protected H2,
+SOCKS multi-target/control cleanup, idle cleanup, shared TCP/UDP avoidance and
+actual 30-second retry, security rejection without H2 contact, and authenticated
+capability absence versus malformed protocol. A terminating relay test covers
+UDP confidentiality with auth v1/v2. These are local observations, not field
+qualification or universal application interoperability. The complete shared
+local/CI and exact RC.3 artifact/SBOM/rollback results are required for candidate
+delivery and retained with its revision-specific evidence. Field qualification
+and public release remain outstanding regardless of those results.
+
+A maximum-packet test reproduced macOS's default UDP socket send-buffer limit.
+Only the new owned session/SOCKS socket buffers were bounded to 131072 bytes;
+no host network setting changed. `socket2` reuses the already locked version.
+
 The owner prioritized integration and deployability on 2026-11-10. The public
 SDK now offers `ProxyConnector`, which reuses the existing H2 pool and H3/auto
 selector without binding local proxy listeners. `connect_tcp` completes target
 admission before returning a session that relays caller-owned async I/O.
 Shared flow admission, cancellation, both half-close directions and pool reuse
-remain enforced. Native UDP sessions expose independent send/receive; legacy
-H2 request/response UDP remains a separately documented compatibility API.
+remain enforced. `open_udp` offers persistent native or reliable sessions under
+explicit policy; legacy H2 exchange APIs remain available with omitted policy.
 Closing the connector stops new opens; returned/in-progress sessions remain
 caller-owned, with cancellation controlled by their owners.
 
@@ -62,7 +106,8 @@ origin CA/hostname trust and a mandatory leaf certificate pin before sending
 Maverick authentication or proxy requests. Authentication uses the inner TLS
 exporter. The server requires the protected envelope when configured, and a
 protected client never retries as an unprotected session. Direct defaults and
-published RC.2 are unchanged; H3 stays direct and default-off.
+published RC.2 are unchanged. H3 stays direct; new generated direct pairs use
+auto/dual, while protected intermediary pairs remain H2.
 
 Seven local integration cases cover auth v1/v2, both half-close
 orders, concurrent transfers, encrypted-body observations, wrong inner identity,
@@ -86,10 +131,11 @@ and [protocol boundaries](docs/END_TO_END_PROTECTION.md).
 ## Configuration Handoff
 
 The CLI provides a consistent path from generating a configuration to checking
-and using it, while preserving default H2 behavior:
+and using it, while preserving omitted settings in existing files:
 
 - An explicit `gen-config --quiche-h3` option requires an H3-enabled build and
-  selects H3 in both generated v1 files. Default generation remains H2.
+  selects H3 in both generated v1 files. Bare generation in full builds now
+  selects dual/auto; `--h2` explicitly selects H2.
 - Generation checks whether either output already exists before writing the
   pair. Existing configurations and secret-file permissions remain protected.
 - `version` describes compiled carrier support, separately from the default
@@ -112,9 +158,9 @@ or update the immutable public RC.2 artifacts.
 
 `gen-config --relay --origin-name NAME --origin-cert CERT` now requires
 owner-supplied origin identity and generates protected H2 on both sides. An
-optional `--origin-ca` supplies private roots. Bare generation remains direct H2.
-`gen-config --auto-h3` generates an opt-in automatic client and dual server.
-Neither H3 nor automatic selection is enabled by omission.
+optional `--origin-ca` supplies private roots. Bare generation now selects direct dual/auto with `udp_policy: allow_reliable`.
+`--auto-h3` remains an explicit alias. In existing files, omitted carrier and
+policy fields retain their earlier behavior.
 
 The dual server binds TCP and UDP on the same port before announcing readiness,
 with shared replay, authentication, connection and user-flow budgets. A failed
@@ -125,7 +171,10 @@ configured connection budget). Only a typed network failure before a peer
 response permits H2; a 30-second negative cache avoids repeated blocked-UDP
 probes. The next connection after expiry tries H3 again. Every TLS, pin,
 authentication or protocol failure is terminal. Existing flows stay on their
-original carrier; native UDP never falls back to reliable H2 UDP.
+original carrier. `native_required` never falls back; `allow_reliable` may select
+H2 for a new UDP session on eligible network failure or authenticated capability
+absence before data. Target silence, security/protocol/target errors and
+post-send failures never cause replay or a carrier change.
 
 Local product regressions cover independent UDP replies, multiple targets,
 empty/maximum/oversized payloads, packet loss/reordering, egress/auth rejection,
@@ -227,7 +276,8 @@ both endpoints. Omission keeps H2; the retired `advanced.experimental_h3` flag
 still rejects. Existing endpoint, certificate, credential and timeout fields
 are reused. One QUIC connection and one H3 request carry one TCP flow or one
 fixed-target native UDP association; there is no H3 connection pool.
-`auto_h3` (client) and `dual_h2_h3` (server) are separate default-off options.
+`auto_h3` (client) and `dual_h2_h3` (server) stay false when omitted from an old
+configuration; new direct generation explicitly enables them.
 
 The H3 dialer tries resolved server addresses in order after a network
 failure before any peer response, instead of discarding every address after the first.
@@ -337,9 +387,10 @@ fixed Beta.4 partner. Later source changes are absent from those immutable files
 
 A changed release requires a new exact RC, its applicable compatibility,
 independent security, supply-chain, native artifact/SBOM and rollback checks.
-The first Stable claim remains Direct H2 and additionally requires the exact
-candidate's authorized 72-hour owner trial and field rollback, followed by
-Stable publication checks. Local H3 success cannot replace these gates. See the
+Stable requires H2/H3, TCP/UDP, both UDP policies and supported protected H2
+routes. Its exact candidate additionally requires authorized field use,
+72-hour observation and rollback across that scope, followed by publication
+checks. Local success cannot replace these gates. See the
 [release contract](docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md).
 
 [CI parallelism/cache, #75](https://github.com/ilhaformosa/maverick/pull/75) and
@@ -360,25 +411,23 @@ rules remain. This was per-alert review, not a new exhaustive security audit.
 
 ## Authorization and Deferred Scope
 
-On 2026-11-09 the owner authorized end-to-end design, implementation and
-verification, followed by native UDP and evidence-based privacy, reliability
-and delivery work. Intermediary confidentiality is mandatory; external client development and
-endpoint/IP-block recovery are excluded. The first implementation follows
-[END_TO_END_PROTECTION.md](docs/END_TO_END_PROTECTION.md). The first protected H2 slice has local validation as recorded above. H3 stays
-default-off; field trials stay deferred.
+The latest owner decision authorizes a persistent goal for complete TCP/UDP,
+new-connection/session H2/H3 selection, reachability avoidance/retry, and explicit
+native-required/reliable-compatible UDP policy. It includes the core/SDK,
+protocol/config/integration/release documentation, full candidate packages and
+all applicable local/CI gates. Routine technical, commit and PR actions remain
+authorized. Candidate completion does not publish Stable.
 
-Routine technical, commit and PR decisions are delegated, including focused
-configuration handoff and default-off H3 development. Field trials remain
-deferred. Network-setting changes, spending, provider resources and Stable
-publication are not authorized by this development work. [AGENTS.md](AGENTS.md)
-and [SECURITY.md](SECURITY.md) retain their applicable boundaries.
+New direct configurations default to dual/auto; fixed H2/H3 remain available.
+Omitted existing settings retain their meaning. Protected relay generation
+requires inner origin TLS and stays on H2. TLS-terminating H3 relays, new crypto
+architectures, external client/Atlas development, endpoint/IP-block recovery
+and new infrastructure are excluded. Field use, deployment and public release
+remain deferred. Mac network and Surge settings are never changed.
 
-The owner additionally authorized native UDP, default-protected intermediary
-generation, dual listeners and new-connection automatic selection. These source
-capabilities remain default-off where they enable H3. Standard CONNECT-UDP,
-runnable Config v2/migration, auth v3, TUN and additional providers still need
-a concrete requirement. Broad Chrome
-qualification and weak-network/field evidence apply to their corresponding
-claims, not every local TCP edit. Phase 3 recovery, giant branch convergence and
-the Quinn product backend remain retired. Historical audits and Beta.4 field
-observations do not qualify newer source or releases.
+Performance-based selection is frozen until explicitly unfrozen, including
+background scoring/testing and preparatory frameworks. Existing necessary
+checks remain. Active-session migration and seamless cross-carrier continuation
+are permanently excluded, with no future reserved design. Standard CONNECT-UDP,
+runnable Config v2/migration, auth v3, TUN and additional providers are not
+prerequisites. Historical Beta/audit/field results do not qualify RC.3.

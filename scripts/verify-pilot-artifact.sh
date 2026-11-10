@@ -12,8 +12,8 @@ readonly MAX_BINARY_BYTES=67108864
 readonly MAX_TEXT_BYTES=1048576
 readonly MAX_SMALL_TEXT_BYTES=4096
 readonly NATIVE_TIMEOUT_SECONDS=8
-readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
-readonly START_HERE_SHA256="cd1c7d86b743455e00678105241a625b13f143c1d6dd2234fc6d5ea9bea76738"
+readonly LEGACY_FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
+readonly LEGACY_START_HERE_SHA256="cd1c7d86b743455e00678105241a625b13f143c1d6dd2234fc6d5ea9bea76738"
 
 private_tmp=""
 
@@ -458,14 +458,20 @@ printf '%s\n' \
   "target: $expected_target" >"$expected_source_file"
 cmp -s "$expected_source_file" "$payload_root/SOURCE.txt" || fail
 
+features_line="$LEGACY_FEATURES_LINE"
+guide_sha256="$LEGACY_START_HERE_SHA256"
+if [[ "$expected_version" == "1.2.0-rc.3" ]]; then
+  features_line+=",udp-sessions,udp-policy,quiche-h3"
+  guide_sha256="c0eeaab17a9ce421d86bc1b94b6e3fd97a3320d1ee8b4d36c6857f6397c3586d"
+fi
 expected_version_file="$private_tmp/expected-version"
 printf '%s\n' \
   "maverick $expected_version" \
   "protocol_version: 1" \
-  "$FEATURES_LINE" >"$expected_version_file"
+  "$features_line" >"$expected_version_file"
 cmp -s "$expected_version_file" "$payload_root/VERSION.txt" || fail
 cmp -s "$repo_root/LICENSE" "$payload_root/LICENSE" || fail
-[[ "$(sha256_file "$payload_root/START_HERE.txt")" == "$START_HERE_SHA256" ]] || fail
+[[ "$(sha256_file "$payload_root/START_HERE.txt")" == "$guide_sha256" ]] || fail
 
 binary_file="$payload_root/maverick"
 file_description="$(file -b "$binary_file" 2>/dev/null)" || fail
@@ -613,5 +619,17 @@ case "$smoke_failure_status" in
   *) fail ;;
 esac
 
+if [[ "$expected_version" == "1.2.0-rc.3" ]]; then
+  [[ "$(grep -Fxc 'udp_session_roundtrip: PASS' "$native_smoke_output" 2>/dev/null)" == "1" ]] || fail
+  native_h3_output="$private_tmp/native-h3-smoke"
+  run_bounded "$native_h3_output" "$binary_file" user-smoke --quiche-h3
+  [[ "$(file_size "$native_h3_output")" -le "$MAX_TEXT_BYTES" ]] || fail
+  for required in 'carrier: h3' 'wrong_credential_rejected: PASS' 'correct_credential_roundtrip: PASS' 'udp_session_roundtrip: PASS'; do
+    [[ "$(grep -Fxc "$required" "$native_h3_output" 2>/dev/null)" == "1" ]] || fail
+  done
+  h3_failure_status=0
+  grep -Eq ': FAIL$' "$native_h3_output" 2>/dev/null || h3_failure_status=$?
+  [[ "$h3_failure_status" -eq 1 ]] || fail
+fi
 verify_input_unchanged
 echo "pilot artifact native verification OK"

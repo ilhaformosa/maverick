@@ -86,7 +86,7 @@ for flag in \
   encoded_rustflags+="$flag"
 done
 
-build_args=(build --locked --release -p maverick-cli)
+build_args=(build --locked --release -p maverick-cli --no-default-features --features experimental-h3)
 if [[ -n "${MAVERICK_PILOT_TARGET:-}" ]]; then
   build_args+=(--target "$target")
 fi
@@ -167,9 +167,27 @@ certificate path before use, then validate both:
 ./maverick check-config --kind server -c server.generated.yaml
 ./maverick check-config --kind client -c client.generated.yaml
 
-Generated configs select the H2 carrier but leave provider fronting disabled.
+This full candidate includes H2 and H3. New direct configs select a dual H2/H3
+server and an automatic client. UDP defaults to allow_reliable: prefer native
+H3, and permit H2 only after eligible setup failures, before sending data.
+
+For a fixed carrier, generate with --h2 or --quiche-h3 instead. To require native
+UDP without reliable compatibility, add --udp-policy native_required to the
+automatic or fixed H3 generator. Existing files are never overwritten and their
+omitted settings keep their original behavior.
+
+For a TLS-terminating intermediary, use --relay with --origin-name and
+--origin-cert (and --origin-ca for private roots). This generates protected H2;
+terminating-relay H3 is unsupported. No failed identity/authentication check
+permits fallback. Existing sessions never migrate and packets are not replayed.
+
+The source revision in SOURCE.txt identifies matching docs/INTEGRATION.md,
+docs/DEPLOYMENT.md and deploy/maverick.service in the source repository. Native
+H3 payloads are at most 1200 bytes; reliable H2 payloads are at most 65507 bytes.
+SOCKS encapsulation and actual network path limits can lower usable sizes.
+
 Real-network use still requires a separate owner decision about the environment
-and any provider TLS termination.
+and any provider TLS termination. This candidate has local/CI validation only.
 
 Point only the chosen application at Maverick's loopback SOCKS5 listener. Do
 not change system proxy, DNS, routes, firewall, or VPN settings.

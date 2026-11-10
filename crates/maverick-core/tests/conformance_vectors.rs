@@ -1324,3 +1324,40 @@ fn native_udp_control_vectors_bind_a_fixed_target_and_advertise_capacity() {
         hex_decode(&encoded_hex)
     );
 }
+
+#[test]
+fn reliable_udp_control_vectors_bind_a_fixed_target_and_advertise_capacity() {
+    let Vector::Frame {
+        frame, encoded_hex, ..
+    } = read_vector("reliable_udp_open_domain.json")
+    else {
+        panic!("native open vector")
+    };
+    let target = OpenTcpPayload::new(TargetAddr::Domain("example.invalid".into()), 443);
+    assert_eq!(
+        target.encode().unwrap().as_ref(),
+        hex_decode(&frame.payload_hex)
+    );
+    assert_eq!(
+        Frame::new(FrameType::OpenUdp, 2, 1, target.encode().unwrap())
+            .encode(65_536)
+            .unwrap()
+            .as_ref(),
+        hex_decode(&encoded_hex)
+    );
+    let Vector::Frame { encoded_hex, .. } = read_vector("reliable_udp_admission.json") else {
+        panic!("native admission vector")
+    };
+    assert_eq!(
+        Frame::new(
+            FrameType::WindowUpdate,
+            2,
+            1,
+            Bytes::copy_from_slice(&65507u16.to_be_bytes())
+        )
+        .encode(65_536)
+        .unwrap()
+        .as_ref(),
+        hex_decode(&encoded_hex)
+    );
+}

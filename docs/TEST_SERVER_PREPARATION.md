@@ -203,18 +203,13 @@ separate, explicit operation.
 The three Maverick modes are policy labels, not three different Linux network
 stacks:
 
-- `stable` always uses H2/TCP as its outer carrier, so the server-sent half uses
-  BBRv1 and the host's approved `fq` or `fq_codel`.
-- `auto` defaults to H2/TCP, whose server-sent half uses the same host policy.
-- `private` also defaults to H2/TCP and uses the same server-sent policy while
-  applying stricter privacy rules.
-
-Runnable config v1 now supports the explicit `quiche_h3`, client `auto_h3` and
-server `dual_h2_h3` selectors in H3-enabled source builds. They default to false;
-`experimental_h3` remains retired. H3 uses QUIC/UDP and quiche's userspace
-congestion control, not kernel TCP BBR. Automatic selection can choose H2 only
-for new TCP flows after pre-response network unavailability; identity,
-authentication and protocol failures do not cause fallback. See
+Legacy `stable`, `auto` and `private` labels do not choose the transport by
+themselves. Omitted carrier settings retain H2/TCP; new direct generation uses
+client `auto_h3`, server `dual_h2_h3` and explicit UDP policy. Fixed H2/H3 remain
+available. `experimental_h3` stays retired. H3 uses QUIC/UDP and quiche's
+userspace congestion control, not kernel TCP BBR. Automatic selection applies
+only to new connections/sessions under the documented network/capability and
+security rules; it does not score performance or migrate active sessions. See
 [NATIVE_UDP_AND_SELECTION.md](NATIVE_UDP_AND_SELECTION.md).
 
 The server-sent half of all three modes' server-to-target TCP connections uses

@@ -2,6 +2,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+pub use crate::udp_session::{UdpCapabilityUnsupported, UdpCarrier};
 use anyhow::{Context, Result};
 pub use bytes::Bytes;
 pub use maverick_core::frame::{TargetAddr, UdpPacketPayload};
@@ -70,6 +71,9 @@ impl ProxyConnector {
     pub async fn exchange_udp(&self, packet: UdpPacketPayload) -> Result<UdpPacketPayload> {
         let _permit = self.permit()?;
         let config = self.pool.config();
+        if config.advanced.udp_policy.is_some() {
+            return crate::udp_session::exchange(&self.pool, packet).await;
+        }
         #[cfg(feature = "experimental-h3")]
         if config.advanced.quiche_h3 || config.advanced.auto_h3 {
             return crate::udp::relay_udp_packet(config, packet).await;
@@ -100,11 +104,45 @@ impl ProxyConnector {
         self.pool.h2_snapshot()
     }
 
+    /// Opens a persistent fixed-target UDP session using the configured policy.
+    /// Carrier choice is complete before this returns; sends are never replayed.
+    pub async fn open_udp(&self, target: TargetAddr, port: u16) -> Result<UdpSession> {
+        let permit = self.permit()?;
+        let inner = crate::udp_session::DatagramSession::open(&self.pool, target, port).await?;
+        Ok(UdpSession {
+            inner,
+            _permit: permit,
+        })
+    }
+
     /// Stops new opens and releases the pool's idle H2 ownership. Already returned
     /// sessions remain owned by the caller; drop them or cancel their relay futures.
     pub fn close(&self) {
         self.flows.close();
         self.pool.shutdown();
+    }
+}
+
+pub struct UdpSession {
+    inner: crate::udp_session::DatagramSession,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl UdpSession {
+    pub fn carrier(&self) -> UdpCarrier {
+        self.inner.carrier()
+    }
+    pub fn max_payload(&self) -> usize {
+        self.inner.max_payload()
+    }
+    pub fn send(&self, packet: Bytes) -> Result<bool> {
+        self.inner.send(packet)
+    }
+    pub async fn recv(&mut self) -> Result<Bytes> {
+        self.inner.recv().await
+    }
+    pub async fn close(self) -> Result<()> {
+        self.inner.close().await
     }
 }
 
@@ -121,6 +159,15 @@ pub struct TcpSession {
 }
 
 impl TcpSession {
+    pub fn carrier(&self) -> crate::transport::TransportKind {
+        match &self.tunnel {
+            ClientTunnel::H2(_) => crate::transport::TransportKind::H2,
+            ClientTunnel::CloudflareWs(_) => crate::transport::TransportKind::CloudflareWs,
+            #[cfg(feature = "experimental-h3")]
+            ClientTunnel::H3(_) => crate::transport::TransportKind::H3,
+        }
+    }
+
     /// Forwards caller-owned I/O, including TCP half-close in either direction.
     /// Cancellation is ordinary Rust future cancellation: dropping this future
     /// drops the local I/O and tunnel. Runtime errors are returned to the caller.

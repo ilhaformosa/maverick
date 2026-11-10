@@ -31,13 +31,13 @@ echo "==> Rust tests"
 echo "==> explicit rustls compatibility build"
 "$cargo_bin" check -p maverick-cli --no-default-features
 
-echo "==> generated config defaults"
+echo "==> fixed H2 configuration compatibility (dual/auto defaults run in H3 gate)"
 config_tmp="$(mktemp -d)"
 trap 'rm -rf "$config_tmp"' EXIT
 (
   cd "$config_tmp"
   "$cargo_bin" run --quiet --manifest-path "$repo_root/Cargo.toml" \
-    -p maverick-cli -- gen-config >/dev/null
+    -p maverick-cli -- gen-config --h2 >/dev/null
   if [[ "$(uname -s)" == "Darwin" ]]; then
     [[ "$(stat -f '%Lp' client.generated.yaml)" == "600" ]]
     [[ "$(stat -f '%Lp' server.generated.yaml)" == "600" ]]
@@ -93,6 +93,7 @@ active_docs=(
   THREAT_MODEL.md
   SECURITY.md
   docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md
+  docs/releases/v1.2.0-rc.3.md
   docs/TRANSPORT_ARCHITECTURE.md
   docs/END_TO_END_PROTECTION.md
   docs/INTEGRATION.md

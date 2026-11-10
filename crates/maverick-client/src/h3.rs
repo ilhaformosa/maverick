@@ -17,6 +17,7 @@ use crate::tunnel::{
 };
 
 pub struct H3ClientTunnel {
+    udp_sessions: bool,
     sender: H3Sender,
     receiver: FrameReceiver,
     datagrams: h3_channel::DatagramChannel,
@@ -44,7 +45,7 @@ pub async fn open(
     );
     config.validate()?;
     let budget = Duration::from_millis(config.advanced.connect_timeout_ms);
-    let max_frame_size = timeout(budget, async {
+    let (max_frame_size, features) = timeout(budget, async {
         let hello = ClientHandshake::new(config, Some(binding))?;
         channel
             .send(
@@ -60,11 +61,13 @@ pub async fn open(
         if server.frame_type != FrameType::ServerHello {
             bail!("server rejected H3 handshake");
         }
-        validate_negotiated_max_frame_size(hello.verify_server_hello(&server.payload)?)
+        let (maximum, features) = hello.verify_server_parameters(&server.payload)?;
+        Ok::<_, anyhow::Error>((validate_negotiated_max_frame_size(maximum)?, features))
     })
     .await
     .context("H3 authentication timed out")??;
     Ok(ClientTunnel::H3(Box::new(H3ClientTunnel {
+        udp_sessions: features & maverick_core::auth::FEATURE_UDP_SESSION != 0,
         receiver: channel.inbound,
         datagrams: channel.datagrams,
         sender: H3Sender {
@@ -316,51 +319,65 @@ impl NativeUdpAssociation {
             Duration::from_millis(config.advanced.connect_timeout_ms),
             async {
                 let connected = crate::h3_transport::connect(config).await?;
-                let ClientTunnel::H3(tunnel) =
-                    open(config, connected.channel, connected.binding).await?
-                else {
-                    bail!("native UDP requires H3");
-                };
-                let H3ClientTunnel {
-                    mut sender,
-                    mut receiver,
-                    mut datagrams,
-                } = *tunnel;
-                let capacity = datagrams.ready().await?;
-                let payload = maverick_core::frame::OpenTcpPayload {
-                    target,
-                    port,
-                    initial_data: Bytes::new(),
-                }
-                .encode()?;
-                let frame = Frame::new(FrameType::OpenUdp, 1, sender.flow_id, payload);
-                sender.send_frame(frame, false).await?;
-                let ack = h3_channel::read_frame(&mut receiver, sender.max_frame_size)
-                    .await?
-                    .context("native UDP admission closed")?;
-                anyhow::ensure!(
-                    ack.frame_type == FrameType::WindowUpdate
-                        && ack.flags == 1
-                        && ack.flow_id == sender.flow_id
-                        && ack.payload.len() == 2,
-                    "native UDP admission rejected"
-                );
-                let max_payload = usize::from(u16::from_be_bytes([ack.payload[0], ack.payload[1]]));
-                anyhow::ensure!(
-                    max_payload > 0 && max_payload <= h3_channel::MAX_NATIVE_UDP_PAYLOAD,
-                    "invalid native UDP payload limit"
-                );
-                datagrams.enable();
-                Ok(Self {
-                    sender,
-                    receiver,
-                    datagrams,
-                    max_payload: max_payload.min(capacity),
-                })
+                Self::from_connected(config, connected, target, port, false).await
             },
         )
         .await
         .context("native UDP setup timed out")?
+    }
+
+    pub(crate) async fn from_connected(
+        config: &ClientConfig,
+        connected: maverick_quiche::Connected,
+        target: maverick_core::frame::TargetAddr,
+        port: u16,
+        require_capability: bool,
+    ) -> Result<Self> {
+        let ClientTunnel::H3(tunnel) = open(config, connected.channel, connected.binding).await?
+        else {
+            bail!("native UDP requires H3");
+        };
+        anyhow::ensure!(
+            !require_capability || tunnel.udp_sessions,
+            crate::udp_session::UdpCapabilityUnsupported
+        );
+        let H3ClientTunnel {
+            udp_sessions: _,
+            mut sender,
+            mut receiver,
+            mut datagrams,
+        } = *tunnel;
+        let capacity = datagrams.ready().await?;
+        let payload = maverick_core::frame::OpenTcpPayload {
+            target,
+            port,
+            initial_data: Bytes::new(),
+        }
+        .encode()?;
+        let frame = Frame::new(FrameType::OpenUdp, 1, sender.flow_id, payload);
+        sender.send_frame(frame, false).await?;
+        let ack = h3_channel::read_frame(&mut receiver, sender.max_frame_size)
+            .await?
+            .context("native UDP admission closed")?;
+        anyhow::ensure!(
+            ack.frame_type == FrameType::WindowUpdate
+                && ack.flags == 1
+                && ack.flow_id == sender.flow_id
+                && ack.payload.len() == 2,
+            "native UDP admission rejected"
+        );
+        let max_payload = usize::from(u16::from_be_bytes([ack.payload[0], ack.payload[1]]));
+        anyhow::ensure!(
+            max_payload > 0 && max_payload <= h3_channel::MAX_NATIVE_UDP_PAYLOAD,
+            "invalid native UDP payload limit"
+        );
+        datagrams.enable();
+        Ok(Self {
+            sender,
+            receiver,
+            datagrams,
+            max_payload: max_payload.min(capacity),
+        })
     }
 
     pub fn max_payload(&self) -> usize {
@@ -414,6 +431,7 @@ mod tests {
     fn tunnel(channel: FrameChannel) -> H3ClientTunnel {
         let shaping = ShapingConfig::default();
         H3ClientTunnel {
+            udp_sessions: false,
             receiver: channel.inbound,
             datagrams: channel.datagrams,
             sender: H3Sender {

@@ -8,22 +8,23 @@ explicitly authorized owner-controlled Linux host, not the development Mac.
 ## Select and verify the build
 
 Use one reviewed source revision for client, server and integration tests.
-The CI pilot archive supplies a checked default-H2 binary with SOURCE.txt,
-VERSION.txt and checksums; it does not enable H3. For an opt-in H3/dual server,
-build that revision on a supported Linux x86_64 build host:
+The RC.3 candidate archive includes H2 and H3, SOURCE.txt, VERSION.txt and
+checksums. It is a candidate artifact, not an independently published Stable
+release. To build the same feature set on supported Linux x86_64:
 
 ```sh
-cargo build --locked --release -p maverick-cli --features experimental-h3
+cargo build --locked --release -p maverick-cli --no-default-features --features experimental-h3
 ./target/release/maverick version
+./target/release/maverick user-smoke
 ./target/release/maverick user-smoke --quiche-h3
 ```
 
-For H2 omit the feature flag and use bare `user-smoke`. Keep the revision,
-build features, binary digest and local check results with the binary. A smoke
-test uses temporary loopback fixtures; it does not validate the deployment
-configuration, certificates, intermediary or remote path. The existing
-`build-pilot.sh`/artifact/SBOM/rollback gates remain the default-H2 release path.
-Do not replace immutable RC.2 assets with newer source builds.
+Both smoke variants exercise TCP plus persistent UDP, authentication rejection,
+port continuity and independent replies on loopback. Keep source identity,
+features, digest and results with the binary. These do not validate deployment
+certificates, a real intermediary or network. `build-pilot.sh`, native artifact,
+SBOM and rollback gates verify the full candidate; immutable Beta/RC.2 archives
+keep their older H2-only verification profile. Do not overwrite those releases.
 
 ## Prepare private configuration
 
@@ -31,10 +32,11 @@ Generate credentials/configuration in a private directory using one recipe:
 
 | Purpose | Generator |
 |---|---|
-| Direct H2 | `maverick gen-config` |
+| Direct dual/auto, reliable-compatible UDP | `maverick gen-config` |
+| Fixed H2 | `maverick gen-config --h2` |
 | Protected H2 intermediary | `maverick gen-config --relay --origin-name origin.example.invalid --origin-cert origin.pem` (add `--origin-ca ca.pem` for private roots) |
 | Explicit H3 TCP/native UDP | `maverick gen-config --quiche-h3` |
-| Direct dual server/automatic client | `maverick gen-config --auto-h3` |
+| Auto with native-required UDP | `maverick gen-config --udp-policy native_required` |
 
 Replace template endpoints and paths. Deploy the certificate matching the
 owner-verified origin pin; keep its private key solely at the origin. H3/dual

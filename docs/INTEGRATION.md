@@ -8,8 +8,8 @@ cross-language interoperability is claimed by the loopback tests.
 
 Depend on `crates/maverick-sdk` from a reviewed checkout/revision. Default
 features support H2 with the browser TLS profile. Opt into the SDK's
-`experimental-h3` feature for H3, native UDP and automatic TCP selection; the
-runtime flags still default to false. The tested browser TLS/H3 platforms are
+`experimental-h3` feature for H3, native UDP and automatic TCP/UDP selection. New generated direct YAML explicitly enables
+auto/dual and `allow_reliable`; omitted runtime fields remain false/None. The tested browser TLS/H3 platforms are
 macOS arm64 and Linux x86_64. An explicit `--no-default-features` SDK build
 retains rustls H2; it does not provide H3.
 
@@ -34,7 +34,8 @@ where S: AsyncRead + AsyncWrite + Unpin {
 }
 ```
 
-The caller owns I/O and task scheduling. `TcpSession::relay` preserves both
+The caller owns I/O and task scheduling. `TcpSession::carrier()` reports the
+actual chosen transport without implying remote application health. `TcpSession::relay` preserves both
 half-close directions and returns I/O errors and remote resets. Configured idle
 expiry follows the existing relay close policy; a successful return is not an
 application delivery acknowledgment. Drop its future to cancel
@@ -45,15 +46,48 @@ returned sessions remain caller-owned; close does not terminate them. Cancel
 their relay futures or drop them when the embedding application shuts down.
 Opens already in progress remain caller-owned too.
 
-`open_native_udp(target, port)` returns a fixed-target `NativeUdpSession` when
-H3/auto is configured. `send(Bytes)` returning true means queued, not delivered;
-false means oversize/queue-full drop. `recv()` independently receives responses,
-including empty datagrams. `max_payload()` gives the setup-time negotiated cap
-(at most 1200 bytes); later transport/path limits may also drop packets. Drop
-or `close().await` releases the session. Native UDP never falls back to H2.
-For legacy H2 request/response UDP, use `exchange_udp(UdpPacketPayload)`; it
-retains the existing reliable compatibility semantics. The same helper uses
-native UDP in H3/auto configurations.
+For persistent UDP, set `config.advanced.udp_policy` to
+`Some(UdpPolicy::NativeRequired)` or `Some(UdpPolicy::AllowReliable)` and call
+`open_udp(target, port)`. The official core selects and admits the session before
+returning. It owns shared reachability avoidance/retry and uses the same policy
+for SOCKS; integrators own user policy/UI, not a separate selection algorithm.
+
+```rust
+use maverick_sdk::{Bytes, ProxyConnector, TargetAddr};
+
+async fn datagrams(proxy: &ProxyConnector, target: TargetAddr,
+                   port: u16) -> anyhow::Result<()> {
+    let mut session = proxy.open_udp(target, port).await?;
+    let _selected = session.carrier();
+    let _limit = session.max_payload();
+    // This API is independent send/receive, not request/response pairing.
+    if !session.send(Bytes::from_static(b"example"))? { return Ok(()); }
+    let _first = session.recv().await?;
+    let _second = session.recv().await?;
+    session.close().await
+}
+```
+
+`send` true means queued, not delivered; false means oversize/queue-full drop.
+`recv` receives independent replies, including empty packets. Each session
+retains one carrier and target and accepts replies only from that target; errors/target silence never replay data or move
+it to another carrier. `max_payload` is at most 65507 for reliable H2 or 1200
+for native H3, also subject to actual path/socket limits. SOCKS encapsulation
+reduces the local usable payload. H2 may add retransmission delay; it is not
+native unreliable delivery. Close/drop releases session resources and the SDK
+flow slot. Keep returned sessions caller-owned when closing the connector.
+
+`UdpCapabilityUnsupported` is a typed authenticated capability-absence result.
+Only pre-response H3 network unavailability, or authenticated capability absence
+before data, may select H2 under auto + `allow_reliable`. Identity, auth, protocol,
+target and admission failures are terminal. Fixed H3 never selects H2;
+`native_required` never does. Protected intermediaries remain fixed H2.
+
+`open_native_udp` remains a strict native convenience API. With omitted policy,
+`exchange_udp` retains old H2 request/response or H3 native behavior; with an
+explicit policy it uses the selected session for one exchange. Use `open_udp`
+for general bidirectional application traffic. No performance ranking,
+background probes or live-session migration are provided.
 
 `MaverickClient::start` remains available for software that wants local
 SOCKS5/HTTP listeners, and `MaverickServer::start` embeds a server. Those APIs
@@ -85,10 +119,12 @@ trailers; H3 uses HTTP stream completion. Neither HTTP 200 nor a local listener
 establishes successful Maverick authentication or target admission.
 
 Never retry failed origin protection as an unprotected session. Current H3
-does not support TLS-terminating fronting. For opt-in auto selection, use the
+does not support TLS-terminating fronting. For configured auto selection, use the
 [selection contract](NATIVE_UDP_AND_SELECTION.md): only pre-response network
 unavailability permits H2, never TLS, pin, authentication or protocol failure.
-Application TCP and UDP remain distinct; existing flows never migrate.
+UDP additionally permits authenticated capability absence under
+`allow_reliable`, before data. Application TCP and UDP remain distinct; existing
+flows never migrate.
 
 ### Frame header and connection sequence
 
@@ -127,6 +163,20 @@ frame header or gRPC wrapper. For example `0068656c6c6f` carries `hello`, and
 The checked [open](../conformance/vectors/native_udp_open_domain.json) and
 [admission](../conformance/vectors/native_udp_admission.json) vectors give exact
 control bytes. This is a Maverick extension, not standard CONNECT-UDP.
+
+Reliable fixed-target H2 UDP requires authenticated feature bit 62 in the
+ClientHello offer and ServerHello selection (auth v1/v2 MACs already cover these
+fields). New-policy peers lacking the capability are unsupported; don't send
+extension requests to them. Native UDP under the new policy uses the same
+capability, while the legacy native API retains the earlier handshake behavior.
+
+H2 `OpenUdp` flags 2 uses the same fixed-target address/port payload with empty
+initial data. `WindowUpdate` flags 2 carries a two-byte positive limit <=65507.
+`UdpPacket` flags 2 carries raw data for that target; the frame flow ID is 1.
+`CloseFlow` flags 0, empty payload, ends the session with successful gRPC
+completion. Reject invalid IDs, flags or oversized payloads. See checked
+[open](../conformance/vectors/reliable_udp_open_domain.json) and
+[admission](../conformance/vectors/reliable_udp_admission.json) vectors.
 
 Legacy H2 UDP uses flags 0 `OpenUdp` with `idle_timeout_ms:u64`, then framed
 `UdpPacket` (`0x08`) request/response messages containing destination and data.

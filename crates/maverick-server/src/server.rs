@@ -13,8 +13,8 @@ use h2::server::SendResponse;
 use http::{HeaderMap, Method, Request, Response, StatusCode};
 use maverick_core::auth::{
     current_unix, ClientHello, ClientHelloV2, ServerHello, ServerHelloV2, ServerHelloV2Params,
-    TlsChannelBinding, AUTH_V2_PROTOCOL_VERSION, FEATURE_TLS_CHANNEL_BINDING, PROTOCOL_VERSION,
-    TLS_CHANNEL_BINDING_EXPORTER_LABEL,
+    TlsChannelBinding, AUTH_V2_PROTOCOL_VERSION, FEATURE_TLS_CHANNEL_BINDING, FEATURE_UDP_SESSION,
+    PROTOCOL_VERSION, TLS_CHANNEL_BINDING_EXPORTER_LABEL,
 };
 use maverick_core::frame::{
     ErrorCode, Frame, FrameType, OpenTcpPayload, OpenUdpPayload, UdpPacketPayload, FRAME_HEADER_LEN,
@@ -61,6 +61,9 @@ const METRICS_READ_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(feature = "experimental-h3")]
 #[path = "h3.rs"]
 pub mod h3;
+
+#[path = "reliable_udp.rs"]
+mod reliable_udp;
 
 fn server_padding(state: &ServerState) -> RuntimePadding {
     RuntimePadding::from_config(
@@ -1040,13 +1043,14 @@ fn selected_client_feature_flags(
     {
         return None;
     }
+    let features = requested & FEATURE_UDP_SESSION;
     if !requested_channel_binding {
-        return Some(0);
+        return Some(features);
     }
     if !state.config.auth.channel_binding.enabled || channel_binding.is_none() {
         return None;
     }
-    Some(FEATURE_TLS_CHANNEL_BINDING)
+    Some(features | FEATURE_TLS_CHANNEL_BINDING)
 }
 
 fn selected_channel_binding_for_flags(
@@ -1251,6 +1255,31 @@ async fn handle_tunnel(
                 return Ok(());
             }
         };
+        if open_frame.flags == maverick_core::frame::RELIABLE_UDP_FLAGS
+            && authenticated.feature_flags_selected & FEATURE_UDP_SESSION != 0
+        {
+            return reliable_udp::serve(
+                open_frame,
+                send_stream,
+                recv_stream,
+                recv_buf,
+                &state,
+                &user_policy,
+                max_frame_size,
+            )
+            .await;
+        }
+        if open_frame.flags != 0 {
+            send_h2_server_frame(
+                &mut send_stream,
+                relay::error_frame(open_frame.flow_id, ErrorCode::ProtocolError),
+                max_frame_size,
+                true,
+                &state,
+            )
+            .await?;
+            return Ok(());
+        }
         return handle_udp_flow(
             open_frame,
             send_stream,
@@ -1417,7 +1446,7 @@ where
         }
     };
     let now_unix = current_unix();
-    let authenticated = match first_frame {
+    let mut authenticated = match first_frame {
         Ok(Some(frame)) if frame.frame_type == FrameType::ClientHello => {
             match authenticate_tunnel_frame(&frame, &state, now_unix, channel_binding).await {
                 Some(authenticated) => authenticated,
@@ -1434,6 +1463,7 @@ where
             return Ok(());
         }
     };
+    authenticated.feature_flags_selected &= !FEATURE_UDP_SESSION;
     info!(
         user = %redact_id(&authenticated.credential.user.id),
         credential_state = authenticated.credential.state.as_str(),

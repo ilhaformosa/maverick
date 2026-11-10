@@ -66,8 +66,9 @@ impl ProxyConnector {
         })
     }
 
-    /// One request/response exchange. H2 retains reliable legacy UDP semantics;
-    /// H3/auto uses native UDP and never falls back to H2 for datagrams.
+    /// One request/response exchange, honoring an explicit UDP session policy.
+    /// With omitted policy, H2 retains legacy exchanges and H3/auto stays native.
+    /// Use open_udp for independent, persistent bidirectional traffic.
     pub async fn exchange_udp(&self, packet: UdpPacketPayload) -> Result<UdpPacketPayload> {
         let _permit = self.permit()?;
         let config = self.pool.config();

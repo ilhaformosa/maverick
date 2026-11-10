@@ -851,7 +851,10 @@ reached, new local TCP proxy attempts fail before opening a Maverick tunnel.
 
 Server `advanced.max_concurrent_connections` and
 `advanced.max_concurrent_connections_per_source` limit accepted TCP/TLS
-connections or explicit H3 QUIC connections globally and per source IP. Server
+connections or explicit H3 QUIC connections globally and per source IP.
+H3 reserves this shared capacity before allocating QUIC/TLS connection state
+and retains it until the transport driver finishes, including unfinished
+handshakes. The separate pre-authentication budget remains in force. Server
 `advanced.pre_auth_max_concurrent` limits concurrent unauthenticated handshake
 and tunnel admission across H2, WebSocket and explicit H3. Server
 `advanced.fallback_max_concurrent` bounds ordinary static or reverse-proxy

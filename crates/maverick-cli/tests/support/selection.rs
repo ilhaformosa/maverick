@@ -39,6 +39,103 @@ fn client_config(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dual_connection_limits_cover_pending_tls_on_both_carriers() -> Result<()> {
+    timeout(Duration::from_secs(30), async {
+        for (per_source, h3_first) in [(false, false), (true, false), (false, true), (true, true)] {
+            let fixture = Fixture::for_transport(true, 8)?;
+            let mut config = server_config(&fixture)?;
+            config.advanced.quiche_h3 = false;
+            config.advanced.dual_h2_h3 = true;
+            config.advanced.max_concurrent_connections = if per_source { 8 } else { 1 };
+            config.advanced.max_concurrent_connections_per_source = if per_source { 1 } else { 8 };
+            config.advanced.pre_auth_max_concurrent = 8;
+            config.advanced.handshake_timeout_ms = if h3_first { 1_000 } else { 5_000 };
+            config.metrics = Some(maverick_core::config::MetricsConfig {
+                enabled: true,
+                listen: "127.0.0.1:0".parse()?,
+            });
+            let server = maverick_server::start_server(config).await?;
+            let metrics = server.metrics_addr.context("missing metrics listener")?;
+            let held_tcp = if h3_first {
+                None
+            } else {
+                let tcp = TcpStream::connect(server.local_addr).await?;
+                timeout(Duration::from_secs(2), async {
+                    while soak::metrics(metrics).await?["active_connections"] != 1 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                }).await.context("H2 pending TLS was not admitted")??;
+                Some(tcp)
+            };
+
+            let spy = UdpSocket::bind("127.0.0.1:0").await?;
+            let mut client = client_config(&fixture, spy.local_addr()?, Fault::None, 0)?;
+            client.advanced.auto_h3 = false;
+            client.advanced.quiche_h3 = true;
+            let mut attempt = Box::pin(maverick_client::transport::connect(&client));
+            let mut packet = [0; 1350];
+            let (count, client_address) = tokio::select! {
+                result = &mut attempt => bail!("H3 ended before Initial: {}", result.is_ok()),
+                received = spy.recv_from(&mut packet) => received?,
+            };
+            spy.send_to(&packet[..count], server.local_addr).await?;
+            let counter = if per_source { "source_connection_limit_rejections" } else { "connection_limit_rejections" };
+            let rejected = if h3_first {
+                timeout(Duration::from_secs(2), async {
+                    loop {
+                        let (_, from) = spy.recv_from(&mut packet).await?;
+                        if from == server.local_addr { break; }
+                        ensure!(from == client_address, "unexpected QUIC test peer");
+                    }
+                    Ok::<_, anyhow::Error>(())
+                }).await.context("missing server TLS flight")??;
+                // The flight is never forwarded, so this QUIC handshake remains
+                // incomplete while its shared reservation must already be held.
+                ensure!(soak::metrics(metrics).await?["active_connections"] == 1,
+                    "pending H3 handshake did not hold shared capacity");
+                let mut rejected_tcp = TcpStream::connect(server.local_addr).await?;
+                let mut byte = [0];
+                ensure!(timeout(Duration::from_secs(1), rejected_tcp.read(&mut byte)).await?? == 0,
+                    "H2 bypassed pending H3 connection capacity");
+                ensure!(soak::metrics(metrics).await?[counter].as_u64().unwrap_or(0) > 0);
+                Ok(())
+            } else { timeout(Duration::from_secs(2), async {
+                loop {
+                    tokio::select! {
+                        received = spy.recv_from(&mut packet) => {
+                            let (_, peer) = received?;
+                            ensure!(peer != server.local_addr, "H3 allocated TLS state beyond the shared connection ceiling");
+                        },
+                        _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                            if soak::metrics(metrics).await?[counter].as_u64().unwrap_or(0) > 0 {
+                                return Ok::<_, anyhow::Error>(());
+                            }
+                        },
+                    }
+                }
+            }).await.context("H3 Initial did not reach shared admission")? };
+            drop(attempt);
+            drop(held_tcp);
+            if rejected.is_ok() {
+                soak::wait_for_drained(metrics, true).await?;
+                client.server.address = server.local_addr.to_string();
+                let proxy = maverick_client::start_client(client).await?;
+                let target = TcpListener::bind("127.0.0.1:0").await?;
+                tokio::try_join!(
+                    async { echo(target.accept().await?.0).await },
+                    exchange(proxy.local_addr, target.local_addr()?, false, b"capacity restored"),
+                )?;
+                proxy.shutdown().await?;
+            }
+            server.shutdown().await?;
+            rejected?;
+        }
+        Ok(())
+    }).await.context("dual pre-auth connection limit test timed out")?
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dual_server_both_carriers_share_user_limit_and_release_listeners() -> Result<()> {
     timeout(Duration::from_secs(30), async {
         let fixture = Fixture::for_transport(true, 8)?;

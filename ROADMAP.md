@@ -94,11 +94,11 @@ keeping field use deferred. This source delivery now provides:
 4. Local/CI coverage through the existing native artifact, rollback, dependency
    and scanning gates.
 
-## RC.3 — Complete Transport Candidate
+## Delivered — RC.3 Complete Transport Candidate
 
-The owner's latest decision supersedes the earlier Direct-H2-only Stable scope
-and generated-direct H2 default. The persistent goal is complete only after all
-of the following ship together with applicable local and CI evidence:
+The owner's decision supersedes the earlier Direct-H2-only Stable scope
+and generated-direct H2 default. PR #109 delivered the following together at
+`2aeaaf9`, with applicable local/CI and exact native archive evidence:
 
 1. Persistent fixed-target H2 UDP sessions: independent upload/download, stable
    target socket/source port, multiple replies, bounded resources and cleanup.
@@ -119,6 +119,25 @@ See [the implementation contract](docs/NATIVE_UDP_AND_SELECTION.md). Current
 completion/evidence lives in STATUS.md; a passing earlier revision does not
 qualify this candidate. Reuse existing implementations and add no new crypto,
 configuration framework, FFI layer or automatic host provisioning.
+
+## RC.4 — Independent Review Corrections
+
+The owner authorized independent RC.3 security review and correction of actual
+findings, while keeping field work and publication deferred. The complete
+RC.2-to-RC.3 review identified two reproduced resource issues; its immutable
+record remains bound to `2aeaaf9`. See [review scope and outcomes](docs/RC3_SECURITY_REVIEW.md).
+
+1. Keep reliable UDP task ownership through cancellable close, retaining normal
+   completion, timeout and bounded cleanup behavior.
+2. Reserve shared connection/source capacity before QUIC setup and hold it
+   through transport completion; retain separate pre-authentication limits.
+3. Independently review the replacement patch, run all applicable local/CI,
+   dependency and native artifact/SBOM/rollback gates, and preserve exact-source
+   RC.4 packages and updated delivery records. Do not overwrite RC.3 evidence.
+
+This is a correction candidate with the existing full transport scope, not
+new protocol functionality. No further speculative hardening is required by
+the findings. Actual failures take priority over unrelated optimization.
 
 Performance-based selection is frozen until explicitly unfrozen: no scoring,
 continuous speed tests, background ranking or preparatory framework. Keep

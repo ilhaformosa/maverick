@@ -204,8 +204,26 @@ pub async fn serve(
     tls: SslContextBuilder,
     options: ServeOptions,
     accepted: mpsc::Sender<Connected>,
-    mut stop: oneshot::Receiver<()>,
+    stop: oneshot::Receiver<()>,
 ) -> Result<()> {
+    serve_with_admission(socket, tls, options, accepted, stop, |_| Some(())).await
+}
+
+/// Reserve caller-owned shared connection capacity before QUIC/TLS allocation.
+/// The reservation lives until the connection driver has finished, including
+/// failed handshakes, a blocked acceptance queue and normal shutdown.
+pub async fn serve_with_admission<F, G>(
+    socket: UdpSocket,
+    tls: SslContextBuilder,
+    options: ServeOptions,
+    accepted: mpsc::Sender<Connected>,
+    mut stop: oneshot::Receiver<()>,
+    admit: F,
+) -> Result<()>
+where
+    F: Fn(SocketAddr) -> Option<G>,
+    G: Send + 'static,
+{
     let local = socket.local_addr()?;
     // Make room for concurrent bursts without shrinking a larger existing buffer.
     // The operating system may clamp the requested size.
@@ -257,6 +275,9 @@ pub async fn serve(
                 {
                     continue;
                 }
+                let Some(connection_guard) = admit(peer) else {
+                    continue;
+                };
                 let admission = match Arc::clone(&options.admission).try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => continue,
@@ -285,6 +306,7 @@ pub async fn serve(
                 let limits = options.limits;
                 let mut stopped = stopped.clone();
                 tasks.spawn(async move {
+                    let _connection_guard = connection_guard;
                     let result: Result<()> = async {
                         // Setup may be waiting on TLS or a full acceptance queue.
                         // A stop must cancel either before a driver is running.

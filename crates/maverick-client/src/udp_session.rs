@@ -308,8 +308,9 @@ impl ReliableUdpAssociation {
         }
         // Do not let queued responses hold graceful shutdown behind the caller.
         self.incoming.close();
-        if let Some(mut task) = self.task.take() {
-            match tokio::time::timeout(self.shutdown_timeout, &mut task).await {
+        // Keep ownership in self so canceling close still runs Drop's abort.
+        if let Some(task) = self.task.as_mut() {
+            match tokio::time::timeout(self.shutdown_timeout, &mut *task).await {
                 Ok(result) => result??,
                 Err(_) => {
                     task.abort();

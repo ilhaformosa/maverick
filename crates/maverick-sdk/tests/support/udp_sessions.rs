@@ -1,5 +1,98 @@
 use super::*;
 
+async fn stalled_reliable_udp_close(cancel: bool) -> Result<()> {
+    timeout(Duration::from_secs(20), async {
+        let mut fixture = Fixture::start(false, 0).await?;
+        let origin = fixture.server.local_addr().context("missing server")?;
+        let relay = TcpListener::bind("127.0.0.1:0").await?;
+        fixture.client.server.address = relay.local_addr()?.to_string();
+        fixture.client.advanced.udp_policy = Some(UdpPolicy::AllowReliable);
+        fixture.client.advanced.connect_timeout_ms = 1_000;
+        let (gate, mut download_allowed) = tokio::sync::watch::channel(true);
+        let held = std::sync::Arc::new(tokio::sync::Notify::new());
+        let held_copy = std::sync::Arc::clone(&held);
+        let mut drivers = tokio::task::JoinSet::new();
+        drivers.spawn(async move {
+            let (client, _) = relay.accept().await?;
+            let server = tokio::net::TcpStream::connect(origin).await?;
+            let (mut client_read, mut client_write) = client.into_split();
+            let (mut server_read, mut server_write) = server.into_split();
+            let upload = async {
+                tokio::io::copy(&mut client_read, &mut server_write).await?;
+                server_write.shutdown().await?;
+                Ok::<_, anyhow::Error>(())
+            };
+            let download = async {
+                let mut bytes = [0; 16 * 1024];
+                loop {
+                    let count = server_read.read(&mut bytes).await?;
+                    if count == 0 {
+                        return client_write.shutdown().await.map_err(Into::into);
+                    }
+                    if !*download_allowed.borrow() {
+                        // Stall opaque TLS bytes, without changing the real server.
+                        held_copy.notify_one();
+                    }
+                    while !*download_allowed.borrow_and_update() {
+                        download_allowed.changed().await?;
+                    }
+                    client_write.write_all(&bytes[..count]).await?;
+                }
+            };
+            tokio::try_join!(upload, download)?;
+            Ok::<_, anyhow::Error>(())
+        });
+        let connector = ProxyConnector::new(fixture.client.clone())?;
+        let target = UdpSocket::bind("127.0.0.1:0").await?;
+        let mut session = connector
+            .open_udp(TargetAddr::Ipv4(Ipv4Addr::LOCALHOST), target.local_addr()?.port())
+            .await?;
+        ensure!(session.send(Bytes::from_static(b"before close"))?);
+        let mut bytes = [0; 32];
+        let (count, source) = target.recv_from(&mut bytes).await?;
+        target.send_to(&bytes[..count], source).await?;
+        ensure!(session.recv().await? == Bytes::from_static(b"before close"));
+        ensure!(connector.h2_pool_snapshot().active_streams == 1);
+
+        gate.send(false)?;
+        let mut close = Box::pin(session.close());
+        tokio::select! {
+            result = &mut close => anyhow::bail!("close ended before the withheld response: {}", result.is_ok()),
+            _ = held.notified() => {},
+        }
+        if cancel {
+            drop(close);
+        } else {
+            let error = close.await.expect_err("stalled close unexpectedly succeeded");
+            ensure!(error.to_string() == "reliable UDP close timed out");
+        }
+        let released = timeout(Duration::from_millis(1_500), async {
+            while connector.h2_pool_snapshot().active_streams != 0 {
+                tokio::task::yield_now().await;
+            }
+        }).await;
+        // Keep the response stalled beyond the canceled shutdown deadline.
+        // Explicit cleanup also leaves the failing old-code test bounded.
+        gate.send(true)?;
+        drivers.abort_all();
+        while drivers.join_next().await.is_some() {}
+        connector.close();
+        fixture.server.shutdown().await?;
+        ensure!(released.is_ok(), "canceled or timed-out UDP close retained its H2 stream beyond the shutdown deadline");
+        Ok(())
+    }).await.context("UDP close cancellation regression timed out")?
+}
+
+#[tokio::test]
+async fn cancelling_reliable_udp_close_releases_the_h2_stream() -> Result<()> {
+    stalled_reliable_udp_close(true).await
+}
+
+#[tokio::test]
+async fn timing_out_reliable_udp_close_releases_the_h2_stream() -> Result<()> {
+    stalled_reliable_udp_close(false).await
+}
+
 #[tokio::test]
 async fn explicit_udp_policy_requires_protected_intermediary_before_connecting() -> Result<()> {
     let fixture = Fixture::start(false, 0).await?;

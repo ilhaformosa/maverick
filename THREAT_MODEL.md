@@ -46,15 +46,19 @@ Cloudflare to the origin. It is not end-to-end encrypted against Cloudflare:
 the provider can observe Maverick authentication and tunnel payload before
 forwarding it.
 
-The explicit quiche H3 TCP/native UDP source path uses the same credential and target
-policy, verified certificates and TLS exporter binding. It is local-validated
-only, default-off and not part of published RC.2. Unknown H3 requests and failed
+The quiche H3 TCP/native UDP source path uses the same credential and target
+policy, verified certificates and TLS exporter binding. Full candidate packages
+include H3; new direct configs use dual listeners and automatic selection.
+Omitted settings in existing configs retain their earlier behavior. H3 is
+local/CI validated, not field qualified or part of published RC.2. Unknown H3 requests and failed
 authentication close the connection; H2 fallback-content behavior and browser
 fingerprint observations do not transfer to H3. It does not support provider
 fronting. Native UDP uses authenticated fixed-target datagrams with bounded
-queues and existing egress/user limits. Opt-in automatic TCP selection permits
-H2 only after a network failure before any peer response; TLS, pin, protocol
-and authentication failures are terminal. Both carriers verify the same origin
+queues and existing egress/user limits. Automatic TCP selection permits H2 only
+after a network failure before any peer response. New UDP sessions additionally
+require `allow_reliable` and may use H2 after authenticated capability absence;
+`native_required` never does. TLS, pin, protocol and authentication failures are
+terminal. Both carriers verify the same origin
 identity; live flows are never moved. Dual listeners share replay/admission
 state. See [the protocol boundary](docs/NATIVE_UDP_AND_SELECTION.md).
 
@@ -80,7 +84,7 @@ Maverick does not currently protect against or prove:
 - a compromised client or server;
 - a malicious server operator;
 - destination-site browser fingerprinting;
-- a TLS-terminating fronting provider observing tunnel content;
+- a TLS-terminating fronting provider observing legacy unprotected tunnel content;
 - every active-probe strategy;
 - anonymity or resistance to a named censorship system.
 

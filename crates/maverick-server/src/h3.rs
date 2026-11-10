@@ -30,6 +30,14 @@ impl Server {
         path: &str,
         binding: TlsChannelBinding,
     ) -> Result<()> {
+        anyhow::ensure!(
+            path == self.state.config.maverick.tunnel_path,
+            "unknown H3 tunnel path"
+        );
+        let Some(_connection) = try_connection_limit(&self.state, peer) else {
+            return Ok(());
+        };
+        let _active = ActiveConnectionMetricGuard::new(Arc::clone(&self.state.metrics));
         self.serve_admitted(tunnel, peer, path, binding, None).await
     }
 
@@ -46,10 +54,6 @@ impl Server {
             path == state.config.maverick.tunnel_path,
             "unknown H3 tunnel path"
         );
-        let Some(_connection) = try_connection_limit(state, peer) else {
-            return Ok(());
-        };
-        let _active = ActiveConnectionMetricGuard::new(Arc::clone(&state.metrics));
         let pre_auth = if let Some(permit) = admission {
             state
                 .metrics
@@ -467,7 +471,12 @@ async fn serve_listener(
     };
     let (accepted, mut connections) = tokio::sync::mpsc::channel(1);
     let (stop_tx, stop_rx) = oneshot::channel();
-    let driver = maverick_quiche::serve(socket, tls, options, accepted, stop_rx);
+    let driver =
+        maverick_quiche::serve_with_admission(socket, tls, options, accepted, stop_rx, |peer| {
+            let connection = try_connection_limit(&server.state, peer)?;
+            let active = ActiveConnectionMetricGuard::new(Arc::clone(&server.state.metrics));
+            Some((connection, active))
+        });
     tokio::pin!(driver);
     let (metrics_stop, metrics_join) = if let Some(listener) = metrics_listener {
         let (tx, rx) = oneshot::channel();

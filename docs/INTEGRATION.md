@@ -76,6 +76,9 @@ for native H3, also subject to actual path/socket limits. SOCKS encapsulation
 reduces the local usable payload. H2 may add retransmission delay; it is not
 native unreliable delivery. Close/drop releases session resources and the SDK
 flow slot. Keep returned sessions caller-owned when closing the connector.
+Canceling a pending reliable-UDP `close()` future also releases its background
+task and H2 stream; graceful completion and the configured close timeout remain
+separate outcomes.
 
 `UdpCapabilityUnsupported` is a typed authenticated capability-absence result.
 Only pre-response H3 network unavailability, or authenticated capability absence

@@ -94,6 +94,8 @@ active_docs=(
   SECURITY.md
   docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md
   docs/releases/v1.2.0-rc.3.md
+  docs/releases/v1.2.0-rc.4.md
+  docs/RC3_SECURITY_REVIEW.md
   docs/TRANSPORT_ARCHITECTURE.md
   docs/END_TO_END_PROTECTION.md
   docs/INTEGRATION.md

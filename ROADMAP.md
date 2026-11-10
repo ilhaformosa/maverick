@@ -1,6 +1,6 @@
 # Maverick Roadmap
 
-Date: 2026-11-09
+Date: 2026-11-10
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
@@ -81,12 +81,27 @@ fallback, and native UDP never silently becomes reliable H2 UDP. H3 remains
 default-off. See the [protection contract](docs/END_TO_END_PROTECTION.md) and
 [UDP/selection contract](docs/NATIVE_UDP_AND_SELECTION.md).
 
-## Next — Evidence and Delivery
+## Delivered — Integration and Deployment Preparation
 
-1. Evidence-based anti-identification, DNS/ECH, performance and reliability
-   improvements, each with a concrete problem and bounded acceptance.
-2. A new exact candidate with applicable independent security, compatibility,
-   artifact, supply-chain and native rollback evidence.
+The owner prioritized proxy integration and deployability on 2026-11-10, while
+keeping field use deferred. This source delivery now provides:
+
+1. An explicit SDK H3 feature, complete builders and protected-profile roundtrip;
+   a listener-free connector reusing the existing pooled TCP and native UDP paths.
+2. A current wire integration guide with checked native UDP frame examples.
+3. A Linux service template and deployment runbook, with normal CLI stop signals
+   releasing server sessions/listeners and tests running only on loopback/CI.
+4. Local/CI coverage through the existing native artifact, rollback, dependency
+   and scanning gates.
+
+## Next — Candidate Delivery
+
+Prepare a new exact candidate with clearly identified default-H2 and opt-in H3
+builds, matching integration/deployment material and applicable release checks.
+Publication and field qualification remain separate owner decisions. Further
+anti-identification, DNS/ECH and performance work needs a concrete observed gap;
+these are not prerequisites for a usable integration interface. Do not add a
+new configuration/crypto framework, FFI layer or automatic host provisioning.
 
 External client development, endpoint/IP-block recovery, node distribution and relay infrastructure
 management are outside scope. Field trials remain deferred. Ordinary resolved
@@ -104,9 +119,9 @@ recurring benchmark. Preserve every quality check.
 Concrete ordinary-use failures still take priority. H3 pooling and further CPU
 work need a measured problem. New-connection selection is authorized above. A remote-status
 capability needs defined observations and freshness; local listeners or
-cumulative counters cannot establish health. Add an explicit SDK H3 feature
-and builder only when that becomes the chosen delivery entry, with a real SDK
-forwarding test; it is not required to keep the existing CLI H3 path working.
+cumulative counters cannot establish health. The SDK entry now has explicit H3
+support and real forwarding tests. Additional language bindings or adapters
+need a concrete consuming application requirement.
 
 ## Deferred — Exact-Candidate Field Validation and Stable
 

@@ -228,38 +228,41 @@ pub async fn start_server(config: ServerConfig) -> Result<ServerHandle> {
     })
 }
 
+/// Standalone server runner with process stop-signal handling. Embedded callers
+/// that own signal policy should use start_server and ServerHandle::shutdown.
 pub async fn run_server(config: ServerConfig) -> Result<()> {
-    config.validate().map_err(anyhow::Error::from)?;
     validate_runtime_features(&config)?;
-    #[cfg(feature = "experimental-h3")]
-    if config.advanced.quiche_h3 || config.advanced.dual_h2_h3 {
-        let dual = config.advanced.dual_h2_h3;
-        let handle = start_server(config).await?;
-        if dual {
-            info!(listen = %handle.local_addr, "Maverick H2/H3 server listening");
-        } else {
-            info!(listen = %handle.local_addr, "Maverick H3 server listening");
+    // Install Unix handlers before announcing readiness, including for systemd.
+    #[cfg(unix)]
+    let stopping = {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate())?;
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        async move {
+            tokio::select! { _ = terminate.recv() => {}, _ = interrupt.recv() => {} }
         }
-        if let Some(address) = handle.metrics_addr {
-            info!(listen = %address, "Maverick local metrics listening");
-        }
-        let ServerHandle {
-            shutdown: _keep_alive,
-            join,
-            ..
-        } = handle;
-        return join.await?;
+    };
+    #[cfg(not(unix))]
+    let stopping = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    let h3 = config.advanced.quiche_h3;
+    let dual = config.advanced.dual_h2_h3;
+    let mut handle = start_server(config).await?;
+    if dual {
+        info!(listen = %handle.local_addr, "Maverick H2/H3 server listening");
+    } else if h3 {
+        info!(listen = %handle.local_addr, "Maverick H3 server listening");
+    } else {
+        info!(listen = %handle.local_addr, "Maverick server listening");
     }
-    let acceptor = h2_acceptor::acceptor(&config)?;
-    let state = server_state(config)?;
-    let listener = TcpListener::bind(state.config.listen).await?;
-    let metrics_listener = bind_metrics_listener(&state.config).await?;
-    info!(listen = %listener.local_addr()?, "Maverick server listening");
-    if let Some(listener) = &metrics_listener {
-        info!(listen = %listener.local_addr()?, "Maverick local metrics listening");
+    if let Some(address) = handle.metrics_addr {
+        info!(listen = %address, "Maverick local metrics listening");
     }
-    let (_tx, rx) = oneshot::channel();
-    serve(listener, metrics_listener, acceptor, state, rx).await
+    tokio::select! {
+        result = &mut handle.join => result?,
+        _ = stopping => handle.shutdown().await,
+    }
 }
 
 fn validate_runtime_features(config: &ServerConfig) -> Result<()> {

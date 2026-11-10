@@ -1,0 +1,31 @@
+[Unit]
+Description=Maverick privacy proxy (experimental Beta)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=maverick
+Group=maverick
+WorkingDirectory=/etc/maverick
+ExecStartPre=/opt/maverick/current/maverick check-config --kind server -c /etc/maverick/server.yaml
+ExecStart=/opt/maverick/current/maverick server -c /etc/maverick/server.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

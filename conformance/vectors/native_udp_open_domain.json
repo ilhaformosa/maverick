@@ -1,0 +1,12 @@
+{
+  "id": "native_udp_open_domain_v1",
+  "kind": "frame",
+  "max_frame_size": 65536,
+  "frame": {
+    "type": "open_udp",
+    "flags": 1,
+    "flow_id": 1,
+    "payload_hex": "03000f6578616d706c652e696e76616c696401bb00000000"
+  },
+  "encoded_hex": "070100000000000000010000001803000f6578616d706c652e696e76616c696401bb00000000"
+}

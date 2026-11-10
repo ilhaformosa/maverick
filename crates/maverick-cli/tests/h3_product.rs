@@ -428,6 +428,8 @@ async fn rejected_before_target(socks: SocketAddr) -> Result<()> {
 mod native_udp;
 #[path = "support/selection.rs"]
 mod selection;
+#[path = "support/server_stop.rs"]
+mod server_stop;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_handle_shutdown_releases_h3_flow_and_allows_restart() -> Result<()> {

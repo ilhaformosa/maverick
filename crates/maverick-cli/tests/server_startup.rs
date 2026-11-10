@@ -102,3 +102,38 @@ async fn malformed_certificate_never_announces_ready() -> Result<()> {
 async fn mismatched_certificate_key_never_announces_ready() -> Result<()> {
     rejects_tls_without_announcing_ready("mismatched").await
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn deployment_unit_passes_native_systemd_validation() -> Result<()> {
+    let directory = TempDir::new()?;
+    let unit = include_str!("../../../deploy/maverick.service");
+    ensure!(unit.matches("/opt/maverick/current/maverick").count() == 2);
+    let executable = env!("CARGO_BIN_EXE_maverick");
+    // Verify the shipped unit with this build's executable, without installing
+    // a service, creating a system account or touching the host service manager.
+    let unit = unit
+        .replace(
+            "/opt/maverick/current/maverick",
+            &format!("\"{executable}\""),
+        )
+        .replace(
+            "WorkingDirectory=/etc/maverick",
+            &format!("WorkingDirectory={}", directory.path().display()),
+        );
+    let path = directory.path().join("maverick.service");
+    fs::write(&path, unit)?;
+    let output = std::process::Command::new("systemd-analyze")
+        .args(["verify", "--man=no"])
+        .arg(path)
+        .output()
+        .context("systemd-analyze is required on the Linux CI runner")?;
+    ensure!(
+        output.status.success(),
+        "service unit validation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+            .replace(executable, "<maverick>")
+            .replace(directory.path().to_string_lossy().as_ref(), "<fixture>")
+    );
+    Ok(())
+}

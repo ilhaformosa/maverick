@@ -852,6 +852,16 @@ missing defaults such as `advanced.experimental_h3=false` and
 `advanced.experimental_ech=false`, `advanced.ech_fallback_policy=fail_closed`,
 and `auth.v2.enabled=false` without rewriting files or printing secrets.
 
+## Embedded proxy connector
+
+The SDK provides `ProxyConnector` for applications that own their listeners and
+I/O. It opens authenticated TCP sessions and relays caller-owned streams, shares
+flow limits and H2 pooling, and exposes native H3 and legacy H2 UDP with distinct
+semantics. SDK `experimental-h3` is default-off; set the existing H3/auto flags
+explicitly after enabling the feature. Builders now accept custom CA roots and
+complete auth/advanced settings. Protected stored profiles retain required
+inner TLS channel binding. See [the integration guide](docs/INTEGRATION.md).
+
 ## SDK diagnostics and local lifecycle
 
 `GuiClientRuntime::connect()` starts the configured local proxy listeners. It

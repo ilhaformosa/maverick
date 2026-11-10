@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 manifest=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
+cargo test --locked -p maverick-sdk --features experimental-h3 --test connector
+cargo clippy --locked -p maverick-sdk --features experimental-h3 --all-targets -- -D warnings
 cargo test --locked -p maverick-client --features experimental-h3 h3::tests
 cargo test --locked -p maverick-tests --features experimental-h3 --test end_to_end \
   public_transport_apis_reject_incompatible_protection_before_connecting

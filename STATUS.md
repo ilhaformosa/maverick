@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-11-09
+Date: 2026-11-10
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
@@ -17,7 +17,7 @@ historical evidence; a result applies to its tested revision and workload.
 | Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |
 | Dual/automatic transport | Opt-in H2/H3 server on one port; new TCP flows prefer H3 and may select H2 only after pre-response network failure; active flows never migrate |
 | Configuration/authentication | Runnable config v1; existing authentication v1/v2; native H3 UDP adds an explicit control-frame extension; config v2 is policy-only |
-| SDK | Client/server wrappers and profile tooling; local startup is distinguished from unverified remote connectivity; no dedicated H3 feature entry |
+| SDK | Listener-free TCP/UDP connector, explicit H3 feature, complete auth/advanced builders and protected stored profiles; local listener state remains distinct from remote connectivity |
 | Field validation | Deferred by the owner; no new real-network trial authorized |
 | Stable | Not published; exact-RC field use and owner rollback remain incomplete |
 
@@ -27,6 +27,32 @@ observe Maverick authentication and tunnel traffic; this is not native ECH or
 provider-independent privacy. Prior provider-pilot browsing observations and
 video/large-image usability problems are historical, not validation of current
 source.
+
+## Integration and Service Delivery
+
+The owner prioritized integration and deployability on 2026-11-10. The public
+SDK now offers `ProxyConnector`, which reuses the existing H2 pool and H3/auto
+selector without binding local proxy listeners. `connect_tcp` completes target
+admission before returning a session that relays caller-owned async I/O.
+Shared flow admission, cancellation, both half-close directions and pool reuse
+remain enforced. Native UDP sessions expose independent send/receive; legacy
+H2 request/response UDP remains a separately documented compatibility API.
+Closing the connector stops new opens; returned/in-progress sessions remain
+caller-owned, with cancellation controlled by their owners.
+
+The SDK's default-off `experimental-h3` feature enables client/server H3;
+builders accept complete auth/advanced settings and custom trust roots.
+Stored profiles now preserve required inner exporter binding for protected
+fronting, fixing a metadata check that incorrectly treated it as unsupported.
+SDK loopback coverage exercises actual forwarding after profile restoration.
+
+The CLI server handles SIGTERM/SIGINT through the existing server-handle stop
+path for H2, H3 and dual listeners. The prepared Linux systemd unit and runbook
+cover private files, source/build identity, low-port binding, startup, stop and
+matched binary/config rollback. They do not install a host or change its
+network settings. Native Linux CI validates unit syntax; CLI loopback tests
+verify process exit, peer closure and restart. Field deployment remains deferred.
+See [integration](docs/INTEGRATION.md) and [deployment](docs/DEPLOYMENT.md).
 
 ## Origin-pinned H2 Intermediary Protection
 

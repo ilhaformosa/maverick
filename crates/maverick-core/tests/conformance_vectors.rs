@@ -1222,6 +1222,8 @@ fn frame_type(value: &str) -> FrameType {
         "dns_query" => FrameType::DnsQuery,
         "dns_response" => FrameType::DnsResponse,
         "tcp_data" => FrameType::TcpData,
+        "open_udp" => FrameType::OpenUdp,
+        "window_update" => FrameType::WindowUpdate,
         "padding" => FrameType::Padding,
         other => panic!("unknown frame type in vector: {other}"),
     }
@@ -1284,4 +1286,41 @@ impl TargetVector {
             Self::Ipv6 { addr } => TargetAddr::Ipv6(addr),
         }
     }
+}
+
+#[test]
+fn native_udp_control_vectors_bind_a_fixed_target_and_advertise_capacity() {
+    let Vector::Frame {
+        frame, encoded_hex, ..
+    } = read_vector("native_udp_open_domain.json")
+    else {
+        panic!("native open vector")
+    };
+    let target = OpenTcpPayload::new(TargetAddr::Domain("example.invalid".into()), 443);
+    assert_eq!(
+        target.encode().unwrap().as_ref(),
+        hex_decode(&frame.payload_hex)
+    );
+    assert_eq!(
+        Frame::new(FrameType::OpenUdp, 1, 1, target.encode().unwrap())
+            .encode(65_536)
+            .unwrap()
+            .as_ref(),
+        hex_decode(&encoded_hex)
+    );
+    let Vector::Frame { encoded_hex, .. } = read_vector("native_udp_admission.json") else {
+        panic!("native admission vector")
+    };
+    assert_eq!(
+        Frame::new(
+            FrameType::WindowUpdate,
+            1,
+            1,
+            Bytes::copy_from_slice(&1200u16.to_be_bytes())
+        )
+        .encode(65_536)
+        .unwrap()
+        .as_ref(),
+        hex_decode(&encoded_hex)
+    );
 }

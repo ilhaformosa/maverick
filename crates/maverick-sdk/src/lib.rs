@@ -11,11 +11,13 @@ use anyhow::{Context, Result};
 use apple_native_keyring_store::keychain::{Cred, MacKeychainDomain};
 #[cfg(target_os = "macos")]
 use keyring_core::Entry;
+pub use maverick_core::config;
 pub use maverick_core::config::{
     AuthChannelBindingConfig, AuthV2Config, ClientAdvancedConfig, ClientAuthConfig, ClientConfig,
-    ClientCredentialRotationConfig, ClientNextCredentialConfig, ClientServerConfig, FallbackConfig,
-    LocalConfig, LogConfig, MaverickServerConfig, MetricsConfig, Mode, SecretString,
-    ServerAdvancedConfig, ServerConfig, Socks5Config, TlsConfig, UserConfig,
+    ClientCredentialRotationConfig, ClientNextCredentialConfig, ClientServerConfig,
+    EndToEndClientConfig, FallbackConfig, LocalConfig, LogConfig, MaverickServerConfig,
+    MetricsConfig, Mode, SecretString, ServerAdvancedConfig, ServerConfig, Socks5Config, TlsConfig,
+    UserConfig,
 };
 pub use maverick_core::{
     GuiConnectionState, GuiDiagnosticsSnapshot, GuiErrorClass, GuiRuntimeReadinessSnapshot,
@@ -27,6 +29,13 @@ pub use maverick_tun::{
     PacketRuntimeState, PacketWriter, ShutdownReport as TunShutdownReport,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+pub use maverick_client::connection_manager::H2ConnectionPoolSnapshot;
+#[cfg(feature = "experimental-h3")]
+pub use maverick_client::connector::NativeUdpSession;
+pub use maverick_client::connector::{
+    Bytes, ProxyConnector, TargetAddr, TcpSession, UdpPacketPayload,
+};
 
 mod platform_helper_ipc;
 pub use platform_helper_ipc::{
@@ -876,7 +885,9 @@ impl StoredClientProfile {
         channel_binding: AuthChannelBindingConfig,
     ) -> bool {
         channel_binding.require
-            && (self.advanced.tls_terminating_fronting_enabled() || self.advanced.experimental_h3)
+            && ((self.advanced.tls_terminating_fronting_enabled()
+                && self.advanced.end_to_end.is_none())
+                || self.advanced.experimental_h3)
     }
 }
 
@@ -1004,8 +1015,9 @@ pub struct ClientConfigBuilder {
     credential_id: Option<String>,
     secret: Option<SecretString>,
     cert_pin: Option<String>,
-    experimental_h3: bool,
-    experimental_tun: bool,
+    ca_cert: Option<PathBuf>,
+    auth: ClientAuthConfig,
+    advanced: ClientAdvancedConfig,
 }
 
 impl Default for ClientConfigBuilder {
@@ -1019,8 +1031,9 @@ impl Default for ClientConfigBuilder {
             credential_id: None,
             secret: None,
             cert_pin: None,
-            experimental_h3: false,
-            experimental_tun: false,
+            ca_cert: None,
+            auth: ClientAuthConfig::default(),
+            advanced: ClientAdvancedConfig::default(),
         }
     }
 }
@@ -1066,22 +1079,35 @@ impl ClientConfigBuilder {
         self
     }
 
+    /// Retired config-v1 flag: true is rejected. Select quiche_h3 or auto_h3
+    /// through advanced() with the SDK experimental-h3 build feature instead.
     pub fn experimental_h3(mut self, enabled: bool) -> Self {
-        self.experimental_h3 = enabled;
+        self.advanced.experimental_h3 = enabled;
         self
     }
 
     pub fn experimental_tun(mut self, enabled: bool) -> Self {
-        self.experimental_tun = enabled;
+        self.advanced.experimental_tun = enabled;
+        self
+    }
+
+    pub fn ca_cert(mut self, path: impl Into<PathBuf>) -> Self {
+        self.ca_cert = Some(path.into());
+        self
+    }
+
+    pub fn auth(mut self, auth: ClientAuthConfig) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    /// Complete runtime options, including origin protection and opt-in H3 selection.
+    pub fn advanced(mut self, advanced: ClientAdvancedConfig) -> Self {
+        self.advanced = advanced;
         self
     }
 
     pub fn build(self) -> Result<ClientConfig> {
-        let advanced = ClientAdvancedConfig {
-            experimental_h3: self.experimental_h3,
-            experimental_tun: self.experimental_tun,
-            ..ClientAdvancedConfig::default()
-        };
         let config = ClientConfig {
             version: 1,
             mode: self.mode,
@@ -1102,12 +1128,12 @@ impl ClientConfigBuilder {
                 secret: self
                     .secret
                     .context("server credential secret is required")?,
-                ca_cert: None,
+                ca_cert: self.ca_cert,
                 cert_pin: self.cert_pin,
             },
-            auth: Default::default(),
+            auth: self.auth,
             log: LogConfig::default(),
-            advanced,
+            advanced: self.advanced,
         };
         config.validate().map_err(anyhow::Error::from)?;
         Ok(config)
@@ -1125,6 +1151,8 @@ pub struct ServerConfigBuilder {
     user_name: Option<String>,
     secret: Option<SecretString>,
     static_dir: Option<PathBuf>,
+    auth: maverick_core::config::ServerAuthConfig,
+    advanced: ServerAdvancedConfig,
 }
 
 impl Default for ServerConfigBuilder {
@@ -1139,6 +1167,8 @@ impl Default for ServerConfigBuilder {
             user_name: None,
             secret: None,
             static_dir: None,
+            auth: Default::default(),
+            advanced: ServerAdvancedConfig::default(),
         }
     }
 }
@@ -1189,6 +1219,16 @@ impl ServerConfigBuilder {
         self
     }
 
+    pub fn auth(mut self, auth: maverick_core::config::ServerAuthConfig) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    pub fn advanced(mut self, advanced: ServerAdvancedConfig) -> Self {
+        self.advanced = advanced;
+        self
+    }
+
     pub fn build(self) -> Result<ServerConfig> {
         let config = ServerConfig {
             version: 1,
@@ -1220,11 +1260,11 @@ impl ServerConfigBuilder {
                     .context("static fallback directory is required")?,
                 index: "index.html".into(),
             },
-            auth: Default::default(),
+            auth: self.auth,
             dns: None,
             metrics: None,
             log: LogConfig::default(),
-            advanced: ServerAdvancedConfig::default(),
+            advanced: self.advanced,
         };
         config.validate().map_err(anyhow::Error::from)?;
         Ok(config)

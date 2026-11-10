@@ -5,6 +5,7 @@
 #[cfg(feature = "browser-tls")]
 mod browser_tls;
 pub mod connection_manager;
+pub mod connector;
 pub mod dns;
 pub mod h2_transport;
 #[cfg(feature = "experimental-h3")]

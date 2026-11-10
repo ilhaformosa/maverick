@@ -186,19 +186,13 @@ metadata conflicts with the BBRv1 policy. It no longer means â€œwait for BBRv3.â
 
 ## Installation Integration
 
-There is not yet a complete server installer, so the repository must not claim
-that an ordinary Maverick installation already prepares the host
-automatically. A future installation workflow can safely use this existing
-gate:
-
-1. Run `prepare`.
-2. If exit 20 says Ubuntu required a reboot before the network policy was
-   written, reboot once and run `prepare` again.
-3. If exit 20 says the persistent qdisc is ready, reboot once and run `verify`
-   directly; do not repeat `prepare`.
-4. On any other nonzero exit, stop without starting Maverick.
-5. Run `verify` after a successful `prepare`.
-6. Only after `verify` exits 0, install and start the Maverick service.
+The [deployment runbook and service template](DEPLOYMENT.md) now cover manual
+application installation and lifecycle. They are not a host provisioner. For
+this specifically authorized test-origin policy, run `prepare`, honor exit 20
+with the documented manual reboot, and require a successful `verify` before
+starting Maverick. A reboot requested before network-policy persistence must
+be followed by `prepare` again; one requested after qdisc persistence is followed
+by `verify`. Other nonzero results stop installation/startup.
 
 Package upgrades do not belong in a recurring systemd `ExecStartPre`. A future
 unit may call a small read-only verifier there, but provisioning must remain a
@@ -215,11 +209,13 @@ stacks:
 - `private` also defaults to H2/TCP and uses the same server-sent policy while
   applying stricter privacy rules.
 
-Config v1 has no H3 exception. `advanced.experimental_h3=true` fails before any
-QUIC/UDP carrier starts, and there is no H3-to-H2 fallback. QRET-2 removes the
-Quinn implementation and loopback oracle; immutable history is not a deployment
-capability. If a future qualified quiche carrier opens through Product Config
-v2, its host policy must be documented separately at that time.
+Runnable config v1 now supports the explicit `quiche_h3`, client `auto_h3` and
+server `dual_h2_h3` selectors in H3-enabled source builds. They default to false;
+`experimental_h3` remains retired. H3 uses QUIC/UDP and quiche's userspace
+congestion control, not kernel TCP BBR. Automatic selection can choose H2 only
+for new TCP flows after pre-response network unavailability; identity,
+authentication and protocol failures do not cause fallback. See
+[NATIVE_UDP_AND_SELECTION.md](NATIVE_UDP_AND_SELECTION.md).
 
 The server-sent half of all three modes' server-to-target TCP connections uses
 the server's TCP congestion-control default. UDP and DNS relay sockets do not

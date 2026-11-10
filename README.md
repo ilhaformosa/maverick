@@ -70,6 +70,18 @@ See [configuration](CONFIG.md#origin-pinned-end-to-end-h2) and the
 streaming H2, not real-provider qualification or native UDP. The intermediary
 can still observe the origin TLS name, timing and volume.
 
+## Integration and Deployment
+
+Proxy cores can use the public SDK's `ProxyConnector` directly with caller-owned
+I/O, without opening a local SOCKS listener. H2 pooling, origin protection,
+opt-in H3/automatic TCP selection and native UDP reuse the product paths. See
+[SDK and wire integration](docs/INTEGRATION.md), including checked frame examples.
+
+A [Linux service template and runbook](docs/DEPLOYMENT.md) describe later
+owner-authorized deployment. CLI servers stop normally on SIGTERM/SIGINT.
+Current source builds can be prepared and verified locally; field use and new
+release publication remain separate from this delivery.
+
 ## Embedded SDK State
 
 `GuiClientRuntime::connect()` starts local listeners. Its diagnostics report

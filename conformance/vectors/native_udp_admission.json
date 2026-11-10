@@ -1,0 +1,12 @@
+{
+  "id": "native_udp_admission_v1",
+  "kind": "frame",
+  "max_frame_size": 65536,
+  "frame": {
+    "type": "window_update",
+    "flags": 1,
+    "flow_id": 1,
+    "payload_hex": "04b0"
+  },
+  "encoded_hex": "0c0100000000000000010000000204b0"
+}

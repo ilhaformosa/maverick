@@ -10,10 +10,11 @@ This record freezes the minimum contract for moving the v1.2 H2/H3 TCP/UDP
 train from Beta toward RC and Stable release. It is a policy record,
 not evidence that any RC or Stable gate has passed.
 
-The contract does not itself make a tag, GitHub Release, publication, provider
-resource, field run, paid audit, or Stable claim ready. Under the standing
-decision delegation in `STATUS.md`, Codex may decide those later tasks without
-another owner choice, but only after recording and passing their exact gates.
+The contract does not itself authorize a tag, GitHub Release, publication,
+provider resource, field run, paid audit, or Stable claim. The current owner
+decision authorizes candidate development and local/CI qualification only.
+Field use, actual deployment and publication remain deferred and require a
+later owner decision before their exact gates can proceed.
 
 ## Owner decisions R1 through R4
 

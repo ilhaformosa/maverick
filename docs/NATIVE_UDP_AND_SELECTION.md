@@ -1,6 +1,6 @@
 # Native UDP and new-connection selection
 
-Date: 2026-11-09
+Date: 2026-11-10
 Status: active implementation contract; current delivery state is in STATUS.md.
 The latest owner decision supersedes earlier opt-in generation and TCP-only selection scope.
 

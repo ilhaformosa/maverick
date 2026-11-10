@@ -1,5 +1,36 @@
 use super::*;
 
+#[tokio::test]
+async fn explicit_udp_policy_requires_protected_intermediary_before_connecting() -> Result<()> {
+    let fixture = Fixture::start(false, 0).await?;
+    let trap = TcpListener::bind("127.0.0.1:0").await?;
+    let mut config = fixture.client.clone();
+    config.server.address = trap.local_addr()?.to_string();
+    config.auth.channel_binding.enabled = false;
+    config.auth.channel_binding.require = false;
+    config.advanced.stealth.cdn_fronting.enabled = true;
+    config.advanced.stealth.cdn_fronting.carrier = config::CdnFrontingCarrier::H2;
+    config
+        .advanced
+        .stealth
+        .cdn_fronting
+        .trusted_tls_terminating_provider = true;
+    // Legacy omission keeps its explicit trusted-provider compatibility meaning.
+    config.validate()?;
+    config.advanced.udp_policy = Some(UdpPolicy::AllowReliable);
+    ensure!(config.validate().is_err());
+    ensure!(ProxyConnector::new(config.clone()).is_err());
+    let opening = maverick_client::h2_transport::connect(&config);
+    tokio::pin!(opening);
+    tokio::select! {
+        result = &mut opening => ensure!(result.is_err()),
+        _ = trap.accept() => anyhow::bail!("modern UDP policy contacted an unprotected intermediary"),
+        _ = tokio::time::sleep(Duration::from_secs(2)) => anyhow::bail!("protection rejection stalled"),
+    }
+    fixture.server.shutdown().await?;
+    Ok(())
+}
+
 async fn released_udp_port(address: std::net::SocketAddr) -> Result<()> {
     timeout(Duration::from_secs(2), async {
         loop {

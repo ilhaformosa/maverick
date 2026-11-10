@@ -89,6 +89,10 @@ explicit policy it uses the selected session for one exchange. Use `open_udp`
 for general bidirectional application traffic. No performance ranking,
 background probes or live-session migration are provided.
 
+The low-level legacy `UdpAssociation` rejects explicit UDP policy before opening
+a connection. Use the selected session API or the policy-aware exchange helper;
+this prevents a manually constructed config from bypassing native-required UDP.
+
 `MaverickClient::start` remains available for software that wants local
 SOCKS5/HTTP listeners, and `MaverickServer::start` embeds a server. Those APIs
 do not install process signal handlers. `GuiClientRuntime` still distinguishes

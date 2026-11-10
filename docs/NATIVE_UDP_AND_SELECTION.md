@@ -18,6 +18,8 @@ New protected intermediary generation selects H2 and `allow_reliable`, requiring
 owner-supplied origin identity. Existing YAML omission keeps its prior behavior:
 H2 legacy UDP exchanges or H3 native datagrams according to the existing carrier.
 No implicit migration of saved settings or weakening of protection is allowed.
+Explicit UDP policy on a TLS-terminating intermediary requires inner origin
+protection; only omitted policy retains the historical trusted-provider path.
 
 The new optional `advanced.udp_policy` has two values:
 

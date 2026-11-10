@@ -313,6 +313,15 @@ impl ClientConfig {
                 "UDP session policy requires H2 or H3, not WebSocket".into(),
             ));
         }
+        if self.advanced.udp_policy.is_some()
+            && self.advanced.tls_terminating_fronting_enabled()
+            && self.advanced.end_to_end.is_none()
+        {
+            return Err(Error::Config(
+                "UDP session policy requires end-to-end protection for a terminating intermediary"
+                    .into(),
+            ));
+        }
         if self.advanced.udp_policy == Some(UdpPolicy::NativeRequired)
             && !self.advanced.quiche_h3
             && !self.advanced.auto_h3

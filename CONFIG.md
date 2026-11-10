@@ -367,6 +367,8 @@ Protected relay generation selects H2 plus `allow_reliable`. It cannot enable
 native-required or direct/H3 fallback. Old peers lacking the authenticated new
 session capability return unsupported; no fallback to the old request/response
 wire mode occurs under an explicit policy.
+An explicit UDP policy also rejects TLS-terminating fronting without
+`advanced.end_to_end`; omitted policy retains the acknowledged legacy route.
 
 Rust callers can use `maverick_client::h3::NativeUdpAssociation` for fixed-target
 `send`/`recv`, `max_payload` and `close`; `send` returning true means queued,

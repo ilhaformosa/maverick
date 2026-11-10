@@ -49,6 +49,10 @@ pub struct UdpAssociation {
 impl UdpAssociation {
     pub async fn open(config: &ClientConfig) -> Result<Self> {
         anyhow::ensure!(
+            config.advanced.udp_policy.is_none(),
+            "explicit UDP policy requires ProxyConnector::open_udp or relay_udp_packet"
+        );
+        anyhow::ensure!(
             !config.advanced.quiche_h3 && !config.advanced.auto_h3,
             "use NativeUdpAssociation for fixed-target native H3 UDP"
         );
@@ -56,6 +60,10 @@ impl UdpAssociation {
     }
 
     pub(crate) async fn open_with_pool(pool: &ClientTunnelPool) -> Result<Self> {
+        anyhow::ensure!(
+            pool.config().advanced.udp_policy.is_none(),
+            "explicit UDP policy requires the selected UDP session API"
+        );
         Self::open_with_tunnel(pool.config(), pool.open().await?).await
     }
 
@@ -146,6 +154,36 @@ fn udp_response_from_frame(frame: Frame, flow_id: u64) -> Result<Option<UdpPacke
 mod tests {
     use super::*;
     use maverick_core::frame::TargetAddr;
+
+    #[tokio::test]
+    async fn legacy_udp_api_rejects_explicit_session_policy_before_connecting() -> Result<()> {
+        use maverick_core::config::UdpPolicy;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let secret = maverick_core::SecretString::generate();
+        let mut config = ClientConfig::from_yaml_str(&format!(
+            "version: 1\nlocal:\n  socks5:\n    listen: '127.0.0.1:0'\nserver:\n  address: '{}'\n  server_name: localhost\n  tunnel_path: /udp-test\n  credential_id: test\n  secret: '{}'\n",
+            listener.local_addr()?, secret.expose_secret()))?;
+        for policy in [UdpPolicy::NativeRequired, UdpPolicy::AllowReliable] {
+            // Public struct construction must not bypass the configured policy.
+            config.advanced.udp_policy = Some(policy);
+            let open = UdpAssociation::open(&config);
+            tokio::pin!(open);
+            tokio::select! {
+                result = &mut open => assert!(result.is_err()),
+                _ = listener.accept() => anyhow::bail!("legacy UDP contacted H2 despite explicit session policy"),
+                _ = tokio::time::sleep(Duration::from_secs(2)) => anyhow::bail!("legacy policy rejection stalled"),
+            }
+            let pool = ClientTunnelPool::new(std::sync::Arc::new(config.clone()));
+            let open = UdpAssociation::open_with_pool(&pool);
+            tokio::pin!(open);
+            tokio::select! {
+                result = &mut open => assert!(result.is_err()),
+                _ = listener.accept() => anyhow::bail!("legacy pooled UDP ignored session policy"),
+                _ = tokio::time::sleep(Duration::from_secs(2)) => anyhow::bail!("legacy pooled policy rejection stalled"),
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn udp_response_decodes_matching_packet() -> Result<()> {

@@ -242,7 +242,7 @@ jobs:
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level full \
             --source-root .
-      - name: Exercise RC.2 upgrade and Beta.4 rollback on GNU/Linux
+      - name: Exercise current-candidate upgrade and Beta.4 rollback on GNU/Linux
         env:
           GH_TOKEN: ${{ github.token }}
           MAVERICK_PILOT_REVISION: ${{ steps.pilot.outputs.revision }}
@@ -274,9 +274,9 @@ jobs:
         with:
           name: rc-candidate-x86_64-unknown-linux-gnu
           path: |
-            dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.tar.gz
-            dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256
-            dist/maverick-1.2.0-rc.2-pilot-x86_64-unknown-linux-gnu.cdx.json
+            dist/maverick-1.2.0-rc.3-pilot-x86_64-unknown-linux-gnu.tar.gz
+            dist/maverick-1.2.0-rc.3-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256
+            dist/maverick-1.2.0-rc.3-pilot-x86_64-unknown-linux-gnu.cdx.json
           if-no-files-found: error
           retention-days: 7
       - name: Compare project outputs after all checks
@@ -416,7 +416,7 @@ jobs:
             --expected-target "$MAVERICK_SBOM_TARGET" \
             --verification-level full \
             --source-root .
-      - name: Exercise RC.2 upgrade and Beta.4 rollback on macOS
+      - name: Exercise current-candidate upgrade and Beta.4 rollback on macOS
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -448,9 +448,9 @@ jobs:
         with:
           name: rc-candidate-aarch64-apple-darwin
           path: |
-            dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.tar.gz
-            dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.tar.gz.sha256
-            dist/maverick-1.2.0-rc.2-pilot-aarch64-apple-darwin.cdx.json
+            dist/maverick-1.2.0-rc.3-pilot-aarch64-apple-darwin.tar.gz
+            dist/maverick-1.2.0-rc.3-pilot-aarch64-apple-darwin.tar.gz.sha256
+            dist/maverick-1.2.0-rc.3-pilot-aarch64-apple-darwin.cdx.json
           if-no-files-found: error
           retention-days: 7
       - name: Compare project outputs after all checks

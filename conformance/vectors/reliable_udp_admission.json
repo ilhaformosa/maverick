@@ -1,0 +1,12 @@
+{
+  "id": "reliable_udp_admission_v1",
+  "kind": "frame",
+  "max_frame_size": 65536,
+  "frame": {
+    "type": "window_update",
+    "flags": 2,
+    "flow_id": 1,
+    "payload_hex": "ffe3"
+  },
+  "encoded_hex": "0c02000000000000000100000002ffe3"
+}

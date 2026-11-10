@@ -4,7 +4,7 @@ All currently runnable client and server config files use YAML and `version: 1`.
 
 The sections below describe runnable v1 configuration first. Future v2 policy
 and detailed compatibility contracts follow the runtime reference. H3 remains
-an explicit, default-off source capability requiring its build feature.
+a source capability requiring its build feature, included in full candidate packages. New direct generation uses dual/auto; omitted fields in existing files retain H2.
 
 ## Client
 
@@ -212,8 +212,8 @@ evidence exists. `private` mode rejects `rustls_default`.
 
 ## Transport
 
-H2/TLS is the default direct config-v1 product carrier; the explicit quiche H3
-opt-in is described below. The
+Omitted carrier fields in config v1 retain H2/TLS. New direct configuration
+generation explicitly selects auto/dual; fixed quiche H3 is described below. The
 `experimental_h3` field remains present and defaults to `false`, but setting it
 to `true` is retired:
 
@@ -290,7 +290,7 @@ their drivers. Active TCP transfers end during shutdown. Close delivery is
 best effort; forced process exit or lost datagrams still relies on peer failure
 or idle detection.
 
-H3 is Beta and default-off. Local validation does not authorize a field trial
+H3 remains candidate/Beta; new direct generation enables auto/dual. Local validation does not authorize a field trial
 or claim browser equivalence or better performance.
 
 ### Native UDP and automatic new connections
@@ -303,16 +303,17 @@ packets and full queues drop; there is no fragmentation or retransmission.
 SOCKS has at most 64 target sessions per control connection, additionally limited
 by `max_concurrent_flows` (the control permit covers its first target). Server
 user limits and egress checks apply to every target. `udp_idle_timeout_ms`
-expires an inactive target; control closure cancels every child. Legacy H2 UDP
-keeps its reliable request/response compatibility semantics.
+expires an inactive target; control closure cancels every child. Omitted UDP policy keeps legacy H2 request/response semantics; an explicit
+policy enables the persistent H2 sessions described below.
 
-For a dual listener and automatic TCP selection, build with `experimental-h3`
-and generate a pair using `gen-config --auto-h3`, or explicitly set:
+For dual listeners and automatic new TCP/UDP selection, use a full candidate
+binary and bare `gen-config` (`--auto-h3` remains an explicit alias), or set:
 
 ```yaml
 # client advanced settings
 advanced:
   auto_h3: true
+  udp_policy: allow_reliable
 ```
 
 ```yaml
@@ -321,7 +322,7 @@ advanced:
   dual_h2_h3: true
 ```
 
-Both flags default to false and conflict with `quiche_h3: true`. Dual mode binds
+When absent, both flags retain false for compatibility and conflict with `quiche_h3: true`. Dual mode binds
 TCP/H2 and UDP/H3 on the same `listen` port, including the same OS-assigned port
 when zero is requested. Authentication, replay, connection/user limits and
 metrics are shared; startup bind failure releases both endpoints, and shutdown
@@ -334,15 +335,47 @@ network failure/timeout **before any peer response** permits H2. Partial TLS
 handshake timeouts, certificate/hostname/pin errors, protocol rejection and
 Maverick authentication failures do not. The overall automatic open has the
 existing `connect_timeout_ms` deadline. A 30-second negative reachability cache
-skips repeated UDP probes; the next new flow after expiry probes again. Native
-UDP always requires H3, even when TCP is currently choosing H2. This does not
+skips repeated H3 setup probes for eligible TCP/UDP opens; a new open after
+expiry tries again. Native-required UDP never chooses H2. This does not
 convert application TCP into UDP or move an established session. `mode: auto`
 alone does not enable carrier selection.
+
+`advanced.udp_policy` is optional and accepts:
+
+| Value | Behavior |
+|---|---|
+| omitted | Preserve legacy H2 exchanges or existing H3 native behavior according to the configured carrier |
+| `native_required` | Native H3 only; incompatible with fixed/protected H2 |
+| `allow_reliable` | Fixed H2 uses persistent reliable UDP; fixed H3 stays native; auto may choose H2 after eligible setup failures |
+
+For auto UDP with `allow_reliable`, authenticated absence of session capability
+also permits H2 before sending application data. Malformed protocol, target
+rejection, identity/auth failures or partial-handshake timeouts never permit it.
+No reply from a UDP target is not a network-unavailable signal. Sessions do not
+change carrier and accepted packets are never automatically replayed.
+
+Reliable H2 holds a connected target socket/source port, independently sends and
+receives, and supports continuous upload and multiple replies. The advertised
+maximum payload is 65507 bytes; the native maximum remains 1200. Neither adds
+fragmentation. Local SOCKS headers consume some of the underlying UDP packet
+capacity. Bounded queues may drop full/oversized packets; `send` reports whether
+a packet was queued, not delivered. The SDK exposes `carrier()` and
+`max_payload()` on each selected session. Server idle expiry is cleanup, not a
+fallback trigger. Per-user/client flow limits and SOCKS child limits still apply.
+
+Protected relay generation selects H2 plus `allow_reliable`. It cannot enable
+native-required or direct/H3 fallback. Old peers lacking the authenticated new
+session capability return unsupported; no fallback to the old request/response
+wire mode occurs under an explicit policy.
+An explicit UDP policy also rejects TLS-terminating fronting without
+`advanced.end_to_end`; omitted policy retains the acknowledged legacy route.
 
 Rust callers can use `maverick_client::h3::NativeUdpAssociation` for fixed-target
 `send`/`recv`, `max_payload` and `close`; `send` returning true means queued,
 not delivered. The one-packet `udp::relay_udp_packet` helper also chooses native
-UDP when H3/auto is configured. The older `UdpAssociation` API remains H2-only.
+UDP when H3/auto is configured and no new policy is set. With an explicit
+policy, one-packet helpers use the selected session; `ProxyConnector::open_udp`
+provides persistent sessions. The older `UdpAssociation` API remains H2-only.
 Public `FrameChannel`/`TransportChannel` now include datagram channels; callers
 should construct them through `h3_channel::channel()`. Existing TCP wire framing
 is unchanged. See [the wire contract](docs/NATIVE_UDP_AND_SELECTION.md).
@@ -367,7 +400,7 @@ The older `carrier: web_socket` path remains available with
 `tls_fingerprint: rustls_default`; `experimental_cloudflare_ws: true` is its
 legacy selector. WebSocket does not support the browser-like TLS profile.
 Explicit quiche H3 reuses the TLS settings without claiming browser equivalence.
-The default direct transport remains H2/TLS while fronting is disabled. Loopback
+Omitted transport fields retain H2/TLS; new direct generation explicitly enables dual/auto. Loopback
 coverage alone does not prove that a real provider configuration accepts
 sustained bidirectional H2. The first owner pilot exercised the path through a
 real provider and network; `STATUS.md` records the bounded success and open
@@ -425,7 +458,7 @@ H2 validates protected configuration before dialing.
 The outer POST uses `application/octet-stream`; the intermediary must support
 simultaneous streaming in both directions. HTTP-body boundaries are irrelevant
 to the inner TLS byte stream. This path is H2-only: combining it with H3 or
-WebSocket is rejected. H3 remains direct and default-off. Profile URI v1 and
+WebSocket is rejected. H3 remains direct; protected intermediary configurations stay H2. Profile URI v1 and
 Config v2 policy projection reject protection they cannot preserve; use YAML.
 Rust callers constructing advanced-settings struct literals must supply the
 new field or use `..Default::default()`; omitted YAML fields remain compatible.
@@ -753,8 +786,11 @@ control, not a precise billing-grade traffic shaper.
 
 ## Generating a configuration pair
 
-Run `maverick gen-config` in an empty directory for default H2, or use
-`maverick gen-config --quiche-h3` with an H3-capable binary. Both outputs use the
+Run `maverick gen-config` in an empty directory with a full H2/H3 binary for a
+dual server and automatic client (`allow_reliable` UDP). Use `--h2` or
+`--quiche-h3` for fixed transport; fixed H3 defaults to `native_required`.
+An explicit `--udp-policy` selects either policy; incompatible combinations
+fail before writing. An H2-only build requires `--h2`. Both outputs use the
 same fresh credential and retain private file permissions. The generator checks
 both filenames before writing, so an existing server file does not leave a new
 client file with mismatched credentials. Existing files are never overwritten;
@@ -856,8 +892,10 @@ and `auth.v2.enabled=false` without rewriting files or printing secrets.
 
 The SDK provides `ProxyConnector` for applications that own their listeners and
 I/O. It opens authenticated TCP sessions and relays caller-owned streams, shares
-flow limits and H2 pooling, and exposes native H3 and legacy H2 UDP with distinct
-semantics. SDK `experimental-h3` is default-off; set the existing H3/auto flags
+flow limits and H2 pooling, and exposes selected persistent UDP through
+`open_udp`, including `carrier`, `max_payload`, independent `send`/`recv`, and
+`close`. Explicit UDP policies preserve native versus reliable semantics;
+omission retains legacy convenience APIs. SDK `experimental-h3` is default-off; set the existing H3/auto flags
 explicitly after enabling the feature. Builders now accept custom CA roots and
 complete auth/advanced settings. Protected stored profiles retain required
 inner TLS channel binding. See [the integration guide](docs/INTEGRATION.md).
@@ -1199,7 +1237,8 @@ traffic_shaping:
 
 The projection must write `transport.strategy: h2`, not `auto`, so any later
 change to Auto eligibility cannot change the preserved v1 behavior. Under the
-current direction Auto remains H2-only. It must not
+policy-only v2 projection is not the runnable `advanced.auto_h3` selector and
+does not migrate its behavior. It must not
 write the legacy Mode into this policy document. Existing auth v1 or v2
 selection remains a separate compatibility fact and is not changed by the
 projection.

@@ -50,7 +50,7 @@ TLS/frame transfer, certificate-pin rejection, timeout and socket release;
 ordinary CLI authentication and forwarding coverage remains in the shared gates.
 
 This does not add parallel dialing or promise recovery when a silent first
-address consumes the entire budget. H3 remains explicit and default-off.
+address consumes the entire budget. At that delivery H3 was explicit/default-off; new generation follows the active contract below.
 
 Mismatched tunnel paths now receive an explicit rejection before authentication.
 Local regressions distinguish the rejection from an authentication timeout;
@@ -77,8 +77,8 @@ The authorized sequence is implemented: generated intermediary configurations
 require owner-verified origin protection; direct H3 carries native UDP; an
 opt-in dual server shares policy/admission across H2/H3; automatic clients choose
 only for new TCP connections. TLS/authentication/protocol failures never cause
-fallback, and native UDP never silently becomes reliable H2 UDP. H3 remains
-default-off. See the [protection contract](docs/END_TO_END_PROTECTION.md) and
+fallback, and native UDP never silently becomes reliable H2 UDP. The earlier
+opt-in generation is superseded by the active candidate contract below. See the [protection contract](docs/END_TO_END_PROTECTION.md) and
 [UDP/selection contract](docs/NATIVE_UDP_AND_SELECTION.md).
 
 ## Delivered — Integration and Deployment Preparation
@@ -94,14 +94,36 @@ keeping field use deferred. This source delivery now provides:
 4. Local/CI coverage through the existing native artifact, rollback, dependency
    and scanning gates.
 
-## Next — Candidate Delivery
+## RC.3 — Complete Transport Candidate
 
-Prepare a new exact candidate with clearly identified default-H2 and opt-in H3
-builds, matching integration/deployment material and applicable release checks.
-Publication and field qualification remain separate owner decisions. Further
-anti-identification, DNS/ECH and performance work needs a concrete observed gap;
-these are not prerequisites for a usable integration interface. Do not add a
-new configuration/crypto framework, FFI layer or automatic host provisioning.
+The owner's latest decision supersedes the earlier Direct-H2-only Stable scope
+and generated-direct H2 default. The persistent goal is complete only after all
+of the following ship together with applicable local and CI evidence:
+
+1. Persistent fixed-target H2 UDP sessions: independent upload/download, stable
+   target socket/source port, multiple replies, bounded resources and cleanup.
+   Preserve the legacy wire path for configurations omitting the new policy.
+2. Core-owned selection for new TCP connections and UDP sessions, with bounded
+   reachability avoidance/retry and explicit `native_required` / `allow_reliable`
+   UDP policy. Authenticate capability decisions; never replay application data.
+3. Public SDK and SOCKS integration using those same sessions and selection rules;
+   configuration, protocol vectors and integration documentation.
+4. A new versioned candidate with H2/H3 built in. Newly generated direct configs
+   use dual servers and automatic clients; fixed H2/H3 remain explicit choices.
+   Protected intermediary configurations stay H2 with origin protection required.
+5. All applicable product, rustls, H3, retained candidate, security, dependency,
+   compatibility, native artifact/SBOM and upgrade/rollback checks, and preserved
+   exact-source archives/evidence. No field deployment or public release.
+
+See [the implementation contract](docs/NATIVE_UDP_AND_SELECTION.md). Current
+completion/evidence lives in STATUS.md; a passing earlier revision does not
+qualify this candidate. Reuse existing implementations and add no new crypto,
+configuration framework, FFI layer or automatic host provisioning.
+
+Performance-based selection is frozen until explicitly unfrozen: no scoring,
+continuous speed tests, background ranking or preparatory framework. Keep
+existing necessary checks. Active-session migration and seamless cross-carrier
+resumption are permanently out of scope, with no reserved future design.
 
 External client development, endpoint/IP-block recovery, node distribution and relay infrastructure
 management are outside scope. Field trials remain deferred. Ordinary resolved
@@ -125,9 +147,10 @@ need a concrete consuming application requirement.
 
 ## Deferred — Exact-Candidate Field Validation and Stable
 
-The owner has deferred named-environment installation, 72-hour ordinary use and
-field rollback. These gate the first Direct-H2 Stable release, not local H3
-development. A changed release needs a new RC and the applicable exact-candidate
+The owner has deferred named-environment installation, ordinary use and field
+rollback. Stable must cover H2/H3 and TCP/UDP and the supported protected H2
+intermediary route; field evidence must cover that matrix. The historical
+Direct-H2-only qualification is insufficient. A changed release needs a new RC and the applicable exact-candidate
 security, compatibility, artifact, supply-chain and native rollback evidence;
 do not replace RC.2 assets or count older evidence as a newer candidate's pass.
 See the [release contract](docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md).
@@ -154,6 +177,7 @@ approved release need.
 - Keep this task's builds/profiling out of performance runs, record anonymous
   host context and report incomparable conditions honestly. Other projects
   continue running; background load never turns a failing assertion into a pass.
-- Keep H3 default-off and field validation deferred. Phase 3 recovery, giant
+- Preserve existing configuration meanings and keep field validation deferred.
+  New direct generation uses dual/auto as authorized above. Phase 3 recovery, giant
   convergence, policy-only prerequisite chains and new receipt/registry/watchdog
   systems remain stopped.

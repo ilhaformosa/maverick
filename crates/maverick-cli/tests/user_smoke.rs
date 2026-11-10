@@ -38,6 +38,7 @@ fn assert_success(output: Output, carrier: &str) -> Result<()> {
     for expected in [
         "wrong_credential_rejected: PASS",
         "correct_credential_roundtrip: PASS",
+        "udp_session_roundtrip: PASS",
     ] {
         ensure!(
             stdout.lines().any(|line| line == expected),

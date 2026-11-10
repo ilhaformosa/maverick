@@ -45,6 +45,7 @@ async fn h2_pair(
     let recv_stream = response.await?.into_body();
     let (request, response) = peer_rx.await?;
     let tunnel = ClientTunnel::H2(Box::new(H2ClientTunnel {
+        udp_sessions: false,
         send_stream,
         recv_stream,
         recv_buf: BytesMut::new(),

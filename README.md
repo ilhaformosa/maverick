@@ -10,31 +10,27 @@ authorization. [ROADMAP.md](ROADMAP.md) gives the next deliverables;
 
 ## Build and Configure
 
-The default source build uses Direct H2. Choose one generation recipe below
-from the checkout; neither generated file may already exist.
+Complete candidate packages include H2 and H3. Build that same capability set
+from source and generate a new direct pair in an empty directory:
 
 ```sh
-cargo build --locked -p maverick-cli
+cargo build --locked -p maverick-cli --features experimental-h3
 ./target/debug/maverick version
 ./target/debug/maverick gen-config
 ./target/debug/maverick check-config --kind server -c server.generated.yaml
 ./target/debug/maverick check-config --kind client -c client.generated.yaml
 ```
 
-For an explicitly selected H3 build and configuration pair, use this alternative:
+New direct generation uses a dual H2/H3 server, an automatic client and explicit
+`udp_policy: allow_reliable`. Use `gen-config --h2` or `gen-config --quiche-h3`
+for a fixed carrier. Add `--udp-policy native_required` to auto/H3 generation
+to forbid reliable UDP compatibility. Existing files are not overwritten and
+omitted settings retain their prior meaning. Minimal H2 source builds remain
+available without the H3 feature and require `gen-config --h2`.
 
-```sh
-cargo build --locked -p maverick-cli --features experimental-h3
-./target/debug/maverick version
-./target/debug/maverick gen-config --quiche-h3
-./target/debug/maverick check-config --kind server -c server.generated.yaml
-./target/debug/maverick check-config --kind client -c client.generated.yaml
-```
-
-Generation creates fresh matching credentials in owner-only files and checks
-both output names before writing. Bare `gen-config` keeps H2 even when the
-binary supports H3. The explicit H3 option requires the build feature;
-`version` reports compiled support, not a successful connection.
+Generation creates matching credentials in owner-only files. `version` reports
+compiled support, not remote connectivity. The `experimental-h3` feature name
+is retained for source compatibility; these candidate builds are not Stable.
 
 The generated files are examples: replace `example.com`, the server address
 and certificate paths before any separately authorized deployment. Keep the
@@ -43,18 +39,20 @@ policy; it does not prove certificate files or a remote server work. Ordinary
 startup uses `server -c server.generated.yaml` and
 `client -c client.generated.yaml`. Field validation remains deferred.
 
-H3 supports direct TCP through SOCKS5 and HTTP CONNECT, using existing
-certificate/hostname/pin verification and authentication v1/v2, plus native UDP
-through SOCKS5 (up to 1200 bytes per datagram, subject to the path limit).
-`gen-config --quiche-h3` selects H3 explicitly. Alternatively,
-`gen-config --auto-h3` generates a dual H2/H3 server and a client that chooses
-for new TCP connections only. Network unavailability may select H2; TLS, pin,
-authentication and protocol failures never do. Existing flows never migrate.
-Omission keeps H2; native UDP never falls back to reliable H2 UDP. Fronting,
-local DNS/TUN and rustls selection remain unsupported with H3.
-Profile URI v1 cannot carry H3 or every
-connection/authentication/trust setting; unsupported exports are rejected
-instead of silently changing policy. See [CONFIG.md](CONFIG.md#transport).
+H2 and H3 both carry TCP and persistent UDP sessions. H3 provides native
+unreliable datagrams up to 1200 bytes; H2 provides reliable compatibility up to
+65507 bytes, with lower limits possible from SOCKS encapsulation or the path.
+The core selects only for new connections/sessions, with a shared temporary
+avoidance cache after pre-response H3 network failure. UDP may select H2 only
+under `allow_reliable`, including authenticated capability absence before data.
+TLS, identity, authentication, malformed protocol and target/admission failures
+never permit fallback. Existing sessions retain their carrier and packets are
+not replayed. Target silence is not a tunnel reachability failure.
+
+Protected intermediaries use H2 only. H3 fronting, local DNS/TUN and rustls
+selection remain unsupported. Profile URI v1 rejects new transport/UDP policies
+it cannot preserve; use full YAML or stored SDK profiles.
+See [CONFIG.md](CONFIG.md#transport).
 
 These are source-build capabilities. Published RC.2 files remain immutable and
 do not include H3 or subsequent source changes.
@@ -74,7 +72,7 @@ can still observe the origin TLS name, timing and volume.
 
 Proxy cores can use the public SDK's `ProxyConnector` directly with caller-owned
 I/O, without opening a local SOCKS listener. H2 pooling, origin protection,
-opt-in H3/automatic TCP selection and native UDP reuse the product paths. See
+H3/automatic TCP and UDP selection, and both UDP policies reuse the product paths. See
 [SDK and wire integration](docs/INTEGRATION.md), including checked frame examples.
 
 A [Linux service template and runbook](docs/DEPLOYMENT.md) describe later
@@ -236,7 +234,7 @@ network deadline, and does not complete the separate Chrome qualification.
 
 ## Pilot Artifacts and Further Documentation
 
-`./scripts/build-pilot.sh` builds the default H2 CLI, start guide, checksums and
+`./scripts/build-pilot.sh` builds the full H2/H3 CLI, start guide, checksums and
 target archive under ignored `dist/`. Public archives contain no credentials;
 operators generate them locally. The builder does not contact a server or
 change network settings. Publication and Stable follow the

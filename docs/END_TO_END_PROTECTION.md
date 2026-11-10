@@ -64,7 +64,8 @@ caller having used CLI/SDK configuration validation first.
   existing `tls` files. Both ends require enabled channel binding.
 - This envelope is H2-only; WebSocket and explicit H3 reject this option.
   Direct H2/H3 already authenticate the origin through carrier TLS; H3 remains
-  default-off. TLS-terminating H3 fronting remains unsupported.
+  included in full candidate builds and auto-selected for new direct configs.
+  TLS-terminating H3 fronting remains unsupported.
 - Omitted settings retain existing wire behavior. Historical explicitly
   trusted-provider H2/WS configurations are compatibility paths that do NOT
   satisfy intermediary confidentiality. They are never fallback destinations
@@ -102,8 +103,10 @@ Verify real client/server sessions through that relay:
 - all applicable local/CI product, rustls, H3, candidate, dependency, native
   artifact/rollback and code-scanning checks remain enabled.
 
-TLS security relies on RFC 8446 and its maintained implementation. Future
-native UDP must meet the same trust boundary; a TLS byte stream is not native
-Datagram delivery. Select that carrier before changing UDP wire semantics.
+TLS security relies on RFC 8446 and its maintained implementation. Persistent
+reliable H2 UDP uses the same inner TLS/identity boundary and is covered through
+a terminating relay with auth v1/v2. Native UDP remains direct H3; the inner TLS
+byte stream is not native Datagram delivery. No new intermediary/crypto
+architecture is part of this candidate.
 
 Reference: https://www.rfc-editor.org/rfc/rfc8446.html

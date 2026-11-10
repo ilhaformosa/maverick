@@ -97,28 +97,37 @@ impl ClientTunnelPool {
     }
 
     #[cfg(feature = "experimental-h3")]
-    async fn open_auto(&self) -> Result<ClientTunnel> {
+    pub(crate) async fn connect_auto_h3(&self) -> Result<Option<maverick_quiche::Connected>> {
         let skip_h3 = self
             .h3_unavailable_until
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_some_and(|until| until > Instant::now());
-        if !skip_h3 {
-            if let Some(connection) = crate::h3_transport::auto_connect(&self.config).await? {
-                debug!("automatic selection chose H3 for new TCP connection");
-                return crate::h3::open(&self.config, connection.channel, connection.binding).await;
-            }
+        if skip_h3 {
+            return Ok(None);
+        }
+        let connected = crate::h3_transport::auto_connect(&self.config).await?;
+        if connected.is_none() {
             *self
                 .h3_unavailable_until
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) =
                 Some(Instant::now() + Duration::from_secs(30));
         }
+        Ok(connected)
+    }
+
+    #[cfg(feature = "experimental-h3")]
+    async fn open_auto(&self) -> Result<ClientTunnel> {
+        if let Some(connection) = self.connect_auto_h3().await? {
+            debug!("automatic selection chose H3 for new TCP connection");
+            return crate::h3::open(&self.config, connection.channel, connection.binding).await;
+        }
         debug!("automatic selection chose H2 for new TCP connection");
         self.open_h2().await
     }
 
-    async fn open_h2(&self) -> Result<ClientTunnel> {
+    pub(crate) async fn open_h2(&self) -> Result<ClientTunnel> {
         let mut last_error = None;
         let mut timeout_recovery_pending = false;
         for attempt in 0..MAX_READY_ATTEMPTS {

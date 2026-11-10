@@ -8,6 +8,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::time::timeout;
 
+#[path = "support/udp_sessions.rs"]
+mod udp_sessions;
+
 struct Fixture {
     _files: TempDir,
     server: MaverickServer,
@@ -16,6 +19,14 @@ struct Fixture {
 
 impl Fixture {
     async fn start(protected: bool, carrier: u8) -> Result<Self> {
+        Self::start_with_idle(protected, carrier, 30_000).await
+    }
+
+    async fn start_with_idle(
+        protected: bool,
+        carrier: u8,
+        udp_idle_timeout_ms: u64,
+    ) -> Result<Self> {
         let files = TempDir::new()?;
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         let cert_path = files.path().join("cert.pem");
@@ -28,6 +39,7 @@ impl Fixture {
         );
         let secret = SecretString::generate();
         let mut options = ServerAdvancedConfig {
+            udp_idle_timeout_ms,
             end_to_end: protected,
             quiche_h3: carrier == 1,
             dual_h2_h3: carrier == 2,
@@ -146,6 +158,14 @@ async fn tcp_matrix(protected: bool, carrier: u8) -> Result<()> {
                     target.local_addr()?.port(),
                 )
                 .await?;
+            ensure!(
+                session.carrier()
+                    == if carrier == 0 {
+                        TransportKind::H2
+                    } else {
+                        TransportKind::H3
+                    }
+            );
             ensure!(
                 connector
                     .connect_tcp(
@@ -315,6 +335,103 @@ fn connector_requires_runtime_without_spawning_or_binding() -> Result<()> {
         .err()
         .context("connector unexpectedly constructed without runtime")?;
     ensure!(error.to_string().contains("Tokio runtime"));
+    Ok(())
+}
+
+async fn udp_session_matrix(protected: bool, carrier: u8, policy: UdpPolicy) -> Result<()> {
+    timeout(Duration::from_secs(20), async {
+        let mut fixture = Fixture::start(protected, carrier).await?;
+        fixture.client.advanced.udp_policy = Some(policy);
+        let mut secrets = InMemoryProfileSecretStore::new();
+        let stored =
+            StoredClientProfile::store_from_config("udp-policy", &fixture.client, &mut secrets)?;
+        let json = serde_json::to_string(&stored)?;
+        ensure!(!json.contains(fixture.client.server.secret.expose_secret()));
+        let restored: StoredClientProfile = serde_json::from_str(&json)?;
+        let restored = restored.to_client_config(&secrets)?;
+        ensure!(restored.advanced.udp_policy == Some(policy));
+        let connector = ProxyConnector::new(restored)?;
+        let target = UdpSocket::bind("127.0.0.1:0").await?;
+        socket2::SockRef::from(&target).set_send_buffer_size(131_072)?;
+        socket2::SockRef::from(&target).set_recv_buffer_size(131_072)?;
+        let address = TargetAddr::Ipv4(Ipv4Addr::LOCALHOST);
+        let port = target.local_addr()?.port();
+        let mut session = connector.open_udp(address.clone(), port).await?;
+        ensure!(
+            session.carrier()
+                == if carrier == 0 {
+                    UdpCarrier::H2Reliable
+                } else {
+                    UdpCarrier::H3Native
+                }
+        );
+        ensure!(connector.open_udp(address.clone(), port).await.is_err());
+        let mut buffer = vec![0; 65_535];
+        let mut source = None;
+        // Upload continues without any target response. One source socket is
+        // retained across all packets; no request/response pairing is assumed.
+        for number in 0..8u8 {
+            ensure!(session.send(Bytes::from(vec![number]))?);
+            let (size, peer) = timeout(Duration::from_secs(3), target.recv_from(&mut buffer))
+                .await
+                .context("continuous UDP upload not received")??;
+            ensure!(size == 1 && buffer[0] == number);
+            if let Some(source) = source {
+                ensure!(peer == source);
+            }
+            source = Some(peer);
+        }
+        let source = source.unwrap();
+        target.send_to(b"first", source).await?;
+        target.send_to(b"second", source).await?;
+        ensure!(session.recv().await?.as_ref() == b"first");
+        ensure!(session.recv().await?.as_ref() == b"second");
+        // Target silence neither causes replay nor destroys the admitted path.
+        ensure!(
+            timeout(Duration::from_millis(80), target.recv_from(&mut buffer))
+                .await
+                .is_err()
+        );
+        ensure!(session.send(Bytes::new())?);
+        let (size, peer) = timeout(Duration::from_secs(3), target.recv_from(&mut buffer))
+            .await
+            .context("empty UDP upload not received")??;
+        ensure!(size == 0 && peer == source);
+        target.send_to(b"", source).await?;
+        ensure!(session.recv().await?.is_empty());
+        let maximum = session.max_payload();
+        ensure!(!session.send(Bytes::from(vec![0; maximum + 1]))?);
+        ensure!(session.send(Bytes::from(vec![42; maximum]))?);
+        let (size, peer) = timeout(Duration::from_secs(3), target.recv_from(&mut buffer))
+            .await
+            .context("maximum UDP upload not received")??;
+        ensure!(size == maximum && peer == source && buffer[..size].iter().all(|b| *b == 42));
+        target.send_to(&buffer[..size], source).await?;
+        ensure!(session.recv().await?.as_ref() == &buffer[..size]);
+        session.close().await?;
+        let next = connector.open_udp(address, port).await?;
+        next.close().await?;
+        connector.close();
+        fixture.server.shutdown().await?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("UDP session matrix timed out")?
+}
+
+#[tokio::test]
+async fn reliable_udp_sessions_preserve_port_and_independent_duplex() -> Result<()> {
+    udp_session_matrix(false, 0, UdpPolicy::AllowReliable).await?;
+    udp_session_matrix(true, 0, UdpPolicy::AllowReliable).await
+}
+
+#[cfg(feature = "experimental-h3")]
+#[tokio::test]
+async fn selected_udp_sessions_preserve_native_datagrams() -> Result<()> {
+    for policy in [UdpPolicy::NativeRequired, UdpPolicy::AllowReliable] {
+        udp_session_matrix(false, 1, policy).await?;
+        udp_session_matrix(false, 2, policy).await?;
+    }
     Ok(())
 }
 

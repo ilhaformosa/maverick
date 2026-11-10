@@ -247,6 +247,62 @@ async fn terminating_relay_preserves_v1_v2_and_both_half_close_orders() -> Resul
 }
 
 #[tokio::test]
+async fn terminating_relay_cannot_read_persistent_udp_sessions() -> Result<()> {
+    use maverick_client::connector::{ProxyConnector, TargetAddr, UdpCarrier};
+    use maverick_core::config::UdpPolicy;
+    timeout(DEADLINE, async {
+        for v2 in [false, true] {
+            let origin = harness(v2).await?;
+            let relay = Relay::start(origin.client_config()).await?;
+            let mut config = relay.config.clone();
+            config.advanced.udp_policy = Some(UdpPolicy::AllowReliable);
+            let proxy = ProxyConnector::new(config)?;
+            let target = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+            let mut session = proxy
+                .open_udp(
+                    TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+                    target.local_addr()?.port(),
+                )
+                .await?;
+            ensure!(session.carrier() == UdpCarrier::H2Reliable);
+            let marker = b"protected persistent UDP application payload";
+            let mut data = [0; 256];
+            let mut source = None;
+            for _ in 0..3 {
+                ensure!(session.send(Bytes::from_static(marker))?);
+                let (size, peer) = target.recv_from(&mut data).await?;
+                ensure!(&data[..size] == marker);
+                if let Some(source) = source {
+                    ensure!(source == peer);
+                }
+                source = Some(peer);
+            }
+            for _ in 0..2 {
+                target.send_to(marker, source.unwrap()).await?;
+                ensure!(session.recv().await?.as_ref() == marker);
+            }
+            session.close().await?;
+            proxy.close();
+            {
+                let mut captured = relay.capture.lock().unwrap().clone();
+                captured.extend_from_slice(&relay.response_capture.lock().unwrap());
+                for private in [marker.as_slice(), b"u_test".as_slice()] {
+                    ensure!(
+                        !captured.windows(private.len()).any(|w| w == private),
+                        "relay observed protected UDP content"
+                    );
+                }
+            }
+            drop(relay);
+            origin.shutdown().await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("protected UDP relay test timed out")?
+}
+
+#[tokio::test]
 async fn valid_outer_tls_cannot_replace_inner_identity() -> Result<()> {
     timeout(DEADLINE, async {
         let origin = harness(false).await?;

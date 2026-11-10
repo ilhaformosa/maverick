@@ -16,6 +16,75 @@ use tokio::time::{advance, pause, timeout};
 
 const MAX_FRAME: usize = 65_536;
 
+#[tokio::test]
+async fn udp_capability_fallback_requires_authenticated_absence_before_data() -> Result<()> {
+    use crate::connection_manager::ClientTunnelPool;
+    use crate::udp_session::{DatagramSession, UdpCapabilityUnsupported};
+    use maverick_core::auth::{ClientHello, ServerHello, FEATURE_TLS_CHANNEL_BINDING};
+    use maverick_core::config::UdpPolicy;
+    use maverick_core::frame::TargetAddr;
+    use tokio::net::TcpListener;
+    timeout(Duration::from_secs(15), async {
+        // 0: authenticated older peer; 1: invalid MAC; 2: malformed admission;
+        // 3: authenticated older peer with native-required policy.
+        for fault in 0..4 {
+            let mut peer = Peer::start().await?;
+            let h2_trap = TcpListener::bind(peer.address).await?;
+            let mut config = peer.config();
+            config.advanced.quiche_h3 = false;
+            config.advanced.auto_h3 = true;
+            config.advanced.udp_policy = Some(if fault == 3 {
+                UdpPolicy::NativeRequired
+            } else { UdpPolicy::AllowReliable });
+            let pool = ClientTunnelPool::new(Arc::new(config.clone()));
+            let server = async {
+                let mut remote = peer.accepted.recv().await.context("missing accepted peer")?;
+                let frame = remote.channel.read(MAX_FRAME).await?.context("missing hello")?;
+                let hello = ClientHello::decode(&frame.payload)?;
+                let features = if fault == 2 { hello.feature_flags }
+                    else { hello.feature_flags & FEATURE_TLS_CHANNEL_BINDING };
+                let mut response = ServerHello::try_new_with_channel_binding(
+                    &config.server.secret, &hello.client_nonce, MAX_FRAME as u32, 4,
+                    features, Some(remote.binding))?.encode();
+                if fault == 1 { *response.last_mut().unwrap() ^= 1; }
+                remote.channel.send(Frame::new(FrameType::ServerHello, 0, 0, response), false, MAX_FRAME).await?;
+                if fault == 2 {
+                    let open = remote.channel.read(MAX_FRAME).await?.context("missing UDP open")?;
+                    anyhow::ensure!(open.frame_type == FrameType::OpenUdp && open.flags == 1);
+                    // A negotiated capability followed by a malformed response is
+                    // a protocol failure, not absence of native UDP capability.
+                    remote.channel.send(Frame::new(FrameType::WindowUpdate, 1, 1, Bytes::new()), false, MAX_FRAME).await?;
+                }
+                Ok::<_, anyhow::Error>(remote)
+            };
+            let client = async {
+                let mut open = Box::pin(DatagramSession::open(&pool,
+                    TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST), 9));
+                if fault == 0 {
+                    tokio::select! {
+                        accepted = h2_trap.accept() => { let _ = accepted?; },
+                        result = &mut open => anyhow::bail!("capability fallback ended before H2 contact: {}", result.is_ok()),
+                    }
+                } else {
+                    let error = match open.await {
+                        Ok(_) => anyhow::bail!("invalid UDP setup was accepted"),
+                        Err(error) => error,
+                    };
+                    anyhow::ensure!((error.downcast_ref::<UdpCapabilityUnsupported>().is_some()) == (fault == 3));
+                    anyhow::ensure!(timeout(Duration::from_millis(80), h2_trap.accept()).await.is_err());
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            let (remote, result) = tokio::join!(server, client);
+            let remote = remote?;
+            result?;
+            drop(remote);
+            peer.shutdown().await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await.context("UDP capability classification timed out")?
+}
+
 struct Peer {
     address: SocketAddr,
     ca: PathBuf,

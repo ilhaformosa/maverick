@@ -2,42 +2,47 @@
 
 Status: owner-approved release policy; current completion state is in STATUS.md
 
-Decision date: 2026-08-12
+Decision date: 2026-08-12; support scope superseded by owner decision 2026-11-10
 
 ## Purpose
 
-This record freezes the minimum contract for moving the better-proven v1.2 H2
-train from Beta toward its first RC and Stable release. It is a policy record,
+This record freezes the minimum contract for moving the v1.2 H2/H3 TCP/UDP
+train from Beta toward RC and Stable release. It is a policy record,
 not evidence that any RC or Stable gate has passed.
 
-The contract does not itself make a tag, GitHub Release, publication, provider
-resource, field run, paid audit, or Stable claim ready. Under the standing
-decision delegation in `STATUS.md`, Codex may decide those later tasks without
-another owner choice, but only after recording and passing their exact gates.
+The contract does not itself authorize a tag, GitHub Release, publication,
+provider resource, field run, paid audit, or Stable claim. The current owner
+decision authorizes candidate development and local/CI qualification only.
+Field use, actual deployment and publication remain deferred and require a
+later owner decision before their exact gates can proceed.
 
 ## Owner decisions R1 through R4
 
 | ID | Approved decision |
 |---|---|
-| R1 | The first Stable support claim covers **Direct H2 only**. Provider-fronted H2 remains Beta. |
+| R1 | Stable must support **H2/H3 and TCP/UDP**, both UDP policies, new-session selection and protected H2 intermediary confidentiality. Unprotected intermediary paths do not satisfy this claim. |
 | R2 | An RC is a GitHub prerelease and is not Latest. Stable is a non-prerelease GitHub Release and is Latest. |
 | R3 | The exact rollback partner for the first v1.2 RC/Stable line is immutable `v1.2.0-beta.4`. |
 | R4 | The exact RC requires an independent security review, supply-chain checks, and no unresolved Critical or High finding. A new paid third-party formal audit is optional, not mandatory. |
 
-## Supported H2 route
+## Supported routes
 
-The first Stable support matrix has one Stable cell:
+The required Stable support matrix is:
 
 | Route | First v1.2 Stable status | Contract |
 |---|---|---|
-| Direct client-to-Maverick TLS/H2 | Stable candidate | Must pass every exact-candidate, field, security, compatibility, rollback, artifact, and publication gate below. |
-| Provider-fronted TLS/H2 | Beta | May remain explicitly available as Beta, but is excluded from the Stable claim and cannot satisfy a Direct H2 gate. |
+| Direct H2 TCP and reliable UDP | Stable candidate | Full bidirectional sessions; all applicable gates below. |
+| Direct H3 TCP and native UDP | Stable candidate | Native datagram limits explicit; all applicable gates below. |
+| Direct dual/auto with both UDP policies | Stable candidate | New-session selection/avoidance/retry; no security downgrade or payload replay. |
+| Origin-protected intermediary H2 TCP/reliable UDP | Stable candidate | Inner origin verification and confidentiality; route-specific validation. |
+| Unprotected intermediary H2/WS | Legacy, excluded | Cannot satisfy mandatory intermediary confidentiality. |
+| TLS-terminating intermediary H3 | Unsupported, excluded | No new relay or encryption architecture authorized. |
 
 Direct and provider-fronted H2 are different trust routes. The Direct H2 path
 must not silently fall through to the provider-fronted path, and evidence from
 one route must not be credited to the other. Release notes and user guidance
-must identify the provider-fronted route as Beta even when its code is present
-in the same binary.
+must identify each supported/protected route and explicitly exclude unsupported
+or unprotected legacy routes even if compatibility code is present.
 
 This decision does not change the current protocol, config, stored-profile, or
 authentication/frame wire versions. Any such change needs its own compatibility
@@ -96,8 +101,9 @@ the candidate back through RC.
 
 - The exact RC commit, annotated tag, package version, and release-note version
   agree.
-- Direct H2 is the tested and supported Stable route; no hidden
-  provider-fronted or H3 fallback crosses the trust-route boundary.
+- Every supported matrix cell is tested; no hidden carrier or intermediary
+  fallback crosses its trust boundary. Full packages include H2/H3, generated
+  direct configs use dual/auto, and omitted old settings preserve their meaning.
 - The supported v1 config/profile behavior and the Beta.4 rollback path are
   tested as an N/N-1 pair. A migration must preserve the original input and
   fail closed instead of silently changing authentication or trust policy.
@@ -136,8 +142,9 @@ independent review above.
 
 - After the field task's exact origin, lifetime, cost cap, cleanup, and go/no-go
   decision are recorded, the independently downloaded exact RC artifact is
-  deployed to a fresh owner-controlled origin and used only on the Direct H2
-  route covered by the Stable claim.
+  deployed to a fresh owner-controlled origin and used on the supported routes and TCP/UDP policy combinations covered by the
+  Stable claim. A Direct-H2-only run cannot qualify H3/native UDP or protected
+  intermediary use.
 - Fresh-origin validation, a 72-hour soak, and owner-controlled ordinary daily
   use complete on that exact candidate. Failures and unknowns remain visible.
 - The run follows the current privacy and network boundaries. It does not reuse
@@ -188,3 +195,11 @@ security, supply-chain, artifact, rollback and publication rules above. A
 candidate-changing fix requires a replacement RC. Stable/Latest still requires
 its explicit implementation, exact-file verification, completed field evidence
 and publication decision; publishing RC.2 does not satisfy those conditions.
+
+## Current development boundary
+
+The active development goal delivers candidate functionality, SDK, protocol
+material and deployable archives with local/CI evidence. Field use, deployment
+and public/Stable publication remain deferred by the owner. Performance-based
+selection is frozen; active-session migration is permanently excluded. The
+72-hour requirement remains a field gate, not permission to start a field task.

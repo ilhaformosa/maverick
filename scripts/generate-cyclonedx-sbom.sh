@@ -297,7 +297,7 @@ generation_status=0
       --all \
       --no-build-deps \
       --no-default-features \
-      --features maverick-cli/browser-tls \
+      --features maverick-cli/experimental-h3 \
       -qq
   ) >"$generation_log" 2>&1
 } 2>/dev/null || generation_status=$?

@@ -75,15 +75,21 @@ An H3-enabled build and `advanced.quiche_h3: true` select the new carrier. Each
 TCP flow or fixed-target native UDP association uses one QUIC connection and
 one H3 request; no H3 pool or provider-fronted H3 is installed. HTTP Datagrams
 carry native UDP separately from reliable control frames. Opt-in dual servers
-share admission state; opt-in clients select H2 only after pre-response H3
-network unavailability for a new TCP flow. See the
+share admission state; automatic clients select H2 after eligible pre-response
+H3 network unavailability. Explicit UDP policy may additionally use authenticated
+capability absence before data. See the
 [wire/selection contract](NATIVE_UDP_AND_SELECTION.md). Server UDP acceptance
 uses bounded packet queues and existing global, per-source and pre-auth limits.
 After verified TLS, existing Maverick authentication and egress policy run.
-The default build and configuration continue to select H2.
+Full candidate packages compile both carriers; new direct configurations select
+auto/dual and an explicit UDP policy. Omitted old settings retain their meaning.
+Persistent H2 UDP uses authenticated fixed-target sessions, bounded queues and
+independent directions with a retained target socket/source port.
 
-The first Stable candidate remains Direct H2. H3 field use and performance
-claims need their own evidence; the current owner authorization remains local.
+Stable must cover H2/H3, TCP/UDP and supported protected H2 intermediaries.
+Field use remains deferred. Performance-based selection is frozen; active-session
+migration is permanently excluded. Client core/SDK owns selection and session
+management; integrators supply policy/UI, and the server owns listeners/egress.
 
 ## Unauthenticated Requests
 

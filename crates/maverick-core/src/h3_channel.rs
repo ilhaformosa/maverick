@@ -9,7 +9,7 @@ use std::sync::{
 };
 use tokio::sync::{mpsc, watch};
 
-pub const MAX_NATIVE_UDP_PAYLOAD: usize = 1200;
+pub use crate::frame::MAX_NATIVE_UDP_PAYLOAD;
 pub const DATAGRAM_QUEUE: usize = 64;
 
 pub struct DatagramChannel {

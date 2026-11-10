@@ -30,7 +30,7 @@ pub enum TunnelRequestSender {
 pub enum TransportKind {
     H2,
     CloudflareWs,
-    /// Explicit opt-in quiche TCP carrier.
+    /// Direct QUIC carrier, explicitly selected or chosen for a new session.
     H3,
 }
 

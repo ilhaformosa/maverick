@@ -119,7 +119,7 @@ fn deployment_unit_passes_native_systemd_validation() -> Result<()> {
         )
         .replace(
             "WorkingDirectory=/etc/maverick",
-            &format!("WorkingDirectory=\"{}\"", directory.path().display()),
+            &format!("WorkingDirectory={}", directory.path().display()),
         );
     let path = directory.path().join("maverick.service");
     fs::write(&path, unit)?;

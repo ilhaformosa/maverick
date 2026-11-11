@@ -21,11 +21,17 @@ recorded below. A distributable candidate must also have the complete gates
 and exact artifact evidence for its SOURCE.txt revision; see the associated
 Git/PR/Actions records, not results from a different commit.
 
+The Stable-tooling task's CI subsequently reported RUSTSEC-2026-0486 against
+locked rustix 1.1.4. RC.5 updates only that registry package to 1.1.6 and retains
+the protocol/SDK functionality freeze. This dependency change requires new
+candidate evidence; RC.4's earlier passing records remain historical. See
+[RC.5 notes](docs/releases/v1.2.0-rc.5.md) and the associated PR/CI for exact results.
+
 | Area | Current state |
 |---|---|
 | Stage | Experimental Beta; not production-ready |
 | Published release | Immutable `v1.2.0-rc.2`, prerelease/non-Latest, Direct H2 |
-| Current candidate | RC.4 `d12c6a6`, independently reviewed fixes and complete applicable local/CI qualification; field qualification remains deferred |
+| Current candidate | RC.5 dependency correction and Stable tooling; qualification is bound to its own source/archives and associated checks; field qualification remains deferred |
 | Build/configuration defaults | Full candidate packages include H2/H3; new direct generation uses dual/auto with `allow_reliable`; omitted existing settings retain their prior meaning |
 | Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3; local terminating-relay validation; not published |
 | Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |
@@ -43,6 +49,21 @@ video/large-image usability problems are historical, not validation of current
 source.
 
 ## Integration and Service Delivery
+
+### Stable publication tooling preparation
+
+The owner froze protocol and SDK functionality on 2026-11-11 and authorized
+Stable tooling design, implementation, independent review and local/CI tests.
+Current work adds strict Stable classification, full H2/H3 artifact/SBOM checks,
+native rollback support and private Stable-format rehearsals. Actual publication
+requires a later exact-revision owner approval as well as the existing release
+contract gates. No project release tag, Release, deployment or field run is
+authorized. See [the design and validation boundary](docs/STABLE_RELEASE_TOOLING.md).
+The real package version is RC.5 because CI required the minimal rustix 1.1.6
+dependency correction. Protocol/SDK/runtime Rust functionality is unchanged;
+rehearsal success will not be called Stable qualification. Independent review
+also identified an incorrect standalone-fixture lock rewrite in the rehearsal;
+the correction preserves its own version and verifies locked metadata.
 
 ### SDK integration handoff
 

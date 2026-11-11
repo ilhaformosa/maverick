@@ -43,7 +43,8 @@ done
 
 [[ -n "$tag" && -n "$sha" && -n "$version" && -n "$main_ref" ]] || fail
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail
-[[ "$version" =~ ^1\.2\.0-(beta|rc)\.[1-9][0-9]*$ ]] || fail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$script_dir/release-channel.sh" "$version" >/dev/null 2>&1 || fail
 [[ "$tag" == "v$version" ]] || fail
 [[ "$main_ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || fail
 [[ "$main_ref" != *..* && "$main_ref" != /* && "$main_ref" != */ ]] || fail

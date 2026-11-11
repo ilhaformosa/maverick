@@ -4,6 +4,11 @@ Status: owner-approved release policy; current completion state is in STATUS.md
 
 Decision date: 2026-08-12; support scope superseded by owner decision 2026-11-10
 
+Tooling preparation authorized: 2026-11-11. The owner permits implementing,
+independently reviewing and testing Stable tooling before field qualification,
+while freezing protocol/SDK scope. This does not move the publication decision
+or authorize a release tag, deployment or GitHub Release.
+
 ## Purpose
 
 This record freezes the minimum contract for moving the v1.2 H2/H3 TCP/UDP
@@ -65,8 +70,13 @@ selected for upload must be reverified immediately before publication.
 
 RLC-001 is merged at `main` commit
 `9423bff57818da199c9b1141edfeb89e03c801a1`. Its release-tag verifier accepts
-Beta and RC while continuing to reject Stable. This completed only the bounded
+Beta and RC while rejecting Stable at that historical revision. This completed only the bounded
 tag-verifier slice and did not authorize an RC tag.
+
+Current [Stable tooling preparation](STABLE_RELEASE_TOOLING.md) adds Stable
+classification and an exact-revision publication approval that is unset by
+default. Preparing these tools or passing a private packaging rehearsal does
+not satisfy the field or publication gates below.
 
 The historical RLC-001/RLC-001b tooling and RC preparation steps have been
 completed. They are not new prerequisites or a separate active work queue.
@@ -171,13 +181,15 @@ exercise must run natively on Apple Silicon macOS for
 `x86_64-unknown-linux-gnu`; one platform's static inspection does not replace
 the other platform's native exercise. The current
 `scripts/test-n-minus-one-release-drill.sh` is fixed to Beta.4 as the rollback
-partner and accepts only an exact RC candidate identity. A platform cell closes
+partner and accepts the exact RC.5 candidate (or explicitly selected RC.4/Stable)
+promotion identity. A platform cell closes
 only when that exact candidate passes the native drill and independent review.
 
 ### 6. Publication
 
-After every gate above passes for one exact RC, Codex records the RLC-002 and
-Stable-promotion go/no-go decisions. The Stable candidate receives a fresh
+After every gate above passes for one exact RC, Codex records the Stable-promotion
+go/no-go decision; the RLC-002 tooling may be prepared and reviewed earlier under
+the 2026-11-11 authorization. The Stable candidate receives a fresh
 exact-file verification, the independent RLC-002 review, and the narrow
 promotion-diff review. Only then may `v1.2.0` be published as a non-prerelease
 and Latest.

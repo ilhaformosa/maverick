@@ -8,7 +8,7 @@ explicitly authorized owner-controlled Linux host, not the development Mac.
 ## Select and verify the build
 
 Use one reviewed source revision for client, server and integration tests.
-The RC.4 candidate archive includes H2 and H3, SOURCE.txt, VERSION.txt and
+The RC.5 candidate archive includes H2 and H3, SOURCE.txt, VERSION.txt and
 checksums. It is a candidate artifact, not an independently published Stable
 release. To build the same feature set on supported Linux x86_64:
 

@@ -18,8 +18,8 @@ readonly TEST_RELEASE_NOTE_VERSION="1.2.0-beta.3"
 readonly TEST_REVISION="1111111111111111111111111111111111111111"
 readonly TEST_MARKER="SYNTH_PRIVATE_MARKER_DO_NOT_ECHO"
 readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
-readonly PILOT_RELEASE_WORKFLOW_SHA256="76e9f0b1c6f83ecacbfb66e3f00c7daa6df6a6d333710d911f0fcfb74f6d89e6"
-readonly PILOT_RELEASE_PUBLISH_STEP_SHA256="e5578640dc3066f3e18fc33f9a628cedd8fd1440a1805bef679f76e61c03280c"
+readonly PILOT_RELEASE_WORKFLOW_SHA256="865da0022eabea7efa90c0fd37000abe0c366a6a1f482331b3269605eaa8f90f"
+readonly PILOT_RELEASE_PUBLISH_STEP_SHA256="0e45d06ca05f55900189324ecd492ec149ed69b2f206db90d0829291476a0ae5"
 
 cleanup() {
   case "$test_root" in
@@ -173,7 +173,7 @@ static void record_execution(void) {
 int main(int argc, char **argv) {
   record_execution();
   if (argc != 2 && !(argc == 3 && strcmp(argv[1], "user-smoke") == 0 &&
-      strcmp(argv[2], "--quiche-h3") == 0 && (strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0))) {
+      strcmp(argv[2], "--quiche-h3") == 0 && (strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.5") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0))) {
     return 2;
   }
   if (strcmp(argv[1], "version") == 0) {
@@ -183,7 +183,7 @@ int main(int argc, char **argv) {
     }
     printf("maverick %s\n", FIXTURE_VERSION);
     puts("protocol_version: 1");
-    if ((strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0)) {
+    if ((strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.5") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0)) {
     puts("features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke,udp-sessions,udp-policy,quiche-h3");
     } else {
     puts("features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke");
@@ -192,7 +192,7 @@ int main(int argc, char **argv) {
   }
   if (strcmp(argv[1], "user-smoke") == 0) {
     if (FIXTURE_MODE == 7 && argc == 3) { return 3; }
-    if ((strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0)) {
+    if ((strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.5") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0)) {
       puts(argc == 3 ? "carrier: h3" : "carrier: h2");
       if (!(FIXTURE_MODE == 8 && argc == 3)) { puts("udp_session_roundtrip: PASS"); }
     }
@@ -236,15 +236,18 @@ make_payload() {
     "source_state: clean" \
     "version: $version" \
     "target: $target" >"$root/SOURCE.txt"
-  if [[ "$version" == "1.2.0-rc.3" || "$version" == "1.2.0-rc.4" ]]; then
+  if [[ "$version" == "1.2.0-rc.3" || "$version" == "1.2.0-rc.4" || "$version" == "1.2.0-rc.5" || "$version" == "1.2.0" ]]; then
   sed -n "/^cat >.*START_HERE\\.txt.*<<'GUIDE'$/,/^GUIDE$/p" \
     "$repo_root/scripts/build-pilot.sh" |
     sed '1d;$d' >"$root/START_HERE.txt"
   else
     cp "$repo_root/crates/maverick-tests/fixtures/release/START_HERE.legacy.txt" "$root/START_HERE.txt"
   fi
+  if [[ "$version" == "1.2.0" ]]; then
+    cp "$repo_root/docs/STABLE_START_HERE.txt" "$root/START_HERE.txt"
+  fi
   local features="$FEATURES_LINE"
-  if [[ "$version" == "1.2.0-rc.3" || "$version" == "1.2.0-rc.4" ]]; then features+=",udp-sessions,udp-policy,quiche-h3"; fi
+  if [[ "$version" == "1.2.0-rc.3" || "$version" == "1.2.0-rc.4" || "$version" == "1.2.0-rc.5" || "$version" == "1.2.0" ]]; then features+=",udp-sessions,udp-policy,quiche-h3"; fi
   printf '%s\n' \
     "maverick $version" \
     "protocol_version: 1" \
@@ -743,7 +746,7 @@ grep -F "notes_source=\"docs/releases/v\${version}.md\"" "$release_workflow" \
 snapshot_call_pattern="snapshot_release_note \"\$notes_source\" \"\$version\" \"\$notes_file\""
 verification_call_pattern="verify_release_note \"\$notes_file\" \"\$version\""
 digest_call_pattern="notes_sha=\"\$(release_note_sha256 \"\$notes_file\")\""
-publish_step_pattern='      - name: Recheck remote gates and publish the reverified prerelease'
+publish_step_pattern='      - name: Recheck remote gates and publish the reverified release'
 release_create_pattern="          exec gh release create \"\$GITHUB_REF_NAME\" \\"
 notes_file_pattern="            --notes-file \"\$NOTES_FILE\""
 snapshot_call_line="$(
@@ -826,27 +829,86 @@ expected_release_command='          if ! release_note_digest_matches "$NOTES_FIL
             "$STAGING/$MAC_SBOM_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --prerelease \
-            --latest=false \
+            "${publication_flags[@]}" \
             --title "Maverick $GITHUB_REF_NAME" \
             --notes-file "$NOTES_FILE"'
 [[ "$actual_release_command" == "$expected_release_command" ]] || fail_test
 [[ "$(grep -Fc "gh release create" "$release_workflow")" -eq 1 ]] ||
   fail_test
-[[ "$(grep -Fc -- "--prerelease" "$release_workflow")" -eq 1 ]] ||
-  fail_test
-[[ "$(grep -Fc -- "--latest" "$release_workflow")" -eq 1 ]] ||
-  fail_test
+[[ "$(grep -Fc './scripts/release-publication-flags.sh' "$release_workflow")" -eq 2 ]] || fail_test
+# Both jobs receive the repository's explicit Stable approval; never a default.
+# shellcheck disable=SC2016
+grep -Fqx '  MAVERICK_STABLE_APPROVED_SHA: ${{ vars.MAVERICK_STABLE_APPROVED_SHA }}' \
+  "$release_workflow" || fail_test
 [[ "$(grep -Ec -- '(^|[[:space:]])gh([[:space:]]|$)' "$release_workflow")" -eq 3 ]] ||
   fail_test
 release_command_block="$test_root/release-command-block"
 printf '%s\n' "$actual_release_command" >"$release_command_block"
 [[ "$(grep -Ec -- '(^|[[:space:]])--verify-tag(=|[[:space:]]|$)' "$release_command_block")" -eq 1 ]] ||
   fail_test
-[[ "$(grep -Ec -- '(^|[[:space:]])--prerelease(=|[[:space:]]|$)' "$release_command_block")" -eq 1 ]] ||
-  fail_test
-[[ "$(grep -Ec -- '(^|[[:space:]])--latest(=|[[:space:]]|$)' "$release_command_block")" -eq 1 ]] ||
-  fail_test
+# shellcheck disable=SC2016
+[[ "$(grep -Fc '"${publication_flags[@]}"' "$release_command_block")" -eq 1 ]] || fail_test
+
+# Execute the actual workflow's flag/command block with a local gh stand-in.
+# Failed approval must never reach the stand-in; no GitHub write is possible.
+# shellcheck disable=SC2016
+flags_line="$(exact_line_in "$release_workflow" \
+  '          publication_flags_text="$(./scripts/release-publication-flags.sh "$version" "$GITHUB_SHA")"')"
+[[ "$publish_tag_line" -lt "$publish_notes_guard_line" ]] || fail_test
+[[ "$flags_line" -lt "$notes_guard_line" ]] || fail_test
+publication_runner="$test_root/publication-runner.sh"
+{
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'release_note_digest_matches() { return 0; }'
+  sed -n "${flags_line},${notes_file_line}p" "$release_workflow" | sed 's/^          //'
+} >"$publication_runner"
+mock_bin="$test_root/mock-bin"
+mkdir "$mock_bin"
+cat >"$mock_bin/gh" <<'MOCK_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >"${MOCK_RELEASE_ARGS:?}"
+MOCK_GH
+chmod 0700 "$mock_bin/gh"
+publication_case() {
+  local version="$1" approved="$2" outcome="$3"
+  local args_file="$test_root/publication-args-$version-$outcome"
+  local log="$test_root/logs/publication-$version-$outcome"
+  local expected="$test_root/publication-expected"
+  rm -f "$args_file"
+  if (
+    cd "$repo_root"
+    env PATH="$mock_bin:$PATH" version="$version" \
+      MAVERICK_STABLE_APPROVED_SHA="$approved" GITHUB_SHA="$TEST_REVISION" \
+      GITHUB_REF_NAME="v$version" GITHUB_REPOSITORY=example/maverick \
+      STAGING=/fixture LINUX_NAME=linux LINUX_SBOM_NAME=linux-sbom \
+      MAC_NAME=mac MAC_SBOM_NAME=mac-sbom NOTES_FILE=notes NOTES_SHA=unused \
+      MOCK_RELEASE_ARGS="$args_file" bash "$publication_runner"
+  ) >"$log" 2>&1; then
+    [[ "$outcome" != denied && -f "$args_file" ]] || fail_test
+    {
+      printf '%s\n' release create "v$version" /fixture/linux /fixture/linux.sha256 \
+        /fixture/linux-sbom /fixture/mac /fixture/mac.sha256 /fixture/mac-sbom \
+        --repo example/maverick --verify-tag
+      if [[ "$outcome" == stable ]]; then
+        printf '%s\n' --prerelease=false --latest=true
+      else
+        printf '%s\n' --prerelease --latest=false
+      fi
+      printf '%s\n' --title "Maverick v$version" --notes-file notes
+    } >"$expected"
+    cmp -s "$args_file" "$expected" || fail_test
+  else
+    [[ "$outcome" == denied && ! -e "$args_file" ]] || fail_test
+    grep -Fxq 'release publication approval failed' "$log" || fail_test
+  fi
+}
+trace_test publication-channel-and-exact-approval
+publication_case "$TEST_VERSION" '' prerelease
+publication_case "$TEST_RC_VERSION" '' prerelease
+publication_case 1.2.0 '' denied
+publication_case 1.2.0 2222222222222222222222222222222222222222 denied
+publication_case 1.2.0 "$TEST_REVISION" stable
+publication_case 1.2.0+build "$TEST_REVISION" denied
 
 trace_test workflow-hash-rejects-errexit-disable
 errexit_mutation="$test_root/pilot-release-errexit-disabled.yml"
@@ -981,20 +1043,20 @@ expect_artifact_pass positive-native "$current_archive" "$current_target" native
 
 for supported_version in \
   "$TEST_BETA_ONE_VERSION" "$TEST_BETA_MULTIDIGIT_VERSION" \
-  "$TEST_RC_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0-rc.3" "1.2.0-rc.4"; do
+  "$TEST_RC_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0-rc.3" "1.2.0-rc.4" "1.2.0-rc.5" "1.2.0"; do
   supported_binary="$test_root/native-maverick-$supported_version"
   compile_fixture_binary "$supported_binary" 0 "" "$supported_version"
   new_artifact_case "supported-$supported_version" "$supported_binary" \
     "$native_target" "$supported_version"
   expect_artifact_pass "supported-$supported_version-static" \
     "$current_archive" "$current_target" static "$supported_version"
-  if [[ "$supported_version" == "$TEST_RC_VERSION" || "$supported_version" == "1.2.0-rc.3" || "$supported_version" == "1.2.0-rc.4" ]]; then
+  if [[ "$supported_version" == "$TEST_RC_VERSION" || "$supported_version" == "1.2.0-rc.3" || "$supported_version" == "1.2.0-rc.4" || "$supported_version" == "1.2.0-rc.5" || "$supported_version" == "1.2.0" ]]; then
     expect_artifact_pass "supported-$supported_version-native" \
       "$current_archive" "$current_target" native "$supported_version"
   fi
 done
 
-for full_candidate_version in 1.2.0-rc.3 1.2.0-rc.4; do
+for full_candidate_version in 1.2.0-rc.3 1.2.0-rc.4 1.2.0-rc.5 1.2.0; do
   for full_candidate_mode in 7 8; do
     full_candidate_label="full-candidate-$full_candidate_version-$full_candidate_mode"
     full_candidate_binary="$test_root/$full_candidate_label"
@@ -1012,7 +1074,7 @@ while IFS='|' read -r unsupported_label unsupported_version; do
   expect_artifact_fail "unsupported-$unsupported_label" "$current_archive" \
     "$current_target" static "" "$unsupported_version"
 done <<'UNSUPPORTED_ARTIFACT_VERSIONS'
-stable|1.2.0
+stable-metadata|1.2.0+build
 alpha|1.2.0-alpha.1
 major|2.2.0-beta.1
 minor|1.3.0-beta.1
@@ -1556,7 +1618,7 @@ expect_tag_pass annotated-rc-main "$tag_repo" "v$TEST_RC_VERSION" \
   "$second_commit" "$TEST_RC_VERSION" main
 
 for release_version in \
-  "$TEST_BETA_MULTIDIGIT_VERSION" "$TEST_RC_MULTIDIGIT_VERSION"; do
+  "$TEST_BETA_MULTIDIGIT_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0"; do
   git -C "$tag_repo" tag -a "v$release_version" \
     -m "annotated multi-digit fixture" "$second_commit"
   expect_tag_pass "annotated-$release_version" "$tag_repo" \
@@ -1569,7 +1631,7 @@ while IFS='|' read -r unsupported_label unsupported_version; do
   expect_tag_fail "unsupported-$unsupported_label" "$tag_repo" \
     "v$unsupported_version" "$second_commit" "$unsupported_version" main
 done <<'UNSUPPORTED_RELEASE_VERSIONS'
-stable|1.2.0
+stable-metadata|1.2.0+build
 alpha|1.2.0-alpha.1
 major|2.2.0-beta.1
 minor|1.3.0-beta.1

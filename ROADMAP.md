@@ -164,7 +164,7 @@ Acceptance is real SDK forwarding and clean completion in each supported
 example mode, applicable local/CI success and a preserved integration handoff.
 Failure/recovery, security rejection and protected-route coverage remain in
 the existing regression suites; the example is not another selection engine
-or a substitute for those tests. Field work and publication remain deferred.
+or a substitute for those tests. Field work and Stable publication remain deferred.
 
 Performance-based selection is frozen until explicitly unfrozen: no scoring,
 continuous speed tests, background ranking or preparatory framework. Keep
@@ -178,29 +178,20 @@ archived prerequisite chains or add a new crypto framework.
 
 ## Continuing Execution Discipline
 
-The 2026-11-11 owner decision freezes protocol/SDK functionality. The remaining
-authorized development is [Stable release tooling](docs/STABLE_RELEASE_TOOLING.md):
+Protocol/SDK functionality remains frozen. PR #112 completed the authorized
+[Stable release tooling](docs/STABLE_RELEASE_TOOLING.md), independent review,
+all applicable local checks, PR 8/8 and exact-main 6/6. RC.5 `e4a21e2` includes
+only the required rustix 1.1.6 dependency correction beyond the existing
+runtime scope; both native packages/SBOMs, Beta.4 rollback and Stable-format
+rehearsals passed. The standalone H3 fixture version correction is included.
+Do not repeat this tooling work or introduce new protocol/SDK features.
 
-1. Extend the existing version, full-feature artifact/SBOM and rollback gates
-   to `1.2.0`, retaining all Beta/RC profiles and immutable Beta.4 inputs.
-2. Keep Stable publication closed without explicit exact-commit owner approval;
-   test the actual workflow arguments with a local stand-in, never GitHub writes.
-3. Build private Stable-format fixtures on both native platforms and verify
-   real H2/H3 TCP/UDP, SBOM negative cases and upgrade/rollback. Preserve evidence
-   separately from the actual RC.4 candidate.
-4. Independently review the exact tooling patch, correct actual findings, run
-   all applicable local/CI checks and save the source and delivery record.
-
-The first CI dependency check detected RUSTSEC-2026-0486 in rustix 1.1.4 after
-the earlier local check passed. Update only rustix to patched 1.1.6, identify
-the changed dependency closure as RC.5, and qualify both native candidate sets
-with independent review. Do not suppress the advisory or add protocol features.
-Also retain the review's concrete rehearsal correction: preserve the standalone
-H3 fixture version and check its locked metadata before packaging.
-
-Acceptance requires all four items. Field validation, real deployment, release
-tags, setting publication approval and publishing Releases remain deferred.
-Do not invent new protocol/SDK features while completing this bounded work.
+The owner separately authorized an RC.5 checkpoint tag and prerelease on
+2026-11-11, plus explicitly allowlisted local cache/duplicate-output cleanup.
+The checkpoint preserves the reviewed source and exact qualification bytes;
+its current publication state is in STATUS.md. Field deployment and Stable
+publication are still deferred. Documentation after this source commit does
+not relabel or rebuild the frozen RC.5 checkpoint.
 
 Judge further CI changes by restore, rebuild and whole-workflow time together.
 A smaller archive alone does not establish a faster PR; runner variation and
@@ -214,6 +205,72 @@ capability needs defined observations and freshness; local listeners or
 cumulative counters cannot establish health. The SDK entry now has explicit H3
 support and real forwarding tests. Additional language bindings or adapters
 need a concrete consuming application requirement.
+
+## Proposed Field Acceptance — Discussion Only
+
+This is the next decision, not permission to provision, deploy, change a host,
+run a real-network test or publish Stable. The candidate is the immutable RC.5
+checkpoint at `e4a21e2`; no new infrastructure or client application work is
+silently included. Private environment identifiers and credentials stay outside
+the repository. Do not change the development Mac's network or Surge settings.
+
+1. **Agree the environment and limits.** Name an owner-controlled, fresh Linux
+   x86_64 test origin, an Apple Silicon client/test device, an existing authorized
+   intermediary route, duration, traffic/cost cap, operator and stop/cleanup
+   decision. Follow the existing host preparation policy only after explicit
+   authorization; no provider, region, host purchase or network change is assumed.
+   A missing intermediary environment leaves that matrix cell unqualified.
+2. **Freeze and install the exact files.** Independently download both RC.5
+   sets, verify digests/source identity, prepare private credentials, valid
+   certificates/origin pins and matched rollback backups, and check actual
+   service start/stop/restart on the named host. Use explicit test-client
+   endpoints or a separately approved test device, not a Mac system-proxy change.
+3. **Exercise the whole supported matrix.** Use continuous and independently
+   bidirectional traffic, repeated UDP replies/target-port continuity and real
+   intended applications, not only a one-packet echo. Test explicit H2/H3 and
+   generated dual/auto; preserve UDP packet bounds and existing-config meaning.
+
+   | Route/policy | Required observations |
+   |---|---|
+   | Direct H2 | TCP and persistent reliable UDP; native-required UDP rejects H2 |
+   | Direct H3 | TCP and native UDP, with both UDP policies and explicit packet limits |
+   | Direct auto | TCP plus both UDP policies; fresh sessions choose only permitted carriers |
+   | Protected intermediary H2 | TCP/reliable UDP; wrong origin identity fails; terminating intermediary cannot read authentication or inner traffic; timing/volume metadata remains visible |
+
+4. **Check failure and recovery before the soak.** In the authorized test
+   environment, make the H3 path unreachable and restore it; verify TCP and
+   eligible reliable-UDP new sessions can select H2, native-required UDP cannot,
+   and later opens retry after the existing 30-second avoidance expires. Do not
+   mutate the Mac's networking. Wrong credentials, certificate/name/pin and
+   malformed protocol must not trigger fallback. UDP target silence must not
+   classify the tunnel as dead or replay data. Existing sessions keep their
+   carrier and may fail on disruption; seamless migration is not an acceptance
+   criterion. Observe session cleanup and bounded resource use with existing
+   tools, without a performance scoring/probing framework.
+5. **Exercise real rollback, then perform ordinary use and a 72-hour soak.**
+   Validate both native platforms' installation/config restore. Beta.4 only
+   supports the older direct-H2 route: use an isolated, explicit matching
+   binary/config pair for that drill and then restore RC.5. Never weaken an
+   origin-protected configuration or pretend Beta.4 restores H3/protected-route
+   functionality. After functional/fault/rollback tests, freeze the accepted
+   RC.5 configuration for the soak and ordinary browsing/video/download plus
+   intended UDP application use within the agreed traffic budget. A runnable
+   SDK example alone does not establish proxy-app interoperability.
+6. **Record the go/no-go.** Every required matrix cell must have attributable
+   evidence; TCP transfers must preserve content; UDP must obey its documented
+   delivery/size semantics; there must be no unresolved security bypass,
+   unexplained crash, persistent resource growth or blocking intended-use failure.
+   Keep failures and uncertainties visible. A runtime/dependency fix creates a
+   replacement RC and repeats affected exact-candidate gates; do not silently
+   change the checkpoint or broaden scope. Only after owner acceptance perform
+   the narrow Stable version/note promotion review, final package qualification
+   and a separately authorized Stable publication.
+
+The practical order is a short functional/fault/rollback session followed by
+three days of normal use/soak and final review. Exact dates, applications and
+budgets remain to be agreed. Paid audit, extra platforms, FFI bindings, new
+providers, performance ranking and active-session migration are not added as
+new mandatory work.
 
 ## Deferred — Exact-Candidate Field Validation and Stable
 

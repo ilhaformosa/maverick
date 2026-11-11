@@ -54,10 +54,12 @@ selection remain unsupported. Profile URI v1 rejects new transport/UDP policies
 it cannot preserve; use full YAML or stored SDK profiles.
 See [CONFIG.md](CONFIG.md#transport).
 
-These are source-build capabilities. Published RC.2 files remain immutable and
-do not include H3 or subsequent source changes.
+These capabilities are included in the [RC.5 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.5)
+at `e4a21e2`, published as a prerelease/non-Latest for macOS arm64 and Linux
+x86_64. See [STATUS.md](STATUS.md) for its exact qualification and remaining gates.
+Older RC.2 files remain immutable and do not include H3 or subsequent changes.
 
-For an H2 intermediary that terminates outer TLS, source builds provide explicit
+For an H2 intermediary that terminates outer TLS, RC.5 and source builds provide explicit
 origin-pinned inner TLS through `advanced.end_to_end`. Generate the protected
 pair using `gen-config --relay --origin-name origin.example.invalid --origin-cert origin.pem`, optionally with `--origin-ca ca.pem`.
 The owner-supplied public certificate determines the mandatory pin. The client verifies a
@@ -88,8 +90,9 @@ caller-owned sessions. This is local integration preparation, not field use.
 
 A [Linux service template and runbook](docs/DEPLOYMENT.md) describe later
 owner-authorized deployment. CLI servers stop normally on SIGTERM/SIGINT.
-Current source builds can be prepared and verified locally; field use and new
-release publication remain separate from this delivery.
+RC.5 is an experimental checkpoint, not Stable. Field use, real deployment and
+Stable publication remain separate decisions; see the proposed acceptance plan
+in [ROADMAP.md](ROADMAP.md#proposed-field-acceptance--discussion-only).
 
 ## Embedded SDK State
 

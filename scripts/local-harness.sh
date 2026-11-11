@@ -99,6 +99,8 @@ active_docs=(
   docs/releases/v1.2.0-rc.3.md
   docs/releases/v1.2.0-rc.4.md
   docs/RC3_SECURITY_REVIEW.md
+  docs/STABLE_RELEASE_TOOLING.md
+  docs/STABLE_START_HERE.txt
   docs/TRANSPORT_ARCHITECTURE.md
   docs/END_TO_END_PROTECTION.md
   docs/INTEGRATION.md
@@ -120,6 +122,7 @@ active_privacy_status=0
 rg -q "$active_privacy_pattern" \
   AGENTS.md README.md STATUS.md ROADMAP.md CONFIG.md THREAT_MODEL.md SECURITY.md \
   docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md \
+  docs/STABLE_RELEASE_TOOLING.md docs/STABLE_START_HERE.txt \
   docs/INTEGRATION.md docs/DEPLOYMENT.md deploy/maverick.service \
   docs/TRANSPORT_ARCHITECTURE.md docs/END_TO_END_PROTECTION.md docs/NATIVE_UDP_AND_SELECTION.md docs/TEST_SERVER_PREPARATION.md \
   docs/YOUTUBE_PLAYBACK_DIAGNOSIS.md scripts/user-smoke.sh \
@@ -128,6 +131,8 @@ rg -q "$active_privacy_pattern" \
   scripts/test-prepare-test-server.sh scripts/verify-pilot-artifact.sh \
   scripts/verify-cyclonedx-sbom.sh scripts/verify-release-tag.sh \
   scripts/test-release-gates.sh \
+  scripts/release-channel.sh scripts/release-publication-flags.sh \
+  scripts/test-stable-release-rehearsal.sh \
   crates config .github/workflows 2>/dev/null || active_privacy_status=$?
 case "$active_privacy_status" in
   0)

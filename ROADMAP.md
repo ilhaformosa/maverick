@@ -178,6 +178,23 @@ archived prerequisite chains or add a new crypto framework.
 
 ## Continuing Execution Discipline
 
+The 2026-11-11 owner decision freezes protocol/SDK functionality. The remaining
+authorized development is [Stable release tooling](docs/STABLE_RELEASE_TOOLING.md):
+
+1. Extend the existing version, full-feature artifact/SBOM and rollback gates
+   to `1.2.0`, retaining all Beta/RC profiles and immutable Beta.4 inputs.
+2. Keep Stable publication closed without explicit exact-commit owner approval;
+   test the actual workflow arguments with a local stand-in, never GitHub writes.
+3. Build private Stable-format fixtures on both native platforms and verify
+   real H2/H3 TCP/UDP, SBOM negative cases and upgrade/rollback. Preserve evidence
+   separately from the actual RC.4 candidate.
+4. Independently review the exact tooling patch, correct actual findings, run
+   all applicable local/CI checks and save the source and delivery record.
+
+Acceptance requires all four items. Field validation, real deployment, release
+tags, setting publication approval and publishing Releases remain deferred.
+Do not invent new protocol/SDK features while completing this bounded work.
+
 Judge further CI changes by restore, rebuild and whole-workflow time together.
 A smaller archive alone does not establish a faster PR; runner variation and
 parallel CodeQL/macOS work can limit the benefit. Do not repeat the completed

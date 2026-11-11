@@ -196,6 +196,10 @@ This artifact is experimental prerelease software, provided without warranty. It
 not production-ready, anonymous, censorship-resistant, or browser-identical.
 GUIDE
 
+if [[ "$version" == "1.2.0" ]]; then
+  install -m 0644 docs/STABLE_START_HERE.txt "$output_dir/START_HERE.txt"
+fi
+
 require_unchanged_source
 
 {

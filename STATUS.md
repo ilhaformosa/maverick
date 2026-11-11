@@ -44,6 +44,18 @@ source.
 
 ## Integration and Service Delivery
 
+### Stable publication tooling preparation
+
+The owner froze protocol and SDK functionality on 2026-11-11 and authorized
+Stable tooling design, implementation, independent review and local/CI tests.
+Current work adds strict Stable classification, full H2/H3 artifact/SBOM checks,
+native rollback support and private Stable-format rehearsals. Actual publication
+requires a later exact-revision owner approval as well as the existing release
+contract gates. No project release tag, Release, deployment or field run is
+authorized. See [the design and validation boundary](docs/STABLE_RELEASE_TOOLING.md).
+The real package version remains RC.4 and runtime source/dependencies are frozen;
+rehearsal success will not be called Stable qualification.
+
 ### SDK integration handoff
 
 This source adds a runnable public-SDK consumer and integration guidance,

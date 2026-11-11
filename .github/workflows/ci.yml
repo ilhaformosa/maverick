@@ -198,6 +198,9 @@ jobs:
             exit 1
           fi
           printf 'revision=%s\n' "$actual_revision" >>"$GITHUB_OUTPUT"
+          version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          ./scripts/release-channel.sh "$version" >/dev/null
+          printf 'version=%s\n' "$version" >>"$GITHUB_OUTPUT"
           ./scripts/build-pilot.sh
       - name: Statically verify the GNU/Linux pilot archive
         env:
@@ -269,14 +272,18 @@ jobs:
             --previous-checksum "$previous_dir/maverick-1.2.0-beta.4-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256" \
             --candidate-archive "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz" \
             --candidate-checksum "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz.sha256" \
+            --candidate-version "$version" \
             --candidate-revision "$MAVERICK_PILOT_REVISION"
+          ./scripts/test-stable-release-rehearsal.sh \
+            --previous-dir "$previous_dir" \
+            --output "$RUNNER_TEMP/maverick-stable-rehearsal"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rc-candidate-x86_64-unknown-linux-gnu
           path: |
-            dist/maverick-1.2.0-rc.4-pilot-x86_64-unknown-linux-gnu.tar.gz
-            dist/maverick-1.2.0-rc.4-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256
-            dist/maverick-1.2.0-rc.4-pilot-x86_64-unknown-linux-gnu.cdx.json
+            dist/maverick-${{ steps.pilot.outputs.version }}-pilot-x86_64-unknown-linux-gnu.tar.gz
+            dist/maverick-${{ steps.pilot.outputs.version }}-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256
+            dist/maverick-${{ steps.pilot.outputs.version }}-pilot-x86_64-unknown-linux-gnu.cdx.json
           if-no-files-found: error
           retention-days: 7
       - name: Compare project outputs after all checks
@@ -301,6 +308,10 @@ jobs:
               --target-dir "$fixture_target"
           done
           cargo clean --workspace --locked --offline --release \
+            --target "$MAVERICK_PILOT_TARGET" \
+            --target-dir "${MAVERICK_PILOT_BUILD_DIR:-$GITHUB_WORKSPACE/target/pilot-artifact}"
+          cargo clean --workspace --locked --offline --release \
+            --manifest-path "$RUNNER_TEMP/maverick-stable-rehearsal/source/Cargo.toml" \
             --target "$MAVERICK_PILOT_TARGET" \
             --target-dir "${MAVERICK_PILOT_BUILD_DIR:-$GITHUB_WORKSPACE/target/pilot-artifact}"
           ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-prepared.json"
@@ -387,6 +398,7 @@ jobs:
       - name: Evaluate the default-off quiche candidate
         run: ./scripts/check.sh quiche-candidate
       - name: Build and verify exact-head macOS candidate artifacts
+        id: pilot
         run: |
           set -euo pipefail
           actual_revision="$(git rev-parse HEAD)"
@@ -395,6 +407,8 @@ jobs:
             exit 1
           fi
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+          ./scripts/release-channel.sh "$version" >/dev/null
+          printf 'version=%s\n' "$version" >>"$GITHUB_OUTPUT"
           archive="dist/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.tar.gz"
           ./scripts/build-pilot.sh
           ./scripts/verify-pilot-artifact.sh \
@@ -443,14 +457,18 @@ jobs:
             --previous-checksum "$previous_dir/maverick-1.2.0-beta.4-pilot-${MAVERICK_SBOM_TARGET}.tar.gz.sha256" \
             --candidate-archive "dist/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.tar.gz" \
             --candidate-checksum "dist/maverick-${version}-pilot-${MAVERICK_SBOM_TARGET}.tar.gz.sha256" \
+            --candidate-version "$version" \
             --candidate-revision "$actual_revision"
+          ./scripts/test-stable-release-rehearsal.sh \
+            --previous-dir "$previous_dir" \
+            --output "$RUNNER_TEMP/maverick-stable-rehearsal"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rc-candidate-aarch64-apple-darwin
           path: |
-            dist/maverick-1.2.0-rc.4-pilot-aarch64-apple-darwin.tar.gz
-            dist/maverick-1.2.0-rc.4-pilot-aarch64-apple-darwin.tar.gz.sha256
-            dist/maverick-1.2.0-rc.4-pilot-aarch64-apple-darwin.cdx.json
+            dist/maverick-${{ steps.pilot.outputs.version }}-pilot-aarch64-apple-darwin.tar.gz
+            dist/maverick-${{ steps.pilot.outputs.version }}-pilot-aarch64-apple-darwin.tar.gz.sha256
+            dist/maverick-${{ steps.pilot.outputs.version }}-pilot-aarch64-apple-darwin.cdx.json
           if-no-files-found: error
           retention-days: 7
       - name: Compare project outputs after all checks
@@ -475,6 +493,10 @@ jobs:
               --target-dir "$fixture_target"
           done
           cargo clean --workspace --locked --offline --release \
+            --target "$MAVERICK_PILOT_TARGET" \
+            --target-dir "${MAVERICK_PILOT_BUILD_DIR:-$GITHUB_WORKSPACE/target/pilot-artifact}"
+          cargo clean --workspace --locked --offline --release \
+            --manifest-path "$RUNNER_TEMP/maverick-stable-rehearsal/source/Cargo.toml" \
             --target "$MAVERICK_PILOT_TARGET" \
             --target-dir "${MAVERICK_PILOT_BUILD_DIR:-$GITHUB_WORKSPACE/target/pilot-artifact}"
           ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-prepared.json"

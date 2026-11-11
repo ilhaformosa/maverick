@@ -75,6 +75,17 @@ I/O, without opening a local SOCKS listener. H2 pooling, origin protection,
 H3/automatic TCP and UDP selection, and both UDP policies reuse the product paths. See
 [SDK and wire integration](docs/INTEGRATION.md), including checked frame examples.
 
+Start with the [runnable SDK consumer](crates/maverick-sdk/examples/connector_loopback.rs):
+
+```sh
+cargo run --locked -p maverick-sdk --features experimental-h3 --example connector_loopback -- auto allow_reliable
+```
+
+It runs entirely on loopback with temporary test credentials, demonstrates TCP
+and independent UDP replies, and closes the embedded server. The integration
+guide explains fixed carriers, native-required UDP, dependency setup and
+caller-owned sessions. This is local integration preparation, not field use.
+
 A [Linux service template and runbook](docs/DEPLOYMENT.md) describe later
 owner-authorized deployment. CLI servers stop normally on SIGTERM/SIGINT.
 Current source builds can be prepared and verified locally; field use and new

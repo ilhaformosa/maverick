@@ -28,6 +28,9 @@ echo "==> B-002-S2 synthetic replay verifier"
 echo "==> Rust tests"
 "$cargo_bin" test --workspace
 
+echo "==> runnable public SDK example"
+"$cargo_bin" run --locked --quiet -p maverick-sdk --example connector_loopback -- h2
+
 echo "==> explicit rustls compatibility build"
 "$cargo_bin" check -p maverick-cli --no-default-features
 

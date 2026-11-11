@@ -47,14 +47,18 @@ awk '
 ' "$fixture/Cargo.toml" >"$fixture/Cargo.toml.new"
 mv "$fixture/Cargo.toml.new" "$fixture/Cargo.toml"
 for lock in Cargo.lock crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.lock; do
-  awk '
+  awk -v source_version="$source_version" '
     /^\[\[package\]\]$/ { package = 0 }
     /^name = "maverick-/ { package = 1 }
-    package && /^version =/ { print "version = \"1.2.0\""; package = 0; next }
+    package && $0 == "version = \"" source_version "\"" { print "version = \"1.2.0\""; package = 0; next }
     { print }
   ' "$fixture/$lock" >"$fixture/$lock.new"
   mv "$fixture/$lock.new" "$fixture/$lock"
 done
+# The standalone H3 fixture has its own version/workspace. Verify its lock
+# still matches, instead of treating the main package's build as proof of it.
+cargo metadata --locked --offline --format-version 1 --features proxy \
+  --manifest-path "$fixture/crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml" >/dev/null
 git -C "$fixture" add .
 git -C "$fixture" -c commit.gpgsign=false commit --allow-empty -qm 'Synthetic Stable packaging rehearsal; not a release'
 fixture_revision="$(git -C "$fixture" rev-parse HEAD)"

@@ -5,6 +5,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 manifest=crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.toml
 cargo test --locked -p maverick-sdk --features experimental-h3 --test connector
+for carrier in h3 auto; do
+  for policy in allow_reliable native_required; do
+    cargo run --locked --quiet -p maverick-sdk --features experimental-h3 \
+      --example connector_loopback -- "$carrier" "$policy"
+  done
+done
 cargo clippy --locked -p maverick-sdk --features experimental-h3 --all-targets -- -D warnings
 cargo test --locked -p maverick-client --features experimental-h3 h3::tests
 cargo test --locked -p maverick-client --features experimental-h3 udp::tests

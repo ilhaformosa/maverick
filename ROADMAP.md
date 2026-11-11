@@ -1,6 +1,6 @@
 # Maverick Roadmap
 
-Date: 2026-11-10
+Date: 2026-11-11
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
@@ -120,7 +120,7 @@ completion/evidence lives in STATUS.md; a passing earlier revision does not
 qualify this candidate. Reuse existing implementations and add no new crypto,
 configuration framework, FFI layer or automatic host provisioning.
 
-## RC.4 — Independent Review Corrections
+## Delivered — RC.4 Independent Review Corrections
 
 The owner authorized independent RC.3 security review and correction of actual
 findings, while keeping field work and publication deferred. The complete
@@ -138,6 +138,33 @@ record remains bound to `2aeaaf9`. See [review scope and outcomes](docs/RC3_SECU
 This is a correction candidate with the existing full transport scope, not
 new protocol functionality. No further speculative hardening is required by
 the findings. Actual failures take priority over unrelated optimization.
+
+RC.4 `d12c6a6` passed all applicable local gates, PR #110's 8 checks and the
+merged main's 6 checks. Both native candidate archives, SBOMs and Beta.4
+upgrade/rollback passed. The exact source and artifacts remain preserved;
+the independent review and two corrections are complete, not a pending queue.
+
+## SDK Integration Handoff
+
+This bounded delivery makes the completed core easier to integrate:
+
+1. A runnable public-SDK example owns its application I/O, performs
+   TCP half-close and persistent UDP with independent replies, reports the
+   selected carrier/packet cap, and closes its sessions. It uses generated test
+   trust, loopback and ephemeral ports only; keep setup separate from real
+   consumer configuration.
+2. The integration guide documents Cargo dependency/feature setup, ownership
+   and error handling, links the full example, and distinguishes this source
+   companion from the qualified RC.4 archives. No runtime/API/dependency changes.
+3. The example executes in the existing product/rustls/H3 gates, including fixed
+   H2, fixed H3 and auto with both supported UDP policies. Keep all current CI,
+   security, artifact/SBOM and rollback checks; record exact revisions/results.
+
+Acceptance is real SDK forwarding and clean completion in each supported
+example mode, applicable local/CI success and a preserved integration handoff.
+Failure/recovery, security rejection and protected-route coverage remain in
+the existing regression suites; the example is not another selection engine
+or a substitute for those tests. Field work and publication remain deferred.
 
 Performance-based selection is frozen until explicitly unfrozen: no scoring,
 continuous speed tests, background ranking or preparatory framework. Keep

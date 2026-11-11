@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-11-10
+Date: 2026-11-11
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
@@ -11,10 +11,12 @@ historical evidence; a result applies to its tested revision and workload.
 The latest owner decision requires full H2/H3 and TCP/UDP support for Stable,
 not a Direct-H2-only claim. The full-transport goal was delivered as RC.3 at
 `2aeaaf9` through PR #109, with all applicable local gates, PR 8/8 and main 6/6
-checks and both native candidate packages. The next authorized task independently
-reviewed that exact candidate and corrects its findings in RC.4. Field trials,
+checks and both native candidate packages. Independent review then corrected
+two reproduced resource issues in RC.4 `d12c6a6` through PR #110. All applicable
+local checks, PR 8/8 and merged main 6/6 passed, including both native candidate
+archives, full SBOMs and Beta.4 upgrade/rollback. Field trials,
 actual deployment and publication remain deferred. The table describes the current source implementation, not
-completion of full candidate qualification. Focused implementation evidence is
+Stable qualification. Focused implementation evidence is
 recorded below. A distributable candidate must also have the complete gates
 and exact artifact evidence for its SOURCE.txt revision; see the associated
 Git/PR/Actions records, not results from a different commit.
@@ -23,7 +25,7 @@ Git/PR/Actions records, not results from a different commit.
 |---|---|
 | Stage | Experimental Beta; not production-ready |
 | Published release | Immutable `v1.2.0-rc.2`, prerelease/non-Latest, Direct H2 |
-| Current candidate | RC.4 resource fixes following the exact RC.3 review; qualification is bound to its SOURCE.txt and associated local/CI records |
+| Current candidate | RC.4 `d12c6a6`, independently reviewed fixes and complete applicable local/CI qualification; field qualification remains deferred |
 | Build/configuration defaults | Full candidate packages include H2/H3; new direct generation uses dual/auto with `allow_reliable`; omitted existing settings retain their prior meaning |
 | Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3; local terminating-relay validation; not published |
 | Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |
@@ -41,6 +43,20 @@ video/large-image usability problems are historical, not validation of current
 source.
 
 ## Integration and Service Delivery
+
+### SDK integration handoff
+
+This source adds a runnable public-SDK consumer and integration guidance,
+without changing runtime code, API, wire policy or dependencies. The example
+uses ephemeral loopback servers and generated test trust; its TCP and persistent
+UDP checks join the existing product/rustls/H3 gates. Fixed H2 (browser TLS and
+rustls), fixed H3 and auto with both supported UDP policies pass focused local
+execution. The associated PR/Actions records qualify the complete handoff;
+those checks retain all prior security, native artifact/SBOM and rollback gates.
+See the [runnable example and consumer guide](docs/INTEGRATION.md).
+The qualified
+RC.4 runtime remains `d12c6a6`; a later example/documentation commit does not
+replace those archive bytes or retroactively change the independent review.
 
 ### Independent RC.3 review and RC.4 corrections
 
@@ -67,6 +83,13 @@ replacement source/bytes qualify RC.4. See [candidate notes](docs/releases/v1.2.
 No UDP policy, authentication, configuration or wire semantics changed. The
 original RC.3 packages and review records remain preserved; field use and
 publication remain deferred.
+
+Exact RC.4 qualification: [PR #110](https://github.com/ilhaformosa/maverick/pull/110),
+[merged-main product/native checks](https://github.com/ilhaformosa/maverick/actions/runs/42834991677),
+and [Rust/Actions CodeQL](https://github.com/ilhaformosa/maverick/actions/runs/42834991406).
+The replacement review at `4db613a` and merged `d12c6a6` have the same source
+tree. Existing CodeQL alert #36 is intentional public-certificate fingerprint
+output, reviewed as not secret logging; its state/rule was not suppressed.
 
 ### RC.3 implementation and qualification boundaries
 

@@ -18,6 +18,7 @@ cargo test --locked -p maverick-tests --no-default-features \
   --test tcp_relay
 cargo test --locked -p maverick-tests --no-default-features --test end_to_end
 cargo test --locked -p maverick-sdk --no-default-features --test connector
+cargo run --locked --quiet -p maverick-sdk --no-default-features --example connector_loopback -- h2
 cargo test --locked -p maverick-cli --no-default-features --test config_handoff
 cargo test --locked -p maverick-cli -p maverick-sdk \
   --no-default-features --test server_startup --test gui_readiness

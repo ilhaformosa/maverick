@@ -6,6 +6,77 @@ cross-language interoperability is claimed by the loopback tests.
 
 ## Use the Rust SDK
 
+### Run a complete consumer first
+
+From a checkout containing the integration companion, run the
+[public SDK example](../crates/maverick-sdk/examples/connector_loopback.rs):
+
+```sh
+# Browser TLS, fixed H2 and reliable-compatible UDP.
+cargo run --locked -p maverick-sdk --example connector_loopback -- h2
+# Full build, fixed H3 or automatic selection; UDP remains application UDP.
+cargo run --locked -p maverick-sdk --features experimental-h3 --example connector_loopback -- h3 native_required
+cargo run --locked -p maverick-sdk --features experimental-h3 --example connector_loopback -- auto allow_reliable
+cargo run --locked -p maverick-sdk --features experimental-h3 --example connector_loopback -- auto native_required
+# Supported minimal H2 build.
+cargo run --locked -p maverick-sdk --no-default-features --example connector_loopback -- h2
+```
+
+The program creates temporary test trust and credentials, an embedded server
+and TCP/UDP targets bound only to `127.0.0.1` on OS-assigned ports. It uses
+`ProxyConnector` without a local SOCKS listener, checks a TCP response after
+upload FIN, queues two UDP messages before receiving three independent replies
+(including an empty packet), and verifies the target-facing UDP port stays
+the same. It prints the chosen carrier and payload cap, closes the sessions and
+server, and removes its temporary files. No certificate checks are disabled.
+It does not use a real endpoint or change system networking. Its 20-second
+deadline bounds this demonstration; it is not an SDK health/retry policy.
+
+This is a readable starting point, not proof of universal application or
+network compatibility. In particular, the example's healthy auto route does
+not test fallback: existing SDK/CLI tests cover unreachable H3, recovery,
+capability absence and security failures. Native UDP still permits loss and
+reordering; the demonstration never retries or replays application packets.
+
+### Add the dependency to your application
+
+For a source bundle placed beside your application, use:
+
+```toml
+[dependencies]
+maverick-sdk = { path = "../maverick/crates/maverick-sdk", features = ["experimental-h3"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+```
+
+Alternatively pin the qualified RC.4 runtime directly:
+
+```toml
+maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", rev = "d12c6a68d746aa2b9a2402c46aa1c7707c1f5f3a", features = ["experimental-h3"] }
+```
+
+Choose one SDK dependency line, preserve your application's own `Cargo.lock`,
+and build with `--locked` after resolving it. Pinning the SDK source does not
+pin every dependency in the embedding application's graph: review its lockfile
+and run its own integration checks. RC.4 evidence covers the repository's
+locked graph. The SDK is consumed from source;
+the CLI archive is not a linkable SDK library, and this delivery does not add a
+C/Swift/Go ABI or a registry publication. Use Rust stable/Cargo and a native
+C/C++ toolchain. Browser TLS/H3 also need CMake and libclang for the bundled
+TLS build; Linux CI's build/verification tool list is in
+[install-linux-tools.sh](../scripts/install-linux-tools.sh). Do not run that
+privileged Linux runner helper on the development Mac. The example's certificate generator
+and embedded target setup are development scaffolding, not dependencies your
+proxy front end needs. Use the configuration and independently verified trust
+delivered by your operator in the real application; keep the example's
+loopback egress allowance out of deployment configuration.
+
+The executable RC.4 candidate remains pinned to `d12c6a6`. The later integration
+companion adds examples/guidance and execution checks only; it neither replaces
+that candidate's archive bytes nor extends its independent security review.
+
+### Configure and own the connector
+
 Depend on `crates/maverick-sdk` from a reviewed checkout/revision. Default
 features support H2 with the browser TLS profile. Opt into the SDK's
 `experimental-h3` feature for H3, native UDP and automatic TCP/UDP selection. New generated direct YAML explicitly enables
@@ -100,6 +171,30 @@ this prevents a manually constructed config from bypassing native-required UDP.
 SOCKS5/HTTP listeners, and `MaverickServer::start` embeds a server. Those APIs
 do not install process signal handlers. `GuiClientRuntime` still distinguishes
 local listening from remote connectivity; a listener is not a health probe.
+
+### Handle completion and errors in the embedding application
+
+| Observation | Consumer action |
+|---|---|
+| `connect_tcp` / `open_udp` returns a session | Authentication and target/session admission succeeded; hand caller-owned traffic to that session. This is not an application-level delivery acknowledgment. |
+| Opening returns an error | End that open and report failure. The core already applies the eligible auto-selection rules; do not catch every error and manually try H2 or weaker trust. |
+| `UdpCapabilityUnsupported` in the error chain | The authenticated peer lacks the requested capability. Report that distinction if useful; preserve the configured policy. The core owns any permitted pre-data compatibility selection. |
+| UDP `send` returns `false` | The packet was oversized or the bounded queue was full. Count/drop it according to application policy; it was not accepted by this queue. `true` still does not prove network delivery. |
+| UDP target is silent | Wait according to the application's own timeout. Silence does not establish tunnel failure and must not cause replay or a carrier change for this session. |
+| Relay or receive returns an error | End this flow, release its resources and report the outcome. Never replay bytes/packets that might already have been sent. |
+| Application is shutting down | Cancel pending opens/relays and close/drop its UDP sessions, then close the connector. Connector close alone does not cancel previously returned or opening sessions. |
+
+Keep one owner of each UDP session. A typical event loop uses `tokio::select!`
+between `session.recv()` and the application's outbound-packet queue; in the
+outbound branch, call `session.send(packet)`. This permits receive progress
+without waiting for a reply to each send. Do not hold a mutex across a receive
+while another task needs that same mutex to send. Independent send/receive
+does not require separate connectors or a new tunnel per packet.
+
+Errors use `anyhow::Error`; `UdpCapabilityUnsupported` supports downcasting.
+Other display strings are diagnostic text, not a stable classification API.
+Do not infer retry/security decisions by matching those strings. Keep secrets,
+private endpoint details and entire configurations out of UI telemetry/logs.
 
 ## Implement the wire protocol independently
 

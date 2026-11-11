@@ -181,7 +181,7 @@ exercise must run natively on Apple Silicon macOS for
 `x86_64-unknown-linux-gnu`; one platform's static inspection does not replace
 the other platform's native exercise. The current
 `scripts/test-n-minus-one-release-drill.sh` is fixed to Beta.4 as the rollback
-partner and accepts the exact RC.4 candidate or an explicitly selected Stable
+partner and accepts the exact RC.5 candidate (or explicitly selected RC.4/Stable)
 promotion identity. A platform cell closes
 only when that exact candidate passes the native drill and independent review.
 

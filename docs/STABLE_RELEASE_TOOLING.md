@@ -7,10 +7,12 @@ GitHub Release, or setting a publication approval.
 
 ## Small implementation boundary
 
-The package version in the actual checkout remains RC.4. Product Rust source,
-dependencies, wire/auth/configuration semantics and client selection do not
-change. The qualified runtime candidate remains `d12c6a6`. These tooling
-changes are not a new independent qualification of a different candidate.
+Protocol/SDK Rust functionality, wire/auth/configuration semantics and client
+selection remain frozen. CI dependency checks detected RUSTSEC-2026-0486 in
+rustix 1.1.4, requiring its minimal patch to 1.1.6 and a new RC.5 package identity.
+Only rustix changes registry version/checksum; independent RC.5 review and fresh
+native candidate evidence are required. RC.4 `d12c6a6` and its historical records
+remain preserved. Tool rehearsals are not independent candidate qualification.
 
 `release-channel.sh` accepts only `1.2.0-beta.N`, `1.2.0-rc.N` (positive integers
 without leading zeros) and `1.2.0`. The tag verifier still requires an annotated
@@ -43,8 +45,8 @@ Stable package verification requires the full H2/H3 feature profile and both
 TCP/UDP native smoke modes. Its SBOM must match that full locked dependency
 graph. The stable installation guide retains experimental/non-production
 limitations while avoiding a false prerelease label. Legacy Beta/RC archive
-profiles remain unchanged. The rollback drill defaults to RC.4 and additionally
-accepts explicit `--candidate-version 1.2.0`; the pinned Beta.4 partner and its
+profiles remain unchanged. The rollback drill defaults to RC.5 and additionally
+accepts explicit RC.4 or `--candidate-version 1.2.0`; the pinned Beta.4 partner and its
 digests never change.
 
 ## Validation without publication
@@ -60,6 +62,8 @@ test repositories, not in the Maverick repository or on GitHub.
 `test-stable-release-rehearsal.sh` creates a private source snapshot with no
 remote or tags, changes only workspace package versions to `1.2.0`, and records
 the actual source commit separately from its local synthetic fixture commit.
+The independent H3 fixture keeps its own 0.0.0 version; a locked offline
+metadata check rejects any mismatch before packaging.
 It builds a real full-feature binary, verifies its native H2/H3 TCP/UDP behavior,
 generates and verifies full SBOMs, runs the existing SBOM negative suite, and
 performs native Beta.4 upgrade/rollback. Both CI platforms run it after the

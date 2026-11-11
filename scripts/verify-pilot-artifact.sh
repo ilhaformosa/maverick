@@ -460,7 +460,7 @@ cmp -s "$expected_source_file" "$payload_root/SOURCE.txt" || fail
 
 features_line="$LEGACY_FEATURES_LINE"
 guide_sha256="$LEGACY_START_HERE_SHA256"
-if [[ "$expected_version" == "1.2.0-rc.3" || "$expected_version" == "1.2.0-rc.4" || "$expected_version" == "1.2.0" ]]; then
+if [[ "$expected_version" == "1.2.0-rc.3" || "$expected_version" == "1.2.0-rc.4" || "$expected_version" == "1.2.0-rc.5" || "$expected_version" == "1.2.0" ]]; then
   features_line+=",udp-sessions,udp-policy,quiche-h3"
   guide_sha256="c0eeaab17a9ce421d86bc1b94b6e3fd97a3320d1ee8b4d36c6857f6397c3586d"
 fi
@@ -622,7 +622,7 @@ case "$smoke_failure_status" in
   *) fail ;;
 esac
 
-if [[ "$expected_version" == "1.2.0-rc.3" || "$expected_version" == "1.2.0-rc.4" || "$expected_version" == "1.2.0" ]]; then
+if [[ "$expected_version" == "1.2.0-rc.3" || "$expected_version" == "1.2.0-rc.4" || "$expected_version" == "1.2.0-rc.5" || "$expected_version" == "1.2.0" ]]; then
   [[ "$(grep -Fxc 'udp_session_roundtrip: PASS' "$native_smoke_output" 2>/dev/null)" == "1" ]] || fail
   native_h3_output="$private_tmp/native-h3-smoke"
   run_bounded "$native_h3_output" "$binary_file" user-smoke --quiche-h3

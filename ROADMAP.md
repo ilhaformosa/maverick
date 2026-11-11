@@ -191,6 +191,13 @@ authorized development is [Stable release tooling](docs/STABLE_RELEASE_TOOLING.m
 4. Independently review the exact tooling patch, correct actual findings, run
    all applicable local/CI checks and save the source and delivery record.
 
+The first CI dependency check detected RUSTSEC-2026-0486 in rustix 1.1.4 after
+the earlier local check passed. Update only rustix to patched 1.1.6, identify
+the changed dependency closure as RC.5, and qualify both native candidate sets
+with independent review. Do not suppress the advisory or add protocol features.
+Also retain the review's concrete rehearsal correction: preserve the standalone
+H3 fixture version and check its locked metadata before packaging.
+
 Acceptance requires all four items. Field validation, real deployment, release
 tags, setting publication approval and publishing Releases remain deferred.
 Do not invent new protocol/SDK features while completing this bounded work.

@@ -49,16 +49,17 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```
 
-Alternatively pin the qualified RC.4 runtime directly:
+Alternatively use a Git dependency, replacing the revision placeholder with
+the complete `git_revision` from the reviewed RC.5 archive's SOURCE.txt:
 
 ```toml
-maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", rev = "d12c6a68d746aa2b9a2402c46aa1c7707c1f5f3a", features = ["experimental-h3"] }
+maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", rev = "REPLACE_WITH_REVIEWED_SOURCE_REVISION", features = ["experimental-h3"] }
 ```
 
 Choose one SDK dependency line, preserve your application's own `Cargo.lock`,
 and build with `--locked` after resolving it. Pinning the SDK source does not
 pin every dependency in the embedding application's graph: review its lockfile
-and run its own integration checks. RC.4 evidence covers the repository's
+and run its own integration checks. Candidate evidence covers the repository's
 locked graph. The SDK is consumed from source;
 the CLI archive is not a linkable SDK library, and this delivery does not add a
 C/Swift/Go ABI or a registry publication. Use Rust stable/Cargo and a native
@@ -71,9 +72,10 @@ proxy front end needs. Use the configuration and independently verified trust
 delivered by your operator in the real application; keep the example's
 loopback egress allowance out of deployment configuration.
 
-The executable RC.4 candidate remains pinned to `d12c6a6`. The later integration
-companion adds examples/guidance and execution checks only; it neither replaces
-that candidate's archive bytes nor extends its independent security review.
+The original integration companion added examples/guidance without changing
+the RC.4 runtime. RC.5 now updates rustix in response to the required dependency
+scan; use its matching source and archives. Earlier RC.4 evidence does not
+extend to the new dependency closure. The public SDK API remains unchanged.
 
 ### Configure and own the connector
 

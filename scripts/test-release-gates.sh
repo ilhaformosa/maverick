@@ -173,7 +173,7 @@ static void record_execution(void) {
 int main(int argc, char **argv) {
   record_execution();
   if (argc != 2 && !(argc == 3 && strcmp(argv[1], "user-smoke") == 0 &&
-      strcmp(argv[2], "--quiche-h3") == 0 && (strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0))) {
+      strcmp(argv[2], "--quiche-h3") == 0 && (strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.5") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0))) {
     return 2;
   }
   if (strcmp(argv[1], "version") == 0) {
@@ -183,7 +183,7 @@ int main(int argc, char **argv) {
     }
     printf("maverick %s\n", FIXTURE_VERSION);
     puts("protocol_version: 1");
-    if ((strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0)) {
+    if ((strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.5") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0)) {
     puts("features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke,udp-sessions,udp-policy,quiche-h3");
     } else {
     puts("features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke");
@@ -192,7 +192,7 @@ int main(int argc, char **argv) {
   }
   if (strcmp(argv[1], "user-smoke") == 0) {
     if (FIXTURE_MODE == 7 && argc == 3) { return 3; }
-    if ((strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0)) {
+    if ((strcmp(FIXTURE_VERSION, "1.2.0-rc.3") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.4") == 0 || strcmp(FIXTURE_VERSION, "1.2.0-rc.5") == 0 || strcmp(FIXTURE_VERSION, "1.2.0") == 0)) {
       puts(argc == 3 ? "carrier: h3" : "carrier: h2");
       if (!(FIXTURE_MODE == 8 && argc == 3)) { puts("udp_session_roundtrip: PASS"); }
     }
@@ -236,7 +236,7 @@ make_payload() {
     "source_state: clean" \
     "version: $version" \
     "target: $target" >"$root/SOURCE.txt"
-  if [[ "$version" == "1.2.0-rc.3" || "$version" == "1.2.0-rc.4" || "$version" == "1.2.0" ]]; then
+  if [[ "$version" == "1.2.0-rc.3" || "$version" == "1.2.0-rc.4" || "$version" == "1.2.0-rc.5" || "$version" == "1.2.0" ]]; then
   sed -n "/^cat >.*START_HERE\\.txt.*<<'GUIDE'$/,/^GUIDE$/p" \
     "$repo_root/scripts/build-pilot.sh" |
     sed '1d;$d' >"$root/START_HERE.txt"
@@ -247,7 +247,7 @@ make_payload() {
     cp "$repo_root/docs/STABLE_START_HERE.txt" "$root/START_HERE.txt"
   fi
   local features="$FEATURES_LINE"
-  if [[ "$version" == "1.2.0-rc.3" || "$version" == "1.2.0-rc.4" || "$version" == "1.2.0" ]]; then features+=",udp-sessions,udp-policy,quiche-h3"; fi
+  if [[ "$version" == "1.2.0-rc.3" || "$version" == "1.2.0-rc.4" || "$version" == "1.2.0-rc.5" || "$version" == "1.2.0" ]]; then features+=",udp-sessions,udp-policy,quiche-h3"; fi
   printf '%s\n' \
     "maverick $version" \
     "protocol_version: 1" \
@@ -1043,20 +1043,20 @@ expect_artifact_pass positive-native "$current_archive" "$current_target" native
 
 for supported_version in \
   "$TEST_BETA_ONE_VERSION" "$TEST_BETA_MULTIDIGIT_VERSION" \
-  "$TEST_RC_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0-rc.3" "1.2.0-rc.4" "1.2.0"; do
+  "$TEST_RC_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0-rc.3" "1.2.0-rc.4" "1.2.0-rc.5" "1.2.0"; do
   supported_binary="$test_root/native-maverick-$supported_version"
   compile_fixture_binary "$supported_binary" 0 "" "$supported_version"
   new_artifact_case "supported-$supported_version" "$supported_binary" \
     "$native_target" "$supported_version"
   expect_artifact_pass "supported-$supported_version-static" \
     "$current_archive" "$current_target" static "$supported_version"
-  if [[ "$supported_version" == "$TEST_RC_VERSION" || "$supported_version" == "1.2.0-rc.3" || "$supported_version" == "1.2.0-rc.4" || "$supported_version" == "1.2.0" ]]; then
+  if [[ "$supported_version" == "$TEST_RC_VERSION" || "$supported_version" == "1.2.0-rc.3" || "$supported_version" == "1.2.0-rc.4" || "$supported_version" == "1.2.0-rc.5" || "$supported_version" == "1.2.0" ]]; then
     expect_artifact_pass "supported-$supported_version-native" \
       "$current_archive" "$current_target" native "$supported_version"
   fi
 done
 
-for full_candidate_version in 1.2.0-rc.3 1.2.0-rc.4 1.2.0; do
+for full_candidate_version in 1.2.0-rc.3 1.2.0-rc.4 1.2.0-rc.5 1.2.0; do
   for full_candidate_mode in 7 8; do
     full_candidate_label="full-candidate-$full_candidate_version-$full_candidate_mode"
     full_candidate_binary="$test_root/$full_candidate_label"

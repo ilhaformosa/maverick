@@ -98,6 +98,7 @@ active_docs=(
   docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md
   docs/releases/v1.2.0-rc.3.md
   docs/releases/v1.2.0-rc.4.md
+  docs/releases/v1.2.0-rc.5.md
   docs/RC3_SECURITY_REVIEW.md
   docs/STABLE_RELEASE_TOOLING.md
   docs/STABLE_START_HERE.txt

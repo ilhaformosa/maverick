@@ -526,9 +526,9 @@ done
 [[ -n "$source_candidate_archive" && -n "$source_candidate_checksum" ]] || fail
 [[ "$candidate_revision" =~ ^[0-9a-f]{40}$ ]] || fail
 readonly candidate_revision
-candidate_version="${candidate_version:-1.2.0-rc.4}"
+candidate_version="${candidate_version:-1.2.0-rc.5}"
 case "$candidate_version" in
-  1.2.0-rc.4 | 1.2.0) ;;
+  1.2.0-rc.4 | 1.2.0-rc.5 | 1.2.0) ;;
   *) fail ;;
 esac
 readonly CANDIDATE_VERSION="$candidate_version"

@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-cli"
-version = "1.2.0-rc.4"
+version = "1.2.0-rc.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -1396,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-client"
-version = "1.2.0-rc.4"
+version = "1.2.0-rc.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-core"
-version = "1.2.0-rc.4"
+version = "1.2.0-rc.5"
 dependencies = [
  "base64",
  "bytes",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-quiche"
-version = "1.2.0-rc.4"
+version = "1.2.0-rc.5"
 dependencies = [
  "anyhow",
  "boring",
@@ -1467,7 +1467,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-sdk"
-version = "1.2.0-rc.4"
+version = "1.2.0-rc.5"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-server"
-version = "1.2.0-rc.4"
+version = "1.2.0-rc.5"
 dependencies = [
  "anyhow",
  "boring",
@@ -1515,7 +1515,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-tests"
-version = "1.2.0-rc.4"
+version = "1.2.0-rc.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-tun"
-version = "1.2.0-rc.4"
+version = "1.2.0-rc.5"
 dependencies = [
  "bytes",
  "etherparse",
@@ -2005,9 +2005,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.0",
  "errno",

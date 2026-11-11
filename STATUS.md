@@ -15,7 +15,9 @@ checks and both native candidate packages. Independent review then corrected
 two reproduced resource issues in RC.4 `d12c6a6` through PR #110. All applicable
 local checks, PR 8/8 and merged main 6/6 passed, including both native candidate
 archives, full SBOMs and Beta.4 upgrade/rollback. Field trials,
-actual deployment and publication remain deferred. The table describes the current source implementation, not
+actual deployment and Stable publication remain deferred. RC.5 checkpoint
+publication was separately authorized on 2026-11-11. The table describes the
+current source implementation, not
 Stable qualification. Focused implementation evidence is
 recorded below. A distributable candidate must also have the complete gates
 and exact artifact evidence for its SOURCE.txt revision; see the associated
@@ -30,10 +32,10 @@ candidate evidence; RC.4's earlier passing records remain historical. See
 | Area | Current state |
 |---|---|
 | Stage | Experimental Beta; not production-ready |
-| Published release | Immutable `v1.2.0-rc.2`, prerelease/non-Latest, Direct H2 |
-| Current candidate | RC.5 dependency correction and Stable tooling; qualification is bound to its own source/archives and associated checks; field qualification remains deferred |
+| Published release | [RC.5 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.5) at `e4a21e2`, prerelease/non-Latest, full transport; older releases remain unchanged |
+| Current candidate | RC.5 `e4a21e2`: full transport, SDK and release tooling qualified locally and in CI; exact-candidate field acceptance remains deferred |
 | Build/configuration defaults | Full candidate packages include H2/H3; new direct generation uses dual/auto with `allow_reliable`; omitted existing settings retain their prior meaning |
-| Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3; local terminating-relay validation; not published |
+| Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3 in RC.5; local terminating-relay validation, real intermediary qualification pending |
 | Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |
 | Dual/automatic transport | H2/H3 on one port; core-owned new TCP/UDP selection, shared temporary avoidance/retry and explicit UDP policy; active sessions never migrate |
 | Configuration/authentication | Runnable config v1; existing authentication v1/v2; native H3 UDP adds an explicit control-frame extension; config v2 is policy-only |
@@ -54,16 +56,58 @@ source.
 
 The owner froze protocol and SDK functionality on 2026-11-11 and authorized
 Stable tooling design, implementation, independent review and local/CI tests.
-Current work adds strict Stable classification, full H2/H3 artifact/SBOM checks,
-native rollback support and private Stable-format rehearsals. Actual publication
-requires a later exact-revision owner approval as well as the existing release
-contract gates. No project release tag, Release, deployment or field run is
-authorized. See [the design and validation boundary](docs/STABLE_RELEASE_TOOLING.md).
+PR #112 completed strict Stable classification, full H2/H3 artifact/SBOM
+checks, native rollback support and private Stable-format rehearsals. The
+reviewed `3ceddb9` and merged `e4a21e2` have the same source tree. All applicable
+local checks, PR 8/8 and main 6/6 passed, with both native candidate packages,
+full SBOMs, Beta.4 rollback and both native Stable-format rehearsals.
+The owner subsequently authorized only the RC.5 checkpoint tag/Release.
+Field use, real deployment and Stable publication remain deferred; the exact-SHA
+Stable approval remains unset. See
+[the design and validation boundary](docs/STABLE_RELEASE_TOOLING.md).
 The real package version is RC.5 because CI required the minimal rustix 1.1.6
 dependency correction. Protocol/SDK/runtime Rust functionality is unchanged;
-rehearsal success will not be called Stable qualification. Independent review
+rehearsal success is not Stable qualification. Independent review
 also identified an incorrect standalone-fixture lock rewrite in the rehearsal;
 the correction preserves its own version and verifies locked metadata.
+
+### RC.5 checkpoint and remaining acceptance
+
+The approved checkpoint is annotated `v1.2.0-rc.5`, directly targeting
+`e4a21e2af755c5ed6656ffc6c2a480f208c2b11e`. It uses the six unchanged archive,
+checksum and SBOM files from the successful exact-main qualification run. The
+[publication workflow](https://github.com/ilhaformosa/maverick/actions/runs/43003524307)
+passed; all six public downloads match the qualified bytes, and the remote
+annotated tag resolves to the exact source. It is a prerelease/non-Latest, not Stable. The dated publication notice preserves the source note verbatim
+as a pre-publication record and makes the later owner authorization explicit.
+
+Qualification: [PR #112](https://github.com/ilhaformosa/maverick/pull/112),
+[main product/native checks](https://github.com/ilhaformosa/maverick/actions/runs/42998811651),
+[main Rust/Actions CodeQL](https://github.com/ilhaformosa/maverick/actions/runs/42998811027),
+and [dependency correction](https://github.com/ilhaformosa/maverick/actions/runs/42994553289).
+Independent supplemental model review covered all 28 changed paths from
+qualified RC.4 through final RC.5, with no remaining reportable security or
+concrete correctness finding. It is not a paid human/full dependency audit.
+Two local H3 checks encountered a post-shutdown guard-bind address conflict;
+unchanged source passed the affected group and remaining gate after bounded
+diagnostics, and both PR/main platform gates passed. The cause remains
+unconfirmed; failures are preserved, with no assertion suppression or retry.
+
+Within the frozen scope, no known protocol/SDK feature or release-tooling
+implementation remains a prerequisite. Real proxy-app integration belongs to
+its consumer, using the existing Rust SDK; additional language bindings are
+not an automatic prerequisite. Supported packages are Apple Silicon macOS and
+x86_64 GNU/Linux. Native H3 UDP is bounded at 1200 bytes; reliable H2 UDP at
+65507, subject to negotiated/path limits and local SOCKS overhead.
+
+Still required before Stable: agree the named environment, cost/lifetime and
+client/intermediary routes; qualify the exact RC in real use, including the
+72-hour soak and owner rollback; resolve observed failures if any; then review
+the narrow Stable version/note promotion and qualify its actual final artifacts
+before a separately approved publication. No performance selector, active-session
+migration, Atlas work, endpoint-block recovery or new relay architecture is added.
+[ROADMAP.md](ROADMAP.md#proposed-field-acceptance--discussion-only) contains the
+proposal for discussion; listing steps does not authorize their execution.
 
 ### SDK integration handoff
 
@@ -103,7 +147,7 @@ replacement source/bytes qualify RC.4. See [candidate notes](docs/releases/v1.2.
 
 No UDP policy, authentication, configuration or wire semantics changed. The
 original RC.3 packages and review records remain preserved; field use and
-publication remain deferred.
+Stable publication remain deferred.
 
 Exact RC.4 qualification: [PR #110](https://github.com/ilhaformosa/maverick/pull/110),
 [merged-main product/native checks](https://github.com/ilhaformosa/maverick/actions/runs/42834991677),

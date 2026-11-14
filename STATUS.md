@@ -1,6 +1,6 @@
 # Maverick Status
 
-Date: 2026-11-11
+Date: 2026-11-15
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
@@ -51,6 +51,31 @@ video/large-image usability problems are historical, not validation of current
 source.
 
 ## Integration and Service Delivery
+
+### Rust 1.100.0 development toolchain
+
+The owner authorized the local stable update and Maverick's migration to Rust
+stable 1.100.0 on 2026-11-15. `rust-toolchain.toml`, product CI, supply-chain
+checks and release workflows now pin that exact version. Fuzzing retains
+`nightly-2026-10-14`. The previously uncommitted replay-verifier test-path fix
+is included; it uses Cargo's binary path instead of assuming a build-directory
+layout. Dependencies and published RC.5 artifacts remain unchanged.
+
+The cache inventory now recognizes Cargo 1.100's per-package build outputs;
+focused tests cover both layouts and preserve source attribution. The release
+workflow integrity expectation was updated for the two reviewed version pins.
+Initial local Apple Silicon validation passed: 776 workspace tests (3 existing ignored),
+formatting, strict Clippy, H2 product smoke and SDK forwarding, rustls/H3 and
+retained-quiche gates, cache regressions and release-gate tests. Workflow YAML
+was parsed locally. The owner subsequently authorized review, commit, push and
+native Linux/macOS CI validation. The associated PR/Actions records carry the
+exact-commit CI and artifact results; initial local tests alone do not qualify
+those artifacts or replace the published RC.5 checkpoint.
+
+The macOS job now allows 45 minutes for a full compiler-change cold build. Its
+previous 30-minute limit stopped the initial Rust 1.100 CI run while compiling
+the Stable-format rehearsal, after product checks, native artifact/SBOM checks
+and Beta.4 rollback had passed. All checks remain required.
 
 ### Stable publication tooling preparation
 

@@ -62,7 +62,7 @@ pin every dependency in the embedding application's graph: review its lockfile
 and run its own integration checks. Candidate evidence covers the repository's
 locked graph. The SDK is consumed from source;
 the CLI archive is not a linkable SDK library, and this delivery does not add a
-C/Swift/Go ABI or a registry publication. Use Rust stable/Cargo and a native
+C/Swift/Go ABI or a registry publication. Use Rust stable 1.100.0/Cargo and a native
 C/C++ toolchain. Browser TLS/H3 also need CMake and libclang for the bundled
 TLS build; Linux CI's build/verification tool list is in
 [install-linux-tools.sh](../scripts/install-linux-tools.sh). Do not run that

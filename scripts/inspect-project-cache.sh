@@ -6,7 +6,7 @@ cargo_bin="${CARGO_BIN:-cargo}"
 stat_os="$(uname -s)"
 
 capture() (
-  local output="$1" temp metadata target_dir workspace label name source kind profile file hash
+  local output="$1" temp metadata target_dir workspace package label name source kind profile file hash
   local root_id root_count=0 i relative_source absolute_source dependencies matched
   local roots=() scope manifest expected symbol
   temp="$(mktemp -d "${TMPDIR:-/tmp}/maverick-cache-inspect.XXXXXX")"
@@ -39,20 +39,23 @@ capture() (
     [[ -d "$target_dir" ]] || continue
     jq -r '. as $m | .packages[] | select(.id as $id | $m.workspace_members | index($id)) |
       . as $p | .targets[] | select(any(.kind[]; . == "bin" or . == "test" or . == "bench")) |
-      [($p.name + ":" + .kind[0] + ":" + .name), .name, .src_path, .kind[0]] | @tsv' \
+      [$p.name, ($p.name + ":" + .kind[0] + ":" + .name), .name, .src_path, .kind[0]] | @tsv' \
       <<<"$metadata" >"$temp/targets"
-    while IFS=$'\t' read -r label name source kind; do
+    while IFS=$'\t' read -r package label name source kind; do
       # rustc depfiles name the crate root first. Match it, not an arbitrary dependency.
       absolute_source="${source// /\\ }"
       relative_source="${source#"$workspace"/}"
       relative_source="${relative_source// /\\ }"
       for profile in "$target_dir"/* "$target_dir"/*/*; do
-        [[ -d "$profile/deps" ]] || continue
-        for file in "$profile/$name" "$profile/deps/${name//-/_}"-*; do
+        [[ -d "$profile" ]] || continue
+        # Cargo 1.100 moved intermediate outputs from deps to per-package units.
+        for file in "$profile/$name" "$profile/deps/${name//-/_}"-* \
+          "$profile/build/$package"/*/out/"${name//-/_}" \
+          "$profile/build/$package"/*/out/"${name//-/_}"-*; do
           [[ -f "$file" && -x "$file" && ! -L "$file" ]] || continue
           if [[ "$file" == "$profile/$name" ]]; then
             [[ "$kind" == bin ]] || continue
-          else
+          elif [[ "${file##*/}" != "${name//-/_}" ]]; then
             hash="${file##*/}"
             hash="${hash#"${name//-/_}"-}"
             [[ "$hash" =~ ^[0-9a-f]+$ ]] || continue

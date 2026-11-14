@@ -2487,9 +2487,13 @@ fn decode_single_gzip_member_cancelled(
 }
 
 #[cfg(test)]
+#[path = "../../tests/support/replay_archive.rs"]
+mod replay_archive;
+
+#[cfg(test)]
 mod tests {
+    use super::replay_archive::{gzip, synthetic_tar, tar_header};
     use super::*;
-    use flate2::{Compression, GzBuilder};
     use rustix::process::{kill_process, Pid, Signal};
     use std::cell::RefCell;
     use std::fs::OpenOptions;
@@ -2507,56 +2511,6 @@ mod tests {
         WORKSPACE_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn gzip(bytes: &[u8]) -> Vec<u8> {
-        let mut encoder = GzBuilder::new()
-            .mtime(0)
-            .operating_system(255)
-            .write(Vec::new(), Compression::new(6));
-        encoder.write_all(bytes).unwrap();
-        encoder.finish().unwrap()
-    }
-
-    fn write_octal(field: &mut [u8], value: u64) {
-        let digits = format!("{:0width$o}", value, width = field.len() - 1);
-        assert_eq!(digits.len(), field.len() - 1);
-        field[..digits.len()].copy_from_slice(digits.as_bytes());
-        field[field.len() - 1] = 0;
-    }
-
-    fn tar_header(path: &str, bytes: &[u8], kind: u8) -> [u8; 512] {
-        assert!(path.len() <= 100);
-        let mut header = [0_u8; 512];
-        header[..path.len()].copy_from_slice(path.as_bytes());
-        write_octal(&mut header[100..108], 0o600);
-        write_octal(&mut header[108..116], 0);
-        write_octal(&mut header[116..124], 0);
-        write_octal(&mut header[124..136], bytes.len() as u64);
-        write_octal(&mut header[136..148], 0);
-        header[148..156].fill(b' ');
-        header[156] = kind;
-        header[257..263].copy_from_slice(b"ustar\0");
-        header[263..265].copy_from_slice(b"00");
-        let checksum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
-        let checksum_text = format!("{checksum:06o}\0 ");
-        header[148..156].copy_from_slice(checksum_text.as_bytes());
-        header
-    }
-
-    fn synthetic_tar() -> Vec<u8> {
-        let entries = [
-            ("synthetic-0.0.0/LICENSE", b"synthetic license\n".as_slice()),
-            ("synthetic-0.0.0/src/message.txt", b"before\n".as_slice()),
-        ];
-        let mut tar = Vec::new();
-        for (path, bytes) in entries {
-            tar.extend_from_slice(&tar_header(path, bytes, b'0'));
-            tar.extend_from_slice(bytes);
-            tar.resize(tar.len().div_ceil(512) * 512, 0);
-        }
-        tar.extend_from_slice(&[0; 1024]);
-        tar
     }
 
     fn tar_from_entries(entries: &[(&str, &[u8], u8)]) -> Vec<u8> {
@@ -2642,12 +2596,6 @@ mod tests {
                     && fixture_removed
             },
         )
-    }
-
-    fn production_binary() -> PathBuf {
-        let current = env::current_exe().unwrap();
-        let debug = current.parent().unwrap().parent().unwrap();
-        debug.join("quiche-fork-replay-verifier")
     }
 
     fn test_repo_identity() -> (u64, u64) {
@@ -3417,34 +3365,6 @@ mod tests {
             tree_manifest_sha256(&inputs.final_vendor_tree),
             HISTORICAL_CURATED_TREE_SHA256
         );
-    }
-
-    #[test]
-    fn prebuilt_historical_binary_silently_rejects_synthetic_and_invalid_inputs() {
-        let _lock = test_lock();
-        let binary = production_binary();
-        assert!(binary.is_file());
-        let fixture = synthetic_fixture();
-        let synthetic_red = Command::new(&binary)
-            .arg(fixture.path())
-            .current_dir(repository_root().unwrap())
-            .env_clear()
-            .output()
-            .unwrap();
-        assert!(!synthetic_red.status.success());
-        assert!(synthetic_red.stdout.is_empty());
-        assert!(synthetic_red.stderr.is_empty());
-        assert!(parent_is_empty());
-
-        let red = Command::new(binary)
-            .arg("relative.crate")
-            .current_dir(repository_root().unwrap())
-            .env_clear()
-            .output()
-            .unwrap();
-        assert!(!red.status.success());
-        assert!(red.stdout.is_empty());
-        assert!(red.stderr.is_empty());
     }
 
     #[test]

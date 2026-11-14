@@ -148,7 +148,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           components: rustfmt, clippy
       - name: Identify Rust compiler for dependency cache
         id: compiler
@@ -362,7 +362,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: stable
+          toolchain: 1.100.0
       - name: Identify Rust compiler for dependency cache
         id: compiler
         run: echo "key=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"

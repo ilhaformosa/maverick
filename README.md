@@ -10,6 +10,10 @@ authorization. [ROADMAP.md](ROADMAP.md) gives the next deliverables;
 
 ## Build and Configure
 
+Source builds and ordinary CI use Rust stable 1.100.0, pinned in
+`rust-toolchain.toml` and the active workflows. Rustup selects that version
+inside this checkout. Fuzzing uses the separately pinned nightly toolchain.
+
 Complete candidate packages include H2 and H3. Build that same capability set
 from source and generate a new direct pair in an empty directory:
 

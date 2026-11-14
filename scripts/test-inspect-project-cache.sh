@@ -118,4 +118,25 @@ printf 'symbols' >"$nested_target/pilot-artifact/release/tool.dSYM/Contents/Reso
 jq -e '.files | length == 6 and ([.[] | select(.path | contains("aarch64-apple-darwin/release"))] | length == 2) and ([.[] | select(.kind == "dsym")] | length == 1)' "$fixture_root/pilot-default.json" >/dev/null || fail nested-pilot-deduplication
 if grep -F "$fixture_root" "$fixture_root/pilot-default.json"; then fail private-pilot-path; fi
 
+# Cargo 1.100 stores each compilation unit under build/<package>/<hash>/out.
+new_target="$fixture_root/cargo-1.100-target"
+CARGO_TARGET_DIR="$new_target" artifact debug/tool "$fixture_root/workspace/src/main.rs"
+CARGO_TARGET_DIR="$new_target" artifact debug/build/first/aabb/out/tool src/main.rs
+CARGO_TARGET_DIR="$new_target" artifact debug/build/first/abcd/out/life_cycle-abcd tests/lifecycle.rs
+CARGO_TARGET_DIR="$new_target" artifact debug/build/first/eeff/out/speed-eeff benches/speed.rs
+CARGO_TARGET_DIR="$new_target" artifact aarch64-apple-darwin/release/build/fixture/abcd/out/proxy-abcd tests/proxy.rs
+CARGO_TARGET_DIR="$new_target" artifact debug/build/first/ffff/out/life_cycle-ffff /registry/other/tests/lifecycle.rs
+CARGO_TARGET_DIR="$new_target" artifact debug/build/third/abcd/out/life_cycle-abcd tests/lifecycle.rs
+CARGO_TARGET_DIR="$new_target" artifact debug/build/first/abcd/out/life_cycle-build tests/lifecycle.rs
+CARGO_TARGET_DIR="$new_target" artifact debug/build/first/1234/out/first src/lib.rs
+CARGO_TARGET_DIR="$new_target" artifact debug/build/first/5678/out/build-script-build src/build.rs
+mkdir -p "$new_target/debug/build/first/abcd/out/life_cycle-abcd.dSYM/Contents/Resources/DWARF"
+printf 'symbols' >"$new_target/debug/build/first/abcd/out/life_cycle-abcd.dSYM/Contents/Resources/DWARF/life_cycle"
+find "$new_target" -type f -exec cksum {} \; | LC_ALL=C sort >"$fixture_root/new-checksums-before"
+CARGO_TARGET_DIR="$new_target" "$subject" capture "$fixture_root/new-layout.json"
+find "$new_target" -type f -exec cksum {} \; | LC_ALL=C sort >"$fixture_root/new-checksums-after"
+cmp "$fixture_root/new-checksums-before" "$fixture_root/new-checksums-after" || fail new-target-was-modified
+jq -e '.files | length == 6 and all(.[]; .root == "target-0") and ([.[] | select(.kind == "dsym")] | length == 1)' "$fixture_root/new-layout.json" >/dev/null || fail cargo-1.100-layout
+if grep -F "$fixture_root" "$fixture_root/new-layout.json"; then fail private-new-layout-path; fi
+
 echo 'project-cache inspection focused tests OK'

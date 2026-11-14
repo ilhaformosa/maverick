@@ -72,6 +72,11 @@ native Linux/macOS CI validation. The associated PR/Actions records carry the
 exact-commit CI and artifact results; initial local tests alone do not qualify
 those artifacts or replace the published RC.5 checkpoint.
 
+The macOS job now allows 45 minutes for a full compiler-change cold build. Its
+previous 30-minute limit stopped the initial Rust 1.100 CI run while compiling
+the Stable-format rehearsal, after product checks, native artifact/SBOM checks
+and Beta.4 rollback had passed. All checks remain required.
+
 ### Stable publication tooling preparation
 
 The owner froze protocol and SDK functionality on 2026-11-11 and authorized

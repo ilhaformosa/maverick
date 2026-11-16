@@ -6,11 +6,34 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## RC.6 Checkpoint — 2026-11-16
+
+The owner separately authorized the RC.6 tag and prerelease checkpoint after
+maintenance qualification. Annotated `v1.2.0-rc.6` directly targets
+`9adc014c29084877de6c5d6520e0622b76c3efa6` (tag object
+`65b119602b5d85dc571febfb91d48d1de2447bcf`). The
+[checkpoint Release](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
+is prerelease/non-Latest, not Stable. The
+[publication workflow](https://github.com/ilhaformosa/maverick/actions/runs/43880495784)
+reverified the six exact-main qualified archives, checksums and SBOMs before
+upload; all six public downloads match the preserved candidate bytes.
+
+The dated publication notice preserves the source release note verbatim and
+explains its pre-publication wording. Frozen tag-bound documents describe their
+source snapshot; this dated record gives the subsequent publication status.
+RC.5 and earlier tags/assets remain unchanged. Source, Git history and all
+review/delivery/validation evidence are preserved. The owner approved the exact
+two-path build-cache cleanup list; those caches were removed after occupancy
+and preservation checks. Source, Git state, all candidate files and verification
+tools remained intact. Cleanup removed no worktree, branch or delivery evidence.
+Field trials, real deployment, infrastructure and Stable publication remain
+deferred. This checkpoint adds no protocol/SDK feature or readiness claim.
+
 ## Completed Maintenance Review — RC.6
 
 The 2026-11-16 comprehensive review and maintenance is delivered through
 [PR #115](https://github.com/ilhaformosa/maverick/pull/115). The qualified
-candidate is unpublished RC.6 at `9adc014c29084877de6c5d6520e0622b76c3efa6`;
+candidate is RC.6 at `9adc014c29084877de6c5d6520e0622b76c3efa6`;
 its source tree equals independently reviewed `3263250`. The Rust 1.100.0
 migration in PR #114, replay-verifier binary-path fix, Cargo cache-layout
 support and 45-minute macOS cold-build allowance remain preserved.
@@ -60,7 +83,8 @@ the documented null-to-empty configuration contract. The historical quiche
 comparison and its original lockfile remain separate from the product graph.
 
 Protocol/SDK functionality remains frozen. Field trials, real deployment,
-resource creation, release tags and Release/Stable publication remain deferred.
+resource creation and Stable publication remain deferred. Only the RC.6
+checkpoint tag/prerelease was subsequently authorized, as recorded above.
 No Mac/Surge settings changed. Published RC.5 stays immutable at `e4a21e2`.
 Later documentation records do not change the qualified RC.6 archive identity;
 use SOURCE.txt and the linked exact-main qualification, not a moving branch name.
@@ -91,8 +115,8 @@ candidate evidence; RC.4's earlier passing records remain historical. See
 | Area | Current state |
 |---|---|
 | Stage | Experimental Beta; not production-ready |
-| Published release | [RC.5 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.5) at `e4a21e2`, prerelease/non-Latest, full transport; older releases remain unchanged |
-| Current qualified candidate | Unpublished RC.6 `9adc014`: full transport, SDK, reviewed maintenance and release tooling; local/PR/main qualification and both native packages complete; field acceptance deferred |
+| Published release | [RC.6 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6) at `9adc014`, prerelease/non-Latest, full transport; RC.5 and older releases remain unchanged |
+| Current qualified candidate | Published RC.6 `9adc014`: full transport, SDK, reviewed maintenance and release tooling; local/PR/main qualification and both native packages complete; field acceptance deferred |
 | Build/configuration defaults | Full candidate packages include H2/H3; new direct generation uses dual/auto with `allow_reliable`; omitted existing settings retain their prior meaning |
 | Protected H2 intermediary | RC.6 retains origin-pinned inner TLS 1.3; local terminating-relay validation passed; real intermediary qualification pending |
 | Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |

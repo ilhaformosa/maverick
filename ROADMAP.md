@@ -7,7 +7,7 @@ contains the execution order, not a second history of completed pull requests.
 
 ## Delivered — Comprehensive Review and Maintenance
 
-The 2026-11-16 review is complete through PR #115. Unpublished RC.6 `9adc014`
+The 2026-11-16 review is complete through PR #115. Qualified RC.6 `9adc014`
 retains the Rust 1.100.0 migration and frozen protocol/SDK scope. Compatible
 active dependencies/tools are updated; explicit libc and YAML compatibility
 holds and immutable historical samples are documented in [STATUS.md](STATUS.md).
@@ -21,8 +21,11 @@ original failures, provisional packages and qualified replacement evidence.
 
 The next decision is the field-acceptance proposal below, still deferred. Do not
 add protocol/SDK features, performance ranking, active-session migration, Atlas
-work or endpoint/IP-block recovery. No provisioning, deployment, new public
-release or Stable publication is authorized by this maintenance delivery.
+work or endpoint/IP-block recovery. The owner subsequently authorized the
+RC.6 checkpoint tag/prerelease, published from the unchanged qualified bytes.
+The separately approved two-path build-cache cleanup is complete; source,
+Git history and all delivery/validation evidence remain preserved. Provisioning,
+deployment and Stable publication remain deferred.
 
 ## Delivered — Reliable Local Startup and Handoff
 
@@ -229,9 +232,9 @@ need a concrete consuming application requirement.
 
 This is the next decision, not permission to provision, deploy, change a host,
 run a real-network test or publish Stable. The proposed candidate is the
-qualified unpublished RC.6 at `9adc014`, replacing the earlier RC.5 field
-proposal. Obtain its preserved CI-qualified delivery; no RC.6 Release has been
-published. No infrastructure or client application work is silently included.
+published RC.6 checkpoint at `9adc014`, replacing the earlier RC.5 field
+proposal. Obtain its exact CI-qualified Release assets and independently verify
+them. No infrastructure or client application work is silently included.
 Private environment identifiers and credentials stay outside the repository.
 Do not change the development Mac's network or Surge settings.
 

@@ -58,12 +58,13 @@ selection remain unsupported. Profile URI v1 rejects new transport/UDP policies
 it cannot preserve; use full YAML or stored SDK profiles.
 See [CONFIG.md](CONFIG.md#transport).
 
-These capabilities are included in the [RC.5 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.5)
-at `e4a21e2`, published as a prerelease/non-Latest for macOS arm64 and Linux
-x86_64. See [STATUS.md](STATUS.md) for its exact qualification and remaining gates.
-Older RC.2 files remain immutable and do not include H3 or subsequent changes.
-Current source prepares an unpublished RC.6 maintenance candidate. Its updated
-dependencies require separate validation; RC.5 results do not qualify RC.6.
+These capabilities and the reviewed maintenance fixes are included in the
+[RC.6 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
+at `9adc014`, published as a prerelease/non-Latest for macOS arm64 and Linux
+x86_64. Its updated dependencies and actual packages have their own local/CI
+qualification; see [STATUS.md](STATUS.md) for exact evidence and remaining field
+gates. RC.5 and older files remain immutable. RC.2 does not include H3 or
+subsequent changes. This checkpoint is not Stable or production qualification.
 
 For an H2 intermediary that terminates outer TLS, RC.5 and source builds provide explicit
 origin-pinned inner TLS through `advanced.end_to_end`. Generate the protected

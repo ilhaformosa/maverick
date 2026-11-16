@@ -303,9 +303,9 @@ fi
 
 linux_components="$(jq '.components | length' "$linux_first")"
 mac_components="$(jq '.components | length' "$mac_first")"
-# RC.3 includes the H3 runtime closure. Full verification above compares every
+# RC.6 updates the full H2/H3 dependency closure. Verification above compares every
 # component with locked Cargo metadata; retain exact counts and target delta too.
-[[ "$linux_components" == 192 && "$mac_components" == 190 ]] || fail
+[[ "$linux_components" == 209 && "$mac_components" == 207 ]] || fail
 jq -r '.components[] | "\(.name)@\(.version)"' "$linux_first" | sort -u \
   >"$private_tmp/linux-components"
 jq -r '.components[] | "\(.name)@\(.version)"' "$mac_first" | sort -u \

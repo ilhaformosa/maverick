@@ -5,27 +5,24 @@ Date: 2026-11-16
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
-## Active — Comprehensive Review and Maintenance
+## Delivered — Comprehensive Review and Maintenance
 
-The 2026-11-16 owner request puts comprehensive inspection and justified
-updates before the deferred field plan. Preserve the verified Rust 1.100.0
-migration and published RC.5; prepare any changed dependency/runtime closure
-as an unpublished RC.6.
+The 2026-11-16 review is complete through PR #115. Unpublished RC.6 `9adc014`
+retains the Rust 1.100.0 migration and frozen protocol/SDK scope. Compatible
+active dependencies/tools are updated; explicit libc and YAML compatibility
+holds and immutable historical samples are documented in [STATUS.md](STATUS.md).
 
-1. Active dependency/tool inventories and supported updates are prepared.
-   Preserve the explicit libc upstream cap, existing YAML-null compatibility,
-   and immutable historical samples.
-2. Complete the reproduced runtime and verification corrections from the three
-   independent ordinary-model reviews. Keep supported protected routes separate
-   from legacy WebSocket compatibility; do not expand functionality.
-3. Independently review the repairs against the initial fixed-source findings;
-   keep original failures, provisional packages and replacement evidence distinct.
-4. Complete all applicable local/CI, security/dependency, fuzz, native package,
-   SBOM and upgrade/rollback checks; preserve source, artifacts and conclusions.
+Three independent ordinary-model reviews, concrete reproductions, focused
+repairs and independent patch follow-ups are complete. All applicable local and
+CI checks, both native candidate packages, full SBOMs, historical RC.5 SBOM
+compatibility, fixed Beta.4 rollback and private Stable-format rehearsals passed.
+Passing fuzz evidence is reused only for demonstrably unchanged inputs. Preserve
+original failures, provisional packages and qualified replacement evidence.
 
-Acceptance is the maintained candidate and attributable validation, with any
-unresolved blockers stated. No real-network validation, deployment, resource
-creation, new public release or Stable publication is authorized by this work.
+The next decision is the field-acceptance proposal below, still deferred. Do not
+add protocol/SDK features, performance ranking, active-session migration, Atlas
+work or endpoint/IP-block recovery. No provisioning, deployment, new public
+release or Stable publication is authorized by this maintenance delivery.
 
 ## Delivered — Reliable Local Startup and Handoff
 
@@ -231,20 +228,23 @@ need a concrete consuming application requirement.
 ## Proposed Field Acceptance — Discussion Only
 
 This is the next decision, not permission to provision, deploy, change a host,
-run a real-network test or publish Stable. The candidate is the immutable RC.5
-checkpoint at `e4a21e2`; no new infrastructure or client application work is
-silently included. Private environment identifiers and credentials stay outside
-the repository. Do not change the development Mac's network or Surge settings.
+run a real-network test or publish Stable. The proposed candidate is the
+qualified unpublished RC.6 at `9adc014`, replacing the earlier RC.5 field
+proposal. Obtain its preserved CI-qualified delivery; no RC.6 Release has been
+published. No infrastructure or client application work is silently included.
+Private environment identifiers and credentials stay outside the repository.
+Do not change the development Mac's network or Surge settings.
 
 1. **Agree the environment and limits.** Name an owner-controlled, fresh Linux
-   x86_64 test origin, an Apple Silicon client/test device, an existing authorized
-   intermediary route, duration, traffic/cost cap, operator and stop/cleanup
+   x86_64 test origin, an Apple Silicon client/test device, an owner-controlled
+   intermediary test route, duration, traffic/cost cap, operator and stop/cleanup
    decision. Follow the existing host preparation policy only after explicit
    authorization; no provider, region, host purchase or network change is assumed.
    A missing intermediary environment leaves that matrix cell unqualified.
-2. **Freeze and install the exact files.** Independently download both RC.5
-   sets, verify digests/source identity, prepare private credentials, valid
-   certificates/origin pins and matched rollback backups, and check actual
+2. **Freeze and install the exact files.** Obtain both qualified RC.6
+   sets, independently verify digests/source identity, prepare private
+   credentials, valid certificates/origin pins and matched rollback backups,
+   and check actual
    service start/stop/restart on the named host. Use explicit test-client
    endpoints or a separately approved test device, not a Mac system-proxy change.
 3. **Exercise the whole supported matrix.** Use continuous and independently
@@ -272,10 +272,10 @@ the repository. Do not change the development Mac's network or Surge settings.
 5. **Exercise real rollback, then perform ordinary use and a 72-hour soak.**
    Validate both native platforms' installation/config restore. Beta.4 only
    supports the older direct-H2 route: use an isolated, explicit matching
-   binary/config pair for that drill and then restore RC.5. Never weaken an
+   binary/config pair for that drill and then restore RC.6. Never weaken an
    origin-protected configuration or pretend Beta.4 restores H3/protected-route
    functionality. After functional/fault/rollback tests, freeze the accepted
-   RC.5 configuration for the soak and ordinary browsing/video/download plus
+   RC.6 configuration for the soak and ordinary browsing/video/download plus
    intended UDP application use within the agreed traffic budget. A runnable
    SDK example alone does not establish proxy-app interoperability.
 6. **Record the go/no-go.** Every required matrix cell must have attributable

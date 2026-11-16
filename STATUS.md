@@ -6,39 +6,64 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
-## Current Maintenance Review
+## Completed Maintenance Review — RC.6
 
-The owner requested a comprehensive project review and active dependency/tool
-updates on 2026-11-16, after the Rust 1.100.0 migration in PR #114. The clean
-baseline is `864bbaa`; its full main CI and subsequent dependency/fuzz jobs
-passed. The migration's Cargo binary-path/cache-layout fixes and 45-minute
-macOS cold-build allowance remain in place.
+The 2026-11-16 comprehensive review and maintenance is delivered through
+[PR #115](https://github.com/ilhaformosa/maverick/pull/115). The qualified
+candidate is unpublished RC.6 at `9adc014c29084877de6c5d6520e0622b76c3efa6`;
+its source tree equals independently reviewed `3263250`. The Rust 1.100.0
+migration in PR #114, replay-verifier binary-path fix, Cargo cache-layout
+support and 45-minute macOS cold-build allowance remain preserved.
 
-This work prepares an unpublished RC.6. Active runtime/test dependencies,
-security/SBOM tooling, workflow pins and fuzz reproducibility are updated with
-compatibility validation. Three independent ordinary-model reviews of
-`9fbcad2` covered runtime/security, SDK/configuration and delivery tooling. The
-automated Deep Scan did not start; the owner approved these reviews instead,
-and no plugin/Daybreak audit result is claimed.
+Three independent ordinary-model reviews covered runtime/security,
+SDK/configuration and delivery tooling at `9fbcad2`, then reviewed the fixes
+at `3263250` with no remaining actionable finding in their recorded scope.
+The automated Deep Scan did not start; the owner approved ordinary-model
+reviews instead. No plugin/Daybreak result or complete upstream-library audit
+is claimed.
 
-The reviews identified H2 request lifetime/cancellation gaps, a legacy WebSocket
-half-close defect, verification failures that could be mistaken for success,
-SBOM identity/relationship gaps and stale current-default documentation.
-Concrete runtime and verifier counterexamples were reproduced locally before
-repair. Corrections reuse existing timeouts, H2 reset notification and Cargo
-metadata; the historical P1 lock remains unchanged and independently pinned.
-Patch follow-up and all applicable final local/CI, native artifact/SBOM and
-rollback gates remain required. Provisional `9fbcad2` binaries are not final
-qualification. Its P1 tests ran, but the old macOS shell did not enforce some
-bare assertions; that overall pass is not credited as complete gate evidence.
-Protocol/SDK features remain frozen. Performance-based selection and active
-session migration are not introduced. Historical quiche comparisons and fixed
-Beta.4 rollback evidence remain unchanged.
+Reproduced findings were repaired with existing mechanisms: bounded ordinary
+H2 fallback-body collection, H2 cancellation during half-close/backpressure,
+legacy WebSocket half-close, search-error handling, macOS shell assertions,
+historical P1 lock identity, SBOM package identity/relationships and current
+configuration guidance. The initial `9fbcad2` P1 tests ran, but bare assertions
+were not enforced reliably on the older macOS shell; that overall pass is not
+credited. The repaired complete gate passed on both native platforms.
 
-Field trials and real deployment remain deferred. This task does not authorize
-new resources, Mac/Surge changes, release tags, another public Release or Stable
-publication. Published RC.5 stays fixed at `e4a21e2`; its evidence does not
-qualify changed RC.6 source or bytes.
+Qualification applies to the exact source and files, not merely the RC.6 name:
+
+- Local product/rustls/H3/SDK/retained-quiche gates, strict Clippy, formatting,
+  shell/YAML checks and dependency/security inventories passed. Workspace tests:
+  782 passed, 3 existing historical Beta.1/Beta.2 process-matrix cases ignored.
+- Full SBOM verification covers both target graphs and 61 negative cases. Both
+  preserved RC.5 SBOMs also passed the stricter repaired verifier.
+- Local Apple Silicon and native Linux/macOS CI packages passed their full
+  artifact/SBOM checks, fixed Beta.4 upgrade/rollback and private Stable-format
+  rehearsals. Those rehearsals are not published Stable artifacts.
+- [PR product/native](https://github.com/ilhaformosa/maverick/actions/runs/43855150319),
+  [supply chain](https://github.com/ilhaformosa/maverick/actions/runs/43855150736)
+  and [CodeQL](https://github.com/ilhaformosa/maverick/actions/runs/43855144556):
+  8/8 checks passed. [Exact-main product/native](https://github.com/ilhaformosa/maverick/actions/runs/43860928833)
+  and [CodeQL](https://github.com/ilhaformosa/maverick/actions/runs/43860928669):
+  6/6 passed; both main candidate sets were preserved and their downloaded ZIP,
+  archive, source/target identities and complete SBOMs reverified.
+- Each parser completed 10,000 local fuzz iterations; the
+  [bounded fuzz CI](https://github.com/ilhaformosa/maverick/actions/runs/43848048543)
+  passed. Parser sources, toolchain, workflow and dependency locks are unchanged
+  between that tested snapshot and the repairs, so the component evidence is
+  reused. Existing optional long timing/soak comparisons were not rerun.
+
+Active compatible dependencies, pinned workflow actions, security/SBOM tools
+and the fuzz nightly are updated. libc remains 0.2.189 because quiche 0.30.1
+requires a version below 0.2.190. serde-saphyr remains 1.3.0 because 2.x breaks
+the documented null-to-empty configuration contract. The historical quiche
+comparison and its original lockfile remain separate from the product graph.
+
+Protocol/SDK functionality remains frozen. Field trials, real deployment,
+resource creation, release tags and Release/Stable publication remain deferred.
+No Mac/Surge settings changed. Published RC.5 stays immutable at `e4a21e2`.
+Later documentation records do not change the qualified RC.6 archive identity;
+use SOURCE.txt and the linked exact-main qualification, not a moving branch name.
 
 ## Current Product
 
@@ -67,9 +92,9 @@ candidate evidence; RC.4's earlier passing records remain historical. See
 |---|---|
 | Stage | Experimental Beta; not production-ready |
 | Published release | [RC.5 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.5) at `e4a21e2`, prerelease/non-Latest, full transport; older releases remain unchanged |
-| Current source candidate | RC.6 maintenance in progress; full review/local/CI/artifact qualification pending. Published RC.5 `e4a21e2` retains its own completed local/CI evidence and deferred field acceptance |
+| Current qualified candidate | Unpublished RC.6 `9adc014`: full transport, SDK, reviewed maintenance and release tooling; local/PR/main qualification and both native packages complete; field acceptance deferred |
 | Build/configuration defaults | Full candidate packages include H2/H3; new direct generation uses dual/auto with `allow_reliable`; omitted existing settings retain their prior meaning |
-| Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3 in RC.5; local terminating-relay validation, real intermediary qualification pending |
+| Protected H2 intermediary | RC.6 retains origin-pinned inner TLS 1.3; local terminating-relay validation passed; real intermediary qualification pending |
 | Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |
 | Dual/automatic transport | H2/H3 on one port; core-owned new TCP/UDP selection, shared temporary avoidance/retry and explicit UDP policy; active sessions never migrate |
 | Configuration/authentication | Runnable config v1; existing authentication v1/v2; native H3 UDP adds an explicit control-frame extension; config v2 is policy-only |

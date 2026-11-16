@@ -3,7 +3,7 @@ use std::path::Path;
 
 use bytes::{Bytes, BytesMut};
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use maverick_core::auth::{
     CLIENT_HELLO_AUTH_LABEL, CLIENT_HELLO_V2_AUTH_LABEL, SERVER_HELLO_AUTH_LABEL,
     SERVER_HELLO_V2_AUTH_LABEL,

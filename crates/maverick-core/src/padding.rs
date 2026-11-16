@@ -1,5 +1,5 @@
-use rand::rngs::OsRng;
-use rand::TryRngCore;
+use rand::rngs::SysRng;
+use rand::TryRng;
 use std::time::Duration;
 
 use crate::config::{Mode, ShapingConfig};
@@ -34,7 +34,7 @@ impl BasicPaddingPolicy {
     pub fn random_padding_bytes(len: usize) -> Vec<u8> {
         let mut bytes = vec![0u8; len];
         if len > 0 {
-            let _ = OsRng.try_fill_bytes(&mut bytes);
+            let _ = SysRng.try_fill_bytes(&mut bytes);
         }
         bytes
     }

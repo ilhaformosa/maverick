@@ -10,7 +10,7 @@ use maverick_core::auth::{TlsChannelBinding, TLS_CHANNEL_BINDING_EXPORTER_LABEL}
 use maverick_core::frame::{Frame, FRAME_HEADER_LEN};
 use maverick_core::h3_channel::{self, FrameChannel, TransportChannel};
 use quiche::h3::{self, Header, NameValue};
-use rand::{rngs::OsRng, TryRngCore};
+use rand::{rngs::SysRng, TryRng};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -342,7 +342,7 @@ where
 
 fn random_id() -> Result<[u8; CONNECTION_ID_LEN]> {
     let mut id = [0; CONNECTION_ID_LEN];
-    OsRng
+    SysRng
         .try_fill_bytes(&mut id)
         .context("generate QUIC connection ID")?;
     Ok(id)

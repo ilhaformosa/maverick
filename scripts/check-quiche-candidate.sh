@@ -20,17 +20,17 @@ graph="$(candidate_tree --locked -p maverick-tests \
   --no-default-features --features browser-tls,quiche-candidate \
   --edges normal,build --prefix none)"
 [[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$graph")" -eq 1 ]]
-[[ "$(grep -Ecx 'boring v5\.2\.0' <<<"$graph")" -eq 1 ]]
-[[ "$(grep -Ecx 'boring-sys v5\.3\.0' <<<"$graph")" -eq 1 ]]
+[[ "$(grep -Ecx 'boring v5\.5\.0' <<<"$graph")" -eq 1 ]]
+[[ "$(grep -Ecx 'boring-sys v5\.5\.0' <<<"$graph")" -eq 1 ]]
 ! grep -Eq '^boring(-sys)? v4\.' <<<"$graph" || exit 1
 metadata="$(cargo metadata --locked --format-version 1 \
   --no-default-features \
   --features maverick-tests/browser-tls,maverick-tests/quiche-candidate)"
-log_id='registry+https://github.com/rust-lang/crates.io-index#log@0.4.33'
+log_id='registry+https://github.com/rust-lang/crates.io-index#log@0.4.35'
 jq -e --arg log_id "$log_id" '
   (.packages | map(select(.name == "log")) | length == 1) and
   (.packages | map(select(
-    .name == "log" and .version == "0.4.33" and
+    .name == "log" and .version == "0.4.35" and
     .source == "registry+https://github.com/rust-lang/crates.io-index" and
     .id == $log_id
   )) | length == 1) and

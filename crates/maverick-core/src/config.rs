@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use rand::rngs::OsRng;
-use rand::TryRngCore;
+use rand::rngs::SysRng;
+use rand::TryRng;
 use serde::de::{Error as _, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 use subtle::ConstantTimeEq;
@@ -76,7 +76,7 @@ impl SecretString {
 
     pub fn generate() -> Self {
         let mut bytes = [0u8; Self::MIN_SECRET_BYTES];
-        OsRng
+        SysRng
             .try_fill_bytes(&mut bytes)
             .expect("OS random generator failed");
         Self(format!("{}{}", Self::PREFIX, URL_SAFE_NO_PAD.encode(bytes)))

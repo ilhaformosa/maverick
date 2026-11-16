@@ -54,7 +54,7 @@ mod tests {
         let key_path = tmp.path().join("key.pem");
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         std::fs::write(&cert_path, certified.cert.pem()).unwrap();
-        std::fs::write(&key_path, certified.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
 
         ServerConfig {
             version: 1,

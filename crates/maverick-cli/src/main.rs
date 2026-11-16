@@ -2936,10 +2936,10 @@ fn init_tracing(level: &str) {
 }
 
 fn random_id() -> String {
-    use rand::TryRngCore;
+    use rand::TryRng;
 
     let mut bytes = [0u8; 9];
-    rand::rngs::OsRng
+    rand::rngs::SysRng
         .try_fill_bytes(&mut bytes)
         .expect("OS random generator failed");
     URL_SAFE_NO_PAD.encode(bytes)
@@ -3211,7 +3211,7 @@ async fn bench_local(
     let key_path = tmp.path().join("key.pem");
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     fs::write(&cert_path, certified.cert.pem())?;
-    fs::write(&key_path, certified.key_pair.serialize_pem())?;
+    fs::write(&key_path, certified.signing_key.serialize_pem())?;
     fs::write(
         tmp.path().join("index.html"),
         "<html><body>Maverick</body></html>",

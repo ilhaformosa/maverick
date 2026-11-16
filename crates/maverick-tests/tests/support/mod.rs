@@ -165,7 +165,7 @@ impl MaverickHarness {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         let cert_der = certified.cert.der().to_vec();
         tokio::fs::write(&cert_path, certified.cert.pem()).await?;
-        tokio::fs::write(&key_path, certified.key_pair.serialize_pem()).await?;
+        tokio::fs::write(&key_path, certified.signing_key.serialize_pem()).await?;
         tokio::fs::write(tmp.path().join("index.html"), fallback_html()).await?;
 
         let secret = SecretString::generate();

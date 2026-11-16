@@ -50,7 +50,7 @@ anyhow = "1"
 ```
 
 Alternatively use a Git dependency, replacing the revision placeholder with
-the complete `git_revision` from the reviewed RC.5 archive's SOURCE.txt:
+the complete `git_revision` from the selected, qualified candidate's SOURCE.txt:
 
 ```toml
 maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", rev = "REPLACE_WITH_REVIEWED_SOURCE_REVISION", features = ["experimental-h3"] }
@@ -72,10 +72,11 @@ proxy front end needs. Use the configuration and independently verified trust
 delivered by your operator in the real application; keep the example's
 loopback egress allowance out of deployment configuration.
 
-The original integration companion added examples/guidance without changing
-the RC.4 runtime. RC.5 now updates rustix in response to the required dependency
-scan; use its matching source and archives. Earlier RC.4 evidence does not
-extend to the new dependency closure. The public SDK API remains unchanged.
+RC.5 is the published checkpoint; RC.6 is the unpublished maintenance candidate
+following Rust 1.100.0 and active dependency updates. Use matching source,
+lockfiles and qualified archives. Earlier candidate evidence does not extend
+to a changed dependency graph. The public SDK API and protocol remain unchanged;
+[STATUS.md](../STATUS.md) records the current validation state.
 
 ### Configure and own the connector
 

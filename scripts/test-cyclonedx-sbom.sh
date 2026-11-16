@@ -225,7 +225,7 @@ mkdir -m 0700 "$mock_generation_dir"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'if [[ "$*" == "cyclonedx --version" ]]; then' \
-  '  printf "%s\n" "cargo-cyclonedx-cyclonedx 0.5.9"' \
+  '  printf "%s\n" "cargo-cyclonedx-cyclonedx 0.5.10"' \
   '  exit 0' \
   'fi' \
   'private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
@@ -407,6 +407,12 @@ expect_failure document-count "$multi_file"
 
 make_fixture identity '.bomFormat = "NotCycloneDX"'
 expect_failure identity "$fixture_path"
+
+make_fixture tool-version '.metadata.tools[0].version = "0.0.0"'
+expect_failure tool-identity "$fixture_path"
+
+make_fixture stale-tool-version '.metadata.tools[0].version = "0.5.9"'
+expect_failure tool-identity "$fixture_path"
 
 make_fixture target \
   '(.metadata.properties[] | select(.name == "cdx:rustc:sbom:target:triple").value) = "aarch64-apple-darwin"'

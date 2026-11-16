@@ -5,7 +5,6 @@ umask 077
 export LC_ALL=C
 
 readonly MAX_SBOM_BYTES=8388608
-readonly EXPECTED_TOOL_VERSION=0.5.9
 readonly EXPECTED_SCHEMA="http://cyclonedx.org/schema/bom-1.5.schema.json"
 readonly PUBLIC_REPOSITORY="https://github.com/ilhaformosa/maverick"
 
@@ -149,6 +148,16 @@ revision_version="$(
   awk -F'"' '/^version =/ {print $2; exit}' "$revision_manifest"
 )" || fail source-version
 [[ "$revision_version" == "$expected_version" ]] || fail source-version
+# The generator identity belongs to the exact source revision. Older published
+# candidates retain their original tool version after the current tool upgrades.
+revision_generator="$private_tmp/revision-sbom-generator.sh"
+git -C "$source_root" show "$expected_revision:scripts/generate-cyclonedx-sbom.sh" \
+  >"$revision_generator" 2>/dev/null || fail source-tool
+expected_tool_version="$(
+  awk -F= '/^readonly EXPECTED_TOOL_VERSION=[0-9]+\.[0-9]+\.[0-9]+$/ {
+    count++; version=$2
+  } END { if (count != 1) exit 1; print version }' "$revision_generator" 2>/dev/null
+)" || fail source-tool
 source_epoch="$(git -C "$source_root" show -s --format=%ct "$expected_revision" 2>/dev/null)" ||
   fail source
 [[ "$source_epoch" =~ ^[0-9]+$ ]] || fail source
@@ -174,7 +183,7 @@ jq -e --arg timestamp "$source_timestamp" \
   '.metadata.timestamp == $timestamp' \
   "$sbom_document" >/dev/null 2>&1 || fail timestamp
 
-jq -e --arg tool_version "$EXPECTED_TOOL_VERSION" \
+jq -e --arg tool_version "$expected_tool_version" \
   '.metadata.tools | type == "array" and length == 1 and
    .[0].vendor == "CycloneDX" and
    .[0].name == "cargo-cyclonedx" and
@@ -305,7 +314,7 @@ if [[ "$verification_level" == "full" ]]; then
 
   metadata_features="maverick-cli/browser-tls"
   root_features='["browser-tls"]'
-  if [[ "$expected_version" == "1.2.0-rc.3" || "$expected_version" == "1.2.0-rc.4" || "$expected_version" == "1.2.0-rc.5" || "$expected_version" == "1.2.0" ]]; then
+  if [[ "$expected_version" == "1.2.0-rc.3" || "$expected_version" == "1.2.0-rc.4" || "$expected_version" == "1.2.0-rc.5" || "$expected_version" == "1.2.0-rc.6" || "$expected_version" == "1.2.0" ]]; then
     metadata_features="maverick-cli/experimental-h3"
     root_features='["browser-tls","experimental-h3"]'
   fi

@@ -10,6 +10,9 @@ on:
       - "Cargo.toml"
       - "crates/**/Cargo.toml"
       - "crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.lock"
+      - "fuzz/Cargo.toml"
+      - "fuzz/Cargo.lock"
+      - ".github/workflows/fuzz.yml"
       - "deny.toml"
       - "rust-toolchain.toml"
       - "scripts/generate-cyclonedx-sbom.sh"
@@ -34,11 +37,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -47,7 +50,7 @@ jobs:
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # stable
         with:
           toolchain: 1.100.0
       - name: Identify security-tool cache compatibility
@@ -58,7 +61,7 @@ jobs:
           echo "os=$(sha256sum /etc/os-release | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - name: Restore pinned security tools
         id: security-tools-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/cargo-audit
@@ -86,7 +89,7 @@ jobs:
         run: ./scripts/test-cyclonedx-sbom.sh
       - name: Save verified main security tools
         if: github.ref == 'refs/heads/main' && steps.security-tools-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/cargo-audit

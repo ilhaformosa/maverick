@@ -148,7 +148,7 @@ impl Fixture {
         )?;
         write_private(
             &temp.path().join("key.pem"),
-            certified.key_pair.serialize_pem().as_bytes(),
+            certified.signing_key.serialize_pem().as_bytes(),
         )?;
         fs::create_dir(temp.path().join("public"))
             .map_err(|_| anyhow!("create neutral fallback directory"))?;

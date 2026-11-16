@@ -49,7 +49,9 @@ impl Relay {
                 .with_no_client_auth()
                 .with_single_cert(
                     vec![CertificateDer::from(edge.cert.der().to_vec())],
-                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(edge.key_pair.serialize_der())),
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                        edge.signing_key.serialize_der(),
+                    )),
                 )?;
         tls.alpn_protocols = vec![b"h2".to_vec()];
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));

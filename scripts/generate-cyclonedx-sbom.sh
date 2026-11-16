@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 export LC_ALL=C
 
-readonly EXPECTED_TOOL_VERSION=0.5.9
+readonly EXPECTED_TOOL_VERSION=0.5.10
 readonly PUBLIC_REPOSITORY="https://github.com/ilhaformosa/maverick"
 
 expected_version=""

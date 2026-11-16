@@ -13,17 +13,16 @@ proxy = ["dep:bytes", "dep:tokio", "dep:maverick-client", "dep:maverick-server",
 
 [dependencies]
 anyhow = "1"
-boring = "=5.2.0"
-brotli = "8.0"
-log = { version = "=0.4.33", default-features = false, features = ["max_level_debug"] }
+boring = "=5.5.0"
+log = { version = "=0.4.35", default-features = false, features = ["max_level_debug"] }
 maverick-core = { path = "../../../maverick-core", default-features = false }
 maverick-quiche = { path = "../../../maverick-quiche", optional = true }
-quiche = { version = "=0.30.0", default-features = false, features = ["boringssl-boring-crate"] }
-rcgen = "0.13"
-sha2 = "0.10"
+quiche = { version = "=0.30.1", default-features = false, features = ["boringssl-boring-crate"] }
+rcgen = "0.14.10"
+sha2 = "0.11.1"
 tempfile = "3"
 bytes = { version = "1", optional = true }
-tokio = { version = "1.53.3", features = ["full"], optional = true }
+tokio = { version = "1.54.1", features = ["full"], optional = true }
 maverick-client = { path = "../../../maverick-client", default-features = false, features = ["browser-tls", "experimental-h3"], optional = true }
 maverick-server = { path = "../../../maverick-server", features = ["experimental-h3"], optional = true }
 

@@ -109,7 +109,8 @@ impl Pair {
         let cert_path = fixture.path().join("cert.pem");
         let key_path = fixture.path().join("key.pem");
         std::fs::write(&cert_path, cert.cert.pem()).context("write candidate certificate")?;
-        std::fs::write(&key_path, cert.key_pair.serialize_pem()).context("write candidate key")?;
+        std::fs::write(&key_path, cert.signing_key.serialize_pem())
+            .context("write candidate key")?;
 
         let mut client_config = transport_config()?;
         client_config.verify_peer(false);

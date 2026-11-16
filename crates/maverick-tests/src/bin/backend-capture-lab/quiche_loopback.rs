@@ -138,7 +138,7 @@ impl Pair {
         let cert_path = fixture.path().join("cert.pem");
         let key_path = fixture.path().join("key.pem");
         write_private(&cert_path, cert.cert.pem().as_bytes())?;
-        write_private(&key_path, cert.key_pair.serialize_pem().as_bytes())?;
+        write_private(&key_path, cert.signing_key.serialize_pem().as_bytes())?;
         let trust_path = fixture.path().join("trust.pem");
         let trust = if trust_server {
             cert.cert.pem()

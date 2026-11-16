@@ -56,9 +56,9 @@ run_installer() {
 new_state missing
 run_installer || fail missing-tool-installation
 expected="$(printf '%s\n' \
-  'install cargo-audit --version 0.22.2 --locked --force' \
+  'install cargo-audit --version 0.23.0 --locked --force' \
   'install cargo-deny --version 0.20.2 --locked --force' \
-  'install cargo-cyclonedx --version 0.5.9 --locked --force')"
+  'install cargo-cyclonedx --version 0.5.10 --locked --force')"
 [[ "$(cat "$state/installs")" == "$expected" ]] || fail missing-tools
 
 # Simulate a binary cache hit: no installation metadata is provided.
@@ -68,7 +68,7 @@ run_installer || fail cached-tool-validation
 
 printf '0.22.1\n' >"$state/audit"
 run_installer || fail wrong-version-replacement
-[[ "$(cat "$state/installs")" == 'install cargo-audit --version 0.22.2 --locked --force' ]] ||
+[[ "$(cat "$state/installs")" == 'install cargo-audit --version 0.23.0 --locked --force' ]] ||
   fail wrong-version
 
 new_state install-failure
@@ -84,7 +84,7 @@ fi
 [[ "$(wc -l <"$state/installs" | tr -d ' ')" -eq 1 ]] || fail continued-after-wrong-install
 
 new_state version-failure
-printf '0.22.2\n' >"$state/audit"
+printf '0.23.0\n' >"$state/audit"
 if run_installer MAVERICK_TEST_VERSION_FAILURE=audit; then
   fail accepted-failed-version-command
 fi

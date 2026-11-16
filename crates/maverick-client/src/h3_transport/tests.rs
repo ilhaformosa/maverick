@@ -104,7 +104,7 @@ impl Peer {
         let ca = directory.path().join("certificate.pem");
         let key = directory.path().join("key.pem");
         std::fs::write(&ca, certificate.cert.pem())?;
-        std::fs::write(&key, certificate.key_pair.serialize_pem())?;
+        std::fs::write(&key, certificate.signing_key.serialize_pem())?;
         let mut tls = SslContext::builder(SslMethod::tls())?;
         tls.set_min_proto_version(Some(SslVersion::TLS1_3))?;
         tls.set_max_proto_version(Some(SslVersion::TLS1_3))?;

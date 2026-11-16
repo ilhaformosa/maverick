@@ -178,10 +178,10 @@ impl Fixture {
         ca.distinguished_name
             .push(DnType::CommonName, "Maverick local test CA");
         let ca_key = KeyPair::generate()?;
+        let issuer = rcgen::Issuer::from_params(&ca, &ca_key);
         let ca = ca.self_signed(&ca_key)?;
         let key = KeyPair::generate()?;
-        let cert =
-            CertificateParams::new(vec!["localhost".into()])?.signed_by(&key, &ca, &ca_key)?;
+        let cert = CertificateParams::new(vec!["localhost".into()])?.signed_by(&key, &issuer)?;
         let wrong_ca = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         private_file(directory.path(), "ca.pem", ca.pem())?;
         private_file(directory.path(), "wrong-ca.pem", wrong_ca.cert.pem())?;

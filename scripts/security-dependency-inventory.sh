@@ -39,6 +39,11 @@ fixture="crates/maverick-tests/fixtures/quiche-tls-auth"
 "$cargo_bin" deny --manifest-path "$fixture/Cargo.toml" \
   check advisories bans licenses sources
 
+echo "==> fuzz harness dependencies"
+"$cargo_bin" audit --file fuzz/Cargo.lock
+"$cargo_bin" deny --manifest-path fuzz/Cargo.toml \
+  check advisories bans licenses sources
+
 echo "==> first-party unsafe-code inventory"
 unsafe_pattern='(^|[^[:alnum:]_])unsafe[[:space:]]*(\{|fn|impl|trait|extern)'
 unsafe_pattern+='|#\[[[:space:]]*(allow|warn|deny)[[:space:]]*\([[:space:]]*unsafe_code[[:space:]]*\)'

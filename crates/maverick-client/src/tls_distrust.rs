@@ -165,7 +165,14 @@ mod tests {
             .unwrap()
             .init(&store, leaf, &chain, |context| {
                 let preverified = context.verify_cert()?;
+                let native_result = context.verify_result();
                 let allowed = verify(preverified, context);
+                if !preverified {
+                    // BoringSSL 5.5 now rejects these keys before our callback.
+                    assert_eq!(native_result, Err(X509VerifyError::CERT_REVOKED));
+                    // Independently retain coverage of Maverick's rejection.
+                    assert!(!verify(true, context));
+                }
                 assert!(
                     !verify(false, context),
                     "must preserve existing verification failure"
@@ -189,9 +196,9 @@ mod tests {
                 &root_key,
                 false,
             );
-            // Normal CA validation accepts this signed test certificate. The
-            // additional policy rejects its known compromised public key.
-            assert_eq!(check(&root, &leaf, None), (true, false));
+            // Both the upstream verifier and Maverick reject the known key.
+            assert!(!certificate_is_allowed(&leaf));
+            assert_eq!(check(&root, &leaf, None), (false, false));
         }
     }
 
@@ -206,7 +213,8 @@ mod tests {
             &signer,
             true,
         );
-        assert_eq!(check(&trusted, &trusted, None), (true, false));
+        assert!(!certificate_is_allowed(&trusted));
+        assert_eq!(check(&trusted, &trusted, None), (false, false));
     }
 
     #[test]

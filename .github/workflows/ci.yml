@@ -22,7 +22,7 @@ jobs:
     env:
       MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -141,12 +141,12 @@ jobs:
       MAVERICK_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       MAVERICK_PILOT_TARGET: x86_64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # stable
         with:
           toolchain: 1.100.0
           components: rustfmt, clippy
@@ -155,7 +155,7 @@ jobs:
         run: echo "key=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - name: Restore Rust dependencies and build tools
         id: rust-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Keep paths stable for v1 restoration. Cargo removes workspace outputs
           # before v2 saves; child globs alone do not filter recursive tar entries.
@@ -170,8 +170,9 @@ jobs:
             !**/incremental/**
             !**/target/**/maverick*
             !**/target/**/libmaverick*
-          key: product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
+          key: product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx0510-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
           restore-keys: |
+            product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx0510-
             product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
             product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
       - name: Inventory restored project outputs
@@ -181,7 +182,7 @@ jobs:
       - name: Install Linux build and verification tools
         run: ./scripts/install-linux-tools.sh
       - name: Install the SBOM generator
-        run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+        run: cargo install cargo-cyclonedx --version 0.5.10 --locked
       - name: Verify upstream H3 authentication and local TCP proxy
         run: ./scripts/check.sh h3
       - name: Evaluate the default-off quiche candidate
@@ -277,7 +278,7 @@ jobs:
           ./scripts/test-stable-release-rehearsal.sh \
             --previous-dir "$previous_dir" \
             --output "$RUNNER_TEMP/maverick-stable-rehearsal"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rc-candidate-x86_64-unknown-linux-gnu
           path: |
@@ -319,7 +320,7 @@ jobs:
           echo 'Identified project executable outputs remaining before cache save: 0'
       - name: Save successful main dependency cache
         if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -356,12 +357,12 @@ jobs:
       MAVERICK_PILOT_TARGET: aarch64-apple-darwin
       MAVERICK_SBOM_TARGET: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # stable
         with:
           toolchain: 1.100.0
       - name: Identify Rust compiler for dependency cache
@@ -369,7 +370,7 @@ jobs:
         run: echo "key=$(rustc -vV | shasum -a 256 | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
       - name: Restore Rust dependencies and build tools
         id: rust-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Keep paths stable for v1 restoration. Cargo removes workspace outputs
           # before v2 saves; child globs alone do not filter recursive tar entries.
@@ -384,13 +385,14 @@ jobs:
             !**/incremental/**
             !**/target/**/maverick*
             !**/target/**/libmaverick*
-          key: product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
+          key: product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx0510-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'scripts/build-pilot.sh') }}
           restore-keys: |
+            product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx0510-
             product-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
             product-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-cyclonedx059-
       - name: Inventory restored project outputs
         run: ./scripts/inspect-project-cache.sh capture "$RUNNER_TEMP/project-cache-before.json"
-      - run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+      - run: cargo install cargo-cyclonedx --version 0.5.10 --locked
       - run: cargo fetch --locked --target "$MAVERICK_SBOM_TARGET"
       - name: Verify origin-pinned TLS through a terminating intermediary
         run: cargo test --locked -p maverick-tests --test end_to_end
@@ -463,7 +465,7 @@ jobs:
           ./scripts/test-stable-release-rehearsal.sh \
             --previous-dir "$previous_dir" \
             --output "$RUNNER_TEMP/maverick-stable-rehearsal"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rc-candidate-aarch64-apple-darwin
           path: |
@@ -505,7 +507,7 @@ jobs:
           echo 'Identified project executable outputs remaining before cache save: 0'
       - name: Save successful main dependency cache
         if: github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry

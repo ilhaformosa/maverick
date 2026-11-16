@@ -14,6 +14,8 @@ proxy = ["dep:bytes", "dep:tokio", "dep:maverick-client", "dep:maverick-server",
 [dependencies]
 anyhow = "1"
 boring = "=5.5.0"
+# src/lib.rs includes the product browser_tls module via #[path].
+brotli = "9.1.3"
 log = { version = "=0.4.35", default-features = false, features = ["max_level_debug"] }
 maverick-core = { path = "../../../maverick-core", default-features = false }
 maverick-quiche = { path = "../../../maverick-quiche", optional = true }

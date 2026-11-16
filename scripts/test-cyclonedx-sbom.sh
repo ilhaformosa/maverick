@@ -1034,11 +1034,11 @@ wait "$verify_pid" || mutation_status=$?
 [[ "$(cat "$mutation_output")" == "sbom verification failed: mutation" ]] || fail
 negative_checks=$((negative_checks + 1))
 
-[[ "$negative_checks" -eq 55 ]] || fail
+[[ "$negative_checks" -eq 57 ]] || fail
 linux_bytes="$(measure_test_file "$linux_first")" || fail
 mac_bytes="$(measure_test_file "$mac_first")" || fail
 [[ "$linux_bytes" =~ ^[0-9]+$ && "$mac_bytes" =~ ^[0-9]+$ ]] || fail
 [[ "$linux_bytes" -le "$max_sbom_bytes" ]] || fail
 [[ "$mac_bytes" -le "$max_sbom_bytes" ]] || fail
 
-echo "CycloneDX SBOM focused tests OK (2 targets, 55 negative checks)"
+echo "CycloneDX SBOM focused tests OK (2 targets, 57 negative checks)"

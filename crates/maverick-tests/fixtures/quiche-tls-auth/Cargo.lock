@@ -941,6 +941,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "boring",
+ "brotli",
  "bytes",
  "log",
  "maverick-client",

@@ -31,7 +31,6 @@ subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, optional = true }
-tracing.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

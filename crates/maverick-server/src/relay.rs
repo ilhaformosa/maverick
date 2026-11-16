@@ -118,6 +118,17 @@ impl fmt::Display for H2SendStall {
 
 impl StdError for H2SendStall {}
 
+#[derive(Debug)]
+pub(crate) struct H2PeerReset;
+
+impl fmt::Display for H2PeerReset {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("h2 peer reset while receive processing was paused")
+    }
+}
+
+impl StdError for H2PeerReset {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TargetOpenFailureKind {
     ResolutionTimeout,
@@ -378,6 +389,8 @@ where
             .as_ref()
             .and_then(|pending| pending.frames.front())
             .map_or(0, Bytes::len);
+        let sending = pending_send.is_some();
+        let receive_paused = client_eof || pending_target_write.is_some();
         tokio::select! {
             _ = tokio::time::sleep(policy.idle_timeout), if pending_target_write.is_none() => {
                 if pending_send.is_some() {
@@ -393,8 +406,16 @@ where
                 pending_target_write = None;
             }
 
-            capacity = wait_h2_capacity(&mut send_stream, desired_capacity),
-                if pending_send.is_some() =>
+            capacity = async {
+                if sending {
+                    wait_h2_capacity(&mut send_stream, desired_capacity).await
+                } else {
+                    // FIN and target backpressure pause DATA reads, but must
+                    // not prevent a peer reset from releasing this relay.
+                    let reason = poll_fn(|cx| send_stream.poll_reset(cx)).await?;
+                    Err(anyhow::Error::new(h2::Error::from(reason)).context(H2PeerReset))
+                }
+            }, if sending || receive_paused =>
             {
                 let capacity = capacity?;
                 if capacity == 0 {
@@ -2047,6 +2068,15 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn h2_target_write_stall_times_out_despite_download_progress() -> Result<()> {
+        h2_target_write_stall(false).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn h2_request_reset_during_target_write_releases_relay_without_idle_wait() -> Result<()> {
+        h2_target_write_stall(true).await
+    }
+
+    async fn h2_target_write_stall(reset: bool) -> Result<()> {
         struct BlockedWriter(Option<tokio::sync::oneshot::Sender<()>>);
 
         impl AsyncWrite for BlockedWriter {
@@ -2118,6 +2148,14 @@ mod tests {
             false,
         )?;
         blocked_rx.await?;
+        if reset {
+            request_body.send_reset(h2::Reason::CANCEL);
+            timeout(Duration::from_secs(1), relay_completed_rx)
+                .await
+                .expect("H2 reset must cancel a blocked target write before its idle deadline")?
+                .expect_err("reset must terminate the relay");
+            return Ok(());
+        }
 
         let mut response_bytes = BytesMut::new();
         for _ in 0..5 {
@@ -2209,9 +2247,18 @@ mod tests {
 
     #[tokio::test]
     async fn h2_request_stream_reset_releases_target_without_idle_wait() -> Result<()> {
+        h2_request_reset_releases_target(false).await
+    }
+
+    #[tokio::test]
+    async fn h2_request_reset_after_upload_fin_releases_target_without_idle_wait() -> Result<()> {
+        h2_request_reset_releases_target(true).await
+    }
+
+    async fn h2_request_reset_releases_target(after_fin: bool) -> Result<()> {
         let target_listener = TcpListener::bind("127.0.0.1:0").await?;
         let target = TcpStream::connect(target_listener.local_addr()?).await?;
-        let (_held_target_peer, _) = target_listener.accept().await?;
+        let (mut target_peer, _) = target_listener.accept().await?;
         let (client_io, server_io) = duplex(16 * 1024);
         let (relay_completed_tx, relay_completed_rx) = tokio::sync::oneshot::channel();
 
@@ -2251,6 +2298,17 @@ mod tests {
         let request = http::Request::builder().method("POST").uri("/").body(())?;
         let (response, mut request_body) = client.send_request(request, false)?;
         let response_body = response.await?.into_body();
+        if after_fin {
+            request_body.send_data(
+                encode_grpc_frame(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()), 65_536)?,
+                true,
+            )?;
+            // Establish that the relay processed FIN before resetting H2.
+            assert_eq!(
+                timeout(Duration::from_secs(1), target_peer.read(&mut [0])).await??,
+                0
+            );
+        }
         request_body.send_reset(h2::Reason::CANCEL);
 
         let relay_result = timeout(Duration::from_secs(1), relay_completed_rx)

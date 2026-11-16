@@ -33,8 +33,8 @@ cargo test --locked -p maverick-cli -p maverick-sdk \
 cargo clippy --locked -p maverick-cli -p maverick-client -p maverick-server \
   --features experimental-h3 --all-targets -- -D warnings
 product_graph="$(cargo tree --locked -p maverick-cli --features experimental-h3 --edges normal,build --prefix none)"
-[[ "$(grep -Ecx 'boring-sys v5\.3\.0' <<<"$product_graph")" -eq 1 ]]
-[[ "$(grep -Ecx 'quiche v0\.30\.0' <<<"$product_graph")" -eq 1 ]]
+[[ "$(grep -Ecx 'boring-sys v5\.5\.0' <<<"$product_graph")" -eq 1 ]] || exit 1
+[[ "$(grep -Ecx 'quiche v0\.30\.1' <<<"$product_graph")" -eq 1 ]] || exit 1
 cargo fmt --manifest-path "$manifest" -- --check
 cargo clippy --locked --manifest-path "$manifest" --features proxy --all-targets -- -D warnings
 cargo test --locked --manifest-path "$manifest" --features proxy
@@ -48,10 +48,10 @@ cargo metadata --locked --manifest-path "$manifest" --features proxy \
       {name, version, features: $node.features}] as $graph |
     ([$graph[] | select(.name == "log")] | length == 1) and
     ($graph[] | select(.name == "log") |
-      .version == "0.4.33" and
+      .version == "0.4.35" and
       (.features | index("max_level_debug")) != null and
       ([.features[] | select(startswith("release_max_level_"))] | length == 0)) and
     ([$graph[] | select(.name == "quiche")] | length == 1) and
     ($graph[] | select(.name == "quiche") |
-      .version == "0.30.0" and (.features | index("qlog")) == null)
+      .version == "0.30.1" and (.features | index("qlog")) == null)
   ' >/dev/null

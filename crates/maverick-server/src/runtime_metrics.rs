@@ -83,9 +83,10 @@ impl ServerRuntimeMetrics {
     pub(crate) fn record_h2_request_error(&self, error: &anyhow::Error) {
         if error.downcast_ref::<relay::H2SendStall>().is_some() {
             self.h2_send_stalls.fetch_add(1, Ordering::Relaxed);
-        } else if error
-            .downcast_ref::<h2::Error>()
-            .is_some_and(h2::Error::is_reset)
+        } else if error.downcast_ref::<relay::H2PeerReset>().is_some()
+            || error
+                .downcast_ref::<h2::Error>()
+                .is_some_and(h2::Error::is_reset)
         {
             self.h2_stream_resets.fetch_add(1, Ordering::Relaxed);
         }

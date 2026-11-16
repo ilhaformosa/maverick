@@ -45,9 +45,14 @@ Stable package verification requires the full H2/H3 feature profile and both
 TCP/UDP native smoke modes. Its SBOM must match that full locked dependency
 graph. The stable installation guide retains experimental/non-production
 limitations while avoiding a false prerelease label. Legacy Beta/RC archive
-profiles remain unchanged. The rollback drill defaults to RC.5 and additionally
-accepts explicit RC.4 or `--candidate-version 1.2.0`; the pinned Beta.4 partner and its
+profiles remain unchanged. The rollback drill defaults to RC.6 and additionally
+accepts explicit RC.4, RC.5 or `--candidate-version 1.2.0`; the pinned Beta.4 partner and its
 digests never change.
+
+RC.6 maintenance upgrades the SBOM generator to cargo-cyclonedx 0.5.10.
+Verification derives the required generator version from the selected source
+revision, so historical published SBOMs retain their original tool identity.
+This changes neither publication authorization nor the final upload gate.
 
 ## Validation without publication
 

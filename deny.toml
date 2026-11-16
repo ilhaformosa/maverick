@@ -20,6 +20,12 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# Existing fuzz-only libFuzzer sources use NCSA; keep the permission scoped
+# to the reviewed package/version rather than admitting it for product crates.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys@0.4.13"
+allow = ["NCSA"]
+
 [bans]
 multiple-versions = "allow"
 wildcards = "allow"

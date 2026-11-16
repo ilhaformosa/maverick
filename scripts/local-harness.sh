@@ -42,11 +42,11 @@ trap 'rm -rf "$config_tmp"' EXIT
   "$cargo_bin" run --quiet --manifest-path "$repo_root/Cargo.toml" \
     -p maverick-cli -- gen-config --h2 >/dev/null
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    [[ "$(stat -f '%Lp' client.generated.yaml)" == "600" ]]
-    [[ "$(stat -f '%Lp' server.generated.yaml)" == "600" ]]
+    [[ "$(stat -f '%Lp' client.generated.yaml)" == "600" ]] || exit 1
+    [[ "$(stat -f '%Lp' server.generated.yaml)" == "600" ]] || exit 1
   else
-    [[ "$(stat -c '%a' client.generated.yaml)" == "600" ]]
-    [[ "$(stat -c '%a' server.generated.yaml)" == "600" ]]
+    [[ "$(stat -c '%a' client.generated.yaml)" == "600" ]] || exit 1
+    [[ "$(stat -c '%a' server.generated.yaml)" == "600" ]] || exit 1
   fi
   rg -q 'tls_fingerprint: "browser_mimic"' client.generated.yaml
   rg -q 'carrier: "h2"' client.generated.yaml
@@ -67,6 +67,9 @@ echo "==> isolated test-server preparation checks"
 
 echo "==> security-tool installer checks"
 ./scripts/test-install-security-tools.sh
+
+echo "==> security inventory failure handling"
+./scripts/test-security-dependency-inventory.sh
 
 echo "==> project-cache inventory checks"
 ./scripts/test-inspect-project-cache.sh
@@ -99,6 +102,7 @@ active_docs=(
   docs/releases/v1.2.0-rc.3.md
   docs/releases/v1.2.0-rc.4.md
   docs/releases/v1.2.0-rc.5.md
+  docs/releases/v1.2.0-rc.6.md
   docs/RC3_SECURITY_REVIEW.md
   docs/STABLE_RELEASE_TOOLING.md
   docs/STABLE_START_HERE.txt

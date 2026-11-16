@@ -667,7 +667,7 @@ impl LabFixture {
         let key_path = tmp.path().join("key.pem");
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         fs::write(&cert_path, certified.cert.pem())?;
-        fs::write(&key_path, certified.key_pair.serialize_pem())?;
+        fs::write(&key_path, certified.signing_key.serialize_pem())?;
         fs::write(
             tmp.path().join("index.html"),
             "<html><body>lab</body></html>",

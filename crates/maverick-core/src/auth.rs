@@ -1,8 +1,8 @@
 use bytes::{Buf, BufMut, BytesMut};
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
-use rand::rngs::OsRng;
-use rand::TryRngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::rngs::SysRng;
+use rand::TryRng;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
@@ -754,7 +754,7 @@ pub fn current_unix() -> i64 {
 }
 
 fn fill_random(bytes: &mut [u8]) -> Result<()> {
-    OsRng
+    SysRng
         .try_fill_bytes(bytes)
         .map_err(|_| Error::Random("OS random generator failed"))
 }

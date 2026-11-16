@@ -9,9 +9,10 @@ repository.workspace = true
 anyhow.workspace = true
 boring.workspace = true
 bytes.workspace = true
-log = { version = "=0.4.33", default-features = false, features = ["max_level_debug"] }
+# Feature unification keeps quiche trace logging out of every product build.
+log = { version = "=0.4.35", default-features = false, features = ["max_level_debug"] }
 maverick-core = { path = "../maverick-core", features = ["experimental-h3"] }
-quiche = { version = "=0.30.0", default-features = false, features = ["boringssl-boring-crate"] }
+quiche = { version = "=0.30.1", default-features = false, features = ["boringssl-boring-crate"] }
 rand.workspace = true
-socket2 = "0.6.4"
+socket2 = "0.6.5"
 tokio.workspace = true

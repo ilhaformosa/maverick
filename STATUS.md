@@ -1,10 +1,44 @@
 # Maverick Status
 
-Date: 2026-11-15
+Date: 2026-11-16
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
+
+## Current Maintenance Review
+
+The owner requested a comprehensive project review and active dependency/tool
+updates on 2026-11-16, after the Rust 1.100.0 migration in PR #114. The clean
+baseline is `864bbaa`; its full main CI and subsequent dependency/fuzz jobs
+passed. The migration's Cargo binary-path/cache-layout fixes and 45-minute
+macOS cold-build allowance remain in place.
+
+This work prepares an unpublished RC.6. Active runtime/test dependencies,
+security/SBOM tooling, workflow pins and fuzz reproducibility are updated with
+compatibility validation. Three independent ordinary-model reviews of
+`9fbcad2` covered runtime/security, SDK/configuration and delivery tooling. The
+automated Deep Scan did not start; the owner approved these reviews instead,
+and no plugin/Daybreak audit result is claimed.
+
+The reviews identified H2 request lifetime/cancellation gaps, a legacy WebSocket
+half-close defect, verification failures that could be mistaken for success,
+SBOM identity/relationship gaps and stale current-default documentation.
+Concrete runtime and verifier counterexamples were reproduced locally before
+repair. Corrections reuse existing timeouts, H2 reset notification and Cargo
+metadata; the historical P1 lock remains unchanged and independently pinned.
+Patch follow-up and all applicable final local/CI, native artifact/SBOM and
+rollback gates remain required. Provisional `9fbcad2` binaries are not final
+qualification. Its P1 tests ran, but the old macOS shell did not enforce some
+bare assertions; that overall pass is not credited as complete gate evidence.
+Protocol/SDK features remain frozen. Performance-based selection and active
+session migration are not introduced. Historical quiche comparisons and fixed
+Beta.4 rollback evidence remain unchanged.
+
+Field trials and real deployment remain deferred. This task does not authorize
+new resources, Mac/Surge changes, release tags, another public Release or Stable
+publication. Published RC.5 stays fixed at `e4a21e2`; its evidence does not
+qualify changed RC.6 source or bytes.
 
 ## Current Product
 
@@ -33,7 +67,7 @@ candidate evidence; RC.4's earlier passing records remain historical. See
 |---|---|
 | Stage | Experimental Beta; not production-ready |
 | Published release | [RC.5 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.5) at `e4a21e2`, prerelease/non-Latest, full transport; older releases remain unchanged |
-| Current candidate | RC.5 `e4a21e2`: full transport, SDK and release tooling qualified locally and in CI; exact-candidate field acceptance remains deferred |
+| Current source candidate | RC.6 maintenance in progress; full review/local/CI/artifact qualification pending. Published RC.5 `e4a21e2` retains its own completed local/CI evidence and deferred field acceptance |
 | Build/configuration defaults | Full candidate packages include H2/H3; new direct generation uses dual/auto with `allow_reliable`; omitted existing settings retain their prior meaning |
 | Protected H2 intermediary | Explicit origin-pinned inner TLS 1.3 in RC.5; local terminating-relay validation, real intermediary qualification pending |
 | Explicit H3 | Direct TCP through SOCKS5/HTTP CONNECT and native UDP through SOCKS5 or the Rust fixed-target API |
@@ -56,10 +90,12 @@ source.
 
 The owner authorized the local stable update and Maverick's migration to Rust
 stable 1.100.0 on 2026-11-15. `rust-toolchain.toml`, product CI, supply-chain
-checks and release workflows now pin that exact version. Fuzzing retains
-`nightly-2026-10-14`. The previously uncommitted replay-verifier test-path fix
+checks and release workflows pin that exact version. That migration retained
+`nightly-2026-10-14`; the subsequent RC.6 maintenance updates only the fuzz
+toolchain to `nightly-2026-11-16`. The previously uncommitted replay-verifier test-path fix
 is included; it uses Cargo's binary path instead of assuming a build-directory
-layout. Dependencies and published RC.5 artifacts remain unchanged.
+layout. That migration did not change dependencies or published RC.5 artifacts;
+RC.6 separately updates the active dependency graph.
 
 The cache inventory now recognizes Cargo 1.100's per-package build outputs;
 focused tests cover both layouts and preserve source attribution. The release
@@ -468,8 +504,8 @@ It ends active TCP transfers and releases local listeners for restart. Close
 delivery remains best effort; forced process termination or datagram loss can
 still leave peers waiting for failure or idle detection.
 
-Product H3 uses upstream quiche 0.30.0 and its official Boring integration,
-with Boring 5.2.0, boring-sys 5.3.0 and tokio-boring 5.2.0 aligned across H2/H3.
+Product H3 uses upstream quiche 0.30.1 and its official Boring integration,
+with Boring, boring-sys and tokio-boring 5.5.0 aligned across H2/H3.
 No private quiche patch enters the product. This shared TLS update also affects
 default H2, so its default/rustls compatibility checks remain required.
 

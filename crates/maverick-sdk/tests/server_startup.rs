@@ -34,7 +34,7 @@ async fn rejects_tls_then_starts_after_correction(fault: &str) -> Result<()> {
         let key_path = directory.path().join("key.pem");
         let valid = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         let valid_cert = valid.cert.pem();
-        let valid_key = valid.key_pair.serialize_pem();
+        let valid_key = valid.signing_key.serialize_pem();
         fs::write(&key_path, &valid_key)?;
         let expected = match fault {
             "missing" => "open cert",
@@ -45,7 +45,7 @@ async fn rejects_tls_then_starts_after_correction(fault: &str) -> Result<()> {
             "mismatched" => {
                 fs::write(&cert_path, &valid_cert)?;
                 let other = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
-                fs::write(&key_path, other.key_pair.serialize_pem())?;
+                fs::write(&key_path, other.signing_key.serialize_pem())?;
                 "build TLS server config"
             }
             _ => unreachable!(),

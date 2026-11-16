@@ -13,7 +13,7 @@ async fn rejects_tls_without_announcing_ready(fault: &str) -> Result<()> {
     let valid = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     fs::write(
         directory.path().join("key.pem"),
-        valid.key_pair.serialize_pem(),
+        valid.signing_key.serialize_pem(),
     )?;
     let expected = match fault {
         "missing" => "open cert",
@@ -26,7 +26,7 @@ async fn rejects_tls_without_announcing_ready(fault: &str) -> Result<()> {
             let other = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
             fs::write(
                 directory.path().join("key.pem"),
-                other.key_pair.serialize_pem(),
+                other.signing_key.serialize_pem(),
             )?;
             "build TLS server config"
         }

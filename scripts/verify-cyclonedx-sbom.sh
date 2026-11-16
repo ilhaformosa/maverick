@@ -5,7 +5,6 @@ umask 077
 export LC_ALL=C
 
 readonly MAX_SBOM_BYTES=8388608
-readonly EXPECTED_TOOL_VERSION=0.5.9
 readonly EXPECTED_SCHEMA="http://cyclonedx.org/schema/bom-1.5.schema.json"
 readonly PUBLIC_REPOSITORY="https://github.com/ilhaformosa/maverick"
 
@@ -149,6 +148,16 @@ revision_version="$(
   awk -F'"' '/^version =/ {print $2; exit}' "$revision_manifest"
 )" || fail source-version
 [[ "$revision_version" == "$expected_version" ]] || fail source-version
+# The generator identity belongs to the exact source revision. Older published
+# candidates retain their original tool version after the current tool upgrades.
+revision_generator="$private_tmp/revision-sbom-generator.sh"
+git -C "$source_root" show "$expected_revision:scripts/generate-cyclonedx-sbom.sh" \
+  >"$revision_generator" 2>/dev/null || fail source-tool
+expected_tool_version="$(
+  awk -F= '/^readonly EXPECTED_TOOL_VERSION=[0-9]+\.[0-9]+\.[0-9]+$/ {
+    count++; version=$2
+  } END { if (count != 1) exit 1; print version }' "$revision_generator" 2>/dev/null
+)" || fail source-tool
 source_epoch="$(git -C "$source_root" show -s --format=%ct "$expected_revision" 2>/dev/null)" ||
   fail source
 [[ "$source_epoch" =~ ^[0-9]+$ ]] || fail source
@@ -174,7 +183,7 @@ jq -e --arg timestamp "$source_timestamp" \
   '.metadata.timestamp == $timestamp' \
   "$sbom_document" >/dev/null 2>&1 || fail timestamp
 
-jq -e --arg tool_version "$EXPECTED_TOOL_VERSION" \
+jq -e --arg tool_version "$expected_tool_version" \
   '.metadata.tools | type == "array" and length == 1 and
    .[0].vendor == "CycloneDX" and
    .[0].name == "cargo-cyclonedx" and
@@ -257,6 +266,13 @@ jq -e '
 ' "$sbom_document" >/dev/null 2>&1 || fail duplicate-ref
 
 jq -e '
+  all(.components[];
+    (.name | type == "string" and length > 0) and
+    (.version | type == "string" and length > 0) and
+    .purl == ("pkg:cargo/" + .name + "@" + .version))
+' "$sbom_document" >/dev/null 2>&1 || fail component-identity
+
+jq -e '
   (.dependencies | type) == "array"
 ' "$sbom_document" >/dev/null 2>&1 || fail graph-ref
 
@@ -305,7 +321,7 @@ if [[ "$verification_level" == "full" ]]; then
 
   metadata_features="maverick-cli/browser-tls"
   root_features='["browser-tls"]'
-  if [[ "$expected_version" == "1.2.0-rc.3" || "$expected_version" == "1.2.0-rc.4" || "$expected_version" == "1.2.0-rc.5" || "$expected_version" == "1.2.0" ]]; then
+  if [[ "$expected_version" == "1.2.0-rc.3" || "$expected_version" == "1.2.0-rc.4" || "$expected_version" == "1.2.0-rc.5" || "$expected_version" == "1.2.0-rc.6" || "$expected_version" == "1.2.0" ]]; then
     metadata_features="maverick-cli/experimental-h3"
     root_features='["browser-tls","experimental-h3"]'
   fi
@@ -330,8 +346,8 @@ if [[ "$verification_level" == "full" ]]; then
     ([.resolve.nodes[] | select(.id == $root)][0].features == $features)
   ' "$metadata_file" >/dev/null 2>&1 || fail metadata-root
 
-  expected_components="$private_tmp/expected-components"
-  jq -r '
+  expected_inventory="$private_tmp/expected-inventory.json"
+  jq -S --arg root_purl "$root_purl" '
     def normal_closure($nodes; $seen; $frontier):
       if ($frontier | length) == 0 then $seen
       else
@@ -346,11 +362,26 @@ if [[ "$verification_level" == "full" ]]; then
     . as $m |
     (reduce $m.resolve.nodes[] as $node ({}; .[$node.id] = $node)) as $nodes |
     normal_closure($nodes; [$m.resolve.root]; [$m.resolve.root]) as $ids |
-    $m.packages[] |
-    select(.id != $m.resolve.root) |
-    select(.id as $id | $ids | index($id)) |
-    "\(.name)@\(.version)"
-  ' "$metadata_file" | sort >"$expected_components" || fail metadata
+    (reduce $m.packages[] as $package ({};
+      .[$package.id] = (
+        if $package.id == $m.resolve.root then $root_purl
+        else "pkg:cargo/\($package.name)@\($package.version)" end
+      ))) as $refs |
+    {
+      components: ([$m.packages[] |
+        select(.id != $m.resolve.root) |
+        select(.id as $id | $ids | index($id)) |
+        "\(.name)@\(.version)"] | sort),
+      dependencies: ([$ids[] as $id | {
+        ref: $refs[$id],
+        dependsOn: ([$nodes[$id].deps[]? |
+          select(any(.dep_kinds[]?; .kind == null)) |
+          $refs[.pkg]] | unique | sort)
+      }] | sort_by(.ref))
+    }
+  ' "$metadata_file" >"$expected_inventory" || fail metadata
+  expected_components="$private_tmp/expected-components"
+  jq -r '.components[]' "$expected_inventory" >"$expected_components" || fail metadata
 
   actual_components="$private_tmp/actual-components"
   jq -r '.components[] | "\(.name)@\(.version)"' "$sbom_document" |
@@ -368,6 +399,13 @@ if [[ "$verification_level" == "full" ]]; then
   [[ ! -s "$expected_duplicates" ]] || fail ambiguous-identity
   [[ ! -s "$actual_duplicates" ]] || fail ambiguous-identity
   cmp -s "$expected_components" "$actual_components" || fail closure
+
+  expected_graph="$private_tmp/expected-graph.json"
+  actual_graph="$private_tmp/actual-graph.json"
+  jq -S '.dependencies' "$expected_inventory" >"$expected_graph" || fail metadata
+  jq -S '[.dependencies[] | {ref, dependsOn: (.dependsOn | sort)}] | sort_by(.ref)' \
+    "$sbom_document" >"$actual_graph" || fail graph-closure
+  cmp -s "$expected_graph" "$actual_graph" || fail graph-closure
 fi
 
 [[ -f "$sbom_path" && ! -L "$sbom_path" ]] || fail mutation

@@ -19,7 +19,7 @@ pub(crate) fn pair(peer: Peer) -> Result<loopback::Pair> {
     let key_path = fixture.path().join("key.pem");
     let trust_path = fixture.path().join("trust.pem");
     loopback::write_private(&cert_path, identity.cert.pem().as_bytes())?;
-    loopback::write_private(&key_path, identity.key_pair.serialize_pem().as_bytes())?;
+    loopback::write_private(&key_path, identity.signing_key.serialize_pem().as_bytes())?;
     let trust = if peer == Peer::Untrusted {
         rcgen::generate_simple_self_signed(vec!["localhost".into()])?
             .cert

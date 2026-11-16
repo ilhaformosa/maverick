@@ -199,36 +199,18 @@ where
     let (mut local_read, mut local_write) = tokio::io::split(local);
     let mut local_buf = vec![0u8; 16 * 1024];
     let mut local_eof = false;
+    let mut remote_eof = false;
 
     loop {
-        if local_eof {
-            tokio::select! {
-                _ = tokio::time::sleep(idle_timeout) => break,
-                remote_frame = tunnel.read_next_frame() => {
-                    match remote_frame? {
-                        Some(frame) => {
-                            let finish_response = response_frame_is_complete(frame.frame_type);
-                            if let Some(close) =
-                                handle_remote_frame(frame, &mut local_write, idle_timeout).await?
-                            {
-                                if finish_response {
-                                    tunnel.finish_response().await?;
-                                }
-                                return Ok(close);
-                            }
-                        }
-                        None => break,
-                    }
-                }
-            }
-            continue;
+        if local_eof && remote_eof {
+            break;
         }
 
         tokio::select! {
             _ = tokio::time::sleep(idle_timeout) => {
                 break;
             }
-            local_read_result = local_read.read(&mut local_buf) => {
+            local_read_result = local_read.read(&mut local_buf), if !local_eof => {
                 let n = local_read_result?;
                 if n == 0 {
                     tunnel
@@ -251,6 +233,11 @@ where
             }
             remote_frame = tunnel.read_next_frame() => {
                 match remote_frame? {
+                    Some(frame) if frame.flow_id == FLOW_ID && frame.frame_type == FrameType::TcpFin => {
+                        let _ = local_write.shutdown().await;
+                        tunnel.finish_response().await?;
+                        remote_eof = true;
+                    }
                     Some(frame) => {
                         let finish_response = response_frame_is_complete(frame.frame_type);
                         if let Some(close) =
@@ -285,7 +272,10 @@ where
         let upload = async {
             let mut bytes = vec![0; 16 * 1024];
             loop {
-                let count = local_read.read(&mut bytes).await?;
+                let count = tokio::select! {
+                    count = local_read.read(&mut bytes) => count?,
+                    reset = sender.wait_for_reset() => return reset,
+                };
                 activity.send_replace(());
                 let frame = if count == 0 {
                     Frame::new(FrameType::TcpFin, 0, FLOW_ID, Bytes::new())

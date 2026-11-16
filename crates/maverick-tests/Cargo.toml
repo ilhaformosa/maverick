@@ -36,15 +36,15 @@ tun-phase2 = ["tun-runtime", "dep:clap", "dep:libc"]
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
-boring = { version = "=5.2.0", optional = true }
+boring = { version = "=5.5.0", optional = true }
 bytes.workspace = true
 clap = { workspace = true, optional = true }
-etherparse = { version = "=0.20.3", optional = true }
+etherparse = { version = "=0.21.0", optional = true }
 futures.workspace = true
 h2.workspace = true
 http.workspace = true
-log = { version = "=0.4.33", default-features = false, features = ["max_level_debug"], optional = true }
-flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
+log = { version = "=0.4.35", default-features = false, features = ["max_level_debug"], optional = true }
+flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
 maverick-client = { path = "../maverick-client", default-features = false }
 maverick-core = { path = "../maverick-core", default-features = false }
 maverick-server = { path = "../maverick-server" }
@@ -56,7 +56,7 @@ rustix = { version = "=1.1.6", features = ["fs", "process"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-signal-hook = { version = "=0.4.4", default-features = false }
+signal-hook = { version = "=0.4.6", default-features = false }
 tempfile.workspace = true
 time.workspace = true
 tokio.workspace = true

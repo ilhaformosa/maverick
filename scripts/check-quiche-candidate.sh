@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Bash 3.2 needs explicit exits for standalone [[ ]] assertions.
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # CI supplies its scratch directory; local runs use disposable temporary files.
@@ -19,18 +21,18 @@ candidate_tree() {
 graph="$(candidate_tree --locked -p maverick-tests \
   --no-default-features --features browser-tls,quiche-candidate \
   --edges normal,build --prefix none)"
-[[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$graph")" -eq 1 ]]
-[[ "$(grep -Ecx 'boring v5\.2\.0' <<<"$graph")" -eq 1 ]]
-[[ "$(grep -Ecx 'boring-sys v5\.3\.0' <<<"$graph")" -eq 1 ]]
+[[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$graph")" -eq 1 ]] || exit 1
+[[ "$(grep -Ecx 'boring v5\.5\.0' <<<"$graph")" -eq 1 ]] || exit 1
+[[ "$(grep -Ecx 'boring-sys v5\.5\.0' <<<"$graph")" -eq 1 ]] || exit 1
 ! grep -Eq '^boring(-sys)? v4\.' <<<"$graph" || exit 1
 metadata="$(cargo metadata --locked --format-version 1 \
   --no-default-features \
   --features maverick-tests/browser-tls,maverick-tests/quiche-candidate)"
-log_id='registry+https://github.com/rust-lang/crates.io-index#log@0.4.33'
+log_id='registry+https://github.com/rust-lang/crates.io-index#log@0.4.35'
 jq -e --arg log_id "$log_id" '
   (.packages | map(select(.name == "log")) | length == 1) and
   (.packages | map(select(
-    .name == "log" and .version == "0.4.33" and
+    .name == "log" and .version == "0.4.35" and
     .source == "registry+https://github.com/rust-lang/crates.io-index" and
     .id == $log_id
   )) | length == 1) and
@@ -51,18 +53,18 @@ quiche_manifest="$(jq -er '
 ' <<<"$metadata")"
 quiche_source="${quiche_manifest%/Cargo.toml}"
 repository_root="$(git rev-parse --show-toplevel)"
-[[ "$quiche_source" != "$quiche_manifest" ]]
+[[ "$quiche_source" != "$quiche_manifest" ]] || exit 1
 case "$quiche_source/" in
   "$repository_root"/*) exit 1 ;;
 esac
-[[ -d "$quiche_source/src/h3" && ! -L "$quiche_source" ]]
-[[ -f "$quiche_manifest" && ! -L "$quiche_manifest" ]]
+[[ -d "$quiche_source/src/h3" && ! -L "$quiche_source" ]] || exit 1
+[[ -f "$quiche_manifest" && ! -L "$quiche_manifest" ]] || exit 1
 [[ "$(shasum -a 256 "$quiche_manifest" | awk '{print $1}')" == \
-  '01434a970c9661367b730bb907d461985d2de61e521386ec79bb91a17b24ffd0' ]]
+  '01434a970c9661367b730bb907d461985d2de61e521386ec79bb91a17b24ffd0' ]] || exit 1
 features="$(candidate_tree --locked -p maverick-tests \
   --no-default-features --features browser-tls,quiche-candidate \
   -e features -i quiche@0.29.3 --prefix none)"
-[[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$features")" -eq 1 ]]
+[[ "$(grep -Ecx 'quiche v0\.29\.3' <<<"$features")" -eq 1 ]] || exit 1
 ! grep -Fq 'quiche feature' <<<"$features" || exit 1
 expected_h3_files="$(printf '%s\n' \
   src/h3/ffi.rs \
@@ -75,7 +77,7 @@ expected_h3_files="$(printf '%s\n' \
   src/h3/stream.rs)"
 actual_h3_files="$(find "$quiche_source/src/h3" -type f \
   -name '*.rs' -print | sed "s#^$quiche_source/##" | LC_ALL=C sort)"
-[[ "$actual_h3_files" == "$expected_h3_files" ]]
+[[ "$actual_h3_files" == "$expected_h3_files" ]] || exit 1
 expected_h3_hashes="$(printf '%s\n' \
   'd9e96d7a133b985d345f74671e75abe543b63014e45da7ea18c6f183aaae10c1  src/h3/ffi.rs' \
   'e15907dac76afc70ce3fdee890556a92fb94e14f39220194b44031f3a8d0a410  src/h3/frame.rs' \
@@ -91,7 +93,7 @@ while IFS= read -r h3_file; do
   actual_h3_hashes+="${h3_hash}  ${h3_file}"$'\n'
 done <<<"$actual_h3_files"
 actual_h3_hashes="${actual_h3_hashes%$'\n'}"
-[[ "$actual_h3_hashes" == "$expected_h3_hashes" ]]
+[[ "$actual_h3_hashes" == "$expected_h3_hashes" ]] || exit 1
 expected_trace_counts="$(printf '%s\n' \
   '0  src/h3/ffi.rs' \
   '0  src/h3/frame.rs' \
@@ -110,8 +112,8 @@ while IFS= read -r h3_file; do
   actual_trace_counts+="${h3_trace_count}  ${h3_file}"$'\n'
 done <<<"$actual_h3_files"
 actual_trace_counts="${actual_trace_counts%$'\n'}"
-[[ "$actual_trace_counts" == "$expected_trace_counts" ]]
-[[ "$trace_call_count" -eq 23 ]]
+[[ "$actual_trace_counts" == "$expected_trace_counts" ]] || exit 1
+[[ "$trace_call_count" -eq 23 ]] || exit 1
 default_cli="$(candidate_tree --locked -p maverick-cli --prefix none)"
 no_default_cli="$(candidate_tree --locked -p maverick-cli \
   --no-default-features --prefix none)"
@@ -232,29 +234,6 @@ candidate_registry_fingerprint() {
   [[ "$registry_digest" =~ ^[0-9a-f]{64}$ ]] || return 1
   printf '%s\n' "$registry_digest"
 }
-candidate_lock_registry_records() {
-  awk '
-    function value(line) {
-      sub(/^[^"]*"/, "", line)
-      sub(/".*$/, "", line)
-      return line
-    }
-    function emit() {
-      if (source ~ /^registry\+/)
-        print name "|" version "|" source "|" checksum
-    }
-    /^\[\[package\]\]$/ {
-      emit()
-      name = version = source = checksum = ""
-      next
-    }
-    /^name = / { name = value($0); next }
-    /^version = / { version = value($0); next }
-    /^source = / { source = value($0); next }
-    /^checksum = / { checksum = value($0); next }
-    END { emit() }
-  ' "$1" | LC_ALL=C sort -u
-}
 candidate_private_root=""
 candidate_target=""
 candidate_runtime_tmp=""
@@ -345,10 +324,10 @@ candidate_registry_root="$(
   dirname "$(dirname "$(dirname "$quiche_source")")"
 )"
 candidate_archive="$candidate_registry_root/cache/$candidate_registry_key/quiche-0.29.3.crate"
-[[ -f "$candidate_archive" && ! -L "$candidate_archive" ]]
-[[ "$(wc -c <"$candidate_archive" | tr -d ' ')" -eq 453798 ]]
+[[ -f "$candidate_archive" && ! -L "$candidate_archive" ]] || exit 1
+[[ "$(wc -c <"$candidate_archive" | tr -d ' ')" -eq 453798 ]] || exit 1
 [[ "$(shasum -a 256 "$candidate_archive" | awk '{print $1}')" == \
-  61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d ]]
+  61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d ]] || exit 1
 candidate_archive_copy="$candidate_private_root/quiche-0.29.3.crate"
 install -m 0400 "$candidate_archive" "$candidate_archive_copy"
 cmp "$candidate_archive" "$candidate_archive_copy"
@@ -356,9 +335,9 @@ cmp "$candidate_archive" "$candidate_archive_copy"
 candidate_names="$candidate_private_root/archive.names"
 LC_ALL=C /usr/bin/tar -tzf "$candidate_archive_copy" \
   >"$candidate_names"
-[[ "$(wc -l <"$candidate_names" | tr -d ' ')" -eq 87 ]]
+[[ "$(wc -l <"$candidate_names" | tr -d ' ')" -eq 87 ]] || exit 1
 [[ "$(shasum -a 256 "$candidate_names" | awk '{print $1}')" == \
-  3b76e73d5e24efaa85d3a68ac59eeb4048daeba867d6a389a14e0f657e286f54 ]]
+  3b76e73d5e24efaa85d3a68ac59eeb4048daeba867d6a389a14e0f657e286f54 ]] || exit 1
 LC_ALL=C awk '
   {
     if (length($0) > 240 ||
@@ -387,15 +366,15 @@ LC_ALL=C awk '
 candidate_headers="$candidate_private_root/archive.headers"
 LC_ALL=C /usr/bin/tar -tvzf "$candidate_archive_copy" \
   >"$candidate_headers"
-[[ "$(wc -l <"$candidate_headers" | tr -d ' ')" -eq 87 ]]
+[[ "$(wc -l <"$candidate_headers" | tr -d ' ')" -eq 87 ]] || exit 1
 LC_ALL=C awk 'substr($0, 1, 1) != "-" { exit 1 }' \
   "$candidate_headers"
 candidate_expanded="$candidate_private_root/archive.tar"
 /usr/bin/gzip -dc "$candidate_archive_copy" >"$candidate_expanded"
 chmod 0400 "$candidate_expanded"
-[[ "$(wc -c <"$candidate_expanded" | tr -d ' ')" -eq 2748928 ]]
+[[ "$(wc -c <"$candidate_expanded" | tr -d ' ')" -eq 2748928 ]] || exit 1
 [[ "$(shasum -a 256 "$candidate_expanded" | awk '{print $1}')" == \
-  7a0e3567015f7a111c3adc6e65a336dbf634fee11693e83e44dff2aed6e2439b ]]
+  7a0e3567015f7a111c3adc6e65a336dbf634fee11693e83e44dff2aed6e2439b ]] || exit 1
 
 candidate_extracted="$candidate_private_root/extracted"
 mkdir -m 0700 "$candidate_extracted"
@@ -415,20 +394,20 @@ case "$candidate_tar_version" in
   *) exit 1 ;;
 esac
 candidate_source="$candidate_extracted/quiche-0.29.3"
-[[ -d "$candidate_source" && ! -L "$candidate_source" ]]
+[[ -d "$candidate_source" && ! -L "$candidate_source" ]] || exit 1
 candidate_unexpected_entry="$(find "$candidate_extracted" \
   -mindepth 1 ! -type f ! -type d -print -quit)" || exit 1
-[[ -z "$candidate_unexpected_entry" ]]
+[[ -z "$candidate_unexpected_entry" ]] || exit 1
 candidate_pristine_hash="$(
   candidate_tree_hash "$candidate_extracted" pristine
 )" || exit 1
 [[ "$candidate_pristine_hash" == \
-  dfe405060753b90ef580b4a105a5c0e9cf4bb4f06adc79145f94572f7a4c5851 ]]
-[[ "$(wc -l <"$candidate_private_root/pristine.paths" | tr -d ' ')" -eq 101 ]]
-[[ "$(find "$candidate_extracted" -mindepth 1 -type f | wc -l | tr -d ' ')" -eq 87 ]]
-[[ "$(find "$candidate_extracted" -mindepth 1 -type d | wc -l | tr -d ' ')" -eq 14 ]]
+  dfe405060753b90ef580b4a105a5c0e9cf4bb4f06adc79145f94572f7a4c5851 ]] || exit 1
+[[ "$(wc -l <"$candidate_private_root/pristine.paths" | tr -d ' ')" -eq 101 ]] || exit 1
+[[ "$(find "$candidate_extracted" -mindepth 1 -type f | wc -l | tr -d ' ')" -eq 87 ]] || exit 1
+[[ "$(find "$candidate_extracted" -mindepth 1 -type d | wc -l | tr -d ' ')" -eq 14 ]] || exit 1
 [[ "$(find "$candidate_extracted" -type f -exec wc -c {} + |
-  awk 'END { print $1 }')" -eq 2680769 ]]
+  awk 'END { print $1 }')" -eq 2680769 ]] || exit 1
 
 candidate_fixture_rel='crates/maverick-tests/fixtures/quiche-p1-candidate'
 candidate_fixture_source="$repository_root/$candidate_fixture_rel"
@@ -437,21 +416,21 @@ LC_ALL=C find "$candidate_fixture_source" -type f -print |
   sed "s#^$candidate_fixture_source/##" |
   LC_ALL=C sort >"$candidate_fixture_files"
 [[ "$(cat "$candidate_fixture_files")" == "$(printf '%s\n' \
-  Cargo.lock Cargo.toml quiche-p1.patch tests/p1.rs)" ]]
+  Cargo.lock Cargo.toml quiche-p1.patch tests/p1.rs)" ]] || exit 1
 candidate_unexpected_fixture_entry="$(find \
   "$candidate_fixture_source" -mindepth 1 \
   ! -type f ! -type d -print -quit)" || exit 1
-[[ -z "$candidate_unexpected_fixture_entry" ]]
+[[ -z "$candidate_unexpected_fixture_entry" ]] || exit 1
 [[ "$(find "$candidate_fixture_source" -mindepth 1 -type d \
-  -print | sed "s#^$candidate_fixture_source/##")" == tests ]]
+  -print | sed "s#^$candidate_fixture_source/##")" == tests ]] || exit 1
 while IFS= read -r candidate_fixture_file; do
   [[ -f "$candidate_fixture_source/$candidate_fixture_file" &&
-    ! -L "$candidate_fixture_source/$candidate_fixture_file" ]]
+    ! -L "$candidate_fixture_source/$candidate_fixture_file" ]] || exit 1
   candidate_fixture_identity="$(
     candidate_stat_identity \
       "$candidate_fixture_source/$candidate_fixture_file"
   )"
-  [[ "${candidate_fixture_identity##*:}" == 644 ]]
+  [[ "${candidate_fixture_identity##*:}" == 644 ]] || exit 1
 done <"$candidate_fixture_files"
 candidate_fixture="$candidate_extracted/quiche-p1-candidate"
 mkdir -m 0700 "$candidate_fixture"
@@ -464,16 +443,14 @@ while IFS= read -r candidate_fixture_file; do
     "$candidate_fixture/$candidate_fixture_file"
 done <"$candidate_fixture_files"
 
-candidate_lock_registry_records "$candidate_fixture/Cargo.lock" \
-  >"$candidate_private_root/fixture-lock.records"
-candidate_lock_registry_records "$repository_root/Cargo.lock" \
-  >"$candidate_private_root/root-lock.records"
-[[ ! -s "$candidate_private_root/fixture-lock.records" ]] && exit 1
-[[ ! -s "$candidate_private_root/root-lock.records" ]] && exit 1
-candidate_unmatched_lock_records="$(comm -23 \
-  "$candidate_private_root/fixture-lock.records" \
-  "$candidate_private_root/root-lock.records")" || exit 1
-[[ -z "$candidate_unmatched_lock_records" ]]
+# This fixture is an immutable historical comparison, separate from the
+# maintained product dependency graph. Verify its original complete lockfile.
+[[ "$(shasum -a 256 "$candidate_fixture/Cargo.lock" | awk '{print $1}')" == \
+  3f5f62114ec78b855dec39e7e52649b66f89ec318d4a17426ee0fb12e8d5681d ]] || exit 1
+# A cold runner may no longer have the fixture's old packages after a product
+# upgrade. Fetch the exact locked graph before the existing offline checks.
+env CARGO_TARGET_DIR="$candidate_target" TMPDIR="$candidate_runtime_tmp" \
+  cargo fetch --locked --manifest-path "$candidate_fixture/Cargo.toml"
 if env | grep -Eq '^BORING_BSSL'; then
   exit 1
 fi
@@ -532,22 +509,22 @@ set +e
   2>"$candidate_private_root/red.stderr"
 candidate_red_exit=$?
 set -e
-[[ "$candidate_red_exit" -ne 0 ]]
-[[ ! -s "$candidate_private_root/red.stdout" ]]
+[[ "$candidate_red_exit" -ne 0 ]] || exit 1
+[[ ! -s "$candidate_private_root/red.stdout" ]] || exit 1
 [[ "$(grep -Ec '^error\[E0599\]' \
-  "$candidate_private_root/red.stderr")" -eq 1 ]]
+  "$candidate_private_root/red.stderr")" -eq 1 ]] || exit 1
 grep -Fq "no method named \`set_reject_peer_push_activity\`" \
   "$candidate_private_root/red.stderr"
 
 candidate_patch="$candidate_fixture/quiche-p1.patch"
 [[ "$(shasum -a 256 "$candidate_patch" | awk '{print $1}')" == \
-  c1023887ffab818409f69e2b971be1d15e5ded9d232d8e26b8956e4ddfec2a46 ]]
+  c1023887ffab818409f69e2b971be1d15e5ded9d232d8e26b8956e4ddfec2a46 ]] || exit 1
 candidate_numstat="$(
   cd "$candidate_source" &&
     git apply --numstat --no-index "$candidate_patch"
 )"
 [[ "$candidate_numstat" == "$(printf '%s\n' \
-  $'61\t1\tsrc/h3/mod.rs' $'28\t12\tsrc/h3/stream.rs')" ]]
+  $'61\t1\tsrc/h3/mod.rs' $'28\t12\tsrc/h3/stream.rs')" ]] || exit 1
 (
   cd "$candidate_source"
   git apply --check --no-index --whitespace=error-all \
@@ -558,7 +535,7 @@ candidate_patched_hash="$(
   candidate_tree_hash "$candidate_extracted" patched
 )" || exit 1
 [[ "$candidate_patched_hash" == \
-  ab0b52cc2f073f563ec57878893cb90885fbbdba230e165490882512a6374b7c ]]
+  ab0b52cc2f073f563ec57878893cb90885fbbdba230e165490882512a6374b7c ]] || exit 1
 
 candidate_test_list="$(
   "${candidate_cargo[@]}" test \
@@ -569,35 +546,35 @@ candidate_test_list="$(
   LC_ALL=C sort)" == "$(printf '%s\n' \
   'omitted_and_explicit_false_preserve_every_pristine_peer_push_outcome: test' \
   'strict_peer_push_gate_preserves_non_push_h3_behavior: test' \
-  'strict_peer_push_gate_rejects_every_surface_at_every_fragment_boundary: test')" ]]
+  'strict_peer_push_gate_rejects_every_surface_at_every_fragment_boundary: test')" ]] || exit 1
 "${candidate_cargo[@]}" test \
   --manifest-path "$candidate_fixture/Cargo.toml" \
   --offline --locked --test p1 -- --test-threads=1
 candidate_runtime_leftover="$(find "$candidate_runtime_tmp" \
   -mindepth 1 -print -quit)" || exit 1
-[[ -z "$candidate_runtime_leftover" ]]
+[[ -z "$candidate_runtime_leftover" ]] || exit 1
 
-[[ "$(git rev-parse HEAD)" == "$candidate_head" ]]
+[[ "$(git rev-parse HEAD)" == "$candidate_head" ]] || exit 1
 [[ "$(git status --porcelain=v1 --untracked-files=all)" == \
-  "$candidate_status" ]]
+  "$candidate_status" ]] || exit 1
 [[ "$(shasum -a 256 Cargo.toml | awk '{print $1}')" == \
-  "$candidate_root_manifest_hash" ]]
+  "$candidate_root_manifest_hash" ]] || exit 1
 [[ "$(shasum -a 256 Cargo.lock | awk '{print $1}')" == \
-  "$candidate_root_lock_hash" ]]
+  "$candidate_root_lock_hash" ]] || exit 1
 candidate_root_target_after="$(
   candidate_metadata_fingerprint "$candidate_root_target"
 )" || exit 1
-[[ "$candidate_root_target_after" == "$candidate_root_target_before" ]]
+[[ "$candidate_root_target_after" == "$candidate_root_target_before" ]] || exit 1
 candidate_quiche_source_after="$(
   candidate_metadata_fingerprint "$quiche_source"
 )" || exit 1
 [[ "$candidate_quiche_source_after" == \
-  "$candidate_quiche_source_before" ]]
+  "$candidate_quiche_source_before" ]] || exit 1
 candidate_registry_after="$(
   candidate_registry_fingerprint "$candidate_fixture_metadata"
 )" || exit 1
-[[ "$candidate_registry_after" == "$candidate_registry_before" ]]
-[[ "$(wc -c <"$candidate_archive" | tr -d ' ')" -eq 453798 ]]
+[[ "$candidate_registry_after" == "$candidate_registry_before" ]] || exit 1
+[[ "$(wc -c <"$candidate_archive" | tr -d ' ')" -eq 453798 ]] || exit 1
 [[ "$(shasum -a 256 "$candidate_archive" | awk '{print $1}')" == \
-  61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d ]]
+  61166d27591eb7cb1310eec2b8fc6ae0e0686e9e4ed742a3ffc6317171175e7d ]] || exit 1
 cmp "$candidate_archive" "$candidate_archive_copy"

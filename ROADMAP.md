@@ -1,9 +1,31 @@
 # Maverick Roadmap
 
-Date: 2026-11-11
+Date: 2026-11-16
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
+
+## Active — Comprehensive Review and Maintenance
+
+The 2026-11-16 owner request puts comprehensive inspection and justified
+updates before the deferred field plan. Preserve the verified Rust 1.100.0
+migration and published RC.5; prepare any changed dependency/runtime closure
+as an unpublished RC.6.
+
+1. Active dependency/tool inventories and supported updates are prepared.
+   Preserve the explicit libc upstream cap, existing YAML-null compatibility,
+   and immutable historical samples.
+2. Complete the reproduced runtime and verification corrections from the three
+   independent ordinary-model reviews. Keep supported protected routes separate
+   from legacy WebSocket compatibility; do not expand functionality.
+3. Independently review the repairs against the initial fixed-source findings;
+   keep original failures, provisional packages and replacement evidence distinct.
+4. Complete all applicable local/CI, security/dependency, fuzz, native package,
+   SBOM and upgrade/rollback checks; preserve source, artifacts and conclusions.
+
+Acceptance is the maintained candidate and attributable validation, with any
+unresolved blockers stated. No real-network validation, deployment, resource
+creation, new public release or Stable publication is authorized by this work.
 
 ## Delivered — Reliable Local Startup and Handoff
 

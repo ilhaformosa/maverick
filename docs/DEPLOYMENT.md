@@ -8,9 +8,11 @@ explicitly authorized owner-controlled Linux host, not the development Mac.
 ## Select and verify the build
 
 Use one reviewed source revision for client, server and integration tests.
-The RC.5 candidate archive includes H2 and H3, SOURCE.txt, VERSION.txt and
+The full candidate archive includes H2 and H3, SOURCE.txt, VERSION.txt and
 checksums. It is a candidate artifact, not an independently published Stable
-release. To build the same feature set on supported Linux x86_64:
+release. RC.5 remains the published checkpoint; RC.6 maintenance requires its
+own complete qualification before selection. See [STATUS.md](../STATUS.md).
+To build the same feature set on supported Linux x86_64:
 
 ```sh
 cargo build --locked --release -p maverick-cli --no-default-features --features experimental-h3

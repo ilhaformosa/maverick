@@ -1689,7 +1689,7 @@ mod tests {
         let key_path = tmp.path().join("key.pem");
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         tokio::fs::write(&cert_path, certified.cert.pem()).await?;
-        tokio::fs::write(&key_path, certified.key_pair.serialize_pem()).await?;
+        tokio::fs::write(&key_path, certified.signing_key.serialize_pem()).await?;
         tokio::fs::write(tmp.path().join("index.html"), "<!doctype html>").await?;
 
         let runtime = MaverickServer::start(ServerConfig {
@@ -1738,7 +1738,7 @@ mod tests {
         let key_path = tmp.path().join("key.pem");
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         tokio::fs::write(&cert_path, certified.cert.pem()).await?;
-        tokio::fs::write(&key_path, certified.key_pair.serialize_pem()).await?;
+        tokio::fs::write(&key_path, certified.signing_key.serialize_pem()).await?;
         tokio::fs::write(tmp.path().join("index.html"), "<!doctype html>").await?;
 
         let err = match MaverickServer::start(ServerConfig {
@@ -1858,7 +1858,7 @@ mod tests {
         let key_path = tmp.path().join("key.pem");
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         tokio::fs::write(&cert_path, certified.cert.pem()).await?;
-        tokio::fs::write(&key_path, certified.key_pair.serialize_pem()).await?;
+        tokio::fs::write(&key_path, certified.signing_key.serialize_pem()).await?;
         tokio::fs::write(tmp.path().join("index.html"), "<!doctype html>").await?;
 
         let config = server_config_builder()

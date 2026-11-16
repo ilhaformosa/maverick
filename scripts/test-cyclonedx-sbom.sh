@@ -225,7 +225,7 @@ mkdir -m 0700 "$mock_generation_dir"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'if [[ "$*" == "cyclonedx --version" ]]; then' \
-  '  printf "%s\n" "cargo-cyclonedx-cyclonedx 0.5.9"' \
+  '  printf "%s\n" "cargo-cyclonedx-cyclonedx 0.5.10"' \
   '  exit 0' \
   'fi' \
   'private_marker="/U""sers/${MOCK_PRIVATE_SEGMENT:?}/private"' \
@@ -303,9 +303,9 @@ fi
 
 linux_components="$(jq '.components | length' "$linux_first")"
 mac_components="$(jq '.components | length' "$mac_first")"
-# RC.3 includes the H3 runtime closure. Full verification above compares every
+# RC.6 updates the full H2/H3 dependency closure. Verification above compares every
 # component with locked Cargo metadata; retain exact counts and target delta too.
-[[ "$linux_components" == 192 && "$mac_components" == 190 ]] || fail
+[[ "$linux_components" == 209 && "$mac_components" == 207 ]] || fail
 jq -r '.components[] | "\(.name)@\(.version)"' "$linux_first" | sort -u \
   >"$private_tmp/linux-components"
 jq -r '.components[] | "\(.name)@\(.version)"' "$mac_first" | sort -u \
@@ -407,6 +407,33 @@ expect_failure document-count "$multi_file"
 
 make_fixture identity '.bomFormat = "NotCycloneDX"'
 expect_failure identity "$fixture_path"
+
+make_fixture tool-version '.metadata.tools[0].version = "0.0.0"'
+expect_failure tool-identity "$fixture_path"
+
+make_fixture stale-tool-version '.metadata.tools[0].version = "0.5.9"'
+expect_failure tool-identity "$fixture_path"
+
+# Keep jq variables literal for the identifier/reference mutation.
+# shellcheck disable=SC2016
+make_fixture component-version-identity '
+  (.components[] | select(.name == "quiche").purl) as $old |
+  ($old | sub("@0.30.1$"; "@0.30.0")) as $new |
+  walk(if type == "string" and . == $old then $new else . end)'
+expect_failure component-identity "$fixture_path"
+
+# shellcheck disable=SC2016
+make_fixture component-name-identity '
+  (.components[] | select(.name == "quiche").purl) as $old |
+  ($old | sub("/quiche@"; "/other-package@")) as $new |
+  walk(if type == "string" and . == $old then $new else . end)'
+expect_failure component-identity "$fixture_path"
+
+make_fixture missing-dependency-edges '.dependencies |= map(.dependsOn = [])'
+expect_failure graph-closure "$fixture_path" full
+
+make_fixture extra-dependency-edge '.dependencies[0].dependsOn += [.dependencies[0].ref]'
+expect_failure graph-closure "$fixture_path" full
 
 make_fixture target \
   '(.metadata.properties[] | select(.name == "cdx:rustc:sbom:target:triple").value) = "aarch64-apple-darwin"'
@@ -1028,11 +1055,11 @@ wait "$verify_pid" || mutation_status=$?
 [[ "$(cat "$mutation_output")" == "sbom verification failed: mutation" ]] || fail
 negative_checks=$((negative_checks + 1))
 
-[[ "$negative_checks" -eq 55 ]] || fail
+[[ "$negative_checks" -eq 61 ]] || fail
 linux_bytes="$(measure_test_file "$linux_first")" || fail
 mac_bytes="$(measure_test_file "$mac_first")" || fail
 [[ "$linux_bytes" =~ ^[0-9]+$ && "$mac_bytes" =~ ^[0-9]+$ ]] || fail
 [[ "$linux_bytes" -le "$max_sbom_bytes" ]] || fail
 [[ "$mac_bytes" -le "$max_sbom_bytes" ]] || fail
 
-echo "CycloneDX SBOM focused tests OK (2 targets, 55 negative checks)"
+echo "CycloneDX SBOM focused tests OK (2 targets, 61 negative checks)"

@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 pub use runtime::{start_packet_runtime, PacketRuntimeHandle};
 
 pub const ENGINE_NAME: &str = "smoltcp";
-pub const ENGINE_VERSION: &str = "0.13.1";
+pub const ENGINE_VERSION: &str = "0.14.0";
 
 const ENGINE_ASSEMBLER_MAX_SEGMENTS: usize = 4;
 const ENGINE_FRAGMENTATION_BUFFER_BYTES: usize = 1500;

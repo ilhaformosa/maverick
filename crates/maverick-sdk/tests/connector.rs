@@ -32,7 +32,7 @@ impl Fixture {
         let cert_path = files.path().join("cert.pem");
         let key_path = files.path().join("key.pem");
         std::fs::write(&cert_path, cert.cert.pem())?;
-        std::fs::write(&key_path, cert.key_pair.serialize_pem())?;
+        std::fs::write(&key_path, cert.signing_key.serialize_pem())?;
         let pin = format!(
             "sha256/{}",
             URL_SAFE_NO_PAD.encode(Sha256::digest(cert.cert.der()))

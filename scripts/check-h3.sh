@@ -33,8 +33,8 @@ cargo test --locked -p maverick-cli -p maverick-sdk \
 cargo clippy --locked -p maverick-cli -p maverick-client -p maverick-server \
   --features experimental-h3 --all-targets -- -D warnings
 product_graph="$(cargo tree --locked -p maverick-cli --features experimental-h3 --edges normal,build --prefix none)"
-[[ "$(grep -Ecx 'boring-sys v5\.5\.0' <<<"$product_graph")" -eq 1 ]]
-[[ "$(grep -Ecx 'quiche v0\.30\.1' <<<"$product_graph")" -eq 1 ]]
+[[ "$(grep -Ecx 'boring-sys v5\.5\.0' <<<"$product_graph")" -eq 1 ]] || exit 1
+[[ "$(grep -Ecx 'quiche v0\.30\.1' <<<"$product_graph")" -eq 1 ]] || exit 1
 cargo fmt --manifest-path "$manifest" -- --check
 cargo clippy --locked --manifest-path "$manifest" --features proxy --all-targets -- -D warnings
 cargo test --locked --manifest-path "$manifest" --features proxy

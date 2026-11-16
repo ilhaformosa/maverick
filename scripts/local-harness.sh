@@ -42,11 +42,11 @@ trap 'rm -rf "$config_tmp"' EXIT
   "$cargo_bin" run --quiet --manifest-path "$repo_root/Cargo.toml" \
     -p maverick-cli -- gen-config --h2 >/dev/null
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    [[ "$(stat -f '%Lp' client.generated.yaml)" == "600" ]]
-    [[ "$(stat -f '%Lp' server.generated.yaml)" == "600" ]]
+    [[ "$(stat -f '%Lp' client.generated.yaml)" == "600" ]] || exit 1
+    [[ "$(stat -f '%Lp' server.generated.yaml)" == "600" ]] || exit 1
   else
-    [[ "$(stat -c '%a' client.generated.yaml)" == "600" ]]
-    [[ "$(stat -c '%a' server.generated.yaml)" == "600" ]]
+    [[ "$(stat -c '%a' client.generated.yaml)" == "600" ]] || exit 1
+    [[ "$(stat -c '%a' server.generated.yaml)" == "600" ]] || exit 1
   fi
   rg -q 'tls_fingerprint: "browser_mimic"' client.generated.yaml
   rg -q 'carrier: "h2"' client.generated.yaml
@@ -67,6 +67,9 @@ echo "==> isolated test-server preparation checks"
 
 echo "==> security-tool installer checks"
 ./scripts/test-install-security-tools.sh
+
+echo "==> security inventory failure handling"
+./scripts/test-security-dependency-inventory.sh
 
 echo "==> project-cache inventory checks"
 ./scripts/test-inspect-project-cache.sh

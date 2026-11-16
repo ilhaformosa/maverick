@@ -404,6 +404,44 @@ async fn cloudflare_ws_tcp_relay_roundtrip() -> Result<()> {
 }
 
 #[tokio::test]
+async fn legacy_websocket_preserves_upload_after_target_fin() -> Result<()> {
+    for fronted in [false, true] {
+        let fixture = MaverickHarness::start_with_options(HarnessOptions {
+            experimental_cloudflare_ws: !fronted,
+            cdn_fronting: fronted,
+            ..HarnessOptions::default()
+        })
+        .await?;
+        let target = TcpListener::bind("127.0.0.1:0").await?;
+        let target_addr = target.local_addr()?;
+        let target_task = tokio::spawn(async move {
+            let (mut socket, _) = target.accept().await?;
+            socket.write_all(b"response-first").await?;
+            socket.shutdown().await?;
+            let mut upload = Vec::new();
+            socket.read_to_end(&mut upload).await?;
+            Ok::<_, anyhow::Error>(upload)
+        });
+        let mut client = socks_connect(fixture.client.local_addr, target_addr).await?;
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(3), client.read_to_end(&mut response)).await??;
+        assert_eq!(response, b"response-first");
+        let payload = vec![0x5a; 64 * 1024];
+        client.write_all(&payload).await?;
+        client.shutdown().await?;
+        let upload = timeout(Duration::from_secs(3), target_task).await???;
+        assert!(
+            upload == payload,
+            "upload changed or truncated: received {} bytes, expected {}",
+            upload.len(),
+            payload.len()
+        );
+        fixture.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn cdn_fronting_websocket_tcp_relay_roundtrip() -> Result<()> {
     let fixture = MaverickHarness::start_with_options(HarnessOptions {
         cdn_fronting: true,
@@ -813,6 +851,55 @@ async fn server_per_source_connection_limit_rejects_extra_connections() -> Resul
 
     drop(second);
     drop(first);
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stalled_fallback_bodies_release_pre_auth_capacity_without_disconnect() -> Result<()> {
+    let fixture = MaverickHarness::start_with_options(HarnessOptions {
+        metrics: true,
+        server_pre_auth_max_concurrent: Some(3),
+        server_handshake_timeout_ms: Some(1_000),
+        ..HarnessOptions::default()
+    })
+    .await?;
+    let metrics_addr = fixture
+        .server
+        .metrics_addr
+        .context("missing metrics listener")?;
+    let transport::TunnelRequestSender::H2(mut ordinary) =
+        transport::connect(&fixture.client_config()).await?
+    else {
+        anyhow::bail!("expected H2 transport");
+    };
+    let mut stalled = Vec::new();
+    for _ in 0..2 {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/ordinary")
+            .body(())?;
+        // Keep both request bodies and the underlying connection open.
+        stalled.push(ordinary.sender.send_request(request, false)?);
+    }
+    wait_for_metric_value(metrics_addr, "active_pre_auth", 3).await?;
+    wait_for_metric_value(metrics_addr, "active_pre_auth", 1).await?;
+
+    // Reclaim request capacity without closing the original H2 connection.
+    let (response, _) = ordinary.sender.send_request(
+        Request::builder().method(Method::GET).uri("/").body(())?,
+        true,
+    )?;
+    assert_eq!(response.await?.status(), StatusCode::OK);
+    let echo = start_echo_server().await?;
+    let mut client = socks_connect(fixture.client.local_addr, echo).await?;
+    client.write_all(b"after-timeout").await?;
+    let mut reply = [0; 13];
+    client.read_exact(&mut reply).await?;
+    assert_eq!(&reply, b"after-timeout");
+    drop(client);
+    drop(stalled);
+    drop(ordinary);
     fixture.shutdown().await?;
     Ok(())
 }

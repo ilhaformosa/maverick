@@ -824,7 +824,12 @@ async fn handle_request(
         .await
     } else {
         let mut body_stream = request.into_body();
-        let request_body = collect_fallback_request_body(&mut body_stream).await?;
+        let request_body = timeout(
+            Duration::from_millis(state.config.advanced.handshake_timeout_ms),
+            collect_fallback_request_body(&mut body_stream),
+        )
+        .await
+        .context("fallback request body timed out")??;
         send_fallback_with_body(
             respond,
             &state,
@@ -1728,59 +1733,28 @@ where
     let (mut target_read, mut target_write) = target.into_split();
     let mut target_buf = vec![0u8; 16 * 1024];
     let mut client_eof = false;
+    let mut target_eof = false;
 
     loop {
-        if client_eof {
-            tokio::select! {
-                _ = tokio::time::sleep(policy.idle_timeout) => {
-                    break;
-                }
-                target_read_result = target_read.read(&mut target_buf) => {
-                    let n = target_read_result?;
-                    if n == 0 {
-                        ws_send_frame_with_policy(
-                            &mut ws_sink,
-                            Frame::new(FrameType::TcpFin, 0, flow_id, Bytes::new()),
-                            max_frame_size,
-                            &policy,
-                        )
-                        .await?;
-                        break;
-                    }
-                    if let Some(limiter) = &policy.rate_limiter {
-                        limiter.throttle(n).await;
-                    }
-                    ws_send_frame_with_policy(
-                        &mut ws_sink,
-                        Frame::new(
-                            FrameType::TcpData,
-                            0,
-                            flow_id,
-                            Bytes::copy_from_slice(&target_buf[..n]),
-                        ),
-                        max_frame_size,
-                        &policy,
-                    )
-                    .await?;
-                }
-            }
-            continue;
+        if client_eof && target_eof {
+            break;
         }
 
         tokio::select! {
             _ = tokio::time::sleep(policy.idle_timeout) => {
                 break;
             }
-            target_read_result = target_read.read(&mut target_buf) => {
+            target_read_result = target_read.read(&mut target_buf), if !target_eof => {
                 let n = target_read_result?;
                 if n == 0 {
+                    target_eof = true;
                     ws_send_frame_with_policy(
                         &mut ws_sink,
                         Frame::new(FrameType::TcpFin, 0, flow_id, Bytes::new()),
                         max_frame_size,
                         &policy,
                     ).await?;
-                    break;
+                    continue;
                 }
                 if let Some(limiter) = &policy.rate_limiter {
                     limiter.throttle(n).await;
@@ -1806,9 +1780,13 @@ where
                                     }
                                     target_write.write_all(&frame.payload).await?;
                                 }
-                                FrameType::TcpFin | FrameType::CloseFlow | FrameType::TcpReset => {
+                                FrameType::TcpFin => {
                                     let _ = target_write.shutdown().await;
                                     client_eof = true;
+                                }
+                                FrameType::CloseFlow | FrameType::TcpReset => {
+                                    let _ = target_write.shutdown().await;
+                                    break;
                                 }
                                 _ => {}
                             },
@@ -1818,7 +1796,7 @@ where
                     Some(Err(err)) => return Err(err.into()),
                     None => {
                         let _ = target_write.shutdown().await;
-                        client_eof = true;
+                        break;
                     }
                 }
             }

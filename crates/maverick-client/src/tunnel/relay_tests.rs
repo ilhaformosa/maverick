@@ -346,3 +346,34 @@ async fn full_terminal_stops_upload_before_delayed_trailers() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn response_fin_then_reset_releases_silent_upload() -> Result<()> {
+    response_fin_then_transport_failure(false).await
+}
+
+#[tokio::test(start_paused = true)]
+async fn response_fin_then_connection_loss_releases_silent_upload() -> Result<()> {
+    response_fin_then_transport_failure(true).await
+}
+
+async fn response_fin_then_transport_failure(connection_loss: bool) -> Result<()> {
+    let idle = Duration::from_secs(10);
+    let (tunnel, _request, mut response, mut drivers) = h2_pair(65_535, idle).await?;
+    let (local, mut app) = tokio::io::duplex(64);
+    let relay = tokio::spawn(relay_stream_and_tunnel(local, tunnel, idle));
+    send_response_fin(&mut response)?;
+    assert_eq!(app.read(&mut [0]).await?, 0);
+    // Leave application upload open and idle after observing response EOF.
+    if connection_loss {
+        drivers.abort_all();
+        while drivers.join_next().await.is_some() {}
+    } else {
+        response.send_reset(h2::Reason::CANCEL);
+    }
+    timeout(Duration::from_secs(1), relay)
+        .await
+        .context("transport failure must release upload before the idle deadline")??
+        .expect_err("transport failure must be reported");
+    Ok(())
+}

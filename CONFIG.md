@@ -181,6 +181,11 @@ advanced:
 Server `log.redact` follows the same rule as the client: it must remain `true`.
 The prototype does not support a non-redacted operational logging mode.
 
+Server `advanced.handshake_timeout_ms` also bounds collection of an ordinary
+H2 fallback request body. The default is 10 seconds for the complete body,
+not a deadline renewed by each arriving byte. Expiry releases the request's
+pre-authentication capacity; the existing 1 MiB fallback body limit also applies.
+
 Server `advanced.max_frame_size` accepts **65536 through 1048576 bytes**,
 inclusive; the default is **65536**. This is the maximum payload size of one
 Maverick frame, not a limit on the total TCP transfer. The range matches the
@@ -254,8 +259,10 @@ certificate pin must match before Maverick authentication begins.
 This bounded v1 extension replaces the former requirement to implement all of
 Product Config v2 before H3 TCP integration. It does not revive
 `advanced.experimental_h3`, change authentication/frame versions, or make the
-v2 policy parser a runnable configuration. Default generated v1 files omit the
-new field and continue to use H2. `gen-config --quiche-h3` creates a matching
+v2 policy parser a runnable configuration. Existing v1 files that omit the
+carrier still use H2. New direct generation writes client auto/server dual and
+`allow_reliable`, requiring an H3-capable build; `gen-config --h2` creates a
+fixed-H2 pair and also works with H2-only builds. `gen-config --quiche-h3` creates a matching
 explicit-H3 pair when the CLI was built with `experimental-h3`; an unsupported
 build rejects the option before writing either file. `maverick version` includes
 `quiche-h3` in its feature list only for a capable build. This reports compiled
@@ -424,7 +431,8 @@ Supply an owner-verified public origin leaf certificate to derive its mandatory
 pin; add `--origin-ca ca.pem` for private roots. Generation fails without the
 origin identity and never fetches trust through the intermediary. Install the
 matching origin certificate/key in the server's existing TLS fields, then set
-the outer endpoint normally. Bare generation still means direct H2. The relay
+the outer endpoint normally. Bare generation means direct dual/auto; use `--h2`
+for a fixed-H2 direct pair. The relay
 option cannot be combined with H3/automatic generation.
 
 An H2 intermediary can terminate outer TLS while forwarding a separate inner

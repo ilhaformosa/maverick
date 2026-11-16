@@ -48,6 +48,7 @@ pub struct HarnessOptions {
     pub server_shaping: Option<ShapingConfig>,
     pub server_idle_timeout_secs: Option<u64>,
     pub server_handshake_timeout_ms: Option<u64>,
+    pub server_pre_auth_max_concurrent: Option<u32>,
     pub server_max_concurrent_connections: Option<u32>,
     pub server_max_concurrent_connections_per_source: Option<u32>,
     pub server_fallback_max_concurrent: Option<u32>,
@@ -86,6 +87,7 @@ impl Default for HarnessOptions {
             server_shaping: None,
             server_idle_timeout_secs: None,
             server_handshake_timeout_ms: None,
+            server_pre_auth_max_concurrent: None,
             server_max_concurrent_connections: None,
             server_max_concurrent_connections_per_source: None,
             server_fallback_max_concurrent: None,
@@ -198,6 +200,9 @@ impl MaverickHarness {
         }
         if let Some(handshake_timeout_ms) = options.server_handshake_timeout_ms {
             server_advanced.handshake_timeout_ms = handshake_timeout_ms;
+        }
+        if let Some(pre_auth_max_concurrent) = options.server_pre_auth_max_concurrent {
+            server_advanced.pre_auth_max_concurrent = pre_auth_max_concurrent;
         }
         if let Some(max_connections) = options.server_max_concurrent_connections {
             server_advanced.max_concurrent_connections = max_connections;

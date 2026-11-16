@@ -15,10 +15,22 @@ passed. The migration's Cargo binary-path/cache-layout fixes and 45-minute
 macOS cold-build allowance remain in place.
 
 This work prepares an unpublished RC.6. Active runtime/test dependencies,
-security/SBOM tooling, workflow pins and fuzz reproducibility are being checked
-and updated with compatibility validation. Independent full-source security
-review and all applicable local/CI, artifact/SBOM and rollback gates remain
-required; no completed finding or candidate qualification is claimed yet.
+security/SBOM tooling, workflow pins and fuzz reproducibility are updated with
+compatibility validation. Three independent ordinary-model reviews of
+`9fbcad2` covered runtime/security, SDK/configuration and delivery tooling. The
+automated Deep Scan did not start; the owner approved these reviews instead,
+and no plugin/Daybreak audit result is claimed.
+
+The reviews identified H2 request lifetime/cancellation gaps, a legacy WebSocket
+half-close defect, verification failures that could be mistaken for success,
+SBOM identity/relationship gaps and stale current-default documentation.
+Concrete runtime and verifier counterexamples were reproduced locally before
+repair. Corrections reuse existing timeouts, H2 reset notification and Cargo
+metadata; the historical P1 lock remains unchanged and independently pinned.
+Patch follow-up and all applicable final local/CI, native artifact/SBOM and
+rollback gates remain required. Provisional `9fbcad2` binaries are not final
+qualification. Its P1 tests ran, but the old macOS shell did not enforce some
+bare assertions; that overall pass is not credited as complete gate evidence.
 Protocol/SDK features remain frozen. Performance-based selection and active
 session migration are not introduced. Historical quiche comparisons and fixed
 Beta.4 rollback evidence remain unchanged.
@@ -492,8 +504,8 @@ It ends active TCP transfers and releases local listeners for restart. Close
 delivery remains best effort; forced process termination or datagram loss can
 still leave peers waiting for failure or idle detection.
 
-Product H3 uses upstream quiche 0.30.0 and its official Boring integration,
-with Boring 5.2.0, boring-sys 5.3.0 and tokio-boring 5.2.0 aligned across H2/H3.
+Product H3 uses upstream quiche 0.30.1 and its official Boring integration,
+with Boring, boring-sys and tokio-boring 5.5.0 aligned across H2/H3.
 No private quiche patch enters the product. This shared TLS update also affects
 default H2, so its default/rustls compatibility checks remain required.
 

@@ -266,6 +266,13 @@ jq -e '
 ' "$sbom_document" >/dev/null 2>&1 || fail duplicate-ref
 
 jq -e '
+  all(.components[];
+    (.name | type == "string" and length > 0) and
+    (.version | type == "string" and length > 0) and
+    .purl == ("pkg:cargo/" + .name + "@" + .version))
+' "$sbom_document" >/dev/null 2>&1 || fail component-identity
+
+jq -e '
   (.dependencies | type) == "array"
 ' "$sbom_document" >/dev/null 2>&1 || fail graph-ref
 
@@ -339,8 +346,8 @@ if [[ "$verification_level" == "full" ]]; then
     ([.resolve.nodes[] | select(.id == $root)][0].features == $features)
   ' "$metadata_file" >/dev/null 2>&1 || fail metadata-root
 
-  expected_components="$private_tmp/expected-components"
-  jq -r '
+  expected_inventory="$private_tmp/expected-inventory.json"
+  jq -S --arg root_purl "$root_purl" '
     def normal_closure($nodes; $seen; $frontier):
       if ($frontier | length) == 0 then $seen
       else
@@ -355,11 +362,26 @@ if [[ "$verification_level" == "full" ]]; then
     . as $m |
     (reduce $m.resolve.nodes[] as $node ({}; .[$node.id] = $node)) as $nodes |
     normal_closure($nodes; [$m.resolve.root]; [$m.resolve.root]) as $ids |
-    $m.packages[] |
-    select(.id != $m.resolve.root) |
-    select(.id as $id | $ids | index($id)) |
-    "\(.name)@\(.version)"
-  ' "$metadata_file" | sort >"$expected_components" || fail metadata
+    (reduce $m.packages[] as $package ({};
+      .[$package.id] = (
+        if $package.id == $m.resolve.root then $root_purl
+        else "pkg:cargo/\($package.name)@\($package.version)" end
+      ))) as $refs |
+    {
+      components: ([$m.packages[] |
+        select(.id != $m.resolve.root) |
+        select(.id as $id | $ids | index($id)) |
+        "\(.name)@\(.version)"] | sort),
+      dependencies: ([$ids[] as $id | {
+        ref: $refs[$id],
+        dependsOn: ([$nodes[$id].deps[]? |
+          select(any(.dep_kinds[]?; .kind == null)) |
+          $refs[.pkg]] | unique | sort)
+      }] | sort_by(.ref))
+    }
+  ' "$metadata_file" >"$expected_inventory" || fail metadata
+  expected_components="$private_tmp/expected-components"
+  jq -r '.components[]' "$expected_inventory" >"$expected_components" || fail metadata
 
   actual_components="$private_tmp/actual-components"
   jq -r '.components[] | "\(.name)@\(.version)"' "$sbom_document" |
@@ -377,6 +399,13 @@ if [[ "$verification_level" == "full" ]]; then
   [[ ! -s "$expected_duplicates" ]] || fail ambiguous-identity
   [[ ! -s "$actual_duplicates" ]] || fail ambiguous-identity
   cmp -s "$expected_components" "$actual_components" || fail closure
+
+  expected_graph="$private_tmp/expected-graph.json"
+  actual_graph="$private_tmp/actual-graph.json"
+  jq -S '.dependencies' "$expected_inventory" >"$expected_graph" || fail metadata
+  jq -S '[.dependencies[] | {ref, dependsOn: (.dependsOn | sort)}] | sort_by(.ref)' \
+    "$sbom_document" >"$actual_graph" || fail graph-closure
+  cmp -s "$expected_graph" "$actual_graph" || fail graph-closure
 fi
 
 [[ -f "$sbom_path" && ! -L "$sbom_path" ]] || fail mutation

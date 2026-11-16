@@ -47,10 +47,19 @@ echo "==> fuzz harness dependencies"
 echo "==> first-party unsafe-code inventory"
 unsafe_pattern='(^|[^[:alnum:]_])unsafe[[:space:]]*(\{|fn|impl|trait|extern)'
 unsafe_pattern+='|#\[[[:space:]]*(allow|warn|deny)[[:space:]]*\([[:space:]]*unsafe_code[[:space:]]*\)'
-if rg -n "$unsafe_pattern" crates fuzz conformance scripts -g '*.rs' \
-  -g '!crates/maverick-tests/src/bin/maverick-tun-phase2/linux_tun.rs'; then
-  echo "first-party unsafe Rust construct found; triage before release" >&2
-  exit 1
-fi
+unsafe_status=0
+rg -n "$unsafe_pattern" crates fuzz conformance scripts -g '*.rs' \
+  -g '!crates/maverick-tests/src/bin/maverick-tun-phase2/linux_tun.rs' || unsafe_status=$?
+case "$unsafe_status" in
+  0)
+    echo "first-party unsafe Rust construct found; triage before release" >&2
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "unable to complete first-party unsafe-code inventory" >&2
+    exit 1
+    ;;
+esac
 
 echo "security dependency inventory OK"

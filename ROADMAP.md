@@ -12,13 +12,14 @@ updates before the deferred field plan. Preserve the verified Rust 1.100.0
 migration and published RC.5; prepare any changed dependency/runtime closure
 as an unpublished RC.6.
 
-1. Inventory every active direct dependency, locked graph, project tool and
-   workflow pin; distinguish live components from immutable historical samples.
-2. Apply supported updates and review protocol/SDK, security, resource cleanup,
-   configuration compatibility and release/deployment boundaries. Fix concrete
-   problems with existing mechanisms; do not create speculative frameworks.
-3. Independently review a fixed full-source snapshot and verify actual findings;
-   keep review coverage and original/replacement evidence distinguishable.
+1. Active dependency/tool inventories and supported updates are prepared.
+   Preserve the explicit libc upstream cap, existing YAML-null compatibility,
+   and immutable historical samples.
+2. Complete the reproduced runtime and verification corrections from the three
+   independent ordinary-model reviews. Keep supported protected routes separate
+   from legacy WebSocket compatibility; do not expand functionality.
+3. Independently review the repairs against the initial fixed-source findings;
+   keep original failures, provisional packages and replacement evidence distinct.
 4. Complete all applicable local/CI, security/dependency, fuzz, native package,
    SBOM and upgrade/rollback checks; preserve source, artifacts and conclusions.
 

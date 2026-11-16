@@ -96,6 +96,21 @@ impl H2ClientTunnel {
 }
 
 impl H2Sender<'_> {
+    pub(crate) async fn wait_for_reset(&mut self) -> Result<()> {
+        let result = match poll_fn(|cx| self.stream.poll_reset(cx)).await {
+            Ok(reason) => {
+                // A Reason converted to h2::Error loses the is_reset marker.
+                if let Some(lease) = self.lease {
+                    lease.record_runtime_stream_reset();
+                }
+                Err(h2::Error::from(reason).into())
+            }
+            Err(error) => Err(error.into()),
+        };
+        record_h2_runtime_failure(self.lease, &result);
+        result
+    }
+
     pub(crate) async fn send_frame(&mut self, frame: Frame, end_stream: bool) -> Result<()> {
         let result = async {
             let frames = prepare_outgoing_frames(frame, self.batcher, &self.padding).await;

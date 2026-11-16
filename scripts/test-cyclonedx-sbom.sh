@@ -414,6 +414,27 @@ expect_failure tool-identity "$fixture_path"
 make_fixture stale-tool-version '.metadata.tools[0].version = "0.5.9"'
 expect_failure tool-identity "$fixture_path"
 
+# Keep jq variables literal for the identifier/reference mutation.
+# shellcheck disable=SC2016
+make_fixture component-version-identity '
+  (.components[] | select(.name == "quiche").purl) as $old |
+  ($old | sub("@0.30.1$"; "@0.30.0")) as $new |
+  walk(if type == "string" and . == $old then $new else . end)'
+expect_failure component-identity "$fixture_path"
+
+# shellcheck disable=SC2016
+make_fixture component-name-identity '
+  (.components[] | select(.name == "quiche").purl) as $old |
+  ($old | sub("/quiche@"; "/other-package@")) as $new |
+  walk(if type == "string" and . == $old then $new else . end)'
+expect_failure component-identity "$fixture_path"
+
+make_fixture missing-dependency-edges '.dependencies |= map(.dependsOn = [])'
+expect_failure graph-closure "$fixture_path" full
+
+make_fixture extra-dependency-edge '.dependencies[0].dependsOn += [.dependencies[0].ref]'
+expect_failure graph-closure "$fixture_path" full
+
 make_fixture target \
   '(.metadata.properties[] | select(.name == "cdx:rustc:sbom:target:triple").value) = "aarch64-apple-darwin"'
 expect_failure target "$fixture_path"
@@ -1034,11 +1055,11 @@ wait "$verify_pid" || mutation_status=$?
 [[ "$(cat "$mutation_output")" == "sbom verification failed: mutation" ]] || fail
 negative_checks=$((negative_checks + 1))
 
-[[ "$negative_checks" -eq 57 ]] || fail
+[[ "$negative_checks" -eq 61 ]] || fail
 linux_bytes="$(measure_test_file "$linux_first")" || fail
 mac_bytes="$(measure_test_file "$mac_first")" || fail
 [[ "$linux_bytes" =~ ^[0-9]+$ && "$mac_bytes" =~ ^[0-9]+$ ]] || fail
 [[ "$linux_bytes" -le "$max_sbom_bytes" ]] || fail
 [[ "$mac_bytes" -le "$max_sbom_bytes" ]] || fail
 
-echo "CycloneDX SBOM focused tests OK (2 targets, 57 negative checks)"
+echo "CycloneDX SBOM focused tests OK (2 targets, 61 negative checks)"

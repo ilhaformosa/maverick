@@ -4,9 +4,15 @@ Maverick is an experimental Rust privacy proxy. It is Beta software, is
 not production-ready, and does not claim anonymity, censorship resistance, or
 exact browser fingerprint equivalence.
 
-[STATUS.md](STATUS.md) records current capabilities, release state and
-authorization. [ROADMAP.md](ROADMAP.md) gives the next deliverables;
-[CONFIG.md](CONFIG.md) describes runnable configuration.
+The current [RC.6 prerelease](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
+is the candidate for future field acceptance. Use its Apple Silicon macOS CLI
+for the test client and its Linux x86_64 CLI for the server. Each platform has
+an archive, a SHA-256 checksum and a software bill of materials (SBOM).
+The [SDK source at `9adc014`](https://github.com/ilhaformosa/maverick/tree/v1.2.0-rc.6)
+matches both packages.
+The packages have passed local and CI checks. Field testing, deployment and
+Stable publication remain deferred. See the [qualification record](STATUS.md#rc6-checkpoint--2026-11-16)
+and [planned acceptance by route](ROADMAP.md#proposed-field-acceptance--discussion-only).
 
 ## Build and Configure
 
@@ -58,15 +64,7 @@ selection remain unsupported. Profile URI v1 rejects new transport/UDP policies
 it cannot preserve; use full YAML or stored SDK profiles.
 See [CONFIG.md](CONFIG.md#transport).
 
-These capabilities and the reviewed maintenance fixes are included in the
-[RC.6 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
-at `9adc014`, published as a prerelease/non-Latest for macOS arm64 and Linux
-x86_64. Its updated dependencies and actual packages have their own local/CI
-qualification; see [STATUS.md](STATUS.md) for exact evidence and remaining field
-gates. RC.5 and older files remain immutable. RC.2 does not include H3 or
-subsequent changes. This checkpoint is not Stable or production qualification.
-
-For an H2 intermediary that terminates outer TLS, RC.5 and source builds provide explicit
+For an H2 intermediary that terminates outer TLS, RC.6 provides
 origin-pinned inner TLS through `advanced.end_to_end`. Generate the protected
 pair using `gen-config --relay --origin-name origin.example.invalid --origin-cert origin.pem`, optionally with `--origin-ca ca.pem`.
 The owner-supplied public certificate determines the mandatory pin. The client verifies a
@@ -95,11 +93,9 @@ and independent UDP replies, and closes the embedded server. The integration
 guide explains fixed carriers, native-required UDP, dependency setup and
 caller-owned sessions. This is local integration preparation, not field use.
 
-A [Linux service template and runbook](docs/DEPLOYMENT.md) describe later
-owner-authorized deployment. CLI servers stop normally on SIGTERM/SIGINT.
-RC.5 is an experimental checkpoint, not Stable. Field use, real deployment and
-Stable publication remain separate decisions; see the proposed acceptance plan
-in [ROADMAP.md](ROADMAP.md#proposed-field-acceptance--discussion-only).
+The [Linux deployment guide](docs/DEPLOYMENT.md) covers package verification,
+the service template, startup and shutdown. The [field acceptance plan](ROADMAP.md#proposed-field-acceptance--discussion-only)
+identifies the client, carrier observation and pass criteria for each route.
 
 ## Embedded SDK State
 

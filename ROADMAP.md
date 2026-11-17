@@ -1,9 +1,20 @@
 # Maverick Roadmap
 
-Date: 2026-11-17
+Date: 2026-11-18
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
+
+## Next decision
+
+The [published RC.6 prerelease](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
+at `9adc014` is the field candidate. The [SDK guide](docs/INTEGRATION.md) and
+[deployment guide](docs/DEPLOYMENT.md) identify the matching source and packages.
+The next decision is whether to authorize the environment, applications, duration
+and budget in the [field acceptance plan](#proposed-field-acceptance--discussion-only).
+Until then, field testing, deployment and Stable publication remain deferred.
+Keep the handshake experiments in the test suite and prioritize reproducible
+ordinary-use failures within the existing protocol and SDK scope.
 
 ## Delivered — Bounded Local Handshake Research
 
@@ -265,17 +276,48 @@ Do not change the development Mac's network or Surge settings.
    and check actual
    service start/stop/restart on the named host. Use explicit test-client
    endpoints or a separately approved test device, not a Mac system-proxy change.
-3. **Exercise the whole supported matrix.** Use continuous and independently
-   bidirectional traffic, repeated UDP replies/target-port continuity and real
-   intended applications, not only a one-packet echo. Test explicit H2/H3 and
-   generated dual/auto; preserve UDP packet bounds and existing-config meaning.
+3. **Exercise each route with the RC.6 clients.** On the separate Apple Silicon
+   test Mac, run the packaged CLI with `maverick client -c client.generated.yaml`.
+   Point a dedicated browser profile at its local SOCKS5 listener for browsing,
+   video and downloads. Use a SOCKS5 UDP ASSOCIATE client for application UDP.
+   For individual TCP/UDP measurements, use a caller of the matching Rust SDK
+   configured for the same route and a controlled remote target. The bundled
+   SDK example and CLI `user-smoke` both create their own loopback environments.
 
-   | Route/policy | Required observations |
-   |---|---|
-   | Direct H2 | TCP and persistent reliable UDP; native-required UDP rejects H2 |
-   | Direct H3 | TCP and native UDP, with both UDP policies and explicit packet limits |
-   | Direct auto | TCP plus both UDP policies; fresh sessions choose only permitted carriers |
-   | Protected intermediary H2 | TCP/reliable UDP; wrong origin identity fails; terminating intermediary cannot read authentication or inner traffic; timing/volume metadata remains visible |
+   | Route | Test client and configuration | Carrier evidence for a successful session | Pass criteria |
+   |---|---|---|---|
+   | Direct H2 | CLI and SDK with the fixed pair from `gen-config --h2` | Verified transfer through the H2-only origin. SDK reports TCP `H2` and UDP `H2Reliable`. | TCP content matches in both directions. Persistent UDP with `allow_reliable` delivers independent replies through the same target-facing source port. A fixed H2 configuration with `native_required` is rejected. |
+   | Direct H3 | CLI and SDK with `gen-config --quiche-h3`. Exercise each UDP policy. | Verified transfer through the H3-only origin. SDK reports TCP `H3` and UDP `H3Native`. | TCP content matches. Both UDP policies deliver native datagrams within the session's reported limit (at most 1200 bytes). An oversized send is rejected or dropped. Native delivery allows loss and reordering. |
+   | Direct auto | CLI and SDK with the default dual server and auto client. Open fresh sessions under each UDP policy. | For TCP, correlate the CLI selection line below with completed data transfer. The SDK reports the actual TCP and UDP carrier for each admitted session. | With H3 healthy, fresh sessions use H3. During a verified pre-response H3 outage, new TCP uses H2, `allow_reliable` UDP uses `H2Reliable`, and `native_required` UDP fails to open. After recovery and cooldown, new sessions use H3 again. |
+   | Protected intermediary H2 | CLI and SDK with the protected pair from `gen-config --relay` and the independently verified origin identity. Route both through the test intermediary. | The intermediary terminates outer TLS and forwards to the protected origin. The SDK reports TCP `H2` and UDP `H2Reliable`. Verify inner origin authentication separately. | TCP and reliable UDP deliver synthetic markers in both directions. Inspect the decrypted outer body at the intermediary for the synthetic authentication identifier, proxy target and payload markers. All must remain unreadable. A wrong inner CA, name or pin must fail before target access. |
+
+   Use the [configuration recipes](docs/DEPLOYMENT.md#prepare-private-configuration)
+   for the fixed carrier, UDP policy and protected origin settings. For each auto
+   policy, keep the same CLI process or SDK connector across outage and recovery
+   so that new sessions exercise its 30-second avoidance window.
+
+   **Reading the carrier.** For an isolated auto TCP request, start the CLI with
+   `RUST_LOG=maverick_client::connection_manager=debug` in its process
+   environment. Match `automatic selection chose H2 for new TCP connection`
+   or its H3 counterpart to that request. The line precedes target admission,
+   so require the target's verified response. For auto UDP through the CLI,
+   isolate one SOCKS association and correlate its known transfer with sustained
+   bidirectional TCP (H2) or QUIC/UDP (H3) traffic on the origin's Maverick
+   port. An initial probe alone cannot identify the carrier that delivered data.
+   If attribution is ambiguous, record the CLI carrier as unverified. For an
+   SDK session, read [the returned session's carrier and UDP limit](docs/INTEGRATION.md#integration-acceptance)
+   directly. An SDK result applies only to that SDK session.
+
+   **Recording a pass.** Record attempts and completions per route, client and
+   policy. For a failure record the last observed stage (connection, identity,
+   authentication, target admission or transfer) and mark unknowns explicitly.
+   Compare synthetic TCP bytes at both ends. For each UDP route, check packet
+   boundaries, repeated independent replies, source-port continuity, the reported
+   size limit and resource release on close. For the [intermediary check](docs/END_TO_END_PROTECTION.md#acceptance),
+   use a synthetic target that receives the marker in plaintext after Maverick
+   decryption. Keep the origin key only at the origin. Record marker checks as
+   present or absent without retaining bodies or credentials. The intermediary
+   can still see the origin TLS name, timing and traffic volume.
 
 4. **Check failure and recovery before the soak.** In the authorized test
    environment, make the H3 path unreachable and restore it; verify TCP and
@@ -286,7 +328,8 @@ Do not change the development Mac's network or Surge settings.
    classify the tunnel as dead or replay data. Existing sessions keep their
    carrier and may fail on disruption; seamless migration is not an acceptance
    criterion. Observe session cleanup and bounded resource use with existing
-   tools, without a performance scoring/probing framework.
+   tools. Check existing configurations with omitted transport or UDP settings
+   against their [documented behavior](docs/NATIVE_UDP_AND_SELECTION.md#scope-and-defaults).
 5. **Exercise real rollback, then perform ordinary use and a 72-hour soak.**
    Validate both native platforms' installation/config restore. Beta.4 only
    supports the older direct-H2 route: use an isolated, explicit matching

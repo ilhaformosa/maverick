@@ -6,6 +6,25 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## UDP Handshake-Candidate Coverage — 2026-11-17
+
+The owner authorized committing the completed research and continuing concrete
+improvements. The next local test change closes its documented UDP gap: 24
+reliable H2 sessions and 16 native H3 sessions pass focused checks through the
+existing record/layout candidates, including empty/maximum packets, oversized
+upload rejection, independent replies, stable source ports, close/cancellation
+and resource release. Native-required H3 retains ordinary handshake-loss
+recovery without replaying application packets. See the
+[UDP experiment record](docs/HANDSHAKE_UDP_EXPERIMENTS.md).
+Local product/rustls/H3/retained-quiche checks are complete: 786 product-workspace
+tests passed (three existing historical cases ignored), alongside formatting,
+strict Clippy and the expanded TLS/QUIC matrices. An initial existing SDK test
+reported an unidentified bind conflict; setup contexts were added and the
+17-test SDK group/full H3 gate passed. The original failure is retained and its
+cause is not claimed resolved. Product runtime/defaults and package versions
+remain unchanged; only an existing socket2 test dependency edge is added to
+size test-owned UDP buffers. Field work remains deferred.
+
 ## Local Feedback, TLS and QUIC Development — 2026-11-17
 
 The owner subsequently authorized development of the three proposed directions

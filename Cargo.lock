@@ -1728,6 +1728,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "signal-hook",
+ "socket2",
  "tempfile",
  "time",
  "tokio",

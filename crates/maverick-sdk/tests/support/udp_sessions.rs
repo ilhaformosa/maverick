@@ -350,12 +350,18 @@ async fn udp_selection_shares_avoidance_retries_and_keeps_existing_sessions() ->
 #[tokio::test]
 async fn native_required_and_security_failures_never_choose_h2() -> Result<()> {
     timeout(Duration::from_secs(15), async {
-        let mut fixture = Fixture::start(false, 0).await?;
-        let _blackhole = UdpSocket::bind(fixture.server.local_addr().unwrap()).await?;
+        let mut fixture = Fixture::start(false, 0)
+            .await
+            .context("start H2-only UDP-policy fixture")?;
+        let _blackhole = UdpSocket::bind(fixture.server.local_addr().unwrap())
+            .await
+            .context("bind UDP blackhole beside H2 listener")?;
         fixture.client.advanced.auto_h3 = true;
         fixture.client.advanced.udp_policy = Some(UdpPolicy::NativeRequired);
         let connector = ProxyConnector::new(fixture.client.clone())?;
-        let target = UdpSocket::bind("127.0.0.1:0").await?;
+        let target = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .context("bind UDP-policy loopback target")?;
         let address = TargetAddr::Ipv4(Ipv4Addr::LOCALHOST);
         ensure!(connector
             .open_udp(address.clone(), target.local_addr()?.port())
@@ -377,8 +383,12 @@ async fn native_required_and_security_failures_never_choose_h2() -> Result<()> {
         fixture.server.shutdown().await?;
 
         for fault in ["secret", "pin", "name", "ca"] {
-            let mut fixture = Fixture::start(false, 1).await?;
-            let h2_trap = TcpListener::bind(fixture.server.local_addr().unwrap()).await?;
+            let mut fixture = Fixture::start(false, 1)
+                .await
+                .with_context(|| format!("start H3 UDP-policy fixture: {fault}"))?;
+            let h2_trap = TcpListener::bind(fixture.server.local_addr().unwrap())
+                .await
+                .with_context(|| format!("bind H2 trap beside H3 listener: {fault}"))?;
             fixture.client.advanced.quiche_h3 = false;
             fixture.client.advanced.auto_h3 = true;
             fixture.client.advanced.udp_policy = Some(UdpPolicy::AllowReliable);

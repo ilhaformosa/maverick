@@ -5,9 +5,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
-use maverick_client::connector::{ProxyConnector, TargetAddr};
+use maverick_client::connector::{ProxyConnector, TargetAddr, UdpCarrier};
 use maverick_client::transport::TransportKind;
-use maverick_core::config::TlsFingerprintMode;
+use maverick_core::config::{TlsFingerprintMode, UdpPolicy};
 use maverick_core::SecretString;
 use maverick_tests::fingerprint::parse_tls_client_hello;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -23,7 +23,7 @@ use support::{HarnessOptions, MaverickHarness};
 const DEADLINE: Duration = Duration::from_secs(15);
 #[path = "support/handshake_experiment.rs"]
 mod experiment;
-use experiment::{drained, transfer, PAYLOAD_SIZE};
+use experiment::{drained, transfer, transfer_udp, udp_target, PAYLOAD_SIZE};
 #[path = "support/client_hello.rs"]
 mod client_hello;
 
@@ -386,6 +386,45 @@ async fn observed_first_record_failure_drives_candidates_with_reassembly_control
                 inspected_case(backend, candidate, Inspection::Reassembled).await?,
                 "reassembly control must still see the fixture's SNI"
             );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn record_layouts_preserve_persistent_reliable_udp_and_cleanup() -> Result<()> {
+    for backend in backends() {
+        for v2 in [false, true] {
+            for mode in [
+                RecordMode::Unchanged,
+                RecordMode::SplitAfterTwoBytes,
+                RecordMode::SplitInsideSni,
+            ] {
+                timeout(DEADLINE, async {
+                    let origin = harness(backend, v2).await?;
+                    let relay = RecordRelay::start(origin.server.local_addr, mode).await?;
+                    let mut config = origin.client_config();
+                    config.server.address = relay.address.to_string();
+                    config.server.cert_pin = Some(origin.cert_pin());
+                    config.advanced.udp_policy = Some(UdpPolicy::AllowReliable);
+                    let connector = ProxyConnector::new(config)?;
+                    let mut sessions = Vec::new();
+                    for cancel in [false, true] {
+                        let target = udp_target().await?;
+                        let session = connector.open_udp(TargetAddr::Ipv4(Ipv4Addr::LOCALHOST), target.local_addr()?.port()).await?;
+                        sessions.push(transfer_udp(session, &target, UdpCarrier::H2Reliable, cancel).await?);
+                    }
+                    let pool = connector.h2_pool_snapshot();
+                    ensure!(pool.connections_created == 1 && pool.streams_opened == 2 && pool.active_streams == 0);
+                    connector.close();
+                    let records = relay.finish().await?;
+                    let snapshot = drained(&origin).await?;
+                    ensure!(snapshot["authenticated_sessions"] == 2 && snapshot["tcp_flows"] == 0);
+                    origin.shutdown().await?;
+                    println!("{}", serde_json::json!({"experiment":"tls_record_udp", "backend":format!("{backend:?}"), "auth_v2":v2, "candidate":mode, "records":records, "sessions":sessions, "resources_drained":true, "real_censor_evidence":false}));
+                    Ok::<_, anyhow::Error>(())
+                }).await.context("TLS UDP experiment timed out")??;
+            }
         }
     }
     Ok(())

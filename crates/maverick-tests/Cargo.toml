@@ -63,5 +63,9 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
 
+[dev-dependencies]
+# Already locked by the product; size only the test-owned UDP socket buffers.
+socket2 = "=0.6.5"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true, optional = true }

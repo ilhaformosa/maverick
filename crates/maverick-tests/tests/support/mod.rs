@@ -39,6 +39,7 @@ pub struct HarnessOptions {
     pub client_tls_fingerprint: Option<TlsFingerprintMode>,
     pub user_enabled: bool,
     pub experimental_h3: bool,
+    pub quiche_h3: bool,
     pub experimental_tun: bool,
     pub previous_credentials: Vec<PreviousCredentialConfig>,
     pub auth_v2_epoch: Option<u64>,
@@ -78,6 +79,7 @@ impl Default for HarnessOptions {
             client_tls_fingerprint: None,
             user_enabled: true,
             experimental_h3: false,
+            quiche_h3: false,
             experimental_tun: false,
             previous_credentials: Vec::new(),
             auth_v2_epoch: None,
@@ -181,6 +183,7 @@ impl MaverickHarness {
         let mut server_advanced = ServerAdvancedConfig {
             end_to_end: options.end_to_end,
             experimental_h3: options.experimental_h3,
+            quiche_h3: options.quiche_h3,
             experimental_cloudflare_ws: options.experimental_cloudflare_ws,
             ..ServerAdvancedConfig::default()
         };
@@ -318,6 +321,7 @@ impl MaverickHarness {
             client_advanced.stealth.tls_fingerprint = tls_fingerprint;
         }
         client_advanced.experimental_h3 = options.experimental_h3;
+        client_advanced.quiche_h3 = options.quiche_h3;
         client_advanced.experimental_tun = options.experimental_tun;
         client_advanced.experimental_cloudflare_ws = options.experimental_cloudflare_ws;
         if cdn_fronting_enabled {

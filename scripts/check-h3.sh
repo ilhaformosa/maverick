@@ -17,6 +17,8 @@ cargo test --locked -p maverick-client --features experimental-h3 udp::tests
 cargo test --locked -p maverick-tests --features experimental-h3 --test end_to_end \
   public_transport_apis_reject_incompatible_protection_before_connecting
 cargo test --locked -p maverick-client --features experimental-h3 h3_transport::tests
+cargo test --locked -p maverick-tests --features experimental-h3 --test quic_initial_layout
+cargo clippy --locked -p maverick-tests --features experimental-h3 --test quic_initial_layout -- -D warnings
 cargo test --locked -p maverick-client --features experimental-h3 --lib bind_failure_
 cargo test --locked -p maverick-client --features experimental-h3 tunnel::relay_tests
 cargo test --locked -p maverick-server --features experimental-h3 h3::tests

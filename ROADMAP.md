@@ -1,9 +1,24 @@
 # Maverick Roadmap
 
-Date: 2026-11-16
+Date: 2026-11-17
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
+
+## Delivered — Bounded Local Handshake Research
+
+The owner-authorized empirical feedback, outer TLS fragmentation and observation
+followed by a selected QUIC layout candidate are implemented in the existing
+test package. Default product behavior remains unchanged; complete local gates
+pass, using only loopback/ephemeral ports and full identity/authentication/transfer
+checks. The existing product, rustls and H3 gates include the new tests. No online
+search system or private transport fork is introduced. Outcomes and limits live in
+[STATUS.md](STATUS.md) and [the experiment report](docs/HANDSHAKE_EXPERIMENTS.md).
+
+This bounded research precedes any decision about production integration.
+Field work remains deferred; it adds no Stable prerequisite and does not unfreeze
+unrelated protocol/SDK development, performance ranking or active-session
+migration. The existing release/field-acceptance sequence below is preserved.
 
 ## Delivered — Comprehensive Review and Maintenance
 

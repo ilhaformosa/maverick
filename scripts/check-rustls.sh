@@ -17,6 +17,7 @@ grep -Fqx 'auth_v2_private_client_rejects_rustls_fingerprint: test' \
 cargo test --locked -p maverick-tests --no-default-features \
   --test tcp_relay
 cargo test --locked -p maverick-tests --no-default-features --test end_to_end
+cargo test --locked -p maverick-tests --no-default-features --test tls_record_fragmentation
 cargo test --locked -p maverick-sdk --no-default-features --test connector
 cargo run --locked --quiet -p maverick-sdk --no-default-features --example connector_loopback -- h2
 cargo test --locked -p maverick-cli --no-default-features --test config_handoff

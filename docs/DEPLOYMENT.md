@@ -1,18 +1,23 @@
 # Server deployment preparation
 
-This is an operator runbook and a service template, not an automatic installer.
-The source is experimental Beta; RC.2 binaries do not contain later protocol
-changes. Field validation remains deferred. These instructions are for a later,
-explicitly authorized owner-controlled Linux host, not the development Mac.
+This runbook and its service template cover the experimental RC.6 Linux
+server. Deployment and field testing remain deferred until the owner authorizes
+a named environment. The development Mac keeps its existing network settings.
 
 ## Select and verify the build
 
-Use one reviewed source revision for client, server and integration tests.
-The full candidate archive includes H2 and H3, SOURCE.txt, VERSION.txt and
-checksums. It is a candidate artifact, not an independently published Stable
-release. RC.5 remains the published checkpoint; RC.6 maintenance requires its
-own complete qualification before selection. See [STATUS.md](../STATUS.md).
-To build the same feature set on supported Linux x86_64:
+For acceptance use the [published RC.6 prerelease](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6).
+Select `aarch64-apple-darwin` for the test Mac and
+`x86_64-unknown-linux-gnu` for the Linux origin. For each target, obtain the
+`.tar.gz`, its `.tar.gz.sha256` and the matching `.cdx.json` dependency
+inventory. Verify the archive against the published checksum and the
+[RC.6 qualification record](../STATUS.md#rc6-checkpoint--2026-11-16).
+Inside each archive, check `SHA256SUMS` and confirm that `SOURCE.txt` lists
+the expected target, version `1.2.0-rc.6` and `git_revision`
+`9adc014c29084877de6c5d6520e0622b76c3efa6`. Use that revision for the SDK.
+
+For a local source-build check on Linux x86_64, use the following commands.
+Field acceptance uses the verified Release archives.
 
 ```sh
 cargo build --locked --release -p maverick-cli --no-default-features --features experimental-h3
@@ -119,6 +124,10 @@ Older RC.2 does not understand the new protection/H3 settings; never weaken
 the configuration to make an old binary appear compatible.
 
 ## Evidence boundary
+
+The [field acceptance plan](../ROADMAP.md#proposed-field-acceptance--discussion-only)
+lists the test client, evidence of the actual H2/H3 session and pass criteria
+for direct H2, direct H3, automatic selection and the protected H2 intermediary.
 
 CI parses the shipped unit with native `systemd-analyze verify` on Linux,
 substituting only its test executable/working directory without installing or

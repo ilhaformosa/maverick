@@ -1,8 +1,10 @@
 # Proxy integration
 
-This describes the current source implementation, not the immutable RC.2
-binary. Maverick remains experimental Beta. No field qualification or
-cross-language interoperability is claimed by the loopback tests.
+Use the [RC.6 source](https://github.com/ilhaformosa/maverick/tree/v1.2.0-rc.6)
+at `9adc014` for the Rust SDK and protocol described here. The matching
+[RC.6 prerelease](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
+provides the Apple Silicon macOS and Linux x86_64 CLI packages. Maverick
+remains experimental Beta. Field acceptance and Stable publication are deferred.
 
 ## Use the Rust SDK
 
@@ -49,11 +51,11 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```
 
-Alternatively use a Git dependency, replacing the revision placeholder with
-the complete `git_revision` from the selected, qualified candidate's SOURCE.txt:
+Alternatively, pin the Git dependency to the `git_revision` in the RC.6
+package's `SOURCE.txt`.
 
 ```toml
-maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", rev = "REPLACE_WITH_REVIEWED_SOURCE_REVISION", features = ["experimental-h3"] }
+maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", rev = "9adc014c29084877de6c5d6520e0622b76c3efa6", features = ["experimental-h3"] }
 ```
 
 Choose one SDK dependency line, preserve your application's own `Cargo.lock`,
@@ -71,12 +73,6 @@ and embedded target setup are development scaffolding, not dependencies your
 proxy front end needs. Use the configuration and independently verified trust
 delivered by your operator in the real application; keep the example's
 loopback egress allowance out of deployment configuration.
-
-RC.5 is the published checkpoint; RC.6 is the unpublished maintenance candidate
-following Rust 1.100.0 and active dependency updates. Use matching source,
-lockfiles and qualified archives. Earlier candidate evidence does not extend
-to a changed dependency graph. The public SDK API and protocol remain unchanged;
-[STATUS.md](../STATUS.md) records the current validation state.
 
 ### Configure and own the connector
 
@@ -335,6 +331,17 @@ retain server replay/timestamp checks. Existing JSON auth vectors exercise the
 non-binding transcript; live exporter behavior is covered by local/CI TLS tests.
 
 ## Integration acceptance
+
+For an authorized field session, the consuming application supplies the private
+route configuration and a controlled remote target to the RC.6 SDK. After
+`connect_tcp` returns, read `TcpSession::carrier()` before calling `relay`.
+After `open_udp` returns, read `UdpSession::carrier()` and `max_payload()`.
+The TCP values for the acceptance routes are `H2` and `H3`. The UDP values
+are `H2Reliable` and `H3Native`. If opening fails, record the failure stage
+and leave the established carrier empty. Pair each result with data verified
+at the target and client in that same session. The [field acceptance plan](../ROADMAP.md#proposed-field-acceptance--discussion-only)
+gives the expected results for each route. The included `connector_loopback`
+example starts its own server and targets and accepts no remote endpoint.
 
 Check actual request/response bytes, authentication and pin rejection, both TCP
 half-close orders, cancellation and flow-slot reuse. For native UDP also check

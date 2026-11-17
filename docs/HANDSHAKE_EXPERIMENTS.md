@@ -3,6 +3,10 @@
 Date: 2026-11-17
 Status: test-side development; default product behavior remains unchanged.
 
+The subsequent [UDP coverage follow-up](HANDSHAKE_UDP_EXPERIMENTS.md) extends
+these same relays to persistent reliable/native UDP. Counts and source-bound
+observations below describe the first-stage TCP delivery.
+
 ## Authorized scope
 
 The owner authorized development of three bounded directions: empirical
@@ -146,14 +150,16 @@ product workspace suite passed 785 tests with three existing historical cases
 ignored. All three new TLS tests also passed without default features; all four
 new QUIC tests and their strict Clippy check passed in the H3 gate. Existing
 SDK, native UDP, product smoke, compatibility and historical-fixture checks
-remain intact. Candidate traffic assertions in the new experiments use TCP
-tunnels; the existing UDP gates do not qualify UDP through the test relays.
+remain intact. Candidate traffic assertions in this first-stage delivery use
+TCP tunnels; the later UDP follow-up supplies its own results through the relays.
 
 Logs, including the initial observer failures, are retained privately under ignored
 `runtime-evidence/handshake-experiments-20261117/`. They are not publication
 artifacts. The verification manifest records the base revision, exact source
 hashes, log hashes and gate result. No CI, Linux execution, field performance or
-release qualification is implied. No runtime or dependency-lock file changed.
+release qualification is implied. This first stage changed no runtime or
+dependency-lock file; the later UDP follow-up adds only a test dependency edge
+to the already locked socket2 package.
 
 ## Product decision
 

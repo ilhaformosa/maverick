@@ -1,9 +1,9 @@
 //! Loopback-only observation of the actual product QUIC client and server.
 #![cfg(feature = "experimental-h3")]
 use anyhow::{ensure, Context, Result};
-use maverick_client::connector::{ProxyConnector, TargetAddr};
+use maverick_client::connector::{ProxyConnector, TargetAddr, UdpCarrier};
 use maverick_client::transport::TransportKind;
-use maverick_core::config::TlsFingerprintMode;
+use maverick_core::config::{TlsFingerprintMode, UdpPolicy};
 use maverick_core::SecretString;
 use serde::Serialize;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -22,7 +22,7 @@ mod client_hello;
 mod experiment;
 #[path = "support/quic_initial.rs"]
 mod quic_initial;
-use experiment::{drained, transfer, PAYLOAD_SIZE};
+use experiment::{drained, transfer, transfer_udp, udp_target, PAYLOAD_SIZE};
 use quic_initial::{FlightSummary, InitialFlight};
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -133,6 +133,20 @@ impl DatagramRelay {
     }
 }
 
+async fn harness(v2: bool) -> Result<MaverickHarness> {
+    MaverickHarness::start_with_options(HarnessOptions {
+        quiche_h3: true,
+        metrics: true,
+        client_tls_fingerprint: Some(TlsFingerprintMode::BrowserMimic),
+        auth_channel_binding_require: true,
+        auth_v2_epoch: v2.then_some(7),
+        client_connect_timeout_ms: Some(3_000),
+        server_handshake_timeout_ms: Some(3_000),
+        ..Default::default()
+    })
+    .await
+}
+
 async fn run_case(
     layout: Layout,
     drop_first: bool,
@@ -141,14 +155,7 @@ async fn run_case(
     fault: Option<&str>,
 ) -> Result<()> {
     timeout(Duration::from_secs(15), async {
-        let origin = MaverickHarness::start_with_options(HarnessOptions {
-            quiche_h3: true, metrics: true,
-            client_tls_fingerprint: Some(TlsFingerprintMode::BrowserMimic),
-            auth_channel_binding_require: true, auth_v2_epoch: v2.then_some(7),
-            client_connect_timeout_ms: Some(3_000),
-            server_handshake_timeout_ms: Some(3_000),
-            ..Default::default()
-        }).await?;
+        let origin = harness(v2).await?;
         let relay = DatagramRelay::start(origin.server.local_addr, layout, drop_first).await?;
         let mut config = origin.client_config();
         config.server.address = relay.address.to_string();
@@ -232,6 +239,47 @@ async fn product_quic_layout_comparison_preserves_rejections() -> Result<()> {
         for fault in ["ca", "name", "pin", "credential"] {
             for layout in [Layout::Unchanged, Layout::ReverseFirstTwo] {
                 run_case(layout, false, v2, None, Some(fault)).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_layouts_preserve_native_udp_boundaries_and_cleanup() -> Result<()> {
+    for v2 in [false, true] {
+        for layout in [Layout::Unchanged, Layout::ReverseFirstTwo] {
+            for drop_first in [false, true] {
+                for cancel in [false, true] {
+                    timeout(Duration::from_secs(15), async {
+                        let origin = harness(v2).await?;
+                        let relay = DatagramRelay::start(origin.server.local_addr, layout, drop_first).await?;
+                        let mut config = origin.client_config();
+                        config.server.address = relay.address.to_string();
+                        config.server.cert_pin = Some(origin.cert_pin());
+                        config.advanced.udp_policy = Some(UdpPolicy::NativeRequired);
+                        let connector = ProxyConnector::new(config)?;
+                        let target = udp_target().await?;
+                        let session = match connector.open_udp(TargetAddr::Ipv4(Ipv4Addr::LOCALHOST), target.local_addr()?.port()).await {
+                            Ok(session) => session,
+                            Err(error) => {
+                                connector.close();
+                                let observed = relay.finish().await;
+                                origin.shutdown().await?;
+                                observed.context("Initial observer failed before UDP establishment")?;
+                                return Err(error);
+                            }
+                        };
+                        let session = transfer_udp(session, &target, UdpCarrier::H3Native, cancel).await?;
+                        connector.close();
+                        let snapshot = drained(&origin).await?;
+                        ensure!(snapshot["authenticated_sessions"] == 1 && snapshot["tcp_flows"] == 0);
+                        let report = relay.finish().await?;
+                        origin.shutdown().await?;
+                        println!("{}", serde_json::json!({"experiment":"quic_layout_udp", "candidate":layout, "drop_first_initial":drop_first, "auth_v2":v2, "session":session, "report":report, "resources_drained":true, "real_censor_evidence":false}));
+                        Ok::<_, anyhow::Error>(())
+                    }).await.context("QUIC UDP experiment timed out")??;
+                }
             }
         }
     }

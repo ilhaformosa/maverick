@@ -1,10 +1,45 @@
 # Maverick Status
 
-Date: 2026-11-16
+Date: 2026-11-17
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
+
+## Local Feedback, TLS and QUIC Development — 2026-11-17
+
+The owner subsequently authorized development of the three proposed directions
+within the existing local-only boundary. Test-side feedback now reproduces a
+first-record parser failure, evaluates two TLS splits with complete sessions,
+and requires a reassembly control to continue blocking. The extended TLS
+compatibility matrix passes 12 configurations and 48 identity/credential
+rejections. Product QUIC observation confirms an already fragmented ClientHello;
+the selected unchanged-byte, two-datagram reorder passes full-session,
+half-close, single-Initial-loss recovery and identity/authentication comparisons.
+See [the current experiment report](docs/HANDSHAKE_EXPERIMENTS.md) for scope,
+initial observer failures, corrected evidence and limits. The complete local
+product/rustls/H3/retained-quiche gates passed, including strict Clippy and 785
+product-workspace tests (three existing historical cases ignored). New QUIC
+tests and no-default-feature TLS tests are included in the existing gates.
+Product runtime/defaults and dependency locks remain unchanged; field
+trials, product integration and publication are not authorized by these tests.
+
+## Independent Local TLS Record Experiment — 2026-11-17
+
+The owner authorized an independent loopback-only outer ClientHello record-split
+experiment, preserving all default product behavior. The dedicated integration
+test reuses the existing server/client harness, connector, fingerprint parser
+and resource metrics; no runtime/configuration/dependency change is introduced.
+The focused matrix passed browser TLS/rustls and auth v1/v2, complete
+bidirectional transfers, both half-close orders, cancellation, pool reuse and
+32 invalid-identity/credential cases. See the
+[experiment method, results and limits](docs/TLS_CLIENTHELLO_RECORD_EXPERIMENT.md).
+The complete local harness also passed on Apple Silicon: formatting, strict
+Clippy, 784 workspace tests (three existing historical cases ignored), SDK
+forwarding, rustls compatibility, product smoke and isolated script/release
+checks. This is not censorship-resistance, performance, H3, Linux/CI or field
+evidence. Protocol/SDK features, real-network trials and Stable publication
+remain under their existing freeze.
 
 ## RC.6 Checkpoint — 2026-11-16
 

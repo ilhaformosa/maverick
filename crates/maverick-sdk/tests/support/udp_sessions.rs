@@ -347,15 +347,56 @@ async fn udp_selection_shares_avoidance_retries_and_keeps_existing_sessions() ->
 }
 
 #[cfg(feature = "experimental-h3")]
+async fn fixture_with_port_guard<G>(
+    carrier: u8,
+    mut bind_guard: impl AsyncFnMut(std::net::SocketAddr) -> std::io::Result<G>,
+) -> Result<(Fixture, G)> {
+    // The OS assigns the server port for one protocol. Keep both real sockets
+    // on success so the test never has to release and reclaim that endpoint.
+    let mut ports_left = 4;
+    loop {
+        let fixture = Fixture::start(false, carrier).await?;
+        let address = fixture
+            .server
+            .local_addr()
+            .context("missing server address")?;
+        let error = match bind_guard(address).await {
+            Ok(guard) => return Ok((fixture, guard)),
+            Err(error) => error,
+        };
+        fixture.server.shutdown().await?;
+        ports_left -= 1;
+        if error.kind() != std::io::ErrorKind::AddrInUse || ports_left == 0 {
+            return Err(error).context("bind companion socket on test server port");
+        }
+    }
+}
+
+#[cfg(feature = "experimental-h3")]
+#[tokio::test]
+async fn h3_fixture_selects_a_port_with_an_available_tcp_guard() -> Result<()> {
+    let mut occupied = None;
+    let (fixture, guard) = fixture_with_port_guard(1, async |address| {
+        if occupied.is_none() {
+            occupied = Some(TcpListener::bind(address).await?);
+        }
+        TcpListener::bind(address).await
+    })
+    .await?;
+    let selected = guard.local_addr()?;
+    let occupied = occupied.context("missing competing TCP listener")?;
+    ensure!(Some(selected) == fixture.server.local_addr());
+    ensure!(selected != occupied.local_addr()?);
+    fixture.server.shutdown().await
+}
+
+#[cfg(feature = "experimental-h3")]
 #[tokio::test]
 async fn native_required_and_security_failures_never_choose_h2() -> Result<()> {
     timeout(Duration::from_secs(15), async {
-        let mut fixture = Fixture::start(false, 0)
+        let (mut fixture, _blackhole) = fixture_with_port_guard(0, UdpSocket::bind)
             .await
-            .context("start H2-only UDP-policy fixture")?;
-        let _blackhole = UdpSocket::bind(fixture.server.local_addr().unwrap())
-            .await
-            .context("bind UDP blackhole beside H2 listener")?;
+            .context("start H2 fixture with UDP blackhole")?;
         fixture.client.advanced.auto_h3 = true;
         fixture.client.advanced.udp_policy = Some(UdpPolicy::NativeRequired);
         let connector = ProxyConnector::new(fixture.client.clone())?;
@@ -383,12 +424,9 @@ async fn native_required_and_security_failures_never_choose_h2() -> Result<()> {
         fixture.server.shutdown().await?;
 
         for fault in ["secret", "pin", "name", "ca"] {
-            let mut fixture = Fixture::start(false, 1)
+            let (mut fixture, h2_trap) = fixture_with_port_guard(1, TcpListener::bind)
                 .await
-                .with_context(|| format!("start H3 UDP-policy fixture: {fault}"))?;
-            let h2_trap = TcpListener::bind(fixture.server.local_addr().unwrap())
-                .await
-                .with_context(|| format!("bind H2 trap beside H3 listener: {fault}"))?;
+                .with_context(|| format!("start H3 fixture with TCP trap: {fault}"))?;
             fixture.client.advanced.quiche_h3 = false;
             fixture.client.advanced.auto_h3 = true;
             fixture.client.advanced.udp_policy = Some(UdpPolicy::AllowReliable);

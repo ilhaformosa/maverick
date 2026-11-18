@@ -14,6 +14,9 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{advance, pause, timeout};
 
+#[path = "../../../maverick-tests/tests/support/port_guard.rs"]
+mod port_guard;
+
 const MAX_FRAME: usize = 65_536;
 
 #[tokio::test]
@@ -28,8 +31,15 @@ async fn udp_capability_fallback_requires_authenticated_absence_before_data() ->
         // 0: authenticated older peer; 1: invalid MAC; 2: malformed admission;
         // 3: authenticated older peer with native-required policy.
         for fault in 0..4 {
-            let mut peer = Peer::start().await?;
-            let h2_trap = TcpListener::bind(peer.address).await?;
+            let (mut peer, h2_trap) = port_guard::with_port_guard(
+                async || {
+                    let peer = Peer::start().await?;
+                    let address = peer.address;
+                    Ok((peer, address))
+                },
+                TcpListener::bind,
+                Peer::shutdown,
+            ).await?;
             let mut config = peer.config();
             config.advanced.quiche_h3 = false;
             config.advanced.auto_h3 = true;

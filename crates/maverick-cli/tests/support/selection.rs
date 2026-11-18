@@ -12,6 +12,22 @@ fn server_config(fixture: &Fixture) -> Result<ServerConfig> {
     Ok(config)
 }
 
+async fn server_with_guard<G>(
+    config: ServerConfig,
+    bind_guard: impl AsyncFn(SocketAddr) -> std::io::Result<G>,
+) -> Result<(maverick_server::ServerHandle, G)> {
+    port_guard::with_port_guard(
+        async || {
+            let server = maverick_server::start_server(config.clone()).await?;
+            let address = server.local_addr;
+            Ok((server, address))
+        },
+        bind_guard,
+        maverick_server::ServerHandle::shutdown,
+    )
+    .await
+}
+
 fn client_config(
     fixture: &Fixture,
     address: SocketAddr,
@@ -235,8 +251,7 @@ async fn auto_network_fallback_is_cached_and_existing_h3_flow_is_not_migrated() 
         let mut config = server_config(&fixture)?;
         let h3 = maverick_server::start_server(config.clone()).await?;
         config.advanced.quiche_h3 = false;
-        let h2 = maverick_server::start_server(config).await?;
-        let socket = UdpSocket::bind(h2.local_addr).await?;
+        let (h2, socket) = server_with_guard(config, UdpSocket::bind).await?;
         let h3_address = h3.local_addr;
         let (stop, mut stopped) = tokio::sync::oneshot::channel();
         let blocked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -305,8 +320,7 @@ async fn auto_network_fallback_is_cached_and_existing_h3_flow_is_not_migrated() 
 async fn auto_tls_pin_auth_and_protocol_failures_never_contact_h2() -> Result<()> {
     timeout(Duration::from_secs(40), async {
         let fixture = Fixture::for_transport(true, 16)?;
-        let server = maverick_server::start_server(server_config(&fixture)?).await?;
-        let spy = TcpListener::bind(server.local_addr).await?;
+        let (server, spy) = server_with_guard(server_config(&fixture)?, TcpListener::bind).await?;
         let target = TcpListener::bind("127.0.0.1:0").await?;
         for (index, fault) in [
             Fault::Ca,

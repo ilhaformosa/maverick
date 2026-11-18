@@ -30,6 +30,8 @@ const METRICS_READY: &str = "Maverick local metrics listening";
 mod generated_config;
 #[path = "support/host_context.rs"]
 mod host_context;
+#[path = "../../maverick-tests/tests/support/port_guard.rs"]
+mod port_guard;
 #[path = "support/h3_resilience.rs"]
 mod resilience;
 #[path = "support/h3_shaping.rs"]

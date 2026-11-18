@@ -8,10 +8,21 @@ async fn auto_native_udp_respects_single_slot_and_control_cancellation() -> Resu
     timeout(Duration::from_secs(30), async {
         let fixture = Fixture::for_transport(true, 4)?;
         fixture.server_config_with_metrics(true)?;
-        let mut server = Cli::start(fixture.directory.path(), "server", "server.yaml")?;
-        let address = server.ready(SERVER_READY).await?;
-        let metrics = server.ready(METRICS_READY).await?;
-        let spy = TcpListener::bind(address).await?;
+        let ((server, metrics), spy) = port_guard::with_port_guard(
+            async || {
+                let mut server = Cli::start(fixture.directory.path(), "server", "server.yaml")?;
+                let address = server.ready(SERVER_READY).await?;
+                let metrics = server.ready(METRICS_READY).await?;
+                Ok(((server, metrics), address))
+            },
+            TcpListener::bind,
+            async |(server, _)| {
+                drop(server);
+                Ok(())
+            },
+        )
+        .await?;
+        let address = spy.local_addr()?;
         fixture.client_config("client.yaml", address, true, Fault::None)?;
         let path = fixture.directory.path().join("client.yaml");
         let source = std::fs::read_to_string(&path)?.replace(

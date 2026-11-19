@@ -127,11 +127,15 @@ async fn read_connect_target(stream: &mut TcpStream) -> Result<(TargetAddr, u16,
         if n == 0 {
             bail!("client disconnected before CONNECT headers");
         }
+        let search_start = data.len().saturating_sub(3);
         data.extend_from_slice(&buf[..n]);
-        if data.windows(4).any(|window| window == b"\r\n\r\n") {
+        if data[search_start..]
+            .windows(4)
+            .any(|window| window == b"\r\n\r\n")
+        {
             break;
         }
-        if data.len() > MAX_CONNECT_HEADER_BYTES {
+        if data.len() >= MAX_CONNECT_HEADER_BYTES {
             bail!("CONNECT headers too large");
         }
     }
@@ -143,6 +147,9 @@ fn parse_connect_request_bytes(data: &[u8]) -> Result<(TargetAddr, u16, Bytes)> 
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .context("CONNECT header terminator missing")?;
+    if header_end + 4 > MAX_CONNECT_HEADER_BYTES {
+        bail!("CONNECT headers too large");
+    }
     let text = std::str::from_utf8(&data[..header_end]).context("CONNECT headers are not utf-8")?;
     let first_line = text.lines().next().context("missing request line")?;
     let mut parts = first_line.split_whitespace();
@@ -239,6 +246,23 @@ mod tests {
         assert_eq!(target, TargetAddr::Domain("example.com".into()));
         assert_eq!(port, 443);
         assert_eq!(initial_data, Bytes::from_static(b"early-data"));
+    }
+
+    #[test]
+    fn connect_header_limit_counts_the_terminator_and_excludes_tunnel_data() {
+        let mut request = b"CONNECT example.com:443 HTTP/1.1\r\nX-Example: ".to_vec();
+        request.resize(MAX_CONNECT_HEADER_BYTES - 4, b'x');
+        request.extend_from_slice(b"\r\n\r\nearly-data");
+        let (_, _, data) = parse_connect_request_bytes(&request).unwrap();
+        assert_eq!(data, Bytes::from_static(b"early-data"));
+
+        request.insert(MAX_CONNECT_HEADER_BYTES - 4, b'x');
+        assert_eq!(
+            parse_connect_request_bytes(&request)
+                .unwrap_err()
+                .to_string(),
+            "CONNECT headers too large"
+        );
     }
 
     #[tokio::test]

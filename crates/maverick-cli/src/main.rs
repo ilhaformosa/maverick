@@ -271,7 +271,7 @@ async fn main() -> Result<()> {
             let secret = SecretString::generate();
             let id = format!("u_{}", random_id());
             println!("id: {id}");
-            println!("name: {name}");
+            println!("name: {}", yaml_double_quoted(&name));
             println!("secret: {}", secret.expose_secret());
             Ok(())
         }
@@ -298,10 +298,13 @@ async fn main() -> Result<()> {
             // Check both outputs before generating a new pair of credentials.
             // create_new below still prevents overwriting a concurrent writer.
             for path in [GENERATED_CLIENT_CONFIG, GENERATED_SERVER_CONFIG] {
-                anyhow::ensure!(
-                    !Path::new(path).try_exists()?,
-                    "{path} already exists; generate the configuration pair in an empty directory"
-                );
+                match fs::symlink_metadata(path) {
+                    Ok(_) => anyhow::bail!(
+                        "{path} already exists; generate the configuration pair in an empty directory"
+                    ),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err).with_context(|| format!("inspect {path}")),
+                }
             }
             let secret = SecretString::generate();
             let mut client = example_client_config(secret.expose_secret(), quiche_h3);
@@ -347,9 +350,9 @@ async fn main() -> Result<()> {
             })?;
             ServerConfig::from_yaml_str(&server)
                 .map_err(|_| anyhow::anyhow!("generated server configuration is invalid"))?;
-            write_secret_config_file(GENERATED_CLIENT_CONFIG, client)
+            write_private_file(GENERATED_CLIENT_CONFIG, client)
                 .with_context(|| format!("write {GENERATED_CLIENT_CONFIG}"))?;
-            write_secret_config_file(GENERATED_SERVER_CONFIG, server)
+            write_private_file(GENERATED_SERVER_CONFIG, server)
                 .with_context(|| format!("write {GENERATED_SERVER_CONFIG}"))?;
             println!("wrote {GENERATED_CLIENT_CONFIG} and {GENERATED_SERVER_CONFIG}");
             Ok(())
@@ -2277,38 +2280,27 @@ fn import_config_uri(uri: &str, dry_run: bool, output: Option<&Path>) -> Result<
     }
     let cfg = profile.to_client_config()?;
     let yaml = client_config_secret_yaml(&cfg);
-    write_secret_config_file(output, yaml)?;
+    write_private_file(output, yaml)?;
     println!("config-uri import wrote client config");
     println!("output: {}", output.display());
     println!("secret: [REDACTED]");
     Ok(())
 }
 
-fn write_secret_config_file(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Result<()> {
+fn write_private_file(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Result<()> {
     let path = path.as_ref();
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("write {}", path.display()))?;
-        file.write_all(contents.as_ref())
-            .with_context(|| format!("write {}", path.display()))?;
+        options.mode(0o600);
     }
-    #[cfg(not(unix))]
-    {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .with_context(|| format!("write {}", path.display()))?;
-        file.write_all(contents.as_ref())
-            .with_context(|| format!("write {}", path.display()))?;
-    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("write {}", path.display()))?;
+    file.write_all(contents.as_ref())
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -2436,7 +2428,29 @@ advanced:
 }
 
 fn yaml_double_quoted(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    use std::fmt::Write as _;
+
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' | '\\' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            c if c.is_control()
+                || matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{feff}' | '\u{fffe}' | '\u{ffff}'
+                ) =>
+            {
+                write!(quoted, "\\u{:04X}", u32::from(ch)).expect("writing to a String");
+            }
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 impl ProfileUri {
@@ -3211,9 +3225,11 @@ async fn bench_local(
     let key_path = tmp.path().join("key.pem");
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     fs::write(&cert_path, certified.cert.pem())?;
-    fs::write(&key_path, certified.signing_key.serialize_pem())?;
+    write_private_file(&key_path, certified.signing_key.serialize_pem())?;
+    let public_dir = tmp.path().join("public");
+    fs::create_dir(&public_dir)?;
     fs::write(
-        tmp.path().join("index.html"),
+        public_dir.join("index.html"),
         "<html><body>Maverick</body></html>",
     )?;
 
@@ -3254,7 +3270,7 @@ async fn bench_local(
             rotation: None,
         }],
         fallback: FallbackConfig::Static {
-            static_dir: tmp.path().to_path_buf(),
+            static_dir: public_dir,
             index: "index.html".into(),
         },
         auth: Default::default(),
@@ -3362,14 +3378,7 @@ async fn bench_local(
 }
 
 async fn time_echo_roundtrip(addr: SocketAddr, bytes: usize) -> Result<std::time::Duration> {
-    let mut stream = TcpStream::connect(addr).await?;
-    let payload = deterministic_payload(bytes);
-    let start = Instant::now();
-    stream.write_all(&payload).await?;
-    let mut echoed = vec![0u8; bytes];
-    stream.read_exact(&mut echoed).await?;
-    anyhow::ensure!(echoed == payload, "echo mismatch");
-    Ok(start.elapsed())
+    time_echo_payload(TcpStream::connect(addr).await?, bytes).await
 }
 
 async fn time_socks_echo_roundtrip(
@@ -3389,11 +3398,15 @@ async fn time_socks_echo_roundtrip(
     stream.read_exact(&mut connect_reply).await?;
     anyhow::ensure!(connect_reply[1] == 0x00, "SOCKS connect failed");
 
+    time_echo_payload(stream, bytes).await
+}
+
+async fn time_echo_payload(mut stream: TcpStream, bytes: usize) -> Result<Duration> {
     let payload = deterministic_payload(bytes);
-    let start = Instant::now();
-    stream.write_all(&payload).await?;
     let mut echoed = vec![0u8; bytes];
-    stream.read_exact(&mut echoed).await?;
+    let (mut reader, mut writer) = stream.split();
+    let start = Instant::now();
+    tokio::try_join!(writer.write_all(&payload), reader.read_exact(&mut echoed))?;
     anyhow::ensure!(echoed == payload, "echo mismatch");
     Ok(start.elapsed())
 }
@@ -4607,7 +4620,7 @@ fallback:
         );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("client.yaml");
-        write_secret_config_file(&path, input).unwrap();
+        write_private_file(&path, input).unwrap();
         for (include_secret, qr) in [(false, false), (true, false), (false, true)] {
             assert_eq!(
                 export_config_uri(&path, include_secret, qr)

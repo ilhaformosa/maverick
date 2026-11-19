@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-core"
-version = "1.2.0-rc.6"
+version = "1.2.0-rc.7"
 dependencies = [
  "base64",
  "bytes",

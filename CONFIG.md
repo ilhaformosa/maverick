@@ -3,8 +3,10 @@
 All currently runnable client and server config files use YAML and `version: 1`.
 
 The sections below describe runnable v1 configuration first. Future v2 policy
-and detailed compatibility contracts follow the runtime reference. H3 remains
-a source capability requiring its build feature, included in full candidate packages. New direct generation uses dual/auto; omitted fields in existing files retain H2.
+and detailed compatibility contracts follow the runtime reference. The 1.2.0
+packages include H3. Source builds require the `experimental-h3` feature for
+H3. New direct configs enable dual/auto. Existing configs that omit transport
+settings retain H2.
 
 ## Client
 
@@ -297,8 +299,8 @@ their drivers. Active TCP transfers end during shutdown. Close delivery is
 best effort; forced process exit or lost datagrams still relies on peer failure
 or idle detection.
 
-H3 remains candidate/Beta; new direct generation enables auto/dual. Local validation does not authorize a field trial
-or claim browser equivalence or better performance.
+Field validation of H3 was deferred for 1.2.0. Browser equivalence and
+real-network performance remain unverified.
 
 ### Native UDP and automatic new connections
 
@@ -313,8 +315,8 @@ user limits and egress checks apply to every target. `udp_idle_timeout_ms`
 expires an inactive target; control closure cancels every child. Omitted UDP policy keeps legacy H2 request/response semantics; an explicit
 policy enables the persistent H2 sessions described below.
 
-For dual listeners and automatic new TCP/UDP selection, use a full candidate
-binary and bare `gen-config` (`--auto-h3` remains an explicit alias), or set:
+For dual listeners and automatic new TCP/UDP selection, use a binary
+built with H3 support and bare `gen-config` (`--auto-h3` remains an explicit alias), or set:
 
 ```yaml
 # client advanced settings
@@ -605,7 +607,9 @@ users:
         not_before: "2026-07-15T00:00:00Z"
 ```
 
-Validation rejects short rotated secrets, duplicate active/previous/next ids,
+Credential IDs are limited to 512 UTF-8 bytes. Active and previous IDs must
+be unique across server users. A user's planned next ID must also differ from
+that user's active and previous IDs. Validation rejects short rotated secrets,
 more than four previous credentials per user, invalid RFC3339 timestamps,
 client `auto_switch` without next credential material, mismatched client next
 ids, and previous windows whose `not_after` is not after `not_before`.
@@ -864,7 +868,10 @@ H3 reserves this shared capacity before allocating QUIC/TLS connection state
 and retains it until the transport driver finishes, including unfinished
 handshakes. The separate pre-authentication budget remains in force. Server
 `advanced.pre_auth_max_concurrent` limits concurrent unauthenticated handshake
-and tunnel admission across H2, WebSocket and explicit H3. Server
+and tunnel admission across H2, WebSocket and H3. An H2 connection needs at
+least two available slots for admission, or three when origin protection adds
+an inner H2 connection. H3 and WebSocket can admit a connection with one slot.
+The default is 512. Server
 `advanced.fallback_max_concurrent` bounds ordinary static or reverse-proxy
 fallback work. Server
 `advanced.h2_max_concurrent_streams` advertises the HTTP/2 concurrent stream

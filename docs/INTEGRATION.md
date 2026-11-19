@@ -1,10 +1,9 @@
 # Proxy integration
 
-Use the [RC.6 source](https://github.com/ilhaformosa/maverick/tree/v1.2.0-rc.6)
-at `9adc014` for the Rust SDK and protocol described here. The matching
-[RC.6 prerelease](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
-provides the Apple Silicon macOS and Linux x86_64 CLI packages. Maverick
-remains experimental Beta. Field acceptance and Stable publication are deferred.
+Pair the Rust SDK with the source revision of the CLI you use. The
+[release list](https://github.com/ilhaformosa/maverick/releases) provides the
+tags and packages for Apple Silicon macOS and Linux x86_64. Application
+interoperability on real networks remains unverified for 1.2.0.
 
 ## Use the Rust SDK
 
@@ -51,17 +50,21 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```
 
-Alternatively, pin the Git dependency to the `git_revision` in the RC.6
-package's `SOURCE.txt`.
+Alternatively, pin the Git dependency to the tag for your package. For a
+1.2.0 stable binary, use this dependency:
 
 ```toml
-maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", rev = "9adc014c29084877de6c5d6520e0622b76c3efa6", features = ["experimental-h3"] }
+maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", tag = "v1.2.0", features = ["experimental-h3"] }
 ```
+
+When pairing an application with a release binary, check that the resolved
+Git commit in the application lockfile matches `git_revision` in the CLI
+archive's `SOURCE.txt`.
 
 Choose one SDK dependency line, preserve your application's own `Cargo.lock`,
 and build with `--locked` after resolving it. Pinning the SDK source does not
 pin every dependency in the embedding application's graph: review its lockfile
-and run its own integration checks. Candidate evidence covers the repository's
+and run its own integration checks. Release checks cover the repository's
 locked graph. The SDK is consumed from source;
 the CLI archive is not a linkable SDK library, and this delivery does not add a
 C/Swift/Go ABI or a registry publication. Use Rust stable 1.100.0/Cargo and a native
@@ -253,7 +256,9 @@ compression and extra bytes inside a gRPC message are rejected.
 `OpenTcp` payload: address type `0x01` + four IPv4 octets, `0x04` + sixteen IPv6
 octets, or `0x03` + `length:u16` + UTF-8 domain; then `port:u16`,
 `initial_data_length:u32`, and initial data. Current clients send empty initial
-data. TCP admission has an empty WindowUpdate payload.
+data. If a client includes initial data, the server forwards it after target
+admission and before subsequent `TcpData` bytes. TCP admission has an empty
+WindowUpdate payload.
 
 Native UDP uses the same address payload with empty initial data. Its admission
 is flags 1 with a two-byte maximum payload, positive and at most 1200. QUIC
@@ -333,7 +338,7 @@ non-binding transcript; live exporter behavior is covered by local/CI TLS tests.
 ## Integration acceptance
 
 For an authorized field session, the consuming application supplies the private
-route configuration and a controlled remote target to the RC.6 SDK. After
+route configuration and a controlled remote target to the 1.2.0 SDK. After
 `connect_tcp` returns, read `TcpSession::carrier()` before calling `relay`.
 After `open_udp` returns, read `UdpSession::carrier()` and `max_payload()`.
 The TCP values for the acceptance routes are `H2` and `H3`. The UDP values

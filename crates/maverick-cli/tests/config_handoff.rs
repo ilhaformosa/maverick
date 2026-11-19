@@ -97,6 +97,20 @@ fn generated_pair(directory: &Path, h3: bool) -> Result<()> {
 }
 
 #[tokio::test]
+async fn generated_user_name_round_trips_as_a_yaml_string() -> Result<()> {
+    let directory = TempDir::new()?;
+    let name = "Operations: East #1\nNight shift\u{7f}\u{85}\u{9f}\u{2028}\u{2029}\u{feff}\u{fffe}\u{ffff}\"\\✈";
+    let output = cli(directory.path(), &["gen-user", "--name", name], None).await?;
+    ensure!(output.status.success(), "credential generation failed");
+    let text = std::str::from_utf8(&output.stdout)?;
+    let user: maverick_core::config::UserConfig = serde_saphyr::from_str(text)
+        .map_err(|_| anyhow::anyhow!("generated user was not valid YAML"))?;
+    ensure!(user.name.as_deref() == Some(name), "user name changed");
+    user.secret.validate()?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn generated_fixed_h2_pair_remains_h2() -> Result<()> {
     let directory = TempDir::new()?;
     let output = cli(directory.path(), &["gen-config", "--h2"], None).await?;
@@ -338,6 +352,29 @@ async fn generation_refuses_existing_pair_member_without_partial_writes() -> Res
             "generation left a partial configuration pair"
         );
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn generation_preserves_dangling_link_without_creating_partial_pair() -> Result<()> {
+    let directory = TempDir::new()?;
+    let server_path = directory.path().join("server.generated.yaml");
+    let missing = Path::new("moved-server-config.yaml");
+    std::os::unix::fs::symlink(missing, &server_path)?;
+    let output = cli(directory.path(), &["gen-config", "--h2"], None).await?;
+    ensure!(
+        !output.status.success(),
+        "generation accepted a dangling link"
+    );
+    ensure!(
+        fs::read_link(server_path)? == missing,
+        "server link changed"
+    );
+    ensure!(
+        !directory.path().join("client.generated.yaml").exists(),
+        "generation left an unmatched client configuration"
+    );
     Ok(())
 }
 

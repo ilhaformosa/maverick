@@ -22,6 +22,9 @@ echo "==> formatting"
 echo "==> clippy"
 "$cargo_bin" clippy --workspace --all-targets -- -D warnings
 
+echo "==> all optional core features"
+"$cargo_bin" check --locked -p maverick-core --all-features
+
 echo "==> B-002-S2 synthetic replay verifier"
 "$cargo_bin" build --locked -p maverick-tests --bin quiche-fork-replay-verifier
 
@@ -90,6 +93,8 @@ if [[ -n "$active_python" ]]; then
   exit 1
 fi
 
+workspace_version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
+release_note="docs/releases/v${workspace_version}.md"
 active_docs=(
   AGENTS.md
   README.md
@@ -103,6 +108,7 @@ active_docs=(
   docs/releases/v1.2.0-rc.4.md
   docs/releases/v1.2.0-rc.5.md
   docs/releases/v1.2.0-rc.6.md
+  "$release_note"
   docs/RC3_SECURITY_REVIEW.md
   docs/STABLE_RELEASE_TOOLING.md
   docs/STABLE_START_HERE.txt
@@ -126,7 +132,7 @@ active_privacy_pattern='/U''sers/|fi''le://|ssh''-rsa|BEGIN (RSA |EC |OPENSSH )?
 active_privacy_status=0
 rg -q "$active_privacy_pattern" \
   AGENTS.md README.md STATUS.md ROADMAP.md CONFIG.md THREAT_MODEL.md SECURITY.md \
-  docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md \
+  docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md "$release_note" \
   docs/STABLE_RELEASE_TOOLING.md docs/STABLE_START_HERE.txt \
   docs/INTEGRATION.md docs/DEPLOYMENT.md deploy/maverick.service \
   docs/TRANSPORT_ARCHITECTURE.md docs/END_TO_END_PROTECTION.md docs/NATIVE_UDP_AND_SELECTION.md docs/TEST_SERVER_PREPARATION.md \

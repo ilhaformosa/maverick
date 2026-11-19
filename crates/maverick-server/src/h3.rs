@@ -149,7 +149,7 @@ impl Server {
         if open.frame_type == FrameType::OpenUdp {
             return serve_native_udp(tunnel, open, max, &policy, &user, state).await;
         }
-        let target = match OpenTcpPayload::decode(&open.payload) {
+        let request = match OpenTcpPayload::decode(&open.payload) {
             Ok(target) => target,
             Err(_) => {
                 return send(
@@ -177,7 +177,7 @@ impl Server {
         let target = tokio::select! {
             _ = tunnel.outbound.closed() => return Ok(()),
             result = relay::open_target_with_metrics(
-                &target,
+                &request,
                 state.config.advanced.tcp_connect_timeout_ms,
                 &state.config.advanced.egress,
                 &target_metrics,
@@ -205,7 +205,17 @@ impl Server {
             &policy,
         )
         .await?;
-        relay_tcp(target.into_split(), tunnel, open.flow_id, max, policy).await
+        relay_tcp(
+            target.into_split(),
+            tunnel,
+            relay::TcpFlow {
+                id: open.flow_id,
+                initial_data: request.initial_data,
+            },
+            max,
+            policy,
+        )
+        .await
     }
 }
 
@@ -248,7 +258,7 @@ async fn send(
 async fn relay_tcp<R, W>(
     (mut read, mut write): (R, W),
     tunnel: FrameChannel,
-    flow_id: u64,
+    mut flow: relay::TcpFlow,
     max: usize,
     policy: relay::TunnelRelayPolicy,
 ) -> Result<()>
@@ -256,6 +266,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let flow_id = flow.id;
     // Separate directions preserve receive progress while the H3 sender is
     // backpressured, including a response after the client's TCP half-close.
     let FrameChannel {
@@ -266,7 +277,8 @@ where
     let (activity, mut progress) = tokio::sync::watch::channel(());
     let upstream = async {
         loop {
-            let frame = h3_channel::read_frame(&mut inbound, max)
+            let frame = flow
+                .next_upload(h3_channel::read_frame(&mut inbound, max))
                 .await?
                 .context("H3 request ended without TCP FIN")?;
             activity.send_replace(());
@@ -724,7 +736,10 @@ mod tests {
             let mut relay = Box::pin(relay_tcp(
                 tokio::io::split(target),
                 channel,
-                1,
+                relay::TcpFlow {
+                    id: 1,
+                    initial_data: Bytes::new(),
+                },
                 65_536,
                 relay_policy(),
             ));
@@ -792,7 +807,10 @@ mod tests {
         let mut relay = Box::pin(relay_tcp(
             tokio::io::split(target),
             channel,
-            1,
+            relay::TcpFlow {
+                id: 1,
+                initial_data: Bytes::new(),
+            },
             65_536,
             relay_policy(),
         ));
@@ -956,7 +974,10 @@ mod tests {
         let task = tokio::spawn(relay_tcp(
             tokio::io::split(target),
             channel,
-            1,
+            relay::TcpFlow {
+                id: 1,
+                initial_data: Bytes::new(),
+            },
             65_536,
             relay_policy(),
         ));
@@ -1008,7 +1029,10 @@ mod tests {
         let task = tokio::spawn(relay_tcp(
             tokio::io::split(target),
             channel,
-            1,
+            relay::TcpFlow {
+                id: 1,
+                initial_data: Bytes::new(),
+            },
             65_536,
             relay_policy(),
         ));

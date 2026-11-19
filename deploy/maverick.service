@@ -1,5 +1,5 @@
 [Unit]
-Description=Maverick privacy proxy (experimental Beta)
+Description=Maverick privacy proxy (experimental)
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=60

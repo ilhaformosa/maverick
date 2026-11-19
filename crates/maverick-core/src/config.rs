@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use zeroize::Zeroize;
 
-use crate::auth::AUTH_V2_MAX_CREDENTIAL_HINT_LEN;
+use crate::auth::{AUTH_V1_MAX_CREDENTIAL_ID_LEN, AUTH_V2_MAX_CREDENTIAL_HINT_LEN};
 use crate::crypto::CryptoPolicyConfig;
 use crate::error::{Error, Result};
 use crate::frame::{DEFAULT_MAX_FRAME_SIZE, MAX_NEGOTIATED_FRAME_SIZE};
@@ -364,7 +365,6 @@ impl ClientConfig {
                 "server.credential_id must not be empty".into(),
             ));
         }
-        validate_auth_v1_string_len("server.credential_id", &self.server.credential_id)?;
         self.auth.validate(&self.server.credential_id)?;
         if self.server.cert_pin.is_some() {
             validate_cert_pin(self.server.cert_pin.as_deref().unwrap())?;
@@ -584,23 +584,40 @@ impl AuthV2Config {
                 "auth.v2.require requires auth.v2.enabled to be true".into(),
             ));
         }
+        self.validate_credential_id_len("server.credential_id", active_credential_id)?;
+        if let Some(next_credential_id) = &rotation.next_credential_id {
+            self.validate_credential_id_len(
+                "auth.rotation.next_credential_id",
+                next_credential_id,
+            )?;
+        }
+        if let Some(next) = &rotation.next {
+            self.validate_credential_id_len("auth.rotation.next.id", &next.id)?;
+        }
         if self.enabled {
-            validate_auth_v2_credential_hint_len("server.credential_id", active_credential_id)?;
-            if let Some(next_credential_id) = &rotation.next_credential_id {
-                validate_auth_v2_credential_hint_len(
-                    "auth.rotation.next_credential_id",
-                    next_credential_id,
-                )?;
-            }
-            if let Some(next) = &rotation.next {
-                validate_auth_v2_credential_hint_len("auth.rotation.next.id", &next.id)?;
-            }
             let active_epoch = rotation.active_epoch.as_deref().ok_or_else(|| {
                 Error::Config(
                     "auth.rotation.active_epoch is required when auth.v2.enabled is true".into(),
                 )
             })?;
             parse_auth_epoch(active_epoch)?;
+        }
+        Ok(())
+    }
+
+    fn validate_credential_id_len(&self, field: &str, value: &str) -> Result<()> {
+        let (limit, context) = if self.enabled {
+            (
+                AUTH_V2_MAX_CREDENTIAL_HINT_LEN,
+                "when auth.v2.enabled is true",
+            )
+        } else {
+            (AUTH_V1_MAX_CREDENTIAL_ID_LEN, "for Auth v1")
+        };
+        if value.len() > limit {
+            return Err(Error::Config(format!(
+                "{field} must be at most {limit} bytes {context}"
+            )));
         }
         Ok(())
     }
@@ -666,9 +683,6 @@ impl ClientCredentialRotationConfig {
                 "auth.rotation.next_credential_id must not be empty".into(),
             ));
         }
-        if let Some(next_credential_id) = &self.next_credential_id {
-            validate_auth_v1_string_len("auth.rotation.next_credential_id", next_credential_id)?;
-        }
         if let Some(next) = &self.next {
             next.validate()?;
             if next.id == active_credential_id {
@@ -707,7 +721,6 @@ impl ClientNextCredentialConfig {
                 "auth.rotation.next.id must not be empty".into(),
             ));
         }
-        validate_auth_v1_string_len("auth.rotation.next.id", &self.id)?;
         self.secret.validate()?;
         parse_rfc3339("auth.rotation.next.not_before", &self.not_before)?;
         Ok(())
@@ -837,13 +850,16 @@ impl ServerConfig {
             return Err(Error::Config("at least one user is required".into()));
         }
         self.auth.validate()?;
+        let mut usable_credential_ids = HashSet::new();
         for user in &self.users {
             if user.id.is_empty() {
                 return Err(Error::Config("user id must not be empty".into()));
             }
-            validate_auth_v1_string_len("user.id", &user.id)?;
-            if self.auth.v2.enabled {
-                validate_auth_v2_credential_hint_len("user.id", &user.id)?;
+            self.auth
+                .v2
+                .validate_credential_id_len("user.id", &user.id)?;
+            if !usable_credential_ids.insert(&user.id) {
+                return Err(Error::Config("server credential ids must be unique".into()));
             }
             user.secret.validate()?;
             if let Some(rate_limit) = &user.rate_limit {
@@ -860,16 +876,18 @@ impl ServerConfig {
             }
             if let Some(rotation) = &user.rotation {
                 rotation.validate_for_user(&user.id)?;
-                if self.auth.v2.enabled {
-                    for previous in &rotation.previous {
-                        validate_auth_v2_credential_hint_len(
-                            "user.rotation.previous.id",
-                            &previous.id,
-                        )?;
+                for previous in &rotation.previous {
+                    self.auth
+                        .v2
+                        .validate_credential_id_len("user.rotation.previous.id", &previous.id)?;
+                    if !usable_credential_ids.insert(&previous.id) {
+                        return Err(Error::Config("server credential ids must be unique".into()));
                     }
-                    if let Some(next) = &rotation.next {
-                        validate_auth_v2_credential_hint_len("user.rotation.next.id", &next.id)?;
-                    }
+                }
+                if let Some(next) = &rotation.next {
+                    self.auth
+                        .v2
+                        .validate_credential_id_len("user.rotation.next.id", &next.id)?;
                 }
             }
         }
@@ -1165,7 +1183,6 @@ impl PreviousCredentialConfig {
                 "user.rotation.previous.id must not be empty".into(),
             ));
         }
-        validate_auth_v1_string_len("user.rotation.previous.id", &self.id)?;
         self.secret.validate()?;
         let not_before = parse_rfc3339("user.rotation.previous.not_before", &self.not_before)?;
         let not_after = parse_rfc3339("user.rotation.previous.not_after", &self.not_after)?;
@@ -1191,7 +1208,6 @@ impl NextCredentialConfig {
                 "user.rotation.next.id must not be empty".into(),
             ));
         }
-        validate_auth_v1_string_len("user.rotation.next.id", &self.id)?;
         parse_rfc3339("user.rotation.next.not_before", &self.not_before)?;
         Ok(())
     }
@@ -1564,10 +1580,19 @@ impl ServerAdvancedConfig {
                 "advanced.max_concurrent_connections_per_source must be greater than zero".into(),
             ));
         }
-        if self.pre_auth_max_concurrent == 0 {
-            return Err(Error::Config(
-                "advanced.pre_auth_max_concurrent must be greater than zero".into(),
-            ));
+        // Each H2 layer holds a connection permit while the request authenticates.
+        // H3 and WebSocket can authenticate with a single permit.
+        let minimum_pre_auth = if self.end_to_end {
+            3
+        } else if self.quiche_h3 || self.dual_h2_h3 || self.cloudflare_ws_enabled() {
+            1
+        } else {
+            2
+        };
+        if self.pre_auth_max_concurrent < minimum_pre_auth {
+            return Err(Error::Config(format!(
+                "advanced.pre_auth_max_concurrent must be at least {minimum_pre_auth} for the configured transport"
+            )));
         }
         if self.fallback_max_concurrent == 0 {
             return Err(Error::Config(
@@ -2092,15 +2117,6 @@ fn validate_auth_v1_string_len(field: &str, value: &str) -> Result<()> {
     if value.len() > AUTH_V1_MAX_STRING_LEN {
         return Err(Error::Config(format!(
             "{field} must be at most {AUTH_V1_MAX_STRING_LEN} bytes for Auth v1 wire encoding"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_auth_v2_credential_hint_len(field: &str, value: &str) -> Result<()> {
-    if value.len() > AUTH_V2_MAX_CREDENTIAL_HINT_LEN {
-        return Err(Error::Config(format!(
-            "{field} must be at most {AUTH_V2_MAX_CREDENTIAL_HINT_LEN} bytes when auth.v2.enabled is true"
         )));
     }
     Ok(())
@@ -3372,6 +3388,40 @@ server:
         );
         let err = cfg.validate().unwrap_err();
         assert!(err.to_string().contains("maverick.tunnel_path"));
+    }
+
+    #[test]
+    fn auth_v1_configuration_checks_the_decoder_credential_limit() {
+        let at_limit = "a".repeat(AUTH_V1_MAX_CREDENTIAL_ID_LEN);
+        let too_long = format!("{at_limit}x");
+        let mut client =
+            client_config_with_server(client_server_config(&at_limit, SecretString::generate()));
+        let mut server = server_config_with_user(&at_limit, "/assets/upload");
+        client.validate().unwrap();
+        server.validate().unwrap();
+        client.auth.rotation.next = Some(ClientNextCredentialConfig {
+            id: too_long.clone(),
+            secret: SecretString::generate(),
+            not_before: "2026-06-01T00:00:00Z".into(),
+        });
+        assert!(client
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("auth.rotation.next.id"));
+        server.users[0].id.clone_from(&too_long);
+        assert!(server
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("user.id"));
+        client.auth.rotation.next = None;
+        client.server.credential_id = too_long;
+        assert!(client
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("server.credential_id"));
     }
 
     #[test]
@@ -4919,6 +4969,43 @@ auth:
     }
 
     #[test]
+    fn rejects_cross_user_credential_collisions_before_startup() {
+        let mut cfg = server_config_with_user("first", "/assets/upload");
+        let mut second = cfg.users[0].clone();
+        cfg.users.push(second.clone());
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("credential ids must be unique"));
+
+        second.id = "second".into();
+        cfg.users[1] = second;
+        cfg.users[0].rotation = Some(UserCredentialRotationConfig {
+            previous: vec![PreviousCredentialConfig {
+                id: "second".into(),
+                secret: SecretString::generate(),
+                not_before: "2026-06-01T00:00:00Z".into(),
+                not_after: "2026-07-01T00:00:00Z".into(),
+            }],
+            next: None,
+        });
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("credential ids must be unique"));
+        cfg.users.swap(0, 1);
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("credential ids must be unique"));
+        cfg.users[0].id = "third".into();
+        cfg.validate().unwrap();
+    }
+
+    #[test]
     fn rejects_duplicate_rotation_ids() {
         let secret = SecretString::generate();
         let previous_secret = SecretString::generate();
@@ -5076,6 +5163,45 @@ advanced:
         );
         let err = ServerConfig::from_yaml_str(&input).unwrap_err();
         assert!(err.to_string().contains("handshake_timeout_ms"));
+    }
+
+    #[test]
+    fn pre_auth_capacity_must_admit_at_least_one_configured_transport() {
+        let mut server = server_config_with_user("user", "/path");
+        server.advanced.pre_auth_max_concurrent = 1;
+        assert!(server
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("at least 2"));
+        server.advanced.pre_auth_max_concurrent = 2;
+        server.validate().unwrap();
+        server.advanced.end_to_end = true;
+        assert!(server
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("at least 3"));
+        server.advanced.pre_auth_max_concurrent = 3;
+        server.validate().unwrap();
+
+        server.advanced.end_to_end = false;
+        server.advanced.pre_auth_max_concurrent = 1;
+        if cfg!(feature = "experimental-h3") {
+            server.advanced.quiche_h3 = true;
+            server.validate().unwrap();
+            server.advanced.quiche_h3 = false;
+            server.advanced.dual_h2_h3 = true;
+            server.validate().unwrap();
+            server.advanced.dual_h2_h3 = false;
+        }
+        server.advanced.stealth.cdn_fronting.enabled = true;
+        server
+            .advanced
+            .stealth
+            .cdn_fronting
+            .trusted_tls_terminating_provider = true;
+        server.validate().unwrap();
     }
 
     #[test]

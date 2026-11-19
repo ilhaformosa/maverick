@@ -64,7 +64,7 @@ caller having used CLI/SDK configuration validation first.
   existing `tls` files. Both ends require enabled channel binding.
 - This envelope is H2-only; WebSocket and explicit H3 reject this option.
   Direct H2/H3 already authenticate the origin through carrier TLS; H3 remains
-  included in full candidate builds and auto-selected for new direct configs.
+  included in the 1.2.0 packages and auto-selected for new direct configs.
   TLS-terminating H3 fronting remains unsupported.
 - Omitted settings retain existing wire behavior. Historical explicitly
   trusted-provider H2/WS configurations are compatibility paths that do NOT

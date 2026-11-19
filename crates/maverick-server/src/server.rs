@@ -1392,13 +1392,16 @@ async fn handle_tunnel(
         &state,
     )
     .await?;
-    relay::relay_target_and_tunnel(
-        target,
+    relay::relay_halves_and_tunnel(
+        target.into_split(),
         send_stream,
         recv_stream,
         recv_buf,
         max_frame_size,
-        open_frame.flow_id,
+        relay::TcpFlow {
+            id: open_frame.flow_id,
+            initial_data: open.initial_data,
+        },
         relay::TunnelRelayPolicy {
             idle_timeout: Duration::from_secs(state.config.advanced.idle_timeout_secs),
             rate_limiter: user_policy.rate_limiter.clone(),
@@ -1589,8 +1592,12 @@ where
     relay_ws_target_and_tunnel(
         target,
         ws,
+        ws_recv_buf,
         max_frame_size,
-        open_frame.flow_id,
+        relay::TcpFlow {
+            id: open_frame.flow_id,
+            initial_data: open.initial_data,
+        },
         relay::TunnelRelayPolicy {
             idle_timeout: Duration::from_secs(state.config.advanced.idle_timeout_secs),
             rate_limiter: user_policy.rate_limiter.clone(),
@@ -1675,14 +1682,6 @@ where
     }
 }
 
-fn frame_from_ws_message(message: Message, max_frame_size: usize) -> Result<Option<Frame>> {
-    let Message::Binary(bytes) = message else {
-        return Ok(None);
-    };
-    let mut buf = BytesMut::from(bytes.as_ref());
-    Ok(Frame::decode_from(&mut buf, max_frame_size)?)
-}
-
 async fn ws_send_frame_with_policy<W>(
     ws: &mut W,
     frame: Frame,
@@ -1722,14 +1721,17 @@ where
 async fn relay_ws_target_and_tunnel<S>(
     target: TcpStream,
     ws: WebSocketStream<S>,
+    mut recv_buf: BytesMut,
     max_frame_size: usize,
-    flow_id: u64,
+    mut flow: relay::TcpFlow,
     policy: relay::TunnelRelayPolicy,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let (mut ws_sink, mut ws_stream) = ws.split();
+    use futures::future::Either;
+    let flow_id = flow.id;
+    let (mut sink, mut messages) = ws.split();
     let (mut target_read, mut target_write) = target.into_split();
     let mut target_buf = vec![0u8; 16 * 1024];
     let mut client_eof = false;
@@ -1749,7 +1751,7 @@ where
                 if n == 0 {
                     target_eof = true;
                     ws_send_frame_with_policy(
-                        &mut ws_sink,
+                        &mut sink,
                         Frame::new(FrameType::TcpFin, 0, flow_id, Bytes::new()),
                         max_frame_size,
                         &policy,
@@ -1760,41 +1762,43 @@ where
                     limiter.throttle(n).await;
                 }
                 ws_send_frame_with_policy(
-                    &mut ws_sink,
+                    &mut sink,
                     Frame::new(FrameType::TcpData, 0, flow_id, Bytes::copy_from_slice(&target_buf[..n])),
                     max_frame_size,
                     &policy,
                 ).await?;
             }
-            tunnel_frame = ws_stream.next() => {
-                match tunnel_frame {
-                    Some(Ok(Message::Ping(payload))) => {
-                        ws_sink.send(Message::Pong(payload)).await?;
-                    }
-                    Some(Ok(message)) => {
-                        match frame_from_ws_message(message, max_frame_size)? {
-                            Some(frame) if frame.flow_id == flow_id => match frame.frame_type {
-                                FrameType::TcpData => {
-                                    if let Some(limiter) = &policy.rate_limiter {
-                                        limiter.throttle(frame.payload.len()).await;
-                                    }
-                                    target_write.write_all(&frame.payload).await?;
-                                }
-                                FrameType::TcpFin => {
-                                    let _ = target_write.shutdown().await;
-                                    client_eof = true;
-                                }
-                                FrameType::CloseFlow | FrameType::TcpReset => {
-                                    let _ = target_write.shutdown().await;
-                                    break;
-                                }
-                                _ => {}
-                            },
-                            Some(_) | None => {}
+            input = async {
+                if let Some(frame) = flow.take_initial_frame() {
+                    return Ok::<_, anyhow::Error>(Either::Left(frame));
+                }
+                if let Some(frame) = Frame::decode_from(&mut recv_buf, max_frame_size)? {
+                    return Ok(Either::Left(frame));
+                }
+                Ok(Either::Right(messages.next().await.transpose()?))
+            } => {
+                match input? {
+                    Either::Right(Some(Message::Binary(bytes))) => recv_buf.extend_from_slice(&bytes),
+                    Either::Right(Some(Message::Ping(payload))) => sink.send(Message::Pong(payload)).await?,
+                    Either::Left(frame) if frame.flow_id == flow_id => match frame.frame_type {
+                        FrameType::TcpData => {
+                            if let Some(limiter) = &policy.rate_limiter {
+                                limiter.throttle(frame.payload.len()).await;
+                            }
+                            target_write.write_all(&frame.payload).await?;
                         }
-                    }
-                    Some(Err(err)) => return Err(err.into()),
-                    None => {
+                        FrameType::TcpFin => {
+                            let _ = target_write.shutdown().await;
+                            client_eof = true;
+                        }
+                        FrameType::CloseFlow | FrameType::TcpReset => {
+                            let _ = target_write.shutdown().await;
+                            break;
+                        }
+                        _ => {}
+                    },
+                    Either::Left(_) | Either::Right(Some(_)) => {}
+                    Either::Right(None) => {
                         let _ = target_write.shutdown().await;
                         break;
                     }
@@ -2147,7 +2151,7 @@ async fn send_fallback_with_body(
     request_body: Bytes,
 ) -> Result<()> {
     let Some(_fallback_permit) = try_fallback_admission(state) else {
-        return send_fallback_overload(respond).await;
+        return send_fallback_overload(respond, method).await;
     };
     state
         .metrics
@@ -2163,7 +2167,7 @@ async fn send_fallback_with_body(
     };
     let (parts, body) = fallback_response.into_parts();
     let response = Response::from_parts(parts, ());
-    let end_stream = body.is_empty();
+    let end_stream = body.is_empty() || *method == Method::HEAD;
     let mut stream = respond.send_response(response, end_stream)?;
     if !end_stream {
         stream.send_data(body, true)?;
@@ -2179,14 +2183,17 @@ fn fallback_request_headers(headers: &HeaderMap) -> HeaderMap {
     fallback_headers
 }
 
-async fn send_fallback_overload(mut respond: SendResponse<Bytes>) -> Result<()> {
+async fn send_fallback_overload(mut respond: SendResponse<Bytes>, method: &Method) -> Result<()> {
     let body = Bytes::from_static(b"Service unavailable");
     let response = Response::builder()
         .status(StatusCode::SERVICE_UNAVAILABLE)
         .header("content-type", "text/plain; charset=utf-8")
         .body(())?;
-    let mut stream = respond.send_response(response, false)?;
-    stream.send_data(body, true)?;
+    let head = *method == Method::HEAD;
+    let mut stream = respond.send_response(response, head)?;
+    if !head {
+        stream.send_data(body, true)?;
+    }
     Ok(())
 }
 

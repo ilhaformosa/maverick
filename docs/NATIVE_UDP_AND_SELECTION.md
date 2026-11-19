@@ -11,7 +11,7 @@ The official client core/SDK owns default selection, reachability state and
 session lifecycle. The server owns both listeners and target forwarding.
 Integrators supply policy/UI; they do not need to reimplement these core rules.
 
-Complete candidate packages include H2 and H3. New direct generation selects
+The 1.2.0 packages include H2 and H3. New direct generation selects
 client auto/server dual, with explicit `udp_policy: allow_reliable`; fixed H2
 and fixed H3 remain options, and `native_required` may be selected explicitly.
 New protected intermediary generation selects H2 and `allow_reliable`, requiring

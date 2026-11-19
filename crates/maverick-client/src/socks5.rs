@@ -177,14 +177,28 @@ pub(crate) async fn serve_udp_associate_with_pool(
     control_peer: Option<SocketAddr>,
 ) -> Result<()> {
     crate::reject_retired_v1_h3(tunnel_pool.config())?;
+    let socket = UdpSocket::bind(udp_relay_bind_addr(control.local_addr()?)).await?;
     if tunnel_pool.config().advanced.udp_policy.is_some() {
-        return serve_session_udp_associate(control, tunnel_pool, _flow_permit, control_peer).await;
+        return serve_session_udp_associate(
+            control,
+            socket,
+            tunnel_pool,
+            _flow_permit,
+            control_peer,
+        )
+        .await;
     }
     #[cfg(feature = "experimental-h3")]
     if tunnel_pool.config().advanced.quiche_h3 || tunnel_pool.config().advanced.auto_h3 {
-        return serve_session_udp_associate(control, tunnel_pool, _flow_permit, control_peer).await;
+        return serve_session_udp_associate(
+            control,
+            socket,
+            tunnel_pool,
+            _flow_permit,
+            control_peer,
+        )
+        .await;
     }
-    let socket = UdpSocket::bind("127.0.0.1:0").await?;
     let bind_addr = socket.local_addr()?;
     write_udp_associate_success(&mut control, bind_addr).await?;
     let mut association = None;
@@ -253,6 +267,14 @@ pub(crate) async fn serve_udp_associate_with_pool(
         let _ = association.close().await;
     }
     Ok(())
+}
+
+fn udp_relay_bind_addr(control: SocketAddr) -> SocketAddr {
+    if control.is_ipv6() {
+        SocketAddr::from((Ipv6Addr::LOCALHOST, 0))
+    } else {
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+    }
 }
 
 fn accept_udp_peer(
@@ -354,6 +376,7 @@ fn encode_udp_response(packet: &UdpPacketPayload) -> Result<Bytes> {
 
 async fn serve_session_udp_associate(
     mut control: TcpStream,
+    socket: UdpSocket,
     pool: Arc<ClientTunnelPool>,
     flow_permit: OwnedSemaphorePermit,
     control_peer: Option<SocketAddr>,
@@ -362,7 +385,7 @@ async fn serve_session_udp_associate(
     use tokio::sync::mpsc;
     const TARGET_LIMIT: usize = 64;
     let budget = Arc::clone(flow_permit.semaphore());
-    let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+    let socket = Arc::new(socket);
     let options = socket2::SockRef::from(socket.as_ref());
     options.set_send_buffer_size(131_072)?;
     options.set_recv_buffer_size(131_072)?;
@@ -427,7 +450,7 @@ async fn serve_session_udp_associate(
                                             Ok(Ok(data)) => {
                                                 let response = UdpPacketPayload::new(child_key.0.clone(), child_key.1, data);
                                                 let encoded = encode_udp_response(&response)?;
-                                                // The local IPv4 UDP packet includes the SOCKS header.
+                                                // The local UDP packet includes the SOCKS header.
                                                 if encoded.len() > maverick_core::frame::MAX_RELIABLE_UDP_PAYLOAD { continue; }
                                                 local.send_to(&encoded, peer).await?;
                                             }
@@ -576,6 +599,20 @@ mod tests {
         let encoded = encode_udp_response(&packet).unwrap();
         let decoded = decode_udp_request(&encoded).unwrap();
         assert_eq!(packet, decoded);
+    }
+
+    #[test]
+    fn udp_relay_binds_loopback_in_the_control_connection_address_family() {
+        for (control, expected) in [
+            ("127.0.0.1:1080", "127.0.0.1:0"),
+            ("[::1]:1080", "[::1]:0"),
+            ("[2001:db8::1]:1080", "[::1]:0"),
+        ] {
+            assert_eq!(
+                udp_relay_bind_addr(control.parse().unwrap()),
+                expected.parse().unwrap()
+            );
+        }
     }
 
     #[test]

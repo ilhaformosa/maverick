@@ -46,7 +46,7 @@ awk '
   { print }
 ' "$fixture/Cargo.toml" >"$fixture/Cargo.toml.new"
 mv "$fixture/Cargo.toml.new" "$fixture/Cargo.toml"
-for lock in Cargo.lock crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.lock; do
+for lock in Cargo.lock crates/maverick-tests/fixtures/quiche-tls-auth/Cargo.lock fuzz/Cargo.lock; do
   awk -v source_version="$source_version" '
     /^\[\[package\]\]$/ { package = 0 }
     /^name = "maverick-/ { package = 1 }

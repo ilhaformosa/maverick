@@ -101,10 +101,13 @@ impl ClientHello {
                 "tls channel binding feature flag requires channel binding material".into(),
             ));
         }
+        let credential_id = credential_id.into();
+        if credential_id.len() > AUTH_V1_MAX_CREDENTIAL_ID_LEN {
+            return Err(Error::MalformedFrame("credential id too long"));
+        }
         let mut client_nonce = [0u8; 32];
         fill_random(&mut client_nonce)?;
         let timestamp_unix = current_unix();
-        let credential_id = credential_id.into();
         let transcript = ClientAuthTranscript {
             version: PROTOCOL_VERSION,
             nonce: &client_nonce,
@@ -1045,6 +1048,18 @@ mod tests {
         let hello = ClientHello::new("u_abc", &secret, "/assets/upload", Mode::Private, 7).unwrap();
         let decoded = ClientHello::decode(&hello.encode()).unwrap();
         assert_eq!(hello, decoded);
+    }
+
+    #[test]
+    fn client_hello_constructor_respects_decoder_credential_limit() {
+        let secret = SecretString::generate();
+        let id = "a".repeat(AUTH_V1_MAX_CREDENTIAL_ID_LEN);
+        let hello = ClientHello::new(&id, &secret, "/", Mode::Auto, 0).unwrap();
+        assert_eq!(ClientHello::decode(&hello.encode()).unwrap(), hello);
+        assert!(matches!(
+            ClientHello::new(id + "x", &secret, "/", Mode::Auto, 0),
+            Err(Error::MalformedFrame("credential id too long"))
+        ));
     }
 
     #[test]

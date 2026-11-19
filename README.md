@@ -1,18 +1,19 @@
 # Maverick
 
-Maverick is an experimental Rust privacy proxy. It is Beta software, is
-not production-ready, and does not claim anonymity, censorship resistance, or
-exact browser fingerprint equivalence.
+Maverick is an experimental Rust privacy proxy for TCP and UDP. The project
+makes no production-readiness, anonymity, censorship-resistance or
+browser-equivalence claim.
 
-The current [RC.6 prerelease](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
-is the candidate for future field acceptance. Use its Apple Silicon macOS CLI
-for the test client and its Linux x86_64 CLI for the server. Each platform has
-an archive, a SHA-256 checksum and a software bill of materials (SBOM).
-The [SDK source at `9adc014`](https://github.com/ilhaformosa/maverick/tree/v1.2.0-rc.6)
-matches both packages.
-The packages have passed local and CI checks. Field testing, deployment and
-Stable publication remain deferred. See the [qualification record](STATUS.md#rc6-checkpoint--2026-11-16)
-and [planned acceptance by route](ROADMAP.md#proposed-field-acceptance--discussion-only).
+Download the archive, SHA-256 checksum and software bill of materials (SBOM)
+for your platform from [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
+Select the entry tagged `v1.2.0` for the stable build.
+Use `aarch64-apple-darwin` for Apple Silicon macOS and `x86_64-unknown-linux-gnu`
+for Linux x86_64. Each archive includes the CLI and `START_HERE.txt`.
+For the Rust SDK, use the release tag that matches your CLI archive.
+
+The maintainer deferred pre-release field testing for 1.2.0. Real-network
+interoperability, operational rollback and the planned 72-hour soak remain
+unverified for this version. See the [current release status](STATUS.md).
 
 ## Build and Configure
 
@@ -20,15 +21,21 @@ Source builds and ordinary CI use Rust stable 1.100.0, pinned in
 `rust-toolchain.toml` and the active workflows. Rustup selects that version
 inside this checkout. Fuzzing uses the separately pinned nightly toolchain.
 
-Complete candidate packages include H2 and H3. Build that same capability set
-from source and generate a new direct pair in an empty directory:
+The release packages include H2 and H3. To build the same capabilities from
+source and generate a matched configuration pair, run this from the repository
+root. It creates a private directory named `maverick-config` in your home
+directory and stops if that directory already exists.
 
 ```sh
-cargo build --locked -p maverick-cli --features experimental-h3
-./target/debug/maverick version
-./target/debug/maverick gen-config
-./target/debug/maverick check-config --kind server -c server.generated.yaml
-./target/debug/maverick check-config --kind client -c client.generated.yaml
+cargo build --locked --target-dir target -p maverick-cli --features experimental-h3 && (
+  cli="$PWD/target/debug/maverick"
+  mkdir -m 700 "$HOME/maverick-config" &&
+  cd "$HOME/maverick-config" &&
+  "$cli" version &&
+  "$cli" gen-config &&
+  "$cli" check-config --kind server -c server.generated.yaml &&
+  "$cli" check-config --kind client -c client.generated.yaml
+)
 ```
 
 New direct generation uses a dual H2/H3 server, an automatic client and explicit
@@ -40,7 +47,7 @@ available without the H3 feature and require `gen-config --h2`.
 
 Generation creates matching credentials in owner-only files. `version` reports
 compiled support, not remote connectivity. The `experimental-h3` feature name
-is retained for source compatibility; these candidate builds are not Stable.
+is retained for source compatibility.
 
 The generated files are examples: replace `example.com`, the server address
 and certificate paths before any separately authorized deployment. Keep the
@@ -64,7 +71,7 @@ selection remain unsupported. Profile URI v1 rejects new transport/UDP policies
 it cannot preserve; use full YAML or stored SDK profiles.
 See [CONFIG.md](CONFIG.md#transport).
 
-For an H2 intermediary that terminates outer TLS, RC.6 provides
+For an H2 intermediary that terminates outer TLS, 1.2.0 provides
 origin-pinned inner TLS through `advanced.end_to_end`. Generate the protected
 pair using `gen-config --relay --origin-name origin.example.invalid --origin-cert origin.pem`, optionally with `--origin-ca ca.pem`.
 The owner-supplied public certificate determines the mandatory pin. The client verifies a
@@ -73,7 +80,9 @@ payloads; protection failures never retry in the historical unprotected mode.
 See [configuration](CONFIG.md#origin-pinned-end-to-end-h2) and the
 [protocol boundary](docs/END_TO_END_PROTECTION.md). This is locally tested
 streaming H2, not real-provider qualification or native UDP. The intermediary
-can still observe the origin TLS name, timing and volume.
+can still observe the origin TLS name, timing and volume. Legacy unprotected
+intermediary H2 and WebSocket expose tunnel contents to the intermediary and
+are excluded from the stable route set.
 
 ## Integration and Deployment
 
@@ -249,12 +258,12 @@ cargo run --locked -p maverick-tests --no-default-features \
 It accepts no external address, uses temporary credentials and a five-second
 network deadline, and does not complete the separate Chrome qualification.
 
-## Pilot Artifacts and Further Documentation
+## Release Artifacts and Further Documentation
 
 `./scripts/build-pilot.sh` builds the full H2/H3 CLI, start guide, checksums and
 target archive under ignored `dist/`. Public archives contain no credentials;
 operators generate them locally. The builder does not contact a server or
-change network settings. Publication and Stable follow the
+change network settings. Publication follows the
 [release contract](docs/V1_2_RC_STABLE_RELEASE_CONTRACT.md).
 
 - [CONFIG.md](CONFIG.md): runnable configuration and compatibility.

@@ -1,10 +1,31 @@
 # Maverick Status
 
-Date: 2026-11-18
+Date: 2026-11-19
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
+
+## 1.2.0 release decision — 2026-11-19
+
+The owner authorized fixing confirmed defects and publishing 1.2.0 as Stable
+and Latest after independent review and automated qualification. For this
+release only, the owner deferred field installation, real-network route and
+rollback exercises, ordinary application use and the 72-hour soak until after
+publication. These items have no field result. Future field work remains an
+owner decision. Maverick remains experimental, with no production-readiness claim.
+
+Runtime fixes require a replacement candidate. [RC.7](docs/releases/v1.2.0-rc.7.md)
+is the source candidate for automated qualification. Review covered the CLI,
+client and SDK, core protocol and configuration, server admission and relay,
+and release gates. Findings and changes are listed in its release note.
+The root dependency lock updates `heapless` to 0.9.4 in the optional TUN
+component. The packaged CLI excludes it on both supported targets.
+The publication workflow
+requires two native packages from the final Stable revision, an exact-commit
+approval and a fresh check of all six files. See the
+[release record](https://github.com/ilhaformosa/maverick/releases) for published
+versions. The dated RC.6 and earlier records below describe their own decisions.
 
 ## Test port conflicts — investigation closed 2026-11-18
 
@@ -229,7 +250,7 @@ the protocol/SDK functionality freeze. This dependency change requires new
 candidate evidence; RC.4's earlier passing records remain historical. See
 [RC.5 notes](docs/releases/v1.2.0-rc.5.md) and the associated PR/CI for exact results.
 
-| Area | Current state |
+| Area | RC.6 checkpoint state (historical) |
 |---|---|
 | Stage | Experimental Beta; not production-ready |
 | Published release | [RC.6 checkpoint](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6) at `9adc014`, prerelease/non-Latest, full transport; RC.5 and older releases remain unchanged |

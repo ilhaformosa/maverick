@@ -1,10 +1,72 @@
 # Maverick Status
 
-Date: 2026-11-17
+Date: 2026-11-18
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
+
+## Test port conflicts — investigation closed 2026-11-18
+
+- **Confirmed Linux failure.** On the first CI run of `main` at `7f5f33d`,
+  the SDK no-downgrade test started an H3 peer on an OS-assigned UDP port.
+  Its TCP listener on the same port number failed with `EADDRINUSE` (error 98)
+  while preparing the wrong-hostname case, before its security assertions ran.
+  UDP and TCP have separate port allocations. The log identifies the failed
+  bind and leaves the TCP port owner unknown. The failed jobs passed on a
+  second run of the same commit. [Original Linux job](https://github.com/ilhaformosa/maverick/actions/runs/44190832071/job/134419583177)
+- **Earlier macOS evidence.** The original November 17 log records the same
+  SDK test and `Address already in use` (error 48). It gives neither the bind
+  operation nor the fault case. A later controlled macOS run occupied the TCP
+  port on purpose and reproduced the Linux failure at the same line. The
+  specific cause of the original macOS event remains unknown. The earlier RC.5
+  post-shutdown bind failures also retain their separate, unconfirmed diagnosis.
+  [November 17 verification record](docs/HANDSHAKE_UDP_EXPERIMENTS.md#verification-and-reproduction)
+- **Repairs and verification.** Six tests now hold both sockets before
+  exercising the behavior under test. The original SDK fix was followed by
+  one more SDK test, three CLI tests and one client H3 transport test. Only
+  an occupied companion socket permits another OS-assigned port, up to four
+  candidates. The fixture stops the unused server first. Each case then runs
+  once with its original assertions and deadlines. Shutdown and restart checks
+  still require the exact endpoint. The review found no further case in the
+  `maverick-tests` integration tests. [SDK fix #121](https://github.com/ilhaformosa/maverick/pull/121) · [SDK and CLI follow-up #122](https://github.com/ilhaformosa/maverick/pull/122) · [H3 follow-up #123](https://github.com/ilhaformosa/maverick/pull/123)
+
+Controlled loopback collisions exercised the fixes. The final local H3 gate
+and workspace harness passed (786 workspace tests passed, three historical
+cases ignored). All three fix PRs and their merged revisions passed applicable
+CI on the first run, including 7/7 PR checks and 6/6 main checks for #123 at
+`3290466`. [Main product CI](https://github.com/ilhaformosa/maverick/actions/runs/44324352442) · [Main code scanning](https://github.com/ilhaformosa/maverick/actions/runs/44324352086)
+
+## Before RC.6 field acceptance
+
+The field candidate remains the published RC.6 at `9adc014`. Through
+`main` at `3290466`, later changes cover documentation, test experiments,
+fixtures and checks. Product runtime and SDK behavior remain as qualified for
+RC.6. There is no known protocol, SDK or release-tooling development prerequisite
+within the agreed scope. [RC.6 checkpoint](#rc6-checkpoint--2026-11-16)
+
+1. **Agree the trial and authorize it.** Identify the owner-controlled fresh
+   Linux x86_64 origin, separate Apple Silicon test Mac, controlled H2
+   intermediary and operator. Choose the intended applications (including
+   UDP), access networks, duration, traffic and spending caps, and stop/cleanup
+   conditions. Record explicit approval before provisioning or deployment.
+2. **Verify the files and prepare recovery.** Independently verify both
+   native RC.6 release archives, their checksums, dependency inventories and
+   `SOURCE.txt` revision. Pin any SDK caller to that revision. Prepare matched
+   binary/configuration backups for both platforms and the fixed Beta.4
+   direct-H2 rollback pair. [Deployment guide](docs/DEPLOYMENT.md#select-and-verify-the-build)
+3. **Prepare the authorized environment and observations.** Verify host
+   preparation before starting the service. Prepare private credentials,
+   certificates and an independently verified origin pin. Arrange a controlled
+   target and clients that can record the actual carrier and verify data at
+   both ends. Use application-level proxy settings on the test device and
+   preserve the development Mac's network and Surge settings.
+
+Field testing, deployment and Stable publication remain deferred. Once
+authorized, the field sequence begins with short route, fault and real rollback
+checks, followed by ordinary use and the 72-hour soak. Stable promotion
+requires a subsequent review of the final files and a separate publication
+decision. [Field acceptance plan](ROADMAP.md#proposed-field-acceptance--discussion-only)
 
 ## UDP Handshake-Candidate Coverage — 2026-11-17
 
@@ -20,8 +82,9 @@ Local product/rustls/H3/retained-quiche checks are complete: 786 product-workspa
 tests passed (three existing historical cases ignored), alongside formatting,
 strict Clippy and the expanded TLS/QUIC matrices. An initial existing SDK test
 reported an unidentified bind conflict; setup contexts were added and the
-17-test SDK group/full H3 gate passed. The original failure is retained and its
-cause is not claimed resolved. Product runtime/defaults and package versions
+17-test SDK group/full H3 gate passed. The later Linux diagnosis and the limits
+of this original log are recorded [above](#test-port-conflicts--investigation-closed-2026-11-18).
+Product runtime/defaults and package versions
 remain unchanged; only an existing socket2 test dependency edge is added to
 size test-owned UDP buffers. Field work remains deferred.
 

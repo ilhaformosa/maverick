@@ -16,13 +16,21 @@ publication. These items have no field result. Future field work remains an
 owner decision. Maverick remains experimental, with no production-readiness claim.
 
 The 1.2.0 source promotes [RC.7](docs/releases/v1.2.0-rc.7.md) at
-`815723e0ba79c049fe1a81ef08cdbe44b9111f27`. The merged candidate has the
-same tree as the independently reviewed PR at `77f3ede`. The complete local
-checks passed, including 796 workspace tests with three historical cases
-ignored. Both native CI jobs exercised the authenticated routes, verified
-archives and full dependency inventories, and ran the Beta.4 rollback drills.
-[Candidate checks](https://github.com/ilhaformosa/maverick/actions/runs/44531146876)
-and [merged candidate qualification](https://github.com/ilhaformosa/maverick/actions/runs/44535083852).
+`43817c2fb15c37c3aecaecf33fc89e8c25a6649d`. The runtime and dependency
+locks come from [the independently reviewed RC.7 repairs](https://github.com/ilhaformosa/maverick/pull/125).
+The first main build encountered a Linux port conflict during a TLS test.
+The log identifies the case, but not the failing bind or port owner.
+[The test fixture repair](https://github.com/ilhaformosa/maverick/pull/127)
+keeps the relay listener until its exact-port check. Assertions and deadlines
+are preserved. That PR and the resulting main candidate have the same tree.
+[Original failure](https://github.com/ilhaformosa/maverick/actions/runs/44535083852/job/135598319106).
+
+The local product suite passed 796 tests with three historical cases ignored.
+The complete local product, rustls, H3 and retained quiche gates passed on the
+runtime repairs. The amended TLS fixture also passed with both TLS profiles.
+Both candidate platforms completed their native package, dependency inventory
+and Beta.4 rollback checks. [Candidate PR checks](https://github.com/ilhaformosa/maverick/actions/runs/44536488686)
+and [merged candidate qualification](https://github.com/ilhaformosa/maverick/actions/runs/44540314035).
 
 The promotion changes the package version and release records. The source
 includes the RC.7 repairs and the updated optional TUN dependency. The

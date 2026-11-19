@@ -1,18 +1,14 @@
 # Maverick Threat Model
 
-Status: current threat model for owner-operated Beta evaluation.
+Maverick is an experimental privacy proxy. This threat model describes
+intended protections and their limits for owner-operated use.
 
-Maverick is Beta software. This document is not an audit, production-security
-claim, anonymity claim, or guarantee against a specific censorship system.
+## Field evidence
 
-## Beta Evaluation Basis
-
-The completed owner-operated pilot is the evidence basis for the current Beta
-stage. Its first user was the project owner on an owner-controlled spare macOS
-laptop, its server was owner-controlled, and its task was ordinary,
-non-sensitive browsing on the privately identified lawful client path recorded
-in `STATUS.md`. Any later real-network Beta evaluation remains limited to the
-current authorization recorded there.
+An earlier Beta pilot covered ordinary, non-sensitive browsing on an
+owner-controlled client and server. Its evidence applies to that build and
+network. Field acceptance for 1.2.0 was deferred. The [status record](STATUS.md)
+identifies the scope of the pilot and the current release decision.
 
 The current adversary model is an access-network observer that can:
 
@@ -47,10 +43,10 @@ the provider can observe Maverick authentication and tunnel payload before
 forwarding it.
 
 The quiche H3 TCP/native UDP source path uses the same credential and target
-policy, verified certificates and TLS exporter binding. Full candidate packages
+policy, verified certificates and TLS exporter binding. The 1.2.0 packages
 include H3; new direct configs use dual listeners and automatic selection.
-Omitted settings in existing configs retain their earlier behavior. H3 is
-local/CI validated, not field qualified or part of published RC.2. Unknown H3 requests and failed
+Omitted settings in existing configs retain their earlier behavior. H3 has local and CI coverage. Its behavior on real networks remains
+unverified for 1.2.0. Unknown H3 requests and failed
 authentication close the connection; H2 fallback-content behavior and browser
 fingerprint observations do not transfer to H3. It does not support provider
 fronting. Native UDP uses authenticated fixed-target datagrams with bounded
@@ -108,7 +104,7 @@ authorization recorded in `STATUS.md`.
 
 ## Evidence Standard
 
-Loopback tests show implementation behavior only. A real-network Beta record
+Loopback tests show implementation behavior only. A real-network test record
 must say:
 
 - who consented to test;

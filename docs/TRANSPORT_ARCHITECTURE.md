@@ -81,7 +81,7 @@ capability absence before data. See the
 [wire/selection contract](NATIVE_UDP_AND_SELECTION.md). Server UDP acceptance
 uses bounded packet queues and existing global, per-source and pre-auth limits.
 After verified TLS, existing Maverick authentication and egress policy run.
-Full candidate packages compile both carriers; new direct configurations select
+The 1.2.0 packages include both carriers; new direct configurations select
 auto/dual and an explicit UDP policy. Omitted old settings retain their meaning.
 Persistent H2 UDP uses authenticated fixed-target sessions, bounded queues and
 independent directions with a retained target socket/source port.

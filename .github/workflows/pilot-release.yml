@@ -13,8 +13,8 @@ permissions:
   actions: read
   contents: read
 
-# Set only after exact-candidate field acceptance, independent release review
-# and an explicit owner publication decision. Unset means Stable is blocked.
+# The owner deferred field acceptance for v1.2.0. Set only for the reviewed,
+# CI-qualified commit explicitly approved for publication.
 env:
   MAVERICK_STABLE_APPROVED_SHA: ${{ vars.MAVERICK_STABLE_APPROVED_SHA }}
 

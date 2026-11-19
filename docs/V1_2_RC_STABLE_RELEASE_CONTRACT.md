@@ -9,6 +9,19 @@ independently reviewing and testing Stable tooling before field qualification,
 while freezing protocol/SDK scope. This does not move the publication decision
 or authorize a release tag, deployment or GitHub Release.
 
+## Owner decision for v1.2.0 only — 2026-11-19
+
+The owner authorized a Stable/Latest release after review, repair of confirmed
+defects and automated qualification. For v1.2.0 only, section 4 and the field
+portion of section 5 are deferred. Fresh-host installation, real networks,
+ordinary application use, deployment rollback and the 72-hour soak carry no
+passing result. Future releases can reinstate those gates. The Linux and macOS
+native package and Beta.4 rollback drills below still apply. This decision
+supersedes earlier statements deferring Stable publication or requiring a
+second owner decision for this version. It authorizes setting the exact-SHA
+approval for the qualified Stable revision and publishing its six verified
+files. It grants no infrastructure or deployment authorization.
+
 ## Purpose
 
 This record freezes the minimum contract for moving the v1.2 H2/H3 TCP/UDP
@@ -16,10 +29,7 @@ train from Beta toward RC and Stable release. It is a policy record,
 not evidence that any RC or Stable gate has passed.
 
 The contract does not itself authorize a tag, GitHub Release, publication,
-provider resource, field run, paid audit, or Stable claim. The current owner
-decision authorizes candidate development and local/CI qualification only.
-Field use, actual deployment and publication remain deferred and require a
-later owner decision before their exact gates can proceed.
+provider resource, field run, paid audit, or Stable claim. The November 19 decision above supplies publication authorization for v1.2.0.
 
 ## Owner decisions R1 through R4
 
@@ -181,8 +191,8 @@ exercise must run natively on Apple Silicon macOS for
 `x86_64-unknown-linux-gnu`; one platform's static inspection does not replace
 the other platform's native exercise. The current
 `scripts/test-n-minus-one-release-drill.sh` is fixed to Beta.4 as the rollback
-partner and accepts the exact RC.6 candidate (or explicitly selected RC.4/RC.5/Stable)
-promotion identity. A platform cell closes
+partner and accepts RC.4 through RC.7 and Stable 1.2.0. The default
+candidate version comes from the workspace. A platform cell closes
 only when that exact candidate passes the native drill and independent review.
 
 ### 6. Publication

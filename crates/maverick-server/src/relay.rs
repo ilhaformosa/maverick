@@ -339,6 +339,36 @@ async fn connect_target_tcp(addr: SocketAddr) -> io::Result<TcpStream> {
     Ok(target)
 }
 
+pub(super) struct TcpFlow {
+    pub id: u64,
+    pub initial_data: Bytes,
+}
+
+impl TcpFlow {
+    // The prefix is the first upload on an admitted flow. Return it through
+    // the regular relay path so rate limits, backpressure and FIN ordering apply.
+    pub async fn next_upload<E>(
+        &mut self,
+        read_frame: impl Future<Output = Result<Option<Frame>, E>>,
+    ) -> Result<Option<Frame>, E> {
+        match self.take_initial_frame() {
+            Some(frame) => Ok(Some(frame)),
+            None => read_frame.await,
+        }
+    }
+
+    pub fn take_initial_frame(&mut self) -> Option<Frame> {
+        (!self.initial_data.is_empty()).then(|| {
+            Frame::new(
+                FrameType::TcpData,
+                0,
+                self.id,
+                std::mem::take(&mut self.initial_data),
+            )
+        })
+    }
+}
+
 pub async fn relay_target_and_tunnel(
     target: TcpStream,
     send_stream: h2::SendStream<Bytes>,
@@ -354,25 +384,29 @@ pub async fn relay_target_and_tunnel(
         recv_stream,
         recv_buf,
         max_frame_size,
-        flow_id,
+        TcpFlow {
+            id: flow_id,
+            initial_data: Bytes::new(),
+        },
         policy,
     )
     .await
 }
 
-async fn relay_halves_and_tunnel<R, W>(
+pub(super) async fn relay_halves_and_tunnel<R, W>(
     (mut target_read, target_write): (R, W),
     mut send_stream: h2::SendStream<Bytes>,
     mut recv_stream: h2::RecvStream,
     mut recv_buf: BytesMut,
     max_frame_size: usize,
-    flow_id: u64,
+    mut flow: TcpFlow,
     policy: TunnelRelayPolicy,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    let flow_id = flow.id;
     let mut target_write = Some(target_write);
     let mut pending_target_write: Option<Pin<Box<dyn Future<Output = Result<W>> + Send>>> = None;
     let mut target_buf = vec![0u8; 16 * 1024];
@@ -469,7 +503,7 @@ where
                 )?);
             }
 
-            tunnel_frame = read_next_frame(&mut recv_stream, &mut recv_buf, max_frame_size),
+            tunnel_frame = flow.next_upload(read_next_frame(&mut recv_stream, &mut recv_buf, max_frame_size)),
                 if !client_eof && pending_target_write.is_none() =>
             {
                 if pending_send.is_some() {
@@ -1992,7 +2026,10 @@ mod tests {
                         request.into_body(),
                         BytesMut::new(),
                         65_536,
-                        1,
+                        super::TcpFlow {
+                            id: 1,
+                            initial_data: Bytes::new(),
+                        },
                         TunnelRelayPolicy {
                             idle_timeout: Duration::from_secs(5),
                             rate_limiter: None,
@@ -2116,7 +2153,10 @@ mod tests {
                         request.into_body(),
                         BytesMut::new(),
                         65_536,
-                        1,
+                        super::TcpFlow {
+                            id: 1,
+                            initial_data: Bytes::new(),
+                        },
                         TunnelRelayPolicy {
                             idle_timeout: Duration::from_secs(5),
                             rate_limiter: None,

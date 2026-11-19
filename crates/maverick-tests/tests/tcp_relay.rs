@@ -380,6 +380,70 @@ async fn tcp_relay_large_roundtrip_exceeds_h2_window() -> Result<()> {
     Ok(())
 }
 
+async fn check_open_tcp_initial_data(options: HarnessOptions) -> Result<()> {
+    use maverick_core::frame::{OpenTcpPayload, TargetAddr};
+
+    let fixture = MaverickHarness::start_with_options(options).await?;
+    timeout(Duration::from_secs(5), async {
+        let target = TcpListener::bind("127.0.0.1:0").await?;
+        let open = OpenTcpPayload {
+            target: TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+            port: target.local_addr()?.port(),
+            initial_data: Bytes::from_static(b"first"),
+        };
+        let mut tunnel = maverick_client::tunnel::open(&fixture.client_config()).await?;
+        tunnel
+            .send_frame(Frame::new(FrameType::OpenTcp, 0, 1, open.encode()?), false)
+            .await?;
+        let admitted = tunnel
+            .read_next_frame()
+            .await?
+            .context("missing TCP admission")?;
+        assert_eq!(admitted.frame_type, FrameType::WindowUpdate);
+        assert_eq!(admitted.flow_id, 1);
+        let (mut target, _) = target.accept().await?;
+        tunnel
+            .send_frame(
+                Frame::new(FrameType::TcpData, 0, 1, Bytes::from_static(b" second")),
+                false,
+            )
+            .await?;
+        tunnel
+            .send_frame(Frame::new(FrameType::TcpFin, 0, 1, Bytes::new()), true)
+            .await?;
+        let mut received = Vec::new();
+        target.read_to_end(&mut received).await?;
+        assert_eq!(received, b"first second");
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("initial TCP upload stalled")??;
+    fixture.shutdown().await
+}
+
+#[tokio::test]
+async fn open_tcp_initial_data_on_h2_and_websocket() -> Result<()> {
+    for (end_to_end, experimental_cloudflare_ws) in [(false, false), (true, false), (false, true)] {
+        check_open_tcp_initial_data(HarnessOptions {
+            end_to_end,
+            experimental_cloudflare_ws,
+            ..HarnessOptions::default()
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "experimental-h3")]
+#[tokio::test]
+async fn open_tcp_initial_data_on_h3() -> Result<()> {
+    check_open_tcp_initial_data(HarnessOptions {
+        quiche_h3: true,
+        ..HarnessOptions::default()
+    })
+    .await
+}
+
 #[tokio::test]
 async fn cloudflare_ws_tcp_relay_roundtrip() -> Result<()> {
     let fixture = MaverickHarness::start_with_options(HarnessOptions {

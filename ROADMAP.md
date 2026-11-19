@@ -1,20 +1,22 @@
 # Maverick Roadmap
 
-Date: 2026-11-18
+Date: 2026-11-19
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
-## Next decision
+## 1.2.0 release and follow-up
 
-The [published RC.6 prerelease](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6)
-at `9adc014` is the field candidate. The [SDK guide](docs/INTEGRATION.md) and
-[deployment guide](docs/DEPLOYMENT.md) identify the matching source and packages.
-The next decision is whether to authorize the environment, applications, duration
-and budget in the [field acceptance plan](#proposed-field-acceptance--discussion-only).
-Until then, field testing, deployment and Stable publication remain deferred.
-Keep the handshake experiments in the test suite and prioritize reproducible
-ordinary-use failures within the existing protocol and SDK scope.
+Qualify the RC.7 repairs, review the Stable promotion, then publish the exact
+1.2.0 packages through the normal release workflow. The owner authorized
+publication on November 19 and waived pre-publication field acceptance for
+1.2.0. The [field plan](#proposed-field-acceptance--discussion-only) is retained
+for a future decision. No infrastructure or deployment is included.
+
+After release, prioritize reproducible problems from ordinary use. Record the
+tested version, route and application when reporting results. Future field
+trials can resume under the existing owner-controlled environment rules.
+Earlier delivery and field plans below are historical.
 
 ## Delivered — Bounded Local Handshake Research
 
@@ -256,8 +258,8 @@ need a concrete consuming application requirement.
 
 ## Proposed Field Acceptance — Discussion Only
 
-This is the next decision, not permission to provision, deploy, change a host,
-run a real-network test or publish Stable. The proposed candidate is the
+This is the field plan proposed before the one-release waiver. A future trial
+requires a fresh choice of candidate and environment. The original candidate was the
 published RC.6 checkpoint at `9adc014`, replacing the earlier RC.5 field
 proposal. Obtain its exact CI-qualified Release assets and independently verify
 them. No infrastructure or client application work is silently included.
@@ -355,7 +357,7 @@ budgets remain to be agreed. Paid audit, extra platforms, FFI bindings, new
 providers, performance ranking and active-session migration are not added as
 new mandatory work.
 
-## Deferred — Exact-Candidate Field Validation and Stable
+## Historical field prerequisites before the November 19 waiver
 
 The owner has deferred named-environment installation, ordinary use and field
 rollback. Stable must cover H2/H3 and TCP/UDP and the supported protected H2

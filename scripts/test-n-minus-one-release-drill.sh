@@ -526,9 +526,11 @@ done
 [[ -n "$source_candidate_archive" && -n "$source_candidate_checksum" ]] || fail
 [[ "$candidate_revision" =~ ^[0-9a-f]{40}$ ]] || fail
 readonly candidate_revision
-candidate_version="${candidate_version:-1.2.0-rc.6}"
+if [[ -z "$candidate_version" ]]; then
+  candidate_version="$(awk -F'"' '/^version =/ {print $2; exit}' "$repo_root/Cargo.toml")"
+fi
 case "$candidate_version" in
-  1.2.0-rc.4 | 1.2.0-rc.5 | 1.2.0-rc.6 | 1.2.0) ;;
+  1.2.0-rc.[4-7] | 1.2.0) ;;
   *) fail ;;
 esac
 readonly CANDIDATE_VERSION="$candidate_version"

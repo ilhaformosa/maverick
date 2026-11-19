@@ -5,6 +5,13 @@ This task prepares and independently reviews release tooling with local/CI
 verification. It does not authorize field use, deployment, a release tag, a
 GitHub Release, or setting a publication approval.
 
+## November 19 promotion decision
+
+For 1.2.0 the owner approved publication and deferred field acceptance until
+after release. The exact-SHA approval still binds the release to the reviewed
+Stable commit and its CI-qualified packages. The original tooling decisions
+below predate that exception. See the [release contract](V1_2_RC_STABLE_RELEASE_CONTRACT.md#owner-decision-for-v120-only--2026-11-19).
+
 ## Small implementation boundary
 
 Protocol/SDK Rust functionality, wire/auth/configuration semantics and client
@@ -45,9 +52,8 @@ Stable package verification requires the full H2/H3 feature profile and both
 TCP/UDP native smoke modes. Its SBOM must match that full locked dependency
 graph. The stable installation guide retains experimental/non-production
 limitations while avoiding a false prerelease label. Legacy Beta/RC archive
-profiles remain unchanged. The rollback drill defaults to RC.6 and additionally
-accepts explicit RC.4, RC.5 or `--candidate-version 1.2.0`; the pinned Beta.4 partner and its
-digests never change.
+profiles remain unchanged. The rollback drill defaults to the workspace package version. It accepts RC.4
+through RC.7 and Stable 1.2.0. The Beta.4 partner and its digests stay pinned.
 
 RC.6 maintenance upgrades the SBOM generator to cargo-cyclonedx 0.5.10.
 Verification derives the required generator version from the selected source

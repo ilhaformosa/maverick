@@ -1,23 +1,34 @@
 # Server deployment preparation
 
-This runbook and its service template cover the experimental RC.6 Linux
-server. Deployment and field testing remain deferred until the owner authorizes
-a named environment. The development Mac keeps its existing network settings.
+This runbook covers the Maverick 1.2.0 Linux server. The maintainer deferred
+field validation for this release. Deployment requires a separately authorized
+environment.
 
 ## Select and verify the build
 
-For acceptance use the [published RC.6 prerelease](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0-rc.6).
-Select `aarch64-apple-darwin` for the test Mac and
-`x86_64-unknown-linux-gnu` for the Linux origin. For each target, obtain the
-`.tar.gz`, its `.tar.gz.sha256` and the matching `.cdx.json` dependency
-inventory. Verify the archive against the published checksum and the
-[RC.6 qualification record](../STATUS.md#rc6-checkpoint--2026-11-16).
-Inside each archive, check `SHA256SUMS` and confirm that `SOURCE.txt` lists
-the expected target, version `1.2.0-rc.6` and `git_revision`
-`9adc014c29084877de6c5d6520e0622b76c3efa6`. Use that revision for the SDK.
+Download the archive, checksum and matching `.cdx.json` software bill of
+materials from the entry tagged `v1.2.0` on [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
+Select `aarch64-apple-darwin` for Apple Silicon macOS or
+`x86_64-unknown-linux-gnu` for Linux x86_64. The `pilot` segment in the
+filename is retained for compatibility.
 
-For a local source-build check on Linux x86_64, use the following commands.
-Field acceptance uses the verified Release archives.
+For example, on Linux run the following in the download directory. Extract
+into an empty directory after the first check succeeds.
+
+```sh
+sha256sum -c maverick-1.2.0-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256 &&
+mkdir maverick-1.2.0 &&
+tar -xzf maverick-1.2.0-pilot-x86_64-unknown-linux-gnu.tar.gz -C maverick-1.2.0 &&
+cd maverick-1.2.0/maverick-pilot &&
+sha256sum -c SHA256SUMS
+```
+
+On macOS use the Apple Silicon filename and `shasum -a 256 -c` for both checks.
+In `SOURCE.txt`, check the target and version (`1.2.0`). Compare the full
+`git_revision` to the output of `git rev-parse 'v1.2.0^{commit}'` in a source
+checkout containing the release tag. Use that commit for SDK clients.
+
+For a local source-build check on Linux x86_64, run:
 
 ```sh
 cargo build --locked --release -p maverick-cli --no-default-features --features experimental-h3
@@ -30,7 +41,7 @@ Both smoke variants exercise TCP plus persistent UDP, authentication rejection,
 port continuity and independent replies on loopback. Keep source identity,
 features, digest and results with the binary. These do not validate deployment
 certificates, a real intermediary or network. `build-pilot.sh`, native artifact,
-SBOM and rollback gates verify the full candidate; immutable Beta/RC.2 archives
+SBOM and rollback gates check the release build; immutable Beta/RC.2 archives
 keep their older H2-only verification profile. Do not overwrite those releases.
 
 ## Prepare private configuration

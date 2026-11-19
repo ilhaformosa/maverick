@@ -54,7 +54,13 @@ impl FallbackHandler {
         request_body: Bytes,
     ) -> Result<Response<Bytes>> {
         match self {
-            Self::Static(fallback) => fallback.response_for_path(path_and_query).await,
+            Self::Static(fallback) => {
+                let mut response = fallback.response_for_path(path_and_query).await?;
+                if method == Method::HEAD {
+                    *response.body_mut() = Bytes::new();
+                }
+                Ok(response)
+            }
             Self::ReverseProxy(fallback) => {
                 fallback
                     .response_for(method, path_and_query, headers, request_body)
@@ -199,7 +205,7 @@ impl ReverseProxyFallback {
         };
         let stream = timeout(
             self.timeout,
-            TcpStream::connect((authority.host(), authority.port_u16().unwrap_or(80))),
+            TcpStream::connect(upstream_endpoint(authority)),
         )
         .await
         .context("reverse proxy upstream connect timed out")??;
@@ -250,6 +256,14 @@ impl ReverseProxyFallback {
         connection_task.abort();
         result
     }
+}
+
+fn upstream_endpoint(authority: &http::uri::Authority) -> (&str, u16) {
+    // Keep IPv6 brackets in the Host header and omit them from the socket host.
+    (
+        authority.host().trim_matches(['[', ']']),
+        authority.port_u16().unwrap_or(80),
+    )
 }
 
 fn is_forwardable_request_header(name: &HeaderName, connection_headers: &[HeaderName]) -> bool {
@@ -340,6 +354,13 @@ mod tests {
         let response = fallback.response_for_path("/").await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.body(), &Bytes::from_static(b"hello"));
+        let head = FallbackHandler::Static(fallback)
+            .response_for(&Method::HEAD, "/")
+            .await
+            .unwrap();
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(head.headers(), response.headers());
+        assert!(head.body().is_empty());
     }
 
     #[tokio::test]
@@ -415,6 +436,13 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.body(), &Bytes::from_static(b"proxied"));
+    }
+
+    #[test]
+    fn reverse_proxy_connects_to_an_ipv6_literal_without_uri_brackets() {
+        let authority = "[::1]:8080".parse().unwrap();
+        assert_eq!(upstream_endpoint(&authority), ("::1", 8080));
+        assert_eq!(authority.as_str(), "[::1]:8080");
     }
 
     #[tokio::test]

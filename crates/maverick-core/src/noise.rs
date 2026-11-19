@@ -243,13 +243,11 @@ pub fn noise_static_public_key(mut private: [u8; 32]) -> Result<[u8; 32]> {
 
 fn build_handshake(config: &NoiseRuntimeConfig, role: NoiseRole) -> Result<snow::HandshakeState> {
     let prologue = config.prologue_context().canonical_prologue();
-    let mut local_static_private = config.local_static_private;
     let builder = snow::Builder::new(noise_params()?)
-        .local_private_key(&local_static_private)
+        .local_private_key(&config.local_static_private)
         .map_err(noise_error)?
         .prologue(&prologue)
         .map_err(noise_error)?;
-    local_static_private.zeroize();
     match role {
         NoiseRole::Initiator => builder.build_initiator().map_err(noise_error),
         NoiseRole::Responder => builder.build_responder().map_err(noise_error),

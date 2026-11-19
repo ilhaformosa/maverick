@@ -7,11 +7,11 @@ contains the execution order, not a second history of completed pull requests.
 
 ## 1.2.0 release and follow-up
 
-Qualify the RC.7 repairs, review the Stable promotion, then publish the exact
-1.2.0 packages through the normal release workflow. The owner authorized
-publication on November 19 and waived pre-publication field acceptance for
-1.2.0. The [field plan](#proposed-field-acceptance--discussion-only) is retained
-for a future decision. No infrastructure or deployment is included.
+The 1.2.0 source carries the reviewed RC.7 repairs. The normal release workflow
+qualifies and publishes the final packages under the November 19 owner decision.
+The owner waived pre-publication field acceptance for 1.2.0. The
+[field plan](#proposed-field-acceptance--discussion-only) is retained for a
+future decision. No infrastructure or deployment is included.
 
 After release, prioritize reproducible problems from ordinary use. Record the
 tested version, route and application when reporting results. Future field

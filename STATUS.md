@@ -15,17 +15,23 @@ rollback exercises, ordinary application use and the 72-hour soak until after
 publication. These items have no field result. Future field work remains an
 owner decision. Maverick remains experimental, with no production-readiness claim.
 
-Runtime fixes require a replacement candidate. [RC.7](docs/releases/v1.2.0-rc.7.md)
-is the source candidate for automated qualification. Review covered the CLI,
-client and SDK, core protocol and configuration, server admission and relay,
-and release gates. Findings and changes are listed in its release note.
-The root dependency lock updates `heapless` to 0.9.4 in the optional TUN
-component. The packaged CLI excludes it on both supported targets.
-The publication workflow
-requires two native packages from the final Stable revision, an exact-commit
-approval and a fresh check of all six files. See the
-[release record](https://github.com/ilhaformosa/maverick/releases) for published
-versions. The dated RC.6 and earlier records below describe their own decisions.
+The 1.2.0 source promotes [RC.7](docs/releases/v1.2.0-rc.7.md) at
+`815723e0ba79c049fe1a81ef08cdbe44b9111f27`. The merged candidate has the
+same tree as the independently reviewed PR at `77f3ede`. The complete local
+checks passed, including 796 workspace tests with three historical cases
+ignored. Both native CI jobs exercised the authenticated routes, verified
+archives and full dependency inventories, and ran the Beta.4 rollback drills.
+[Candidate checks](https://github.com/ilhaformosa/maverick/actions/runs/44531146876)
+and [merged candidate qualification](https://github.com/ilhaformosa/maverick/actions/runs/44535083852).
+
+The promotion changes the package version and release records. The source
+includes the RC.7 repairs and the updated optional TUN dependency. The
+publication workflow takes the final Linux and macOS packages from the
+successful run on the tagged Stable commit and rechecks all six files.
+The [1.2.0 release](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0)
+identifies the published builds. The [release note](docs/releases/v1.2.0.md)
+describes the fixes and field limitations. Older records describe the release
+decisions and evidence at their respective dates.
 
 ## Test port conflicts — investigation closed 2026-11-18
 

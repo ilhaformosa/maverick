@@ -875,7 +875,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "maverick-client"
-version = "1.2.0-rc.7"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-core"
-version = "1.2.0-rc.7"
+version = "1.2.0"
 dependencies = [
  "base64",
  "bytes",
@@ -922,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-quiche"
-version = "1.2.0-rc.7"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "boring",
@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "maverick-server"
-version = "1.2.0-rc.7"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "boring",

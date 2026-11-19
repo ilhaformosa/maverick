@@ -147,7 +147,7 @@ async fn forward_client_hello(
 struct RecordRelay {
     address: SocketAddr,
     observation: oneshot::Receiver<Observation>,
-    tasks: JoinSet<Result<()>>,
+    tasks: JoinSet<Result<TcpListener>>,
 }
 
 impl RecordRelay {
@@ -161,26 +161,27 @@ impl RecordRelay {
         inspection: Inspection,
     ) -> Result<Self> {
         ensure!(origin.ip() == Ipv4Addr::LOCALHOST && origin.port() != 0);
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .context("bind TLS test relay listener")?;
         let address = listener.local_addr()?;
         let (observed, observation) = oneshot::channel();
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
             let (mut client, peer) = listener.accept().await?;
             ensure!(peer.ip() == Ipv4Addr::LOCALHOST);
-            // One physical H2 connection per case. The listener stays owned until
-            // completion so accidental reconnects cannot hit a reused port.
+            // Return the listener to finish() so other cases cannot claim its
+            // port between the end of this connection and the exact rebind.
             let mut server = TcpStream::connect(origin).await?;
             let result = forward_client_hello(&mut client, &mut server, mode, inspection).await?;
             let blocked = result.blocked;
             let _ = observed.send(result);
             if blocked {
-                return Ok(());
+                return Ok(listener);
             }
             let copied = tokio::io::copy_bidirectional(&mut client, &mut server).await;
-            drop(listener);
             match copied {
-                Ok(_) => Ok(()),
+                Ok(_) => Ok(listener),
                 // A TLS denial or cancelled stream may close the transport abruptly.
                 Err(error)
                     if matches!(
@@ -188,7 +189,7 @@ impl RecordRelay {
                         std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
                     ) =>
                 {
-                    Ok(())
+                    Ok(listener)
                 }
                 Err(error) => Err(error.into()),
             }
@@ -204,12 +205,15 @@ impl RecordRelay {
         let observed = (&mut self.observation)
             .await
             .context("ClientHello not forwarded")?;
-        self.tasks
+        let listener = self
+            .tasks
             .join_next()
             .await
             .context("missing relay task")???;
-        // Completion, not abort, must release the experiment's listener.
-        let _rebound = TcpListener::bind(self.address).await?;
+        drop(listener);
+        let _rebound = TcpListener::bind(self.address)
+            .await
+            .context("rebind TLS test relay listener after task completion")?;
         Ok(observed)
     }
 }
@@ -297,7 +301,7 @@ async fn default_and_fragmented_records_reject_invalid_identity_and_credentials(
             ] {
                 for fault in ["ca", "name", "pin", "credential"] {
                     timeout(DEADLINE, async {
-                        let origin = harness(backend, v2).await?;
+                        let origin = harness(backend, v2).await.context("start rejection test origin and client")?;
                         let relay = RecordRelay::start(origin.server.local_addr, mode).await?;
                         let mut config = origin.client_config();
                         config.server.address = relay.address.to_string();
@@ -310,7 +314,7 @@ async fn default_and_fragmented_records_reject_invalid_identity_and_credentials(
                             _ => unreachable!(),
                         }
                         let connector = ProxyConnector::new(config)?;
-                        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+                        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.context("bind rejection test target")?;
                         ensure!(connector.connect_tcp(TargetAddr::Ipv4(Ipv4Addr::LOCALHOST), target.local_addr()?.port()).await.is_err(), "invalid identity/credential accepted");
                         ensure!(timeout(Duration::from_millis(60), target.accept()).await.is_err(), "rejected client reached target");
                         connector.close();
@@ -321,7 +325,8 @@ async fn default_and_fragmented_records_reject_invalid_identity_and_credentials(
                         origin.shutdown().await?;
                         println!("backend={backend:?} auth_v2={v2} mode={mode:?} rejected={fault} records={:?} target_connections=0 resources_drained=true", observed.output_lengths);
                         Ok::<_, anyhow::Error>(())
-                    }).await.context("TLS rejection experiment timed out")??;
+                    }).await.context("TLS rejection experiment timed out")?
+                      .with_context(|| format!("rejection case backend={backend:?} auth_v2={v2} mode={mode:?} fault={fault}"))?;
                 }
             }
         }

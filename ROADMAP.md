@@ -7,16 +7,32 @@ contains the execution order, not a second history of completed pull requests.
 
 ## 1.2.1 package qualification
 
-The 1.2.1 patch is based on `810e39f`. The owner authorized publication
-after the actual native packages pass all six routes against published
-1.2.0. Both CI jobs install the client and server from the archives, test
-each mixed direction, upgrade both roles, then restore both saved programs
-and configurations and repeat the transfers. Retain the separate Beta.4
-direct-H2 drill. Use the exact passing main packages for the tag and Release.
+The 1.2.1 patch starts from main `810e39f`. Both native jobs qualified
+the actual archives from candidate `db16076` against the pinned,
+published [1.2.0 packages](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0).
 
-The initial Apple Silicon 1.2.1 archive at `5fa308f` passed all 30 cases
-against the published 1.2.0 archive, including real TCP and UDP transfers
-after restoring each role's executable and private YAML.
+| Native platform | Candidate archive SHA-256 | Loopback result |
+|---|---|---|
+| [Apple Silicon macOS](https://github.com/ilhaformosa/maverick/actions/runs/44827549545/job/136604129770) | `60e10a842e303b4ed9cfce2883c57cbd040d2ea36fba9e7adf55ef59143d96e7` | 30/30 passed |
+| [Linux x86_64](https://github.com/ilhaformosa/maverick/actions/runs/44827549545/job/136604129931) | `4427fca713820888442a60dc8b35a095719ec37b2c160c06abd186813bdb278e` | 30/30 passed |
+
+The six routes were fixed H2, fixed H3, automatic with reliable UDP
+allowed, automatic with native UDP required, automatic with an H2-only
+origin, and origin-protected H2 through a TLS-terminating intermediary.
+Every route passed with the original pair, each mixed-version direction,
+both upgraded roles, and both restored roles. After copying back the
+original executables and private YAML, the test checked the installed
+files, restarted on the same origin port, verified TCP contents and EOF
+in both directions, and received four independent UDP replies over one
+association. Both platforms also passed the separate Beta.4 direct-H2 drill.
+
+The release workflow takes the six files from the successful native run
+on the tagged main revision. That run repeats the package matrix on the
+archives it uploads. To locate it from a checkout with the release tag, run
+`gh run list --workflow ci.yml --branch main --commit "$(git rev-parse 'v1.2.1^{commit}')"`.
+The [public release](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.1)
+carries the checksums for those final archives. Field interoperability and
+the 72-hour soak remain deferred for 1.2.1.
 
 ## Development after 1.2.0
 
@@ -43,7 +59,7 @@ flows and a compatibility design for peers that accept only stream 0. The
 current results support keeping the existing transport choices.
 
 Reproducible transfer, cancellation, resource-release or upgrade defects take
-priority when observed. Package qualification for 1.2.1 is in progress. Provider buffering, public-network application behavior
+priority when observed. The 1.2.1 package results are recorded above. Provider buffering, public-network application behavior
 and the 72-hour field soak require an authorized environment. A future release
 decision needs evidence for its own candidate. The owner deferred field testing separately
 for 1.2.0 and 1.2.1.

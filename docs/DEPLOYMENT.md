@@ -131,6 +131,12 @@ validate the new binary/config and preserve the previous binary and private
 configuration as a matched pair. Stop the service, point the root-owned
 `current` link at the reviewed new build, then start and verify it. Roll back
 the matched binary/config pair if startup or later authorized use fails.
+For a manual CLI upgrade or rollback on macOS, stop the process and copy the
+verified executable to a fresh file in the installation directory. Then
+rename it over the live path (for example, `mv -f maverick.incoming maverick`).
+Overwriting a previously executed file in place can cause macOS to terminate
+the replacement during code-signature verification. [Apple’s guidance on updating signed executables](https://developer.apple.com/documentation/security/updating-mac-software).
+
 Older RC.2 does not understand the new protection/H3 settings; never weaken
 the configuration to make an old binary appear compatible.
 

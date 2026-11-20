@@ -467,7 +467,7 @@ fi
 if [[ "$expected_version" == "1.2.0" ]]; then
   guide_sha256="35c00e5eb0995c74041a8db875c43bbc6b964ffde85710a2b42507557e85a202"
 elif [[ "$expected_version" == "1.2.1" ]]; then
-  guide_sha256="3f3ba36dd18245e0441946e8f4eef2aeae878b313d226810d92876d1f1e04e51"
+  guide_sha256="7ee809cef95b3260f80c862ea2c4f06a50d003ca26bc1a40df6edce8ea0d188b"
 fi
 expected_version_file="$private_tmp/expected-version"
 printf '%s\n' \

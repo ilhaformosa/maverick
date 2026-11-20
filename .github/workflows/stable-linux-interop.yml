@@ -1,0 +1,61 @@
+name: Stable 1.2.0 Linux interoperability
+
+on:
+  push:
+    branches: [codex/linux-1.2.0-interop]
+    paths:
+      - .github/workflows/stable-linux-interop.yml
+      - scripts/archive/python/stable-1.2.0-interop.py
+
+permissions:
+  contents: read
+
+jobs:
+  loopback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DEVELOPMENT_REVISION: 599d02abc9855c2e6fa84a6e7fa6a9d2fa3cd86e
+      ARCHIVE: maverick-1.2.0-pilot-x86_64-unknown-linux-gnu.tar.gz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select the same source and drill used on macOS
+        run: |
+          test "$(uname -sm)" = "Linux x86_64"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse 'v1.2.0^{commit}')" = 4ff413039a39aaa1a157080ca233e64dfe87bcb1
+          cp scripts/archive/python/stable-1.2.0-interop.py "$RUNNER_TEMP/drill.py"
+          sha256sum "$RUNNER_TEMP/drill.py"
+          git switch --detach "$DEVELOPMENT_REVISION"
+          test "$(git rev-parse HEAD)" = "$DEVELOPMENT_REVISION"
+          test -z "$(git status --porcelain)"
+          echo "Development source: $DEVELOPMENT_REVISION"
+          uname -sm
+
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.100.0
+
+      - name: Build the native development CLI and obtain the published Linux archive
+        run: |
+          rustc -vV | grep -Fx 'host: x86_64-unknown-linux-gnu'
+          ./scripts/install-linux-tools.sh
+          cargo build --locked --release -p maverick-cli --no-default-features --features experimental-h3
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/$ARCHIVE" \
+            "https://github.com/ilhaformosa/maverick/releases/download/v1.2.0/$ARCHIVE"
+          cd "$RUNNER_TEMP"
+          echo "9fbe1664cc4b4f7ff321ff66149a525e4a2f142b36e1617b53948d28786c5bf2  $ARCHIVE" | sha256sum --check
+
+      - name: Exercise six routes and five upgrade phases with loopback as the only interface
+        run: |
+          sudo unshare --net -- bash -euc '
+            ip link set dev lo up
+            test "$(ip -o link show | wc -l)" -eq 1
+            echo "Test network: loopback only"
+            exec setpriv --reuid="$1" --regid="$2" --clear-groups -- \
+              /usr/bin/python3 -I "$3/drill.py" "$3/$4" "$5" x86_64-unknown-linux-gnu
+          ' drill "$(id -u)" "$(id -g)" "$RUNNER_TEMP" "$ARCHIVE" "$PWD/target/release/maverick"

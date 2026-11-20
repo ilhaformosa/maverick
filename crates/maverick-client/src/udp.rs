@@ -47,6 +47,10 @@ pub struct UdpAssociation {
 }
 
 impl UdpAssociation {
+    pub(crate) fn carrier(&self) -> crate::transport::TransportKind {
+        self.tunnel.carrier()
+    }
+
     pub async fn open(config: &ClientConfig) -> Result<Self> {
         anyhow::ensure!(
             config.advanced.udp_policy.is_none(),

@@ -47,8 +47,19 @@ struct Cli {
 
 impl Cli {
     fn start(directory: &Path, command: &str, config: &str) -> Result<Self> {
+        Self::spawn(directory, command, config, &[], None)
+    }
+
+    fn spawn(
+        directory: &Path,
+        command: &str,
+        config: &str,
+        flags: &[&str],
+        udp_events: Option<mpsc::UnboundedSender<String>>,
+    ) -> Result<Self> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_maverick"))
             .args([command, "-c", config])
+            .args(flags)
             .current_dir(directory)
             .env("RUST_LOG", "info,maverick_client=debug")
             .stdin(Stdio::null())
@@ -68,6 +79,11 @@ impl Cli {
             // Never retain raw logs: emit only known static failure labels and
             // readiness addresses, without credentials, paths or peer details.
             for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
+                if let (Some(events), Some((_, event))) =
+                    (&udp_events, line.split_once("SOCKS UDP session="))
+                {
+                    let _ = events.send(event.to_owned());
+                }
                 if line.contains("SOCKS connection ended") {
                     for reason in [
                         "H3 connection timed out",
@@ -432,6 +448,8 @@ mod native_udp;
 mod selection;
 #[path = "support/server_stop.rs"]
 mod server_stop;
+#[path = "support/udp_diagnostics.rs"]
+mod udp_diagnostics;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_handle_shutdown_releases_h3_flow_and_allows_restart() -> Result<()> {

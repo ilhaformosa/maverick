@@ -6,6 +6,23 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## Development — observing CLI SOCKS UDP sessions
+
+`maverick client --diagnose-udp` reports the configured carriers for a SOCKS UDP
+open, the carrier returned by remote admission and the first target datagram
+the proxy client receives. Each open gets a process-local number. A refused open
+has an unknown carrier; an admitted session can end with no reply observed.
+An empty datagram counts as a reply. See [the CLI fields and example](CONFIG.md#observe-socks-udp-sessions).
+
+The focused CLI loopback test exercises healthy automatic H3, eligible H2
+fallback, native-only failure, pin rejection, two concurrent fixed targets
+with different reply histories, and legacy H2. It checks the diagnostic events
+against controlled target and SOCKS socket observations and also exercises
+the ordinary CLI with diagnostics disabled. On Apple Silicon the complete
+`scripts/check.sh all` passed, as did the same diagnostic regression using
+the optimized H3-enabled CLI. To repeat the focused check, run
+`cargo test --locked -p maverick-cli --features experimental-h3 --test h3_product cli_diagnose_udp_observes_admission_and_target_replies`.
+
 ## Local 1.2.0 interoperability and rollback
 
 On 2026-11-21 the published 1.2.0 CLI from `4ff4130` and an optimized native

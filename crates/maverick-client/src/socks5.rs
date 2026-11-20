@@ -1,3 +1,6 @@
+mod diagnostics;
+
+use diagnostics::UdpObservation;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use std::net::SocketAddr;
@@ -11,6 +14,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::OwnedSemaphorePermit;
 
+use crate::transport::TransportKind;
+use crate::udp_session::UdpCarrier;
 use crate::ClientTunnelPool;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -232,15 +237,25 @@ pub(crate) async fn serve_udp_associate_with_pool(
                     continue;
                 }
                 if association.is_none() {
+                    let mut observation = UdpObservation::opening(tunnel_pool.config());
                     match crate::udp::UdpAssociation::open_with_pool(&tunnel_pool).await {
-                        Ok(opened) => association = Some(opened),
+                        Ok(opened) => {
+                            observation.admitted(match opened.carrier() {
+                                TransportKind::H2 => "h2_legacy",
+                                TransportKind::CloudflareWs => "websocket",
+                                TransportKind::H3 => "h3",
+                            });
+                            association = Some((opened, observation));
+                        }
                         Err(err) => {
+                            observation.open_failed();
                             tracing::debug!(error = %err, "SOCKS UDP association open failed");
                             continue;
                         }
                     }
                 }
-                let relay = association.as_mut().unwrap().relay_packet(packet);
+                let (opened, observation) = association.as_mut().unwrap();
+                let relay = opened.relay_packet(packet);
                 let response = tokio::select! {
                     control_read = control.read(&mut control_buf) => {
                         if control_read? == 0 {
@@ -257,13 +272,14 @@ pub(crate) async fn serve_udp_associate_with_pool(
                         }
                     },
                 };
+                observation.received_reply();
                 if let Ok(encoded) = encode_udp_response(&response) {
                     let _ = socket.send_to(&encoded, peer).await;
                 }
             }
         }
     }
-    if let Some(association) = association {
+    if let Some((association, _observation)) = association {
         let _ = association.close().await;
     }
     Ok(())
@@ -435,9 +451,17 @@ async fn serve_session_udp_associate(
                     tasks.spawn(async move {
                         let _extra = extra;
                         let config = child_pool.config();
+                        let mut observation = UdpObservation::opening(config);
                         let result = async {
-                            let mut association = crate::udp_session::DatagramSession::open_for_socks(&child_pool,
-                                child_key.0.clone(), child_key.1).await?;
+                            let mut association = crate::udp_session::DatagramSession::open_for_socks(
+                                &child_pool, child_key.0.clone(), child_key.1,
+                            )
+                            .await
+                            .inspect_err(|_| observation.open_failed())?;
+                            observation.admitted(match association.carrier() {
+                                UdpCarrier::H2Reliable => "h2_reliable",
+                                UdpCarrier::H3Native => "h3_native",
+                            });
                             loop {
                                 tokio::select! {
                                     packet = incoming.recv() => {
@@ -448,6 +472,7 @@ async fn serve_session_udp_associate(
                                         std::time::Duration::from_millis(config.advanced.udp_idle_timeout_ms), association.recv()) => {
                                         match received {
                                             Ok(Ok(data)) => {
+                                                observation.received_reply();
                                                 let response = UdpPacketPayload::new(child_key.0.clone(), child_key.1, data);
                                                 let encoded = encode_udp_response(&response)?;
                                                 // The local UDP packet includes the SOCKS header.

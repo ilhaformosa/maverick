@@ -199,6 +199,15 @@ pub struct WsClientTunnel {
 }
 
 impl ClientTunnel {
+    pub(crate) fn carrier(&self) -> transport::TransportKind {
+        match self {
+            Self::H2(_) => transport::TransportKind::H2,
+            Self::CloudflareWs(_) => transport::TransportKind::CloudflareWs,
+            #[cfg(feature = "experimental-h3")]
+            Self::H3(_) => transport::TransportKind::H3,
+        }
+    }
+
     pub fn max_frame_size(&self) -> usize {
         match self {
             Self::H2(tunnel) => tunnel.max_frame_size,

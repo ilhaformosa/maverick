@@ -54,6 +54,9 @@ enum Commands {
         config: PathBuf,
         #[arg(long)]
         allow_loose_permissions: bool,
+        /// Report allowed and admitted SOCKS UDP carriers and the first observed target reply.
+        #[arg(long)]
+        diagnose_udp: bool,
     },
     /// Start the configured TLS proxy server.
     Server {
@@ -259,9 +262,10 @@ async fn main() -> Result<()> {
         Commands::Client {
             config,
             allow_loose_permissions,
+            diagnose_udp,
         } => {
             let cfg = read_client_config_for_start(&config, allow_loose_permissions)?;
-            init_tracing(&cfg.log.level);
+            init_tracing(&cfg.log.level, diagnose_udp);
             run_client(cfg).await
         }
         Commands::Server {
@@ -269,7 +273,7 @@ async fn main() -> Result<()> {
             allow_loose_permissions,
         } => {
             let cfg = read_server_config_for_start(&config, allow_loose_permissions)?;
-            init_tracing(&cfg.log.level);
+            init_tracing(&cfg.log.level, false);
             run_server(cfg).await
         }
         Commands::GenUser { name } => {
@@ -2951,12 +2955,19 @@ fn config_permission_warning(path: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn init_tracing(level: &str) {
+fn init_tracing(level: &str, diagnose_udp: bool) {
     let filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(level))
         .unwrap_or_else(|_| EnvFilter::new("info"));
+    let udp_filter = if diagnose_udp {
+        "maverick::socks_udp=debug"
+    } else {
+        "maverick::socks_udp=off"
+    };
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+        .with_env_filter(
+            filter.add_directive(udp_filter.parse().expect("static UDP log directive")),
+        )
         .with_target(false)
         .try_init();
 }
@@ -3228,7 +3239,7 @@ async fn bench_local(
         !quiche_h3 || cfg!(feature = "experimental-h3"),
         "--quiche-h3 requires a build with --features experimental-h3"
     );
-    init_tracing("warn");
+    init_tracing("warn", false);
     let echo_addr = start_echo_server().await?;
     let direct = time_echo_roundtrip(echo_addr, bytes).await?;
 

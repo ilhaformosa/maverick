@@ -25,9 +25,59 @@ each public leaf. Only the inner origin pin changed in the updated client.
 | Restored original | Restored original | Both transfers passed after restoring the certificate, key and client/server configurations from backup and checking their original bytes and private permissions. |
 
 The [regression](crates/maverick-tests/tests/support/origin_rotation.rs)
-also checks the specific certificate-verifier rejection. Coordinated restart
-and the documented backup set suffice for this routine renewal. Zero-downtime
-rotation and provider interoperability have no result from this exercise.
+also checks the specific certificate-verifier rejection. It passed on both
+[Linux x86_64](https://github.com/ilhaformosa/maverick/actions/runs/44810713890/job/136546322898)
+and [Apple Silicon macOS](https://github.com/ilhaformosa/maverick/actions/runs/44810713890/job/136546322800).
+The documented backups and a coordinated restart restored service in this
+routine renewal. Zero-downtime rotation and provider interoperability remain
+unverified.
+
+## Direct H2 and H3 on short TCP requests
+
+An optimized Apple Silicon CLI at `3e02cef` ran four paired blocks on
+loopback. Each carrier served 128 sequential SOCKS TCP connections per block.
+The application uploaded 1 KiB and closed its write side. The target checked
+the bytes and EOF, then sent 1 KiB back. The application checked the reply
+and EOF. All 1,024 transfers passed. The two processes started fresh for each
+block and carrier. The target, executable, credentials and origin identity
+were the same. The order was H2/H3, H3/H2, H3/H2, H2/H3.
+
+| Per 128 fresh TCP connections | Fixed H2 | Direct H3 |
+|---|---:|---:|
+| Proxy sessions admitted per block | 128 | 128 |
+| Underlying connections carrying them | 1 | 128 |
+| Median block elapsed time (range), ms | 116 (102–132) | 166 (144–173) |
+| Median client + server CPU time (range), ms | 75 (70–80) | 160 (140–170) |
+| Median time per block spent opening the 128 SOCKS connections, ms | 82 | 127 |
+
+Elapsed time includes the first open and excludes process startup and shutdown.
+CPU comes from the two proxy processes at 10 ms resolution. H2 reported one
+connection created at pool shutdown. H3 reported 128 authenticated sessions
+under the [one-request-per-QUIC-connection contract](docs/INTEGRATION.md#carrier-and-trust).
+The first complete request was faster over H3 in every pair. H2 completed each
+whole block sooner as subsequent opens reused its connection. Time to the
+SOCKS success reply includes local negotiation, authentication and target
+admission, so it does not isolate the cost of a TLS or QUIC handshake.
+
+A second control sent 128 numbered 1 KiB request/reply pairs to the same type
+of loopback target. The target replied to each complete request immediately.
+The application either opened a fresh TCP connection per pair or kept one
+connection open for all 128. Each of the four cases occupied each run position
+once. All 2,048 exchanges matched in both directions and every flow closed
+cleanly. Each cell gives median elapsed / combined proxy CPU time in ms per
+block, including the first open.
+
+| Application behavior | Fixed H2 | Direct H3 |
+|---|---:|---:|
+| 128 fresh TCP connections | 120.4 / 80 | 188.6 / 165 |
+| 1 TCP connection carrying 128 exchanges | 44.5 / 40 | 28.7 / 25 |
+
+Applications that already reuse a TCP connection can amortize admission with
+the current CLI. Reusing a QUIC connection across *independent* TCP flows
+would change the H3 client/server contract. The measurements identify a
+workload for a future design review if an application depends on many fresh
+flows. They give no estimate of the gain from an unimplemented pool or of
+performance on a public network.
 
 ## Development — observing CLI SOCKS UDP sessions
 

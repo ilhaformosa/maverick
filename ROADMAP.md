@@ -29,7 +29,7 @@ existing CI. Keep evidence tied to its build, configuration and workload.
 | Order | Deliverable | Acceptance |
 |---|---|---|
 | 1 (in source) | Explain a configuration offline with `check-config --explain`. Align the examples and bug report form with the supported routes. | Old v1 files retain their route and omitted UDP policy. Newly generated client/server pairs describe fixed, automatic/dual and protected configurations correctly. Report the binary's compiled transports and keep private values out of the explanation. |
-| 2 (development build verified on both platforms) | Published 1.2.0 and development revision `599d02a` passed both mixed-version directions, two-sided upgrade and restoration on Apple Silicon macOS and native Linux x86_64. | All six routes transferred TCP and UDP after restoration on each platform. See the [results](STATUS.md#local-120-interoperability-and-rollback) and [Linux Actions run](https://github.com/ilhaformosa/maverick/actions/runs/44796735752/job/136498106065). When a versioned 1.2.x candidate is chosen, extend release classification, the package guide and H2/H3 artifact verification together, then qualify its exact packages on both platforms. Retain the Beta.4 direct-H2 drill. |
+| 2 (development build verified on both platforms) | Published 1.2.0 and development revision `599d02a` passed both mixed-version directions, two-sided upgrade and restoration on Apple Silicon macOS and native Linux x86_64. | All six routes transferred TCP and UDP after restoration on each platform. See the [results](STATUS.md#local-120-interoperability-and-rollback) and [Linux Actions run](https://github.com/ilhaformosa/maverick/actions/runs/44796735752/job/136498106065). The [1.2.1 package qualification](#121-package-qualification) extends release classification, the installation guide and H2/H3 archive verification to the selected patch. Retain the Beta.4 direct-H2 drill. |
 | 3 ([CLI diagnostics on main](https://github.com/ilhaformosa/maverick/pull/129)) | Inspect an actual SOCKS UDP session with [`client --diagnose-udp`](CONFIG.md#observe-socks-udp-sessions). | The client reports the configured choices, admitted carrier and first observed target reply. Controlled loopback applications separately verify receipt. The regression covers reliable fallback, native-only failure, wrong identity and target silence. |
 | 4 (loopback verified) | [Rotate and restore a protected H2 origin certificate](docs/DEPLOYMENT.md#rotate-the-origin-certificate-for-a-protected-h2-intermediary) using the existing pin and restart commands. | The real CLI passed the original, replacement and restored pairs for TCP and reliable UDP. Both mismatched pins were rejected before target access. A persistent regression checks the inner pin failure. The tested coordinated restart needs no new rotation mechanism. [Verification record](STATUS.md#protected-h2-origin-certificate-rotation-and-rollback). |
 
@@ -43,11 +43,10 @@ flows and a compatibility design for peers that accept only stream 0. The
 current results support keeping the existing transport choices.
 
 Reproducible transfer, cancellation, resource-release or upgrade defects take
-priority when observed. The next package qualification depends on choosing a
-versioned candidate. Provider buffering, public-network application behavior
+priority when observed. Package qualification for 1.2.1 is in progress. Provider buffering, public-network application behavior
 and the 72-hour field soak require an authorized environment. A future release
-decision needs evidence for its own candidate. The field waiver applied only
-to 1.2.0.
+decision needs evidence for its own candidate. The owner deferred field testing separately
+for 1.2.0 and 1.2.1.
 
 The [field plan](#proposed-field-acceptance--discussion-only) is available if
 an owner-controlled environment is separately authorized. The sections below

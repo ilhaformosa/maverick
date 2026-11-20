@@ -4,7 +4,7 @@ use maverick_core::ClientConfig;
 use rustix::process::{kill_process, Pid, Signal};
 use std::fs;
 use std::net::SocketAddr;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -24,8 +24,9 @@ async fn cli(binary: &Path, dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         .await?;
     ensure!(
         out.status.success(),
-        "packaged CLI command {} failed",
-        args[0]
+        "packaged CLI command {} failed ({})",
+        args[0],
+        out.status
     );
     Ok(out.stdout)
 }
@@ -216,15 +217,21 @@ impl Installation {
     fn install(&self, candidate: Option<&Path>) -> Result<()> {
         let program = self.directory.join("maverick");
         let config = self.directory.join("config.yaml");
-        match candidate {
-            Some(binary) => {
-                fs::copy(binary, program)?;
-                fs::write(config, &self.updated)?;
-            }
-            None => {
-                fs::copy(self.backup.join("maverick"), program)?;
-                fs::copy(self.backup.join("config.yaml"), config)?;
-            }
+        // macOS can cache the code signature of a previously executed inode.
+        // Stage the executable beside the live path for both upgrade and rollback.
+        let previous_inode = fs::metadata(&program)?.ino();
+        let incoming = self.directory.join("maverick.incoming");
+        let original = self.backup.join("maverick");
+        fs::copy(candidate.unwrap_or(&original), &incoming)?;
+        fs::rename(incoming, &program)?;
+        ensure!(
+            fs::metadata(&program)?.ino() != previous_inode,
+            "installer reused the live executable inode"
+        );
+        if candidate.is_some() {
+            fs::write(config, &self.updated)?;
+        } else {
+            fs::copy(self.backup.join("config.yaml"), config)?;
         }
         Ok(())
     }

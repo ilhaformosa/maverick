@@ -24,6 +24,14 @@ chmod 600 client.generated.yaml &&
 
 The final command keeps running. Stop it with Control-C.
 
+Upgrading or rolling back
+
+Keep the previous program and private YAML together. Stop the process before
+switching versions. On macOS, copy the verified executable to a fresh file
+in the installation directory, then rename it over the live path. Use the
+same procedure for the saved executable when rolling back. Restart with the
+matching config and check that TCP and UDP still transfer.
+
 Generate new local example configs
 
 If no private client config was provided, generate fresh client and server

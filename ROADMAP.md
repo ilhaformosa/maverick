@@ -26,6 +26,15 @@ files, restarted on the same origin port, verified TCP contents and EOF
 in both directions, and received four independent UDP replies over one
 association. Both platforms also passed the separate Beta.4 direct-H2 drill.
 
+A local repeat with the downloaded `3ba824f` macOS archive encountered one
+code-signature termination after the drill overwrote a previously executed
+file. Both original archive binaries passed static code-signature verification.
+Subsequent in-place attempts did not reproduce the failure. The drill now
+stages a fresh executable in the installation directory and renames it into
+place on upgrade and rollback. It checks that the file identity changes.
+Three complete macOS runs with those same archive binaries passed all 90
+cases using this procedure. The bundled guide includes the manual steps.
+
 The release workflow takes the six files from the successful native run
 on the tagged main revision. That run repeats the package matrix on the
 archives it uploads. To locate it from a checkout with the release tag, run

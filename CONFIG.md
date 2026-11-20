@@ -3,7 +3,7 @@
 All currently runnable client and server config files use YAML and `version: 1`.
 
 The sections below describe runnable v1 configuration first. Future v2 policy
-and detailed compatibility contracts follow the runtime reference. The 1.2.0
+and detailed compatibility contracts follow the runtime reference. The 1.2.1
 packages include H3. Source builds require the `experimental-h3` feature for
 H3. New direct configs enable dual/auto. Existing configs that omit transport
 settings retain H2.
@@ -299,7 +299,7 @@ their drivers. Active TCP transfers end during shutdown. Close delivery is
 best effort; forced process exit or lost datagrams still relies on peer failure
 or idle detection.
 
-Field validation of H3 was deferred for 1.2.0. Browser equivalence and
+Field validation of H3 was deferred for 1.2.1. Browser equivalence and
 real-network performance remain unverified.
 
 ### Native UDP and automatic new connections
@@ -522,7 +522,7 @@ realtime voice, or loss-sensitive workloads.
 
 ### Observe SOCKS UDP sessions
 
-In development builds after 1.2.0, enable session diagnostics when starting
+In 1.2.1, enable session diagnostics when starting
 the client, then send UDP traffic from the application through its SOCKS5
 listener.
 
@@ -870,7 +870,7 @@ result does not establish that certificate files exist, a remote server is
 reachable, authentication succeeds, or traffic can be forwarded. The local
 `user-smoke` command checks its own temporary configuration, not these files.
 
-Source builds after 1.2.0 support an optional offline summary for both roles:
+Maverick 1.2.1 supports an optional offline summary for both roles:
 
 ```sh
 maverick check-config --explain --kind client -c client.yaml

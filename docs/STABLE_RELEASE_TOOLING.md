@@ -5,6 +5,16 @@ This task prepares and independently reviews release tooling with local/CI
 verification. It does not authorize field use, deployment, a release tag, a
 GitHub Release, or setting a publication approval.
 
+## Stable patch 1.2.1
+
+The same annotated-tag, exact-commit approval and six-asset publication
+checks apply to 1.2.1. The archive includes the patch installation guide.
+The verifier retains the original 1.2.0 guide digest and requires the full
+H2/H3 profile for both versions. Both native jobs compare their actual
+candidate archive with the pinned published 1.2.0 archive on six loopback
+routes before uploading the candidate. The separate Beta.4 drill remains
+part of both jobs.
+
 ## November 19 promotion decision
 
 For 1.2.0 the owner approved publication and deferred field acceptance until

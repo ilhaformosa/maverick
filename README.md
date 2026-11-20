@@ -6,12 +6,12 @@ browser-equivalence claim.
 
 Download the archive, SHA-256 checksum and software bill of materials (SBOM)
 for your platform from [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
-Select the entry tagged `v1.2.0` for the stable build.
+Select the entry tagged `v1.2.1` for the stable build.
 Use `aarch64-apple-darwin` for Apple Silicon macOS and `x86_64-unknown-linux-gnu`
 for Linux x86_64. Each archive includes the CLI and `START_HERE.txt`.
 For the Rust SDK, use the release tag that matches your CLI archive.
 
-The maintainer deferred pre-release field testing for 1.2.0. Real-network
+The maintainer deferred pre-release field testing for 1.2.1. Real-network
 interoperability, operational rollback and the planned 72-hour soak remain
 unverified for this version. See the [current release status](STATUS.md).
 
@@ -47,7 +47,7 @@ available without the H3 feature and require `gen-config --h2`.
 
 The examples under `config/` illustrate older direct H2 configurations.
 A v1 file containing `mode: auto` still uses H2 when it omits the transport
-switches. In source builds after 1.2.0, add `--explain` to either
+switches. In 1.2.1, add `--explain` to either
 `check-config` command above to see the configured route, UDP behavior and
 direct transports compiled into your binary. This works offline.
 
@@ -81,7 +81,7 @@ selection remain unsupported. Profile URI v1 rejects new transport/UDP policies
 it cannot preserve; use full YAML or stored SDK profiles.
 See [CONFIG.md](CONFIG.md#transport).
 
-For an H2 intermediary that terminates outer TLS, 1.2.0 provides
+For an H2 intermediary that terminates outer TLS, the CLI provides
 origin-pinned inner TLS through `advanced.end_to_end`. Generate the protected
 pair using `gen-config --relay --origin-name origin.example.invalid --origin-cert origin.pem`, optionally with `--origin-ca ca.pem`.
 The owner-supplied public certificate determines the mandatory pin. The client verifies a

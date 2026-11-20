@@ -6,6 +6,14 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## 1.2.1 candidate
+
+The patch from `810e39f` packages offline configuration explanation and
+opt-in SOCKS UDP session diagnostics. The release decision requires native
+1.2.0 interoperability and restoration on loopback. Field testing is
+deferred for this patch. See the [qualification record](ROADMAP.md#121-package-qualification)
+and [release notes](docs/releases/v1.2.1.md).
+
 ## Protected H2 origin certificate rotation and rollback
 
 On Apple Silicon, the optimized CLI at `3e02cef` completed the

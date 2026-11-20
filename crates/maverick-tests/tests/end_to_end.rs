@@ -18,6 +18,8 @@ use tokio::time::timeout;
 
 #[path = "support/origin_rotation.rs"]
 mod origin_rotation;
+#[path = "support/package_interop.rs"]
+mod package_interop;
 #[allow(dead_code)]
 mod support;
 use support::{socks_connect, HarnessOptions, MaverickHarness};

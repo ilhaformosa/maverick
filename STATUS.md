@@ -6,6 +6,43 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## Local 1.2.0 interoperability and rollback
+
+On 2026-11-21 the published Apple Silicon 1.2.0 CLI from `4ff4130` and a
+local optimized H2/H3 build of `599d02a` passed 30 loopback cases. Both
+executables report package version 1.2.0. The release archive digest, its
+`SOURCE.txt` revision and the distinct executable digests identified the
+inputs. The proxy runtime and dependency lock are identical between revisions.
+
+Each row passed with five client/server pairs in isolated installation
+directories: published/published, development/published, published/development,
+development/development, then restored published/published. Every pair ran
+the ordinary CLI processes. A SOCKS5 client and a controlled target compared
+TCP bytes and EOF in both directions. One UDP association carried two uploads
+and four independent replies with the same target-facing source port.
+
+| Configuration | Result in all five phases |
+|---|---|
+| Fixed H2, reliable UDP | TCP and reliable UDP passed. |
+| Fixed H3, native-required UDP | TCP and native UDP passed. |
+| Auto, reliable UDP allowed, dual server | Transfers passed. An isolated follow-up for each phase recorded H3 selection for TCP and zero pooled H2 connections through client shutdown. Reliable UDP would have needed an H2 pool connection. |
+| Auto, native-required UDP, dual server | TCP selected H3 and native UDP passed. |
+| Auto, reliable UDP allowed, H2-only server | TCP selected H2 and reliable UDP passed. |
+| Origin-protected H2 | TCP and reliable UDP passed through a loopback intermediary terminating outer TLS and forwarding H2 over separately verified TLS to the origin. |
+
+Before upgrading, the drill backed up each role's executable and working
+private YAML generated with 1.2.0 and adapted to loopback. Each upgraded
+role installed the development binary and a config with a different flow
+limit. After both upgraded roles transferred data, both processes stopped.
+The drill restored the saved binary and YAML to both installation locations,
+checked byte identity and config permissions, restarted on the original
+server endpoint, and repeated the transfers for every route.
+
+Native Linux x86_64 execution remains pending. Its published archive digest
+and source identity were checked offline. Candidate package qualification
+and real deployment rollback remain open. This drill used the committed
+development source and created no tag or release.
+
 ## Post-1.2.0 development — offline configuration explanation
 
 The development CLI adds `check-config --explain` for client and server v1

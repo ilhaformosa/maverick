@@ -885,6 +885,10 @@ maverick check-config --explain --kind server -c server.yaml
 | Fixed H3 client with `allow_reliable` | Native H3 UDP only |
 | Client from `gen-config --relay` | Origin-protected H2 through the intermediary, reliable UDP |
 
+For a server with legacy WebSocket support, the UDP description covers clients
+using that intermediary profile. A separate authenticated direct H2 client
+can negotiate a reliable UDP session with the same server.
+
 The summary reports the binary's compiled direct transports separately from the
 configuration. It reads the YAML offline. Certificate files, remote identity,
 target admission and application delivery remain unverified. Output uses

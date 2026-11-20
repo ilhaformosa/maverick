@@ -5,6 +5,15 @@ Date: 2026-11-21
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
+## 1.2.1 package qualification
+
+The 1.2.1 patch is based on `810e39f`. The owner authorized publication
+after the actual native packages pass all six routes against published
+1.2.0. Both CI jobs install the client and server from the archives, test
+each mixed direction, upgrade both roles, then restore both saved programs
+and configurations and repeat the transfers. Retain the separate Beta.4
+direct-H2 drill. Use the exact passing main packages for the tag and Release.
+
 ## Development after 1.2.0
 
 Plan for a prolonged period without real-network testing. Use the published

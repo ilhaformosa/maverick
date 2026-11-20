@@ -13,8 +13,7 @@ permissions:
   actions: read
   contents: read
 
-# The owner deferred field acceptance for v1.2.0. Set only for the reviewed,
-# CI-qualified commit explicitly approved for publication.
+# Set only for the reviewed, CI-qualified commit approved for publication.
 env:
   MAVERICK_STABLE_APPROVED_SHA: ${{ vars.MAVERICK_STABLE_APPROVED_SHA }}
 

@@ -37,6 +37,11 @@ certificate path before use, then validate both:
 ./maverick check-config --kind server -c server.generated.yaml
 ./maverick check-config --kind client -c client.generated.yaml
 
+With 1.2.1, add --explain to either command for an offline description of the
+configured routes and compiled transports. For live SOCKS UDP diagnostics,
+start the client with --diagnose-udp. It reports the configured choices, the
+admitted carrier and whether it observed a target reply.
+
 This full build includes H2 and H3. New direct configs select a dual H2/H3
 server and an automatic client. UDP defaults to allow_reliable: prefer native
 H3, and permit H2 only after eligible setup failures, before sending data.

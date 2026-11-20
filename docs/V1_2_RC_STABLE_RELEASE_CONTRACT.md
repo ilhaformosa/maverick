@@ -9,6 +9,16 @@ independently reviewing and testing Stable tooling before field qualification,
 while freezing protocol/SDK scope. This does not move the publication decision
 or authorize a release tag, deployment or GitHub Release.
 
+## Owner decision for patch 1.2.1
+
+Starting from main `810e39f`, the owner authorized a 1.2.1 release after
+native macOS and Linux x86_64 package verification on loopback, PR review
+and merge. The comparison is published 1.2.0 in both mixed directions,
+a two-sided upgrade and restoration of both saved binaries and configurations.
+The release uses the successful main qualification's exact packages. Real
+networks, provider behavior, operational rollback and the 72-hour soak
+remain unverified. This decision applies to 1.2.1.
+
 ## Owner decision for v1.2.0 only — 2026-11-19
 
 The owner authorized a Stable/Latest release after review, repair of confirmed

@@ -6,11 +6,11 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
-## 1.2.1 candidate
+## Maverick 1.2.1
 
 The patch from `810e39f` packages offline configuration explanation and
-opt-in SOCKS UDP session diagnostics. The release decision requires native
-1.2.0 interoperability and restoration on loopback. Field testing is
+opt-in SOCKS UDP session diagnostics. Native Apple Silicon macOS and Linux x86_64 packages passed all 30
+1.2.0 interoperability, upgrade and restoration cases per platform on loopback. Field testing is
 deferred for this patch. See the [qualification record](ROADMAP.md#121-package-qualification)
 and [release notes](docs/releases/v1.2.1.md).
 

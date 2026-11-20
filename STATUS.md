@@ -8,9 +8,10 @@ historical evidence; a result applies to its tested revision and workload.
 
 ## Local 1.2.0 interoperability and rollback
 
-On 2026-11-21 the published Apple Silicon 1.2.0 CLI from `4ff4130` and a
-local optimized H2/H3 build of `599d02a` passed 30 loopback cases. Both
-executables report package version 1.2.0. The release archive digest, its
+On 2026-11-21 the published 1.2.0 CLI from `4ff4130` and an optimized native
+H2/H3 build of `599d02a` passed all 30 loopback cases on both Apple Silicon
+macOS and Linux x86_64. Both versions report package version 1.2.0.
+The release archive digest, its
 `SOURCE.txt` revision and the distinct executable digests identified the
 inputs. The proxy runtime and dependency lock are identical between revisions.
 
@@ -25,7 +26,7 @@ and four independent replies with the same target-facing source port.
 |---|---|
 | Fixed H2, reliable UDP | TCP and reliable UDP passed. |
 | Fixed H3, native-required UDP | TCP and native UDP passed. |
-| Auto, reliable UDP allowed, dual server | Transfers passed. An isolated follow-up for each phase recorded H3 selection for TCP and zero pooled H2 connections through client shutdown. Reliable UDP would have needed an H2 pool connection. |
+| Auto, reliable UDP allowed, dual server | Each phase recorded H3 selection for TCP and zero pooled H2 connections through client shutdown. Reliable UDP would have needed an H2 pool connection. macOS checked those counters in a separate pass and Linux checked them within the matrix. |
 | Auto, native-required UDP, dual server | TCP selected H3 and native UDP passed. |
 | Auto, reliable UDP allowed, H2-only server | TCP selected H2 and reliable UDP passed. |
 | Origin-protected H2 | TCP and reliable UDP passed through a loopback intermediary terminating outer TLS and forwarding H2 over separately verified TLS to the origin. |
@@ -38,10 +39,15 @@ The drill restored the saved binary and YAML to both installation locations,
 checked byte identity and config permissions, restarted on the original
 server endpoint, and repeated the transfers for every route.
 
-Native Linux x86_64 execution remains pending. Its published archive digest
-and source identity were checked offline. Candidate package qualification
-and real deployment rollback remain open. This drill used the committed
-development source and created no tag or release.
+The [native Ubuntu 24.04 job](https://github.com/ilhaformosa/maverick/actions/runs/44796735752/job/136498106065)
+passed on its first attempt. It checked the native Rust host, built the exact
+development revision with the locked dependencies and verified the downloaded
+Linux release archive against its published SHA-256. The test processes ran
+as an unprivileged user in a Linux network namespace whose only interface was
+loopback. The log records both executable digests and all 30 transfer results,
+including the six restored pairs. The [workflow and test revision](https://github.com/ilhaformosa/maverick/commit/cff339d3a2c88e6545805d75b95c4ef6a87a9621)
+preserves the method. Qualification of a future versioned package and rollback
+of a real deployment remain open.
 
 ## Post-1.2.0 development — offline configuration explanation
 

@@ -828,6 +828,27 @@ result does not establish that certificate files exist, a remote server is
 reachable, authentication succeeds, or traffic can be forwarded. The local
 `user-smoke` command checks its own temporary configuration, not these files.
 
+Source builds after 1.2.0 support an optional offline summary for both roles:
+
+```sh
+maverick check-config --explain --kind client -c client.yaml
+maverick check-config --explain --kind server -c server.yaml
+```
+
+| Configuration | Expected route and UDP behavior |
+|---|---|
+| Older direct client with `mode: auto` and omitted transport/UDP fields | Direct H2, legacy UDP request/reply |
+| Client from full-build `gen-config` | Automatic for new connections; native H3 UDP preferred, reliable H2 permitted after an eligible setup failure |
+| Server from the same pair | Dual H2/H3; the client chooses its UDP policy |
+| Fixed H3 client with `allow_reliable` | Native H3 UDP only |
+| Client from `gen-config --relay` | Origin-protected H2 through the intermediary, reliable UDP |
+
+The summary reports the binary's compiled direct transports separately from the
+configuration. It reads the YAML offline. Certificate files, remote identity,
+target admission and application delivery remain unverified. Output uses
+fixed descriptions, including file and validation errors. For detailed
+troubleshooting on your own machine, use plain `check-config`.
+
 H2 server startup initializes TLS and the user/runtime state before binding
 listeners or reporting success. Missing or invalid TLS material is a start
 error, including through the SDK. A successful server start still does not prove

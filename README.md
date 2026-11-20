@@ -45,6 +45,12 @@ to forbid reliable UDP compatibility. Existing files are not overwritten and
 omitted settings retain their prior meaning. Minimal H2 source builds remain
 available without the H3 feature and require `gen-config --h2`.
 
+The examples under `config/` illustrate older direct H2 configurations.
+A v1 file containing `mode: auto` still uses H2 when it omits the transport
+switches. In source builds after 1.2.0, add `--explain` to either
+`check-config` command above to see the configured route, UDP behavior and
+direct transports compiled into your binary. This works offline.
+
 Generation creates matching credentials in owner-only files. `version` reports
 compiled support, not remote connectivity. The `experimental-h3` feature name
 is retained for source compatibility.

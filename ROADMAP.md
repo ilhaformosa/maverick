@@ -1,22 +1,37 @@
 # Maverick Roadmap
 
-Date: 2026-11-19
+Date: 2026-11-21
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
-## 1.2.0 release and follow-up
+## Development after 1.2.0
 
-The 1.2.0 source carries the reviewed RC.7 repairs. The normal release workflow
-qualifies and publishes the final packages under the November 19 owner decision.
-The owner waived pre-publication field acceptance for 1.2.0. The
-[field plan](#proposed-field-acceptance--discussion-only) is retained for a
-future decision. No infrastructure or deployment is included.
+Plan for a prolonged period without real-network testing. Use the published
+[1.2.0 packages](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0)
+as the comparison point. Each development step needs a user-visible outcome
+that can be checked with offline files, controlled loopback processes or the
+existing CI. Keep evidence tied to its build, configuration and workload.
 
-After release, prioritize reproducible problems from ordinary use. Record the
-tested version, route and application when reporting results. Future field
-trials can resume under the existing owner-controlled environment rules.
-Earlier delivery and field plans below are historical.
+| Order | Deliverable | Acceptance |
+|---|---|---|
+| 1 (in source) | Explain a configuration offline with `check-config --explain`. Align the examples and bug report form with the supported routes. | Old v1 files retain their route and omitted UDP policy. Newly generated client/server pairs describe fixed, automatic/dual and protected configurations correctly. Report the binary's compiled transports and keep private values out of the explanation. |
+| 2 | Prepare upgrade and rollback when the first maintenance fix warrants a 1.2.x candidate. | Extend release classification, package-guide and H2/H3 artifact verification together. On both native platforms, exercise the affected old-client/new-server and new-client/old-server paths, then restore the matching 1.2.0 binary and config and verify transfer. Keep the existing Beta.4 direct-H2 drill. |
+| 3 | Explain an actual session, starting with CLI SOCKS UDP. | Distinguish configured policy, admitted carrier and application receipt. Controlled peers cover successful transfer, eligible reliable fallback, native-only failure, identity rejection and target silence. Reuse core session results and report unknown observations explicitly. |
+| 4 | Rehearse protected H2 certificate replacement and recovery. | On loopback, confirm transfer, replace the origin certificate, observe rejection with the old pin, update the independently supplied pin and confirm transfer again. Restore the original matching pair and verify recovery. Use the result to decide whether rotation tooling is needed. |
+
+Reproducible transfer, cancellation, resource-release and upgrade defects can
+take priority at any time. For performance work, the existing per-request H3
+connection cost is a candidate for a matched local comparison with pooled H2.
+Measure connection count, completion time and CPU on the same short-request
+workload before proposing pooling. Production readiness, provider buffering,
+application experience on public networks and a 72-hour field soak remain open
+questions with no scheduled date. A future release decision must describe its
+own evidence; the field waiver applied only to 1.2.0.
+
+The [field plan](#proposed-field-acceptance--discussion-only) is available if
+an owner-controlled environment is separately authorized. The sections below
+record earlier deliveries and decisions. The table above sets the active order.
 
 ## Delivered — Bounded Local Handshake Research
 

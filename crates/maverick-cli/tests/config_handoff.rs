@@ -59,6 +59,162 @@ fn client_yaml(secret: &SecretString) -> String {
     )
 }
 
+async fn expect_explanation(
+    directory: &Path,
+    kind: &str,
+    file: &str,
+    route: &str,
+    udp: &str,
+) -> Result<()> {
+    let output = cli(
+        directory,
+        &["check-config", "--explain", "--kind", kind, "-c", file],
+        None,
+    )
+    .await?;
+    let build = if cfg!(feature = "experimental-h3") {
+        "H2 and H3"
+    } else {
+        "H2 only"
+    };
+    let expected = format!("configured route: {route}\nUDP: {udp}\ncompiled direct transports: {build}\nremote connection: unverified (offline)\n");
+    ensure!(
+        output.status.success() && output.stderr.is_empty(),
+        "{kind} explanation failed"
+    );
+    ensure!(
+        output.stdout == expected.as_bytes(),
+        "unexpected {kind} explanation for {route}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn explain_old_auto_config_and_keep_plain_check_output() -> Result<()> {
+    let directory = TempDir::new()?;
+    private_file(
+        &directory.path().join("old.yaml"),
+        &client_yaml(&SecretString::generate()),
+    )?;
+    expect_explanation(
+        directory.path(),
+        "client",
+        "old.yaml",
+        "direct H2",
+        "policy omitted; legacy H2 request/reply",
+    )
+    .await?;
+    let plain = cli(
+        directory.path(),
+        &["check-config", "--kind", "client", "-c", "old.yaml"],
+        None,
+    )
+    .await?;
+    ensure!(
+        plain.status.success() && plain.stdout == b"client config OK\n" && plain.stderr.is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn explain_rejections_keep_private_inputs_out_of_diagnostics() -> Result<()> {
+    let directory = TempDir::new()?;
+    let file = "private-test-path.yaml";
+    let secret = SecretString::generate();
+    let source = client_yaml(&secret);
+    let path = directory.path().join(file);
+    let args = ["check-config", "--explain", "--kind", "client", "-c", file];
+    let missing = cli(directory.path(), &args, None).await?;
+    ensure!(!missing.status.success() && missing.stdout.is_empty());
+    ensure!(!String::from_utf8_lossy(&missing.stderr).contains(file));
+
+    private_file(
+        &path,
+        &format!("{source}advanced:\n  udp_policy: private-invalid-value\n"),
+    )?;
+    let rejected = cli(directory.path(), &args, None).await?;
+    ensure!(!rejected.status.success() && rejected.stdout.is_empty());
+    let error = String::from_utf8_lossy(&rejected.stderr);
+    ensure!(error.contains("configuration rejected"));
+    for private in [
+        file,
+        "private-invalid-value",
+        "private.example.invalid",
+        "private-test-user",
+        secret.expose_secret(),
+    ] {
+        ensure!(
+            !error.contains(private),
+            "rejection disclosed private input"
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(&path, "version: 0\n")?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
+        let output = cli(directory.path(), &args, None).await?;
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        ensure!(
+            !output.status.success()
+                && diagnostic.contains("chmod 600")
+                && !diagnostic.contains(file)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn explain_h3_respects_fixed_carrier_and_omitted_udp_policy() -> Result<()> {
+    let directory = TempDir::new()?;
+    let source = client_yaml(&SecretString::generate());
+    let auto = "direct automatic (new TCP connections prefer H3; H2 only after a pre-response network failure)";
+    for (index, (carrier, policy, route, udp)) in [
+        ("auto_h3", "", auto, "policy omitted; native H3 only"),
+        (
+            "auto_h3",
+            "  udp_policy: native_required\n",
+            auto,
+            "native_required; native H3 only",
+        ),
+        (
+            "quiche_h3",
+            "",
+            "direct H3",
+            "policy omitted; native H3 only",
+        ),
+        (
+            "quiche_h3",
+            "  udp_policy: allow_reliable\n",
+            "direct H3",
+            "allow_reliable; fixed H3 uses native datagrams only",
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let file = format!("client-{index}.yaml");
+        private_file(
+            &directory.path().join(&file),
+            &format!("{source}advanced:\n  {carrier}: true\n{policy}"),
+        )?;
+        if cfg!(feature = "experimental-h3") {
+            expect_explanation(directory.path(), "client", &file, route, udp).await?;
+        } else {
+            let output = cli(
+                directory.path(),
+                &["check-config", "--explain", "--kind", "client", "-c", &file],
+                None,
+            )
+            .await?;
+            ensure!(!output.status.success() && output.stdout.is_empty());
+            ensure!(String::from_utf8_lossy(&output.stderr)
+                .contains("compiled direct transports: H2 only"));
+        }
+    }
+    Ok(())
+}
+
 fn generated_pair(directory: &Path, h3: bool) -> Result<()> {
     let client = ClientConfig::from_yaml_str(&fs::read_to_string(
         directory.join("client.generated.yaml"),
@@ -118,7 +274,23 @@ async fn generated_fixed_h2_pair_remains_h2() -> Result<()> {
         output.status.success(),
         "default configuration generation failed"
     );
-    generated_pair(directory.path(), false)
+    generated_pair(directory.path(), false)?;
+    expect_explanation(
+        directory.path(),
+        "client",
+        "client.generated.yaml",
+        "direct H2",
+        "allow_reliable; reliable H2 session",
+    )
+    .await?;
+    expect_explanation(
+        directory.path(),
+        "server",
+        "server.generated.yaml",
+        "direct H2",
+        "reliable over H2 (including legacy request/reply)",
+    )
+    .await
 }
 
 #[tokio::test]
@@ -142,6 +314,17 @@ async fn generated_direct_defaults_are_dual_auto_with_explicit_udp_policy() -> R
     ensure!(client.advanced.udp_policy == Some(maverick_core::config::UdpPolicy::AllowReliable));
     ensure!(!client.advanced.quiche_h3 && !server.advanced.quiche_h3);
     ensure!(client.server.secret.expose_secret() == server.users[0].secret.expose_secret());
+    expect_explanation(directory.path(), "client", "client.generated.yaml",
+        "direct automatic (new TCP connections prefer H3; H2 only after a pre-response network failure)",
+        "allow_reliable; prefer native H3; allow reliable H2 before sending data if H3 is unreachable before a reply or the authenticated peer lacks native UDP").await?;
+    expect_explanation(
+        directory.path(),
+        "server",
+        "server.generated.yaml",
+        "direct dual H2/H3",
+        "reliable over H2 or native over H3; client selects",
+    )
+    .await?;
     Ok(())
 }
 
@@ -212,6 +395,23 @@ async fn relay_generation_requires_owner_supplied_origin_trust() -> Result<()> {
     .await?;
     ensure!(pin.status.success() && inner.cert_pin == String::from_utf8(pin.stdout)?.trim());
     ensure!(server.advanced.end_to_end);
+    let route = "origin-protected H2 intermediary (pinned inner TLS)";
+    expect_explanation(
+        directory.path(),
+        "client",
+        "client.generated.yaml",
+        route,
+        "allow_reliable; reliable H2 session",
+    )
+    .await?;
+    expect_explanation(
+        directory.path(),
+        "server",
+        "server.generated.yaml",
+        route,
+        "reliable over H2 (including legacy request/reply)",
+    )
+    .await?;
     Ok(())
 }
 
@@ -387,7 +587,23 @@ async fn explicit_h3_generation_selects_both_endpoints() -> Result<()> {
         output.status.success(),
         "explicit H3 configuration generation failed"
     );
-    generated_pair(directory.path(), true)
+    generated_pair(directory.path(), true)?;
+    expect_explanation(
+        directory.path(),
+        "client",
+        "client.generated.yaml",
+        "direct H3",
+        "native_required; native H3 only",
+    )
+    .await?;
+    expect_explanation(
+        directory.path(),
+        "server",
+        "server.generated.yaml",
+        "direct H3",
+        "native over H3",
+    )
+    .await
 }
 
 #[cfg(not(feature = "experimental-h3"))]

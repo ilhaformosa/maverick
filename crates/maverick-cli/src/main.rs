@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod explain_config;
+
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -102,6 +104,9 @@ enum Commands {
         config: PathBuf,
         #[arg(long, value_parser = ["client", "server"])]
         kind: String,
+        /// Explain the configured route, UDP behavior and compiled transports offline.
+        #[arg(long)]
+        explain: bool,
     },
     /// Dry-run config migration report. Does not rewrite files.
     MigrateConfig {
@@ -357,7 +362,14 @@ async fn main() -> Result<()> {
             println!("wrote {GENERATED_CLIENT_CONFIG} and {GENERATED_SERVER_CONFIG}");
             Ok(())
         }
-        Commands::CheckConfig { config, kind } => {
+        Commands::CheckConfig {
+            config,
+            kind,
+            explain,
+        } => {
+            if explain {
+                return explain_config::run(&config, &kind);
+            }
             match kind.as_str() {
                 "client" => {
                     read_client_config(&config)?;

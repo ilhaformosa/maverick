@@ -134,6 +134,39 @@ the matched binary/config pair if startup or later authorized use fails.
 Older RC.2 does not understand the new protection/H3 settings; never weaken
 the configuration to make an old binary appear compatible.
 
+### Rotate the origin certificate for a protected H2 intermediary
+
+The client pins the SHA-256 digest of the complete origin leaf certificate.
+A renewed leaf normally has a different pin even if its public key is reused.
+The procedure below assumes the same origin hostname and trusted CA. The
+outer endpoint and its trust settings stay fixed throughout.
+
+1. While the original pair works, save the origin certificate chain, its
+   matching private key, and the working client and server YAML as a set.
+   Preserve the private file permissions. Keep the key and its backup at the
+   origin. Verify a fresh TCP transfer and independent reliable UDP replies.
+2. Obtain the replacement leaf through the owner's trusted channel. Verify
+   its hostname, certificate chain and matching key. Run
+   `maverick pin-cert --cert replacement-chain.pem` on the verified public
+   file, with the leaf first. Stage the new client YAML by changing only
+   `advanced.end_to_end.cert_pin`. The outer `server.cert_pin` identifies a
+   different TLS endpoint. Run `check-config` on the staged files.
+3. Coordinate the restart. Stop the origin, install the replacement chain
+   and key together, and start it on the original listener. Restart clients
+   with the staged YAML to force fresh handshakes. Test TCP bytes in both
+   directions and independent UDP replies through the same intermediary.
+   In a controlled rehearsal, also try one client with the old pin before
+   applying the new one. Its opens must fail before the target is reached.
+4. To roll back a routine renewal while the original identity is still valid
+   and trusted, stop the service, restore the backed-up chain, key and server
+   YAML, then restart it. Restore the matching client YAML and restart the
+   client. Recheck the restored files, TCP contents and UDP replies.
+
+Run the [regression](../crates/maverick-tests/tests/support/origin_rotation.rs)
+locally with `cargo test --locked -p maverick-tests --test end_to_end protected_h2_origin_certificate_rotation_and_rollback`.
+The coordinated restart interrupts service until clients and the origin
+have matching credentials again.
+
 ## Evidence boundary
 
 The [field acceptance plan](../ROADMAP.md#proposed-field-acceptance--discussion-only)

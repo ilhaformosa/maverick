@@ -1,10 +1,31 @@
 # Maverick Status
 
-Date: 2026-11-19
+Date: 2026-11-21
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
+
+## Post-1.2.0 development — offline configuration explanation
+
+The development CLI adds `check-config --explain` for client and server v1
+YAML. It describes the configured route, UDP behavior and compiled transports
+using fixed text, with remote connectivity marked unverified. Plain
+`check-config` retains its original output. The published 1.2.0 packages
+predate this option. See [configuration examples](CONFIG.md#validation).
+
+On Apple Silicon, the published Beta.4 and 1.2.0 CLIs each generated a fresh
+pair offline. The development CLI explained the Beta.4 pair as direct H2
+(legacy UDP on the client), and the 1.2.0 pair as automatic H3/H2 with
+`allow_reliable` on the client and dual H2/H3 on the server. All four files
+were byte-for-byte unchanged after the checks.
+The default, rustls-only and H3-enabled CLI builds each passed the 16
+configuration handoff tests. The local product harness and H3-enabled CLI
+Clippy checks passed on Apple Silicon.
+
+The [active roadmap](ROADMAP.md#development-after-120) assumes a prolonged
+period without field access. Local and CI evidence will guide maintenance
+and development; real-network and deployment results remain open.
 
 ## 1.2.0 release decision — 2026-11-19
 

@@ -26,9 +26,12 @@ body:
         - server
         - CLI
         - config
-        - H2 transport
-        - Retired config-v1 H3 flag
-        - Cloudflare-fronted WebSocket
+        - Direct H2
+        - Direct H3
+        - Automatic H3/H2 selection
+        - UDP sessions (native H3 or reliable H2)
+        - Origin-protected H2 intermediary
+        - Legacy intermediary or retired option
         - TUN experimental harness
         - Noise experimental harness
         - docs
@@ -39,7 +42,7 @@ body:
     id: summary
     attributes:
       label: Summary
-      description: What happened, and what did you expect instead?
+      description: What happened and what did you expect? Include the application or workload, configured route, TCP or UDP, and last step that worked. If the actual carrier is unknown, say so.
     validations:
       required: true
   - type: textarea

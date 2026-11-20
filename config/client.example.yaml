@@ -1,3 +1,5 @@
+# Legacy direct H2 example. Generate a fresh pair with the full CLI for
+# automatic H3/H2 selection and an explicit UDP policy.
 version: 1
 mode: auto
 

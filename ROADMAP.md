@@ -14,6 +14,10 @@ each mixed direction, upgrade both roles, then restore both saved programs
 and configurations and repeat the transfers. Retain the separate Beta.4
 direct-H2 drill. Use the exact passing main packages for the tag and Release.
 
+The initial Apple Silicon 1.2.1 archive at `5fa308f` passed all 30 cases
+against the published 1.2.0 archive, including real TCP and UDP transfers
+after restoring each role's executable and private YAML.
+
 ## Development after 1.2.0
 
 Plan for a prolonged period without real-network testing. Use the published

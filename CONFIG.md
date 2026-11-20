@@ -504,7 +504,7 @@ upstream.
 
 ## UDP
 
-With H2, UDP relay uses SOCKS5 UDP ASSOCIATE and authenticated
+With an omitted UDP policy on H2, relay uses SOCKS5 UDP ASSOCIATE and authenticated
 `OpenUdp` / `UdpPacket` request/response flows. One UDP ASSOCIATE control connection owns one
 lazy Maverick UDP association and reuses it for later datagrams. The timeout is
 bounded by:
@@ -514,10 +514,52 @@ advanced:
   udp_idle_timeout_ms: 30000
 ```
 
-With H3 or automatic selection enabled, SOCKS uses the independent native
-datagram path described [above](#native-udp-and-automatic-new-connections).
+With an explicit UDP policy, SOCKS uses persistent per-target sessions as
+described under [automatic selection](#native-udp-and-automatic-new-connections).
+With omitted policy, direct H3 and auto use native H3 datagrams.
 UDP remains experimental and does not claim high performance for games,
 realtime voice, or loss-sensitive workloads.
+
+### Observe SOCKS UDP sessions
+
+In development builds after 1.2.0, enable session diagnostics when starting
+the client, then send UDP traffic from the application through its SOCKS5
+listener.
+
+```sh
+maverick client --diagnose-udp -c client.yaml
+```
+
+For example, an automatic client permitted to use reliable UDP may print these
+events for one session (logger prefixes omitted).
+
+```text
+SOCKS UDP session=1 stage=opening allowed=h3_native,h2_reliable carrier=unknown target_reply=not_observed
+SOCKS UDP session=1 stage=admitted allowed=h3_native,h2_reliable carrier=h2_reliable target_reply=not_observed
+SOCKS UDP session=1 stage=first_reply allowed=h3_native,h2_reliable carrier=h2_reliable target_reply=observed
+```
+
+A SOCKS UDP ASSOCIATE request sets up the local socket. The first accepted
+application datagram that needs a remote session triggers `opening`.
+
+- `allowed` describes the effective choices in the local configuration. A fixed
+  H3 configuration allows only `h3_native`, even with `allow_reliable`.
+- `carrier` becomes known when the remote peer admits the session. A failed open
+  ends with `open_failed` and `unknown`. Cancellation can end a pending open.
+- `first_reply` means the proxy client received a target datagram, including an
+  empty one. Application consumption requires observation in the application.
+  The final `ended` event keeps the last observed state. If the target stays
+  silent, the result remains `not_observed`. The reason is unknown.
+
+Session numbers are local to one process and restart with it. Persistent
+sessions have one number per target open. Legacy H2 (`h2_legacy`) reuses one
+association across targets, so its first reply can come from any target on
+that association. Use an isolated association for a single-target observation.
+The diagnostic lines contain fixed labels and a session number. They omit
+addresses, ports, credentials and payloads. The CLI enables them only with
+`--diagnose-udp`. Use `check-config --explain` to inspect the policy offline.
+For a bug report, copy only the `SOCKS UDP session=` lines for the relevant
+session number.
 
 ## Experimental Packet Runtime
 

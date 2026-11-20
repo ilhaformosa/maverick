@@ -51,6 +51,10 @@ switches. In source builds after 1.2.0, add `--explain` to either
 `check-config` command above to see the configured route, UDP behavior and
 direct transports compiled into your binary. This works offline.
 
+For a running client, use `maverick client --diagnose-udp -c client.yaml` in
+the development build to see which SOCKS UDP carrier was admitted and whether
+the client received a reply from the target. [Read the diagnostic fields](CONFIG.md#observe-socks-udp-sessions).
+
 Generation creates matching credentials in owner-only files. `version` reports
 compiled support, not remote connectivity. The `experimental-h3` feature name
 is retained for source compatibility.

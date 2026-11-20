@@ -2,7 +2,7 @@ use super::*;
 use maverick_core::{ClientConfig, ServerConfig};
 use tokio::net::UdpSocket;
 
-fn server_config(fixture: &Fixture) -> Result<ServerConfig> {
+pub(super) fn server_config(fixture: &Fixture) -> Result<ServerConfig> {
     fixture.server_config(true)?;
     let mut config = ServerConfig::from_yaml_str(&std::fs::read_to_string(
         fixture.directory.path().join("server.yaml"),
@@ -12,7 +12,7 @@ fn server_config(fixture: &Fixture) -> Result<ServerConfig> {
     Ok(config)
 }
 
-async fn server_with_guard<G>(
+pub(super) async fn server_with_guard<G>(
     config: ServerConfig,
     bind_guard: impl AsyncFn(SocketAddr) -> std::io::Result<G>,
 ) -> Result<(maverick_server::ServerHandle, G)> {

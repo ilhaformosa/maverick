@@ -161,12 +161,7 @@ pub struct TcpSession {
 
 impl TcpSession {
     pub fn carrier(&self) -> crate::transport::TransportKind {
-        match &self.tunnel {
-            ClientTunnel::H2(_) => crate::transport::TransportKind::H2,
-            ClientTunnel::CloudflareWs(_) => crate::transport::TransportKind::CloudflareWs,
-            #[cfg(feature = "experimental-h3")]
-            ClientTunnel::H3(_) => crate::transport::TransportKind::H3,
-        }
+        self.tunnel.carrier()
     }
 
     /// Forwards caller-owned I/O, including TCP half-close in either direction.

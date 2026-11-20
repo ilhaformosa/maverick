@@ -16,6 +16,8 @@ use tokio::net::TcpListener;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::timeout;
 
+#[path = "support/origin_rotation.rs"]
+mod origin_rotation;
 #[allow(dead_code)]
 mod support;
 use support::{socks_connect, HarnessOptions, MaverickHarness};

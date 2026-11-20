@@ -6,6 +6,29 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## Protected H2 origin certificate rotation and rollback
+
+On Apple Silicon, the optimized CLI at `3e02cef` completed the
+[operator procedure](docs/DEPLOYMENT.md#rotate-the-origin-certificate-for-a-protected-h2-intermediary)
+over loopback. Two distinct origin leaves and keys shared a trusted CA and
+hostname. The terminating H2 intermediary, outer trust and controlled TCP
+and UDP targets stayed fixed. Each phase used a fresh client process.
+The CLI's `pin-cert` output matched an independent SHA-256 calculation on
+each public leaf. Only the inner origin pin changed in the updated client.
+
+| Origin certificate | Client pin | Observed result |
+|---|---|---|
+| Original | Original | Verified TCP bytes and EOF in both directions, plus two independent reliable UDP replies. |
+| Replacement | Original | Both opens failed inner TLS verification. The origin admitted no Maverick session and neither target received a request. |
+| Replacement | Replacement | Fresh TCP and UDP transfers passed through the same intermediary. |
+| Restored original | Replacement | Both opens again failed before target access. |
+| Restored original | Restored original | Both transfers passed after restoring the certificate, key and client/server configurations from backup and checking their original bytes and private permissions. |
+
+The [regression](crates/maverick-tests/tests/support/origin_rotation.rs)
+also checks the specific certificate-verifier rejection. Coordinated restart
+and the documented backup set suffice for this routine renewal. Zero-downtime
+rotation and provider interoperability have no result from this exercise.
+
 ## Development — observing CLI SOCKS UDP sessions
 
 `maverick client --diagnose-udp` reports the configured carriers for a SOCKS UDP

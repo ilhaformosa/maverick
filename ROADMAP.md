@@ -17,17 +17,24 @@ existing CI. Keep evidence tied to its build, configuration and workload.
 |---|---|---|
 | 1 (in source) | Explain a configuration offline with `check-config --explain`. Align the examples and bug report form with the supported routes. | Old v1 files retain their route and omitted UDP policy. Newly generated client/server pairs describe fixed, automatic/dual and protected configurations correctly. Report the binary's compiled transports and keep private values out of the explanation. |
 | 2 (development build verified on both platforms) | Published 1.2.0 and development revision `599d02a` passed both mixed-version directions, two-sided upgrade and restoration on Apple Silicon macOS and native Linux x86_64. | All six routes transferred TCP and UDP after restoration on each platform. See the [results](STATUS.md#local-120-interoperability-and-rollback) and [Linux Actions run](https://github.com/ilhaformosa/maverick/actions/runs/44796735752/job/136498106065). When a versioned 1.2.x candidate is chosen, extend release classification, the package guide and H2/H3 artifact verification together, then qualify its exact packages on both platforms. Retain the Beta.4 direct-H2 drill. |
-| 3 (CLI SOCKS UDP in development) | Inspect an actual SOCKS UDP session with [`client --diagnose-udp`](CONFIG.md#observe-socks-udp-sessions). | The client reports the configured choices, admitted carrier and first observed target reply. Controlled loopback applications separately verify receipt. The regression covers reliable fallback, native-only failure, wrong identity and target silence. |
+| 3 ([CLI diagnostics on main](https://github.com/ilhaformosa/maverick/pull/129)) | Inspect an actual SOCKS UDP session with [`client --diagnose-udp`](CONFIG.md#observe-socks-udp-sessions). | The client reports the configured choices, admitted carrier and first observed target reply. Controlled loopback applications separately verify receipt. The regression covers reliable fallback, native-only failure, wrong identity and target silence. |
 | 4 (loopback verified) | [Rotate and restore a protected H2 origin certificate](docs/DEPLOYMENT.md#rotate-the-origin-certificate-for-a-protected-h2-intermediary) using the existing pin and restart commands. | The real CLI passed the original, replacement and restored pairs for TCP and reliable UDP. Both mismatched pins were rejected before target access. A persistent regression checks the inner pin failure. The tested coordinated restart needs no new rotation mechanism. [Verification record](STATUS.md#protected-h2-origin-certificate-rotation-and-rollback). |
 
-Reproducible transfer, cancellation, resource-release and upgrade defects can
-take priority at any time. For performance work, the existing per-request H3
-connection cost is a candidate for a matched local comparison with pooled H2.
-Measure connection count, completion time and CPU on the same short-request
-workload before proposing pooling. Production readiness, provider buffering,
-application experience on public networks and a 72-hour field soak remain open
-questions with no scheduled date. A future release decision must describe its
-own evidence; the field waiver applied only to 1.2.0.
+All four development items above have loopback or offline evidence. The
+[matched short-request comparison](STATUS.md#direct-h2-and-h3-on-short-tcp-requests)
+is also complete. Pooled H2 used one underlying connection for 128 fresh TCP
+flows. Direct H3 used 128. When the application reused a single TCP flow,
+both carriers served all 128 exchanges through one connection. A future
+H3 pooling proposal would need a workload that requires independent short
+flows and a compatibility design for peers that accept only stream 0. The
+current results support keeping the existing transport choices.
+
+Reproducible transfer, cancellation, resource-release or upgrade defects take
+priority when observed. The next package qualification depends on choosing a
+versioned candidate. Provider buffering, public-network application behavior
+and the 72-hour field soak require an authorized environment. A future release
+decision needs evidence for its own candidate. The field waiver applied only
+to 1.2.0.
 
 The [field plan](#proposed-field-acceptance--discussion-only) is available if
 an owner-controlled environment is separately authorized. The sections below

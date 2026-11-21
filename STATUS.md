@@ -8,11 +8,14 @@ historical evidence; a result applies to its tested revision and workload.
 
 ## Maverick 1.2.1
 
-The patch from `810e39f` packages offline configuration explanation and
-opt-in SOCKS UDP session diagnostics. Native Apple Silicon macOS and Linux x86_64 packages passed all 30
-1.2.0 interoperability, upgrade and restoration cases per platform on loopback. Field testing is
-deferred for this patch. See the [qualification record](ROADMAP.md#121-package-qualification)
-and [release notes](docs/releases/v1.2.1.md).
+[Maverick 1.2.1](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.1)
+packages offline configuration explanation and opt-in SOCKS UDP session
+diagnostics at `e9c3673`. The final macOS and Linux x86_64 archives passed
+all 30 interoperability, upgrade and rollback cases per platform against
+1.2.0. On macOS a manual upgrade or rollback stages the executable in a
+fresh file before replacing the live path. Field testing is deferred.
+[Qualification record](ROADMAP.md#121-package-qualification) and
+[release notes](docs/releases/v1.2.1.md).
 
 ## Protected H2 origin certificate rotation and rollback
 

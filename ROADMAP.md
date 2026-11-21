@@ -37,6 +37,10 @@ Three complete macOS runs with those same archive binaries passed all 90
 cases using this procedure. The bundled guide includes the manual steps.
 
 The release workflow selects the [tagged revision’s qualification run](https://github.com/ilhaformosa/maverick/actions/runs/44840213099).
+The [publication workflow](https://github.com/ilhaformosa/maverick/actions/runs/44843087555)
+stopped before upload on its first attempt because the Actions success filter
+temporarily omitted that completed run. The same tag was retried when the
+query returned the unique run. Both native packages came from its first attempt.
 Each platform has an archive, its checksum and a CycloneDX software bill of
 materials. The two archive digests above identify the tested download for
 each platform. Field interoperability and the 72-hour soak remain deferred.

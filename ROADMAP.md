@@ -7,14 +7,15 @@ contains the execution order, not a second history of completed pull requests.
 
 ## 1.2.1 package qualification
 
-The 1.2.1 patch starts from main `810e39f`. Both native jobs qualified
-the actual archives from candidate `db16076` against the pinned,
-published [1.2.0 packages](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0).
+The [1.2.1 release](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.1)
+comes from `e9c3673`, based on `810e39f`. These are the final installation
+archives tested against [published 1.2.0](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0).
+Both native jobs performed upgrades and rollbacks with staged executables.
 
-| Native platform | Candidate archive SHA-256 | Loopback result |
+| Native platform | Final 1.2.1 archive SHA-256 | Loopback result |
 |---|---|---|
-| [Apple Silicon macOS](https://github.com/ilhaformosa/maverick/actions/runs/44827549545/job/136604129770) | `60e10a842e303b4ed9cfce2883c57cbd040d2ea36fba9e7adf55ef59143d96e7` | 30/30 passed |
-| [Linux x86_64](https://github.com/ilhaformosa/maverick/actions/runs/44827549545/job/136604129931) | `4427fca713820888442a60dc8b35a095719ec37b2c160c06abd186813bdb278e` | 30/30 passed |
+| [Apple Silicon macOS](https://github.com/ilhaformosa/maverick/actions/runs/44840213099/job/136646479126) | `fa4b06f000402a6b2707de05bb9bb68e828a230e31c4bfb2176c9829fba60238` | 30/30 passed |
+| [Linux x86_64](https://github.com/ilhaformosa/maverick/actions/runs/44840213099/job/136646479131) | `683383108b2281989222ca7265c1f3d5446cef243e64c76d72aa1f0625ca1b84` | 30/30 passed |
 
 The six routes were fixed H2, fixed H3, automatic with reliable UDP
 allowed, automatic with native UDP required, automatic with an H2-only
@@ -35,13 +36,10 @@ place on upgrade and rollback. It checks that the file identity changes.
 Three complete macOS runs with those same archive binaries passed all 90
 cases using this procedure. The bundled guide includes the manual steps.
 
-The release workflow takes the six files from the successful native run
-on the tagged main revision. That run repeats the package matrix on the
-archives it uploads. To locate it from a checkout with the release tag, run
-`gh run list --workflow ci.yml --branch main --commit "$(git rev-parse 'v1.2.1^{commit}')"`.
-The [public release](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.1)
-carries the checksums for those final archives. Field interoperability and
-the 72-hour soak remain deferred for 1.2.1.
+The release workflow selects the [tagged revision’s qualification run](https://github.com/ilhaformosa/maverick/actions/runs/44840213099).
+Each platform has an archive, its checksum and a CycloneDX software bill of
+materials. The two archive digests above identify the tested download for
+each platform. Field interoperability and the 72-hour soak remain deferred.
 
 ## Development after 1.2.0
 

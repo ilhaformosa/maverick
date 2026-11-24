@@ -15,4 +15,4 @@ tokio.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
-etherparse = "=0.21.0"
+etherparse = "=0.21.1"

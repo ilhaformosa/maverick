@@ -17,6 +17,14 @@ Neither affected origin accessor has a direct call in Maverick. Both published
 contain no copy of `url`. The local dependency inventory and CLI URI tests
 passed with the updated lock. The [1.2.2 release record](ROADMAP.md#122-dependency-patch) links the native package evidence.
 
+The [November 24 PR check](https://github.com/ilhaformosa/maverick/actions/runs/45414593876)
+also found [RUSTSEC-2026-0596](https://rustsec.org/advisories/RUSTSEC-2026-0596.html)
+in `etherparse` 0.21.0. The development workspace now pins 0.21.1 for the
+in-memory TUN packet tests. The repository tests use the strict parser.
+Both published 1.2.2 runtime inventories omit this crate, so this test
+dependency update requires no replacement installation package. The historical
+smoltcp comparison still records 0.20.3 in its hash-pinned experiment inputs.
+
 ## Development server TLS file check
 
 `check-config --kind server --check-tls` loads the staged certificate chain

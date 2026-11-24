@@ -460,13 +460,13 @@ cmp -s "$expected_source_file" "$payload_root/SOURCE.txt" || fail
 
 features_line="$LEGACY_FEATURES_LINE"
 guide_sha256="$LEGACY_START_HERE_SHA256"
-if [[ "$expected_version" == 1.2.0-rc.[3-7] || "$expected_version" == 1.2.[01] ]]; then
+if [[ "$expected_version" == 1.2.0-rc.[3-7] || "$expected_version" == 1.2.[012] ]]; then
   features_line+=",udp-sessions,udp-policy,quiche-h3"
   guide_sha256="c0eeaab17a9ce421d86bc1b94b6e3fd97a3320d1ee8b4d36c6857f6397c3586d"
 fi
 if [[ "$expected_version" == "1.2.0" ]]; then
   guide_sha256="35c00e5eb0995c74041a8db875c43bbc6b964ffde85710a2b42507557e85a202"
-elif [[ "$expected_version" == "1.2.1" ]]; then
+elif [[ "$expected_version" == 1.2.[12] ]]; then
   guide_sha256="7ee809cef95b3260f80c862ea2c4f06a50d003ca26bc1a40df6edce8ea0d188b"
 fi
 expected_version_file="$private_tmp/expected-version"
@@ -624,7 +624,7 @@ case "$smoke_failure_status" in
   *) fail ;;
 esac
 
-if [[ "$expected_version" == 1.2.0-rc.[3-7] || "$expected_version" == 1.2.[01] ]]; then
+if [[ "$expected_version" == 1.2.0-rc.[3-7] || "$expected_version" == 1.2.[012] ]]; then
   for required in 'carrier: h2' 'udp_session_roundtrip: PASS'; do
     [[ "$(grep -Fxc "$required" "$native_smoke_output" 2>/dev/null)" == "1" ]] || fail
   done

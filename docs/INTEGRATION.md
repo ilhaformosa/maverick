@@ -3,7 +3,7 @@
 Pair the Rust SDK with the source revision of the CLI you use. The
 [release list](https://github.com/ilhaformosa/maverick/releases) provides the
 tags and packages for Apple Silicon macOS and Linux x86_64. Application
-interoperability on real networks remains unverified for 1.2.1.
+interoperability on real networks remains unverified for 1.2.2.
 
 ## Use the Rust SDK
 
@@ -51,10 +51,10 @@ anyhow = "1"
 ```
 
 Alternatively, pin the Git dependency to the tag for your package. For a
-1.2.1 stable binary, use this dependency:
+1.2.2 stable binary, use this dependency:
 
 ```toml
-maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", tag = "v1.2.1", features = ["experimental-h3"] }
+maverick-sdk = { git = "https://github.com/ilhaformosa/maverick", tag = "v1.2.2", features = ["experimental-h3"] }
 ```
 
 When pairing an application with a release binary, check that the resolved
@@ -338,7 +338,7 @@ non-binding transcript; live exporter behavior is covered by local/CI TLS tests.
 ## Integration acceptance
 
 For an authorized field session, the consuming application supplies the private
-route configuration and a controlled remote target to the 1.2.1 SDK. After
+route configuration and a controlled remote target to the 1.2.2 SDK. After
 `connect_tcp` returns, read `TcpSession::carrier()` before calling `relay`.
 After `open_udp` returns, read `UdpSession::carrier()` and `max_payload()`.
 The TCP values for the acceptance routes are `H2` and `H3`. The UDP values

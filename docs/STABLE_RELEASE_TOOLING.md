@@ -5,6 +5,13 @@ This task prepares and independently reviews release tooling with local/CI
 verification. It does not authorize field use, deployment, a release tag, a
 GitHub Release, or setting a publication approval.
 
+## Stable patch 1.2.2
+
+1.2.2 shares the installation guide and full H2/H3 package profile with
+1.2.1. The native package drill pins the published archive and source for
+each Stable baseline (1.2.0 and 1.2.1) on each platform. The tagged workflow
+retains the one-commit approval, six-file verification and exact-run selection.
+
 ## Stable patch 1.2.1
 
 The same annotated-tag, exact-commit approval and six-asset publication

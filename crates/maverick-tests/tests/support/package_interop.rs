@@ -408,15 +408,21 @@ async fn route(old: &Path, new: &Path, name: &str, flags: &[&str]) -> Result<()>
 #[tokio::test]
 #[ignore = "requires both verified native release archives"]
 async fn stable_patch_package_interop() -> Result<()> {
-    let old =
-        PathBuf::from(std::env::var_os("MAVERICK_BASELINE_CLI").context("missing 1.2.0 program")?)
-            .canonicalize()?;
+    let old = PathBuf::from(
+        std::env::var_os("MAVERICK_BASELINE_CLI").context("missing baseline program")?,
+    )
+    .canonicalize()?;
     let new = PathBuf::from(
         std::env::var_os("MAVERICK_CANDIDATE_CLI").context("missing candidate program")?,
     )
     .canonicalize()?;
     let dir = tempfile::tempdir()?;
-    for (binary, version) in [(&old, "1.2.0"), (&new, env!("CARGO_PKG_VERSION"))] {
+    let baseline_version =
+        std::env::var("MAVERICK_BASELINE_VERSION").unwrap_or_else(|_| "1.2.0".into());
+    for (binary, version) in [
+        (&old, baseline_version.as_str()),
+        (&new, env!("CARGO_PKG_VERSION")),
+    ] {
         let output = cli(binary, dir.path(), &["version"]).await?;
         ensure!(
             output.split(|&b| b == b'\n').next() == Some(format!("maverick {version}").as_bytes()),

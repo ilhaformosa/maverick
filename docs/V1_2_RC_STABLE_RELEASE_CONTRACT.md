@@ -9,6 +9,15 @@ independently reviewing and testing Stable tooling before field qualification,
 while freezing protocol/SDK scope. This does not move the publication decision
 or authorize a release tag, deployment or GitHub Release.
 
+## Owner decision for dependency patch 1.2.2
+
+On November 24 the owner delegated the decision to release the dependency fix.
+1.2.2 ships the repaired CLI dependency closure for both supported platforms.
+The same exact-commit approval and native package gates apply. Exercise both
+published Stable baselines (1.2.0 and 1.2.1), retain the Beta.4 rollback, and
+verify the fixed versions in both actual runtime SBOMs. The available evidence
+is offline or loopback. Field trials and the 72-hour soak remain deferred.
+
 ## Owner decision for patch 1.2.1
 
 Starting from main `810e39f`, the owner authorized a 1.2.1 release after

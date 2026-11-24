@@ -70,6 +70,7 @@ jobs:
             local runs_path="$1"
             local expected_sha="$2"
             jq -er --arg sha "$expected_sha" '
+              select(.total_count == (.workflow_runs | length)) |
               [.workflow_runs[] |
                 select(
                   .name == "product-ci" and
@@ -111,7 +112,6 @@ jobs:
             -f head_sha="$GITHUB_SHA" \
             -f branch=main \
             -f event=push \
-            -f status=success \
             -F per_page=100 >"$runs_file"
           run_id="$(
             select_qualification_run_id "$runs_file" "$GITHUB_SHA"

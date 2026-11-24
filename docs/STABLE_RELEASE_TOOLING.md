@@ -87,6 +87,23 @@ must pass exactly the expected arguments and six files. Existing workflow hash
 and mutation checks remain. Synthetic annotated markers exist only in isolated
 test repositories, not in the Maverick repository or on GitHub.
 
+The release workflow lists push runs of `ci.yml` on `main` for the tagged
+commit. It reads completion and success directly from each run. A partial
+listing cannot establish uniqueness and stops qualification. The workflow still
+requires one completed, successful first attempt with the exact workflow and
+commit, then checks both platform artifacts from that run.
+
+An offline replay of the [1.2.1 qualification record](https://github.com/ilhaformosa/maverick/actions/runs/44840213099)
+used the saved run and artifact metadata, and an empty success-filtered response
+to reproduce the [first publication attempt](https://github.com/ilhaformosa/maverick/actions/runs/44843087555/attempts/1).
+The previous query stopped. The updated query selected the original Linux
+artifact `14681162677` and macOS artifact `14681253592`. The regression suite
+executes the workflow lookup with a local GitHub API stand-in. It verifies
+the selected IDs and publication arguments on success. Pending, failed,
+ambiguous or unrelated runs and incomplete or expired artifact sets leave
+the publication stand-in untouched. The replay uses the artifacts' recorded
+state at qualification time.
+
 `test-stable-release-rehearsal.sh` creates a private source snapshot with no
 remote or tags, changes only workspace package versions to `1.2.0`, and records
 the actual source commit separately from its local synthetic fixture commit.

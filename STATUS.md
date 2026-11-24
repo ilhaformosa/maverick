@@ -34,6 +34,21 @@ was running. The released client then checked TCP upload, download and EOF,
 plus four independent UDP replies on each route. The CLI regression also
 covers missing and malformed files, H2-only builds and private-safe output.
 
+## Offline client and server configuration comparison
+
+The development CLI offers [`check-pair`](CONFIG.md#compare-a-client-and-server-configuration-offline).
+On Apple Silicon, the published 1.2.1 CLI generated fixed H2, fixed H3,
+automatic/dual and origin-protected H2 configurations. The check accepted all
+four original pairs and their loopback copies. Both YAML files stayed
+byte-identical after each check. With the released client and development server,
+each staged pair transferred 8,193 bytes to the target and 6,145 bytes back,
+observed EOF in both directions and received four independent UDP replies.
+
+CLI regressions cover a disabled user, a different secret, credential rotation
+and expiry, incompatible carriers, a native-UDP client with an H2-only server,
+and a protected client with protection disabled at the origin. Parse errors and
+mismatch reports omit private configuration values.
+
 ## Maverick 1.2.1
 
 [Maverick 1.2.1](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.1)

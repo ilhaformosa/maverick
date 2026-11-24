@@ -895,6 +895,28 @@ target admission and application delivery remain unverified. Output uses
 fixed descriptions, including file and validation errors. For detailed
 troubleshooting on your own machine, use plain `check-config`.
 
+### Compare a client and server configuration offline
+
+In a development build after 1.2.2, an operator who already holds both
+private configuration files can check the pair before deployment.
+
+```sh
+maverick check-pair --client client.yaml --server server.yaml
+```
+
+Read the TCP and UDP lines separately. For example, an automatic client
+requiring native UDP and an H2-only server share H2 for TCP, but have no
+shared UDP carrier. This pair exits nonzero. A matching legacy WebSocket
+pair supports TCP only and reports `none` for UDP.
+
+The command compares the tunnel path, origin-protection settings, authentication
+version and epoch, and TLS channel binding policy. It uses the local clock and
+the normal credential rotation rules to check the selected ID and secret
+against an enabled server user. A mismatch exits nonzero. Output uses fixed
+descriptions and omits private values and file paths. The check reads only the
+two YAML files. DNS, certificate trust, origin pins, the carrier a live session
+uses and delivery to a target require separate verification.
+
 ### Check server certificate files before restarting
 
 In development builds after 1.2.2, run this command as the service account

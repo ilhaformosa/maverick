@@ -114,6 +114,13 @@ enum Commands {
         #[arg(long)]
         check_tls: bool,
     },
+    /// Compare a client and server YAML pair offline without printing private values.
+    CheckPair {
+        #[arg(long)]
+        client: PathBuf,
+        #[arg(long)]
+        server: PathBuf,
+    },
     /// Dry-run config migration report. Does not rewrite files.
     MigrateConfig {
         #[arg(short, long)]
@@ -391,6 +398,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Commands::CheckPair { client, server } => check_config::pair(&client, &server),
         Commands::MigrateConfig { config, kind } => migrate_config(&config, &kind),
         Commands::KeyInventory { config, kind } => key_inventory(&config, &kind),
         Commands::RotateCredential {

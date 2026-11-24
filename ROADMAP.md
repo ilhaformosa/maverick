@@ -5,14 +5,38 @@ Date: 2026-11-24
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
+## Development after 1.2.2
+
+The plan starts from the 1.2.1 route and rollback results. The maintained
+baseline is [1.2.2](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.2),
+which delivers the dependency fix with the same CLI and transport behavior. The following items address failures an operator can identify or
+recover from without access to a field environment. Keep the dependency
+inventory green as maintenance work throughout.
+
+| Priority | Deliverable and reason | Offline or loopback acceptance |
+|---|---|---|
+| 1 ([implemented in development](STATUS.md#development-server-tls-file-check)) | Add an opt-in server TLS file check to `check-config`. In 1.2.2 a valid YAML file can pass even when renewal left the service with an unusable certificate or key. | From the service working directory, load the configured certificate chain and private key through each selected TLS backend. Accept matching pairs for H2, protected H2, fixed H3 and dual mode in a capable build. Reject missing, malformed or mismatched files and H3 in an H2-only build, with private-safe output. Run the check with the service port occupied. Existing plain checks still accept a valid configuration before certificates exist. |
+| 2 | Compare a client and server configuration offline before handing the files to two operators. Today's explanations describe each side independently. | Start with the generated 1.2.1 direct and protected pairs. Report the shared carriers and whether the selected credential ID and secret match an enabled server credential. Change one field at a time to cover a disabled user, a wrong secret, a carrier mismatch and a protected client with protection disabled at the origin. Keep both files byte-identical and omit credentials and endpoints from every report. Confirm one matching pair by transferring TCP and UDP over loopback. |
+| 3 | Make the release qualification lookup tolerate the status-index lag observed during 1.2.1 publication. | Replay saved-shape API responses locally, including a completed first-attempt run absent from the success-filtered listing. Require one successful push run on main for the exact commit and workflow, with both expected artifacts. Reject pending, failed, duplicate, wrong-commit and expired-artifact cases. Use the existing publication stand-in to verify that rejected cases cannot publish. |
+
+Real-provider behavior, application performance across public networks and the
+72-hour field soak still require an authorized environment. The local short-flow
+study does not establish a production need for H3 pooling or carrier ranking.
+
 ## 1.2.2 dependency patch
 
-1.2.2 distributes the `url` repair from [PR #135](https://github.com/ilhaformosa/maverick/pull/135).
-Use the published 1.2.1 packages as the immediate upgrade and restoration
-baseline and retain the 1.2.0 matrix and Beta.4 drill. Each native package
-must pass all six routes in all five phases with each Stable baseline. Check
-both final SBOMs for `url` 2.5.9 and `form_urlencoded` 1.2.3. Publish the
-six files from the tagged main commit's successful native qualification.
+[1.2.2](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.2) at
+`04049de` distributes the `url` repair from [PR #135](https://github.com/ilhaformosa/maverick/pull/135).
+The release candidate passed 60/60 loopback cases on each native platform,
+30 with published 1.2.1 and 30 with 1.2.0. Each baseline exercises six routes,
+both mixed client/server directions, upgrade and restoration of the saved
+programs and private configurations. The distinct Beta.4 direct-H2 drill
+is also retained. [macOS candidate](https://github.com/ilhaformosa/maverick/actions/runs/45306317238/job/138150963596)
+and [Linux candidate](https://github.com/ilhaformosa/maverick/actions/runs/45306317238/job/138150963591).
+
+The [tagged main run](https://github.com/ilhaformosa/maverick/actions/runs/45308849245)
+qualifies the final archives. Each platform has a checksum and a full
+CycloneDX runtime inventory with `url` 2.5.9 and `form_urlencoded` 1.2.3.
 Field acceptance remains deferred for this dependency patch.
 
 ## 1.2.1 package qualification
@@ -55,7 +79,7 @@ Each platform has an archive, its checksum and a CycloneDX software bill of
 materials. The two archive digests above identify the tested download for
 each platform. Field interoperability and the 72-hour soak remain deferred.
 
-## Development after 1.2.0
+## Delivered after 1.2.0
 
 Plan for a prolonged period without real-network testing. Use the published
 [1.2.0 packages](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.0)
@@ -87,7 +111,7 @@ for 1.2.0 and 1.2.1.
 
 The [field plan](#proposed-field-acceptance--discussion-only) is available if
 an owner-controlled environment is separately authorized. The sections below
-record earlier deliveries and decisions. The table above sets the active order.
+record earlier deliveries and decisions. The development-after-1.2.2 section sets the active order.
 
 ## Delivered — Bounded Local Handshake Research
 

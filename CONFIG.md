@@ -895,6 +895,28 @@ target admission and application delivery remain unverified. Output uses
 fixed descriptions, including file and validation errors. For detailed
 troubleshooting on your own machine, use plain `check-config`.
 
+### Check server certificate files before restarting
+
+In development builds after 1.2.2, run this command as the service account
+from its normal working directory. Relative certificate and key paths resolve
+from that directory, just as they do at startup. A config can live elsewhere.
+
+```sh
+maverick check-config --kind server -c server.yaml --check-tls
+```
+
+The command loads the local chain and private key using the configured H2
+or H3 backend, or both for a dual server. Protected H2 uses the origin's
+configured identity. Success prints `server TLS certificate chain and private key: OK (offline)`.
+An unavailable backend or unusable pair exits nonzero. Output omits paths,
+certificate contents and credentials. Add `--explain` to include the route
+summary. Both options work while the existing service occupies its ports.
+
+The check covers local readability, parsing and key matching. Client trust,
+hostname, certificate validity dates, the client's origin pin and actual
+transfer require separate verification. Plain `check-config` and
+`--explain` alone work before TLS files have been installed.
+
 H2 server startup initializes TLS and the user/runtime state before binding
 listeners or reporting success. Missing or invalid TLS material is a start
 error, including through the SDK. A successful server start still does not prove

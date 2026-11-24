@@ -199,6 +199,29 @@ impl ServerHandle {
     }
 }
 
+/// Load the configured identity through the same TLS backends used at startup.
+/// This synchronous check opens local files only. Errors omit paths and key material.
+pub fn check_tls_material(config: &ServerConfig) -> Result<()> {
+    validate_runtime_features(config)
+        .map_err(|_| anyhow::anyhow!("invalid server configuration or unavailable transport"))?;
+    if !config.advanced.quiche_h3 {
+        h2_acceptor::rustls_server_config(config).map_err(|_| {
+            anyhow::anyhow!(
+                "H2 could not load a matching server TLS certificate chain and private key"
+            )
+        })?;
+    }
+    #[cfg(feature = "experimental-h3")]
+    if config.advanced.quiche_h3 || config.advanced.dual_h2_h3 {
+        h3::tls_context(config).map_err(|_| {
+            anyhow::anyhow!(
+                "H3 could not load a matching server TLS certificate chain and private key"
+            )
+        })?;
+    }
+    Ok(())
+}
+
 pub async fn start_server(config: ServerConfig) -> Result<ServerHandle> {
     config.validate().map_err(anyhow::Error::from)?;
     validate_runtime_features(&config)?;

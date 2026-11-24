@@ -59,6 +59,131 @@ fn client_yaml(secret: &SecretString) -> String {
     )
 }
 
+async fn expect_check_error(work: &Path, args: &[&str], message: &str) -> Result<()> {
+    let output = cli(work, args, None).await?;
+    ensure!(!output.status.success() && output.stdout.is_empty());
+    ensure!(
+        output.stderr == format!("Error: {message}\n").as_bytes(),
+        "expected only the fixed check-config error"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn offline_server_tls_uses_staged_files_without_binding() -> Result<()> {
+    let valid = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+    let other = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+    let secret = SecretString::generate();
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let listen = tcp.local_addr()?;
+    let _udp = std::net::UdpSocket::bind(listen)?;
+    let plain = [
+        "check-config",
+        "--kind",
+        "server",
+        "-c",
+        "config/staged.yaml",
+    ];
+    let mut inspect = plain.to_vec();
+    inspect.push("--check-tls");
+    let success = b"server TLS certificate chain and private key: OK (offline)\n";
+
+    for (backend, advanced) in [
+        ("H2", ""),
+        ("H2", "  end_to_end: true"),
+        ("H3", "  quiche_h3: true"),
+        ("dual", "  dual_h2_h3: true"),
+    ] {
+        let directory = TempDir::new()?;
+        let work = directory.path();
+        fs::create_dir(work.join("config"))?;
+        let config = work.join("config/staged.yaml");
+        let chain = work.join("test-private-chain.pem");
+        let key = work.join("test-private-key.pem");
+        let mut yaml = format!("version: 1\nlisten: '{listen}'\ntls:\n  cert_path: test-private-chain.pem\n  key_path: test-private-key.pem\nmaverick:\n  tunnel_path: /test-private-route\nusers:\n  - id: test-private-id\n    secret: '{}'\nfallback:\n  type: static\n  static_dir: public\n", secret.expose_secret());
+        if !advanced.is_empty() {
+            yaml.push_str(&format!("advanced:\n{advanced}\n"));
+        }
+        private_file(&config, &yaml)?;
+        if backend != "H2" && !cfg!(feature = "experimental-h3") {
+            let output = cli(work, &inspect, None).await?;
+            ensure!(!output.status.success() && output.stdout.is_empty());
+            let error = String::from_utf8(output.stderr)?;
+            ensure!(
+                error.contains("compiled direct transports: H2 only")
+                    && !error.contains("test-private")
+                    && !error.contains(secret.expose_secret())
+            );
+            continue;
+        }
+        let output = cli(work, &plain, None).await?;
+        ensure!(output.status.success() && output.stdout == b"server config OK\n");
+        let mut explain = plain.to_vec();
+        explain.push("--explain");
+        let output = cli(work, &explain, None).await?;
+        ensure!(
+            output.status.success()
+                && !String::from_utf8(output.stdout)?
+                    .contains("server TLS certificate chain and private key: OK")
+        );
+        let first_backend = if backend == "dual" { "H2" } else { backend };
+        let error = format!("{first_backend} could not load a matching server TLS certificate chain and private key");
+        expect_check_error(work, &inspect, &error)
+            .await
+            .context("missing files")?;
+        private_file(&chain, &valid.cert.pem())?;
+        expect_check_error(work, &inspect, &error)
+            .await
+            .context("missing key")?;
+        private_file(&key, "test-private-malformed-key")?;
+        expect_check_error(work, &inspect, &error)
+            .await
+            .context("malformed key")?;
+        fs::write(&key, other.signing_key.serialize_pem())?;
+        expect_check_error(work, &inspect, &error)
+            .await
+            .context("mismatched key")?;
+        fs::write(&key, valid.signing_key.serialize_pem())?;
+        fs::write(&chain, "test-private-malformed-chain")?;
+        expect_check_error(work, &inspect, &error)
+            .await
+            .context("malformed chain")?;
+        fs::write(&chain, valid.cert.pem())?;
+        let output = cli(work, &inspect, None).await?;
+        ensure!(
+            output.status.success() && output.stdout == success && output.stderr.is_empty(),
+            "matching pair"
+        );
+        let mut both = inspect.clone();
+        both.push("--explain");
+        let output = cli(work, &both, None).await?;
+        ensure!(
+            output.status.success() && output.stderr.is_empty() && output.stdout.ends_with(success)
+        );
+        let text = String::from_utf8(output.stdout)?;
+        ensure!(
+            text.contains("remote connection: unverified (offline)")
+                && !text.contains("test-private")
+                && !text.contains(secret.expose_secret())
+        );
+        ensure!(fs::read_to_string(config)? == yaml);
+    }
+    let dir = TempDir::new()?;
+    expect_check_error(
+        dir.path(),
+        &[
+            "check-config",
+            "--check-tls",
+            "--kind",
+            "client",
+            "-c",
+            "missing.yaml",
+        ],
+        "--check-tls requires --kind server",
+    )
+    .await
+}
+
 async fn expect_explanation(
     directory: &Path,
     kind: &str,

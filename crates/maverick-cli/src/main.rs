@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-mod explain_config;
+mod check_config;
 
 use std::env;
 use std::fs;
@@ -110,6 +110,9 @@ enum Commands {
         /// Explain the configured route, UDP behavior and compiled transports offline.
         #[arg(long)]
         explain: bool,
+        /// Load the configured server TLS certificate chain and matching private key offline.
+        #[arg(long)]
+        check_tls: bool,
     },
     /// Dry-run config migration report. Does not rewrite files.
     MigrateConfig {
@@ -370,9 +373,10 @@ async fn main() -> Result<()> {
             config,
             kind,
             explain,
+            check_tls,
         } => {
-            if explain {
-                return explain_config::run(&config, &kind);
+            if explain || check_tls {
+                return check_config::report(&config, &kind, explain, check_tls);
             }
             match kind.as_str() {
                 "client" => {

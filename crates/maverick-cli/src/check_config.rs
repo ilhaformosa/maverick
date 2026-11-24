@@ -12,7 +12,11 @@ const BUILD_TRANSPORTS: &str = if cfg!(feature = "experimental-h3") {
 
 /// Only fixed descriptions leave this command. File and YAML errors can contain
 /// private paths or excerpts, so detailed diagnostics stay in plain check-config.
-pub(super) fn run(path: &Path, kind: &str) -> Result<()> {
+pub(super) fn report(path: &Path, kind: &str, explain: bool, check_tls: bool) -> Result<()> {
+    ensure!(
+        !check_tls || kind == "server",
+        "--check-tls requires --kind server"
+    );
     if super::config_permission_warning(path)
         .map_err(|_| anyhow!("cannot inspect configuration file permissions"))?
         .is_some()
@@ -21,17 +25,29 @@ pub(super) fn run(path: &Path, kind: &str) -> Result<()> {
     }
     let yaml = fs::read_to_string(path).map_err(|_| anyhow!("cannot read configuration file"))?;
     let rejected = |_| {
-        anyhow!("configuration rejected (compiled direct transports: {BUILD_TRANSPORTS}). Run check-config without --explain locally for details")
+        anyhow!("configuration rejected (compiled direct transports: {BUILD_TRANSPORTS}). Run plain check-config locally for details")
     };
     let (route, udp) = match kind {
         "client" => client_policy(&ClientConfig::from_yaml_str(&yaml).map_err(rejected)?)?,
-        "server" => server_policy(&ServerConfig::from_yaml_str(&yaml).map_err(rejected)?)?,
+        "server" => {
+            let config = ServerConfig::from_yaml_str(&yaml).map_err(rejected)?;
+            let policy = server_policy(&config)?;
+            if check_tls {
+                maverick_server::check_tls_material(&config)?;
+            }
+            policy
+        }
         _ => unreachable!("clap validates the configuration kind"),
     };
-    println!("configured route: {route}");
-    println!("UDP: {udp}");
-    println!("compiled direct transports: {BUILD_TRANSPORTS}");
-    println!("remote connection: unverified (offline)");
+    if explain {
+        println!("configured route: {route}");
+        println!("UDP: {udp}");
+        println!("compiled direct transports: {BUILD_TRANSPORTS}");
+        println!("remote connection: unverified (offline)");
+    }
+    if check_tls {
+        println!("server TLS certificate chain and private key: OK (offline)");
+    }
     Ok(())
 }
 

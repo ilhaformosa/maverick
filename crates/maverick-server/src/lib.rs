@@ -13,4 +13,4 @@ mod runtime_metrics;
 
 #[cfg(feature = "experimental-h3")]
 pub use server::h3;
-pub use server::{run_server, start_server, ServerHandle};
+pub use server::{check_tls_material, run_server, start_server, ServerHandle};

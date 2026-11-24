@@ -18,7 +18,7 @@ readonly TEST_RELEASE_NOTE_VERSION="1.2.0-beta.3"
 readonly TEST_REVISION="1111111111111111111111111111111111111111"
 readonly TEST_MARKER="SYNTH_PRIVATE_MARKER_DO_NOT_ECHO"
 readonly FEATURES_LINE="features: tls13,h2,browser-tls-default,cdn-fronted-h2,socks5,http-connect,tcp-relay,dns-relay,udp-relay,static-fallback,reverse-proxy-fallback,local-metrics,config-uri,key-inventory,rotation-lint,user-smoke"
-readonly PILOT_RELEASE_WORKFLOW_SHA256="a93fa659620b9e7fb130da3cc7ef73f4cd09c9f7837fbd8d0553436a16de761f"
+readonly PILOT_RELEASE_WORKFLOW_SHA256="bd0b7880659bd3122ae8022fcd6cc82f0e787fe18c7a4eb726f0a4c51301f66e"
 readonly PILOT_RELEASE_PUBLISH_STEP_SHA256="0e45d06ca05f55900189324ecd492ec149ed69b2f206db90d0829291476a0ae5"
 
 cleanup() {
@@ -680,7 +680,7 @@ done
 
 qualification_runs="$test_root/qualification-runs.json"
 cat >"$qualification_runs" <<JSON
-{"workflow_runs":[
+{"total_count":3,"workflow_runs":[
   {"id":101,"name":"product-ci","path":".github/workflows/ci.yml","head_sha":"$TEST_REVISION","head_branch":"main","event":"push","status":"completed","conclusion":"success","run_attempt":1},
   {"id":102,"name":"product-ci","path":".github/workflows/ci.yml","head_sha":"$TEST_REVISION","head_branch":"main","event":"pull_request","status":"completed","conclusion":"success","run_attempt":1},
   {"id":103,"name":"product-ci","path":".github/workflows/ci.yml","head_sha":"2222222222222222222222222222222222222222","head_branch":"main","event":"push","status":"completed","conclusion":"success","run_attempt":1}
@@ -690,7 +690,7 @@ trace_test qualification-run-selects-one-exact-main-push
 [[ "$(select_qualification_run_id "$qualification_runs" "$TEST_REVISION")" == 101 ]] ||
   fail_test
 qualification_duplicate_runs="$test_root/qualification-duplicate-runs.json"
-jq '.workflow_runs += [(.workflow_runs[0] | .id = 104)]' \
+jq '.workflow_runs += [(.workflow_runs[0] | .id = 104)] | .total_count = 4' \
   "$qualification_runs" >"$qualification_duplicate_runs"
 trace_test qualification-run-rejects-duplicate
 if select_qualification_run_id \
@@ -698,7 +698,7 @@ if select_qualification_run_id \
   fail_test
 fi
 qualification_rerun="$test_root/qualification-rerun.json"
-jq '.workflow_runs = [(.workflow_runs[0] | .run_attempt = 2)]' \
+jq '.workflow_runs = [(.workflow_runs[0] | .run_attempt = 2)] | .total_count = 1' \
   "$qualification_runs" >"$qualification_rerun"
 trace_test qualification-run-rejects-rerun
 if select_qualification_run_id \
@@ -863,6 +863,12 @@ flags_line="$(exact_line_in "$release_workflow" \
   '          publication_flags_text="$(./scripts/release-publication-flags.sh "$version" "$GITHUB_SHA")"')"
 [[ "$publish_tag_line" -lt "$publish_notes_guard_line" ]] || fail_test
 [[ "$flags_line" -lt "$notes_guard_line" ]] || fail_test
+qualification_runner="$test_root/qualification-runner.sh"
+# Match the literal shell in the workflow.
+# shellcheck disable=SC2016
+sed -n '/^          runs_file="$(mktemp /,/^          } >>"\$GITHUB_OUTPUT"$/p' \
+  "$release_workflow" | sed 's/^          //' >"$qualification_runner"
+[[ -s "$qualification_runner" ]] || fail_test
 publication_runner="$test_root/publication-runner.sh"
 {
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'release_note_digest_matches() { return 0; }'
@@ -873,6 +879,20 @@ mkdir "$mock_bin"
 cat >"$mock_bin/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$1" == api ]]; then
+  case "$*" in
+    "api --method GET repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs -f head_sha=$GITHUB_SHA -f branch=main -f event=push -f status=success -F per_page=100")
+      # The success index temporarily omitted the completed 1.2.1 run.
+      printf '%s\n' '{"total_count":0,"workflow_runs":[]}' ;;
+    "api --method GET repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs -f head_sha=$GITHUB_SHA -f branch=main -f event=push -F per_page=100")
+      cat "$MOCK_RUNS" ;;
+    "api --method GET repos/$GITHUB_REPOSITORY/actions/runs/101/artifacts -F per_page=100")
+      cat "$MOCK_ARTIFACTS" ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+[[ "$1 $2" == 'release create' ]]
 printf '%s\n' "$@" >"${MOCK_RELEASE_ARGS:?}"
 MOCK_GH
 chmod 0700 "$mock_bin/gh"
@@ -881,9 +901,16 @@ publication_case() {
   local args_file="$test_root/publication-args-$version-$outcome"
   local log="$test_root/logs/publication-$version-$outcome"
   local expected="$test_root/publication-expected"
+  local outputs="$test_root/qualification-outputs"
+  : >"$outputs"
   rm -f "$args_file"
   if (
     cd "$repo_root"
+    if [[ -n "${4:-}" ]]; then
+      env PATH="$mock_bin:$PATH" GITHUB_REPOSITORY=example/maverick GITHUB_SHA="$TEST_REVISION" \
+        RUNNER_TEMP="$test_root" GITHUB_OUTPUT="$outputs" MOCK_RUNS="$4" MOCK_ARTIFACTS="$5" \
+        bash -eu -o pipefail "$qualification_runner" || exit 1
+    fi
     env PATH="$mock_bin:$PATH" version="$version" \
       MAVERICK_STABLE_APPROVED_SHA="$approved" GITHUB_SHA="$TEST_REVISION" \
       GITHUB_REF_NAME="v$version" GITHUB_REPOSITORY=example/maverick \
@@ -891,7 +918,11 @@ publication_case() {
       MAC_NAME=mac MAC_SBOM_NAME=mac-sbom NOTES_FILE=notes NOTES_SHA=unused \
       MOCK_RELEASE_ARGS="$args_file" bash "$publication_runner"
   ) >"$log" 2>&1; then
-    [[ "$outcome" != denied && -f "$args_file" ]] || fail_test
+    [[ "$outcome" != denied && "$outcome" != unqualified && -f "$args_file" ]] || fail_test
+    if [[ -n "${4:-}" ]]; then
+      printf '%s\n' qualified_run_id=101 linux_artifact_id=201 mac_artifact_id=202 | \
+        cmp -s - "$outputs" || fail_test
+    fi
     {
       printf '%s\n' release create "v$version" /fixture/linux /fixture/linux.sha256 \
         /fixture/linux-sbom /fixture/mac /fixture/mac.sha256 /fixture/mac-sbom \
@@ -904,6 +935,8 @@ publication_case() {
       printf '%s\n' --title "Maverick v$version" --notes-file notes
     } >"$expected"
     cmp -s "$args_file" "$expected" || fail_test
+  elif [[ "$outcome" == unqualified ]]; then
+    [[ ! -s "$outputs" && ! -e "$args_file" ]] || fail_test
   else
     [[ "$outcome" == denied && ! -e "$args_file" ]] || fail_test
     grep -Fxq 'release publication approval failed' "$log" || fail_test
@@ -923,6 +956,26 @@ publication_case 1.2.2 2222222222222222222222222222222222222222 denied
 publication_case 1.2.2 "$TEST_REVISION" stable
 publication_case 1.2.3 "$TEST_REVISION" denied
 publication_case 1.2.0+build "$TEST_REVISION" denied
+
+trace_test qualification-index-lag-and-publication
+publication_case 1.2.1 "$TEST_REVISION" stable "$qualification_runs" "$qualification_artifacts"
+bad_runs="$test_root/qualification-ineligible.json"
+for invalid in '.status = "in_progress" | .conclusion = null' '.conclusion = "failure"' \
+  '.head_sha = "2222222222222222222222222222222222222222"' '.head_branch = "other"' \
+  '.event = "pull_request"' '.name = "other"' '.path = ".github/workflows/other.yml"'; do
+  jq ".workflow_runs = [(.workflow_runs[0] | $invalid)] | .total_count = 1" "$qualification_runs" >"$bad_runs"
+  publication_case 1.2.1 "$TEST_REVISION" unqualified "$bad_runs" "$qualification_artifacts"
+done
+jq '.total_count += 1' "$qualification_runs" >"$bad_runs"
+for invalid in "$qualification_duplicate_runs" "$qualification_rerun" "$bad_runs"; do
+  publication_case 1.2.1 "$TEST_REVISION" unqualified "$invalid" "$qualification_artifacts"
+done
+missing_artifact="$test_root/qualification-missing-artifact.json"
+jq 'del(.artifacts[1]) | .total_count = 1' "$qualification_artifacts" >"$missing_artifact"
+for invalid in "$qualification_expired" "$qualification_wrong_run" \
+  "$qualification_duplicate_artifact" "$missing_artifact"; do
+  publication_case 1.2.1 "$TEST_REVISION" unqualified "$qualification_runs" "$invalid"
+done
 
 trace_test workflow-hash-rejects-errexit-disable
 errexit_mutation="$test_root/pilot-release-errexit-disabled.yml"

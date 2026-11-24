@@ -366,8 +366,7 @@ where
     }
 }
 
-/// Starts the ordinary server command on UDP when explicitly configured for H3.
-fn tls_context(config: &ServerConfig) -> Result<boring::ssl::SslContextBuilder> {
+pub(super) fn tls_context(config: &ServerConfig) -> Result<boring::ssl::SslContextBuilder> {
     use boring::ssl::{SslContext, SslFiletype, SslMethod, SslVersion};
     let mut tls = SslContext::builder(SslMethod::tls())?;
     tls.set_min_proto_version(Some(SslVersion::TLS1_3))?;

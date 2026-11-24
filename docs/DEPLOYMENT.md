@@ -107,8 +107,11 @@ sudo systemctl status maverick.service
 sudo journalctl -u maverick.service --since '5 minutes ago'
 ```
 
-`check-config` checks syntax/policy, not certificate files. Actual server
-startup validates the certificate/key before announcing listener readiness.
+Plain `check-config` validates the YAML and its policy. Development builds
+after 1.2.2 also support `--check-tls` to load the configured server chain
+and key before a restart. Run it as the service user from the unit's
+`WorkingDirectory` (`/etc/maverick`). Server startup loads the TLS identity
+before announcing listener readiness. [Offline file check](../CONFIG.md#check-server-certificate-files-before-restarting).
 `Type=exec` confirms process execution, not successful proxy forwarding; verify
 the expected Maverick listening message, and only perform a real client test
 when field verification is authorized. Metrics should remain bound to loopback.
@@ -156,7 +159,9 @@ outer endpoint and its trust settings stay fixed throughout.
    `maverick pin-cert --cert replacement-chain.pem` on the verified public
    file, with the leaf first. Stage the new client YAML by changing only
    `advanced.end_to_end.cert_pin`. The outer `server.cert_pin` identifies a
-   different TLS endpoint. Run `check-config` on the staged files.
+   different TLS endpoint. Run `check-config` on the staged files. With the
+   development CLI, also run `check-config --kind server --check-tls -c staged-server.yaml`
+   against the replacement files before stopping the running origin.
 3. Coordinate the restart. Stop the origin, install the replacement chain
    and key together, and start it on the original listener. Restart clients
    with the staged YAML to force fresh handshakes. Test TCP bytes in both

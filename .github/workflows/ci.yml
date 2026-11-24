@@ -246,19 +246,21 @@ jobs:
             --expected-target "$MAVERICK_PILOT_TARGET" \
             --verification-level full \
             --source-root .
-      - name: Verify mixed versions, upgrade and restore with published 1.2.0 packages
+      - name: Verify mixed versions, upgrade and restore with published 1.2.0 and 1.2.1 packages
         run: |
           set -euo pipefail
           previous_dir="$(mktemp -d)"
           trap 'rm -rf "$previous_dir"' EXIT
-          archive="maverick-1.2.0-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
-          for file in "$archive" "$archive.sha256"; do
-            curl --fail --silent --show-error --location --retry 2 \
-              "https://github.com/ilhaformosa/maverick/releases/download/v1.2.0/$file" -o "$previous_dir/$file"
-          done
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
-          ./scripts/test-stable-patch-interop.sh "$previous_dir/$archive" \
-            "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
+          for baseline in 1.2.0 1.2.1; do
+            archive="maverick-${baseline}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
+            for file in "$archive" "$archive.sha256"; do
+              curl --fail --silent --show-error --location --retry 2 \
+                "https://github.com/ilhaformosa/maverick/releases/download/v${baseline}/$file" -o "$previous_dir/$file"
+            done
+            ./scripts/test-stable-patch-interop.sh "$previous_dir/$archive" \
+              "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
+          done
       - name: Exercise current-candidate upgrade and Beta.4 rollback on GNU/Linux
         env:
           GH_TOKEN: ${{ github.token }}
@@ -446,19 +448,21 @@ jobs:
             --expected-target "$MAVERICK_SBOM_TARGET" \
             --verification-level full \
             --source-root .
-      - name: Verify mixed versions, upgrade and restore with published 1.2.0 packages
+      - name: Verify mixed versions, upgrade and restore with published 1.2.0 and 1.2.1 packages
         run: |
           set -euo pipefail
           previous_dir="$(mktemp -d)"
           trap 'rm -rf "$previous_dir"' EXIT
-          archive="maverick-1.2.0-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
-          for file in "$archive" "$archive.sha256"; do
-            curl --fail --silent --show-error --location --retry 2 \
-              "https://github.com/ilhaformosa/maverick/releases/download/v1.2.0/$file" -o "$previous_dir/$file"
-          done
           version="$(awk -F'"' '/^version =/ {print $2; exit}' Cargo.toml)"
-          ./scripts/test-stable-patch-interop.sh "$previous_dir/$archive" \
-            "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
+          for baseline in 1.2.0 1.2.1; do
+            archive="maverick-${baseline}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
+            for file in "$archive" "$archive.sha256"; do
+              curl --fail --silent --show-error --location --retry 2 \
+                "https://github.com/ilhaformosa/maverick/releases/download/v${baseline}/$file" -o "$previous_dir/$file"
+            done
+            ./scripts/test-stable-patch-interop.sh "$previous_dir/$archive" \
+              "dist/maverick-${version}-pilot-${MAVERICK_PILOT_TARGET}.tar.gz"
+          done
       - name: Exercise current-candidate upgrade and Beta.4 rollback on macOS
         env:
           GH_TOKEN: ${{ github.token }}

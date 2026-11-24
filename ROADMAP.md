@@ -1,9 +1,19 @@
 # Maverick Roadmap
 
-Date: 2026-11-21
+Date: 2026-11-24
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
+
+## 1.2.2 dependency patch
+
+1.2.2 distributes the `url` repair from [PR #135](https://github.com/ilhaformosa/maverick/pull/135).
+Use the published 1.2.1 packages as the immediate upgrade and restoration
+baseline and retain the 1.2.0 matrix and Beta.4 drill. Each native package
+must pass all six routes in all five phases with each Stable baseline. Check
+both final SBOMs for `url` 2.5.9 and `form_urlencoded` 1.2.3. Publish the
+six files from the tagged main commit's successful native qualification.
+Field acceptance remains deferred for this dependency patch.
 
 ## 1.2.1 package qualification
 

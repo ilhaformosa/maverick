@@ -12,7 +12,7 @@ The November 23 [scheduled check](https://github.com/ilhaformosa/maverick/action
 reported [RUSTSEC-2026-0592](https://rustsec.org/advisories/RUSTSEC-2026-0592.html)
 in `url` 2.5.8. The CLI uses this crate for profile URI parsing and export.
 Neither affected origin accessor has a direct call in Maverick. Both published
-1.2.1 runtime SBOMs list 2.5.8. The development workspace lock now selects
+1.2.1 runtime SBOMs list 2.5.8. The 1.2.2 workspace lock selects
 2.5.9 and its required `form_urlencoded` 1.2.3. The other tracked locks
 contain no copy of `url`. The local dependency inventory and CLI URI tests
 passed with the updated lock.

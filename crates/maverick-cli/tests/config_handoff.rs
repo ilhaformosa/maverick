@@ -936,3 +936,191 @@ async fn profile_export_rejects_unrepresentable_connection_policies() -> Result<
     }
     Ok(())
 }
+
+async fn compare_pair(client: &str, server: &str, succeeds: bool, lines: &[&str]) -> Result<()> {
+    let dir = TempDir::new()?;
+    let c = dir.path().join("private-client.yaml");
+    let s = dir.path().join("private-server.yaml");
+    private_file(&c, client)?;
+    private_file(&s, server)?;
+    let out = cli(
+        dir.path(),
+        &[
+            "check-pair",
+            "--client",
+            "private-client.yaml",
+            "--server",
+            "private-server.yaml",
+        ],
+        None,
+    )
+    .await?;
+    ensure!(
+        out.status.success() == succeeds,
+        "unexpected pair verdict for {lines:?}"
+    );
+    let report = String::from_utf8(out.stdout)?;
+    for line in lines {
+        ensure!(
+            report.lines().any(|actual| actual == *line),
+            "missing {line}"
+        );
+    }
+    let error = String::from_utf8(out.stderr)?;
+    let inputs = ClientConfig::from_yaml_str(client)?;
+    for private in [
+        "private",
+        inputs.server.secret.expose_secret(),
+        &inputs.server.address,
+        &inputs.server.tunnel_path,
+        &inputs.server.credential_id,
+    ] {
+        ensure!(
+            !report.contains(private) && !error.contains(private),
+            "pair disclosed input"
+        );
+    }
+    ensure!(report.ends_with("remote connection: unverified (offline)\n"));
+    ensure!(if succeeds {
+        error.is_empty()
+    } else {
+        error == "Error: configuration pair mismatch\n"
+    });
+    ensure!(fs::read_to_string(c)? == client && fs::read_to_string(s)? == server);
+    Ok(())
+}
+
+#[tokio::test]
+async fn offline_pair_checks_shared_policy_and_the_selected_credential() -> Result<()> {
+    let secret = SecretString::generate();
+    let other = SecretString::generate();
+    let c = client_yaml(&secret);
+    let s = format!("version: 1\nlisten: '127.0.0.1:0'\ntls:\n  cert_path: private-chain.pem\n  key_path: private-key.pem\nmaverick:\n  tunnel_path: /private-tunnel\nfallback:\n  type: static\n  static_dir: public\nusers:\n  - id: private-test-user\n    secret: '{}'\n", secret.expose_secret());
+    compare_pair(
+        &c,
+        &s,
+        true,
+        &[
+            "shared TCP carriers: H2",
+            "shared UDP carriers: H2",
+            "selected credential: match",
+        ],
+    )
+    .await?;
+    compare_pair(
+        &c,
+        &format!("{s}    enabled: false\n"),
+        false,
+        &["selected credential: disabled user"],
+    )
+    .await?;
+    compare_pair(
+        &c,
+        &s.replace(secret.expose_secret(), other.expose_secret()),
+        false,
+        &["selected credential: secret mismatch"],
+    )
+    .await?;
+    compare_pair(
+        &c,
+        &s.replace("/private-tunnel", "/private-other"),
+        false,
+        &["tunnel path: mismatch"],
+    )
+    .await?;
+    let protected = format!("{c}advanced:\n  end_to_end:\n    server_name: private.invalid\n    cert_pin: sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n");
+    let protected_server = format!("{s}advanced:\n  end_to_end: true\n");
+    compare_pair(
+        &protected,
+        &protected_server,
+        true,
+        &["origin protection: match"],
+    )
+    .await?;
+    compare_pair(&protected, &s, false, &["origin protection: mismatch"]).await?;
+    let rotated = format!("{c}auth:\n  rotation:\n    auto_switch: true\n    next:\n      id: private-next\n      secret: '{}'\n      not_before: '2000-01-01T00:00:00Z'\n", other.expose_secret());
+    compare_pair(
+        &rotated,
+        &s,
+        false,
+        &["selected credential: no enabled credential in its acceptance window"],
+    )
+    .await?;
+    let overlap = format!("{s}    rotation:\n      previous:\n        - id: private-next\n          secret: '{}'\n          not_before: '2000-01-01T00:00:00Z'\n          not_after: '9999-01-01T00:00:00Z'\n", other.expose_secret());
+    compare_pair(&rotated, &overlap, true, &["selected credential: match"]).await?;
+    compare_pair(
+        &rotated,
+        &overlap.replace("9999-", "2001-"),
+        false,
+        &["selected credential: no enabled credential in its acceptance window"],
+    )
+    .await?;
+    let v2 =
+        format!("{c}auth:\n  v2:\n    enabled: true\n  rotation:\n    active_epoch: '202607'\n");
+    compare_pair(&v2, &s, false, &["authentication version/epoch: mismatch"]).await?;
+    compare_pair(
+        &c,
+        &format!("{s}auth:\n  channel_binding:\n    enabled: false\n"),
+        false,
+        &["TLS channel binding policy: mismatch"],
+    )
+    .await?;
+    if cfg!(feature = "experimental-h3") {
+        let h3_server = format!("{s}advanced:\n  quiche_h3: true\n");
+        compare_pair(
+            &c,
+            &h3_server,
+            false,
+            &["shared TCP carriers: none", "shared UDP carriers: none"],
+        )
+        .await?;
+        let auto = format!("{c}advanced:\n  auto_h3: true\n  stealth:\n    tls_fingerprint: browser_mimic\n  udp_policy: native_required\n");
+        compare_pair(
+            &auto,
+            &s,
+            false,
+            &["shared TCP carriers: H2", "shared UDP carriers: none"],
+        )
+        .await?;
+        compare_pair(
+            &auto.replace("native_required", "allow_reliable"),
+            &s,
+            true,
+            &["shared UDP carriers: H2"],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn offline_pair_redacts_read_and_parse_errors() -> Result<()> {
+    let dir = TempDir::new()?;
+    let args = [
+        "check-pair",
+        "--client",
+        "private-client.yaml",
+        "--server",
+        "private-server.yaml",
+    ];
+    expect_check_error(dir.path(), &args, "cannot read client configuration").await?;
+    private_file(
+        &dir.path().join("private-client.yaml"),
+        &client_yaml(&SecretString::generate()),
+    )?;
+    private_file(
+        &dir.path().join("private-server.yaml"),
+        "private-invalid: [",
+    )?;
+    let build = if cfg!(feature = "experimental-h3") {
+        "H2 and H3"
+    } else {
+        "H2 only"
+    };
+    expect_check_error(
+        dir.path(),
+        &args,
+        &format!("server configuration rejected (compiled direct transports: {build})"),
+    )
+    .await
+}

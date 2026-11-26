@@ -5,6 +5,34 @@ Date: 2026-11-27
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
+## 1.2.4 native package qualification
+
+1.2.4 delivers the profile import preview fix from `fae7fa3`. Both native
+jobs tested the CLI extracted from the installation archive at `207b500`.
+The 1.2.3 comparison used the published archives at `69a3cc8` and checked
+their pinned SHA-256 digests before running either program.
+
+| Platform | Packaged configuration checks | With published 1.2.3 | Across 1.2.0 through 1.2.3 |
+|---|---|---|---|
+| [Apple Silicon macOS](https://github.com/ilhaformosa/maverick/actions/runs/45907972889/job/140209261586) | 23/23 | 30/30 | 120/120 |
+| [Native Linux x86_64](https://github.com/ilhaformosa/maverick/actions/runs/45907972889/job/140209261547) | 23/23 | 30/30 | 120/120 |
+
+- Valid file previews left the destination unwritten and hid the secret.
+  Previews with missing credentials, occupied paths or missing directories
+  failed. Using isolated clipboard commands, previews and failed imports
+  retained the link and a successful file import cleared it.
+- The 1.2.3 and 1.2.4 programs each ran the fixed-H2 credential drill.
+  Fresh connections agreed with all eight offline decisions across the
+  original, overlap, retired and restored states. Accepted clients transferred
+  TCP and UDP. Rejected clients reached neither target.
+- Six routes each exercised the original pair, both mixed directions, the
+  upgraded pair and the restored pair. After restoring both saved programs
+  and private YAML byte for byte, bidirectional TCP and independent UDP
+  replies worked on every route. Both platforms also passed the Beta.4 drill.
+
+Publication uses the six files from the successful build of the tagged
+main commit. [Release notes](docs/releases/v1.2.4.md).
+
 ## Development after 1.2.3
 
 Start from the published `69a3cc8`. The 1.2.3 archive can already compare two
@@ -20,7 +48,7 @@ covered Stable baselines through 1.2.2.
 | 3 ([native package gate](scripts/test-stable-patch-interop.sh)) | Include the installed 1.2.3 release in regular native upgrade and recovery checks. Share one pinned list between both CI jobs. | On Apple Silicon macOS and native Linux x86_64, check archive digests and source revisions for all four published Stable baselines. Run six routes and five phases per baseline, the packaged configuration suite once per candidate, the rollover drill and the separate Beta.4 rollback. Preserve the two-archive offline entry point. |
 
 Provider behavior, public-network performance and the 72-hour field soak
-still require a separately authorized environment. The profile preview correction is queued for the next release.
+still require a separately authorized environment. The profile preview correction is included in 1.2.4.
 With 1.2.3, an operator can supply a link via stdin and import it explicitly
 to a fresh path. The credential rollover uses commands already in 1.2.3.
 

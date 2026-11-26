@@ -1237,3 +1237,125 @@ async fn check_staged_origin_chain_with_only_inner_trust() -> Result<()> {
     server_args[2] = "server";
     expect_check_error(work, &server_args, "--origin-cert requires --kind client").await
 }
+
+#[tokio::test]
+async fn check_pair_at_rotation_boundaries() -> Result<()> {
+    let dir = TempDir::new()?;
+    let work = dir.path();
+    let old = SecretString::generate();
+    let new = SecretString::generate();
+    let client = client_yaml(&old);
+    let rotating = format!("{client}auth:\n  rotation:\n    auto_switch: true\n    next:\n      id: private-new\n      secret: '{}'\n      not_before: '2030-04-01T00:30:00Z'\n", new.expose_secret());
+    let server = format!("version: 1\nlisten: '127.0.0.1:0'\ntls:\n  cert_path: private-chain.pem\n  key_path: private-key.pem\nmaverick:\n  tunnel_path: /private-tunnel\nfallback:\n  type: static\n  static_dir: public\nusers:\n  - id: private-new\n    secret: '{}'\n    enabled: true\n    rotation:\n      previous:\n      - id: private-test-user\n        secret: '{}'\n        not_before: '2030-04-01T00:00:00Z'\n        not_after: '2030-04-01T01:00:00Z'\n", new.expose_secret(), old.expose_secret());
+    let cpath = work.join("private-client.yaml");
+    let spath = work.join("private-server.yaml");
+    private_file(&cpath, &rotating)?;
+    private_file(&spath, &server)?;
+    let args = [
+        "check-pair",
+        "--client",
+        "private-client.yaml",
+        "--server",
+        "private-server.yaml",
+        "--at",
+    ];
+    let disabled = server.replace("enabled: true", "enabled: false");
+    let missing = "no enabled credential in its acceptance window";
+    for (c, s, at, cslot, sslot, verdict) in [
+        (
+            &rotating,
+            &server,
+            "2030-03-31T23:59:59Z",
+            "active",
+            "none",
+            missing,
+        ),
+        (
+            &rotating,
+            &server,
+            "2030-04-01T00:00:00Z",
+            "active",
+            "previous",
+            "match",
+        ),
+        (
+            &rotating,
+            &server,
+            "2030-04-01T00:29:59Z",
+            "active",
+            "previous",
+            "match",
+        ),
+        (
+            &rotating,
+            &server,
+            "2030-04-01T08:30:00+08:00",
+            "next",
+            "active",
+            "match",
+        ),
+        (
+            &client,
+            &server,
+            "2030-04-01T00:59:59Z",
+            "active",
+            "previous",
+            "match",
+        ),
+        (
+            &client,
+            &server,
+            "2030-04-01T01:00:00Z",
+            "active",
+            "none",
+            missing,
+        ),
+        (
+            &rotating,
+            &disabled,
+            "2030-04-01T01:00:00Z",
+            "next",
+            "none",
+            "disabled user",
+        ),
+    ] {
+        if fs::read_to_string(&cpath)? != *c {
+            fs::write(&cpath, c)?;
+        }
+        if fs::read_to_string(&spath)? != *s {
+            fs::write(&spath, s)?;
+        }
+        let mut argv = args.to_vec();
+        argv.push(at);
+        let out = cli(work, &argv, None).await?;
+        let matched = verdict == "match";
+        ensure!(
+            out.status.success() == matched,
+            "unexpected rotation result at {at}"
+        );
+        let report = String::from_utf8(out.stdout)?;
+        ensure!(report.ends_with(&format!("client credential at supplied time: {cslot}\nserver credential at supplied time: {sslot}\nselected credential: {verdict}\nremote connection: unverified (offline)\n")));
+        ensure!(
+            !report.contains("private")
+                && !report.contains(old.expose_secret())
+                && !report.contains(new.expose_secret())
+        );
+        ensure!(if matched {
+            out.stderr.is_empty()
+        } else {
+            out.stderr == b"Error: configuration pair mismatch\n"
+        });
+        ensure!(fs::read_to_string(&cpath)? == *c && fs::read_to_string(&spath)? == *s);
+    }
+    for invalid in ["2030-04-01T00:30:00", "private-invalid-time"] {
+        let mut argv = args.to_vec();
+        argv.push(invalid);
+        expect_check_error(
+            work,
+            &argv,
+            "--at requires an RFC3339 timestamp with a UTC offset",
+        )
+        .await?;
+    }
+    Ok(())
+}

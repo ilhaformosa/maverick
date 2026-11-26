@@ -148,8 +148,14 @@ fn server_policy(config: &ServerConfig) -> Result<(&'static str, &'static str)> 
 }
 
 /// Compare static policy only. Use the same instant and credential lookup as a new handshake.
-pub(super) fn pair(client_path: &Path, server_path: &Path) -> Result<()> {
-    use maverick_core::config::{parse_auth_epoch, select_client_credential_at_unix};
+pub(super) fn pair(
+    client_path: &Path,
+    server_path: &Path,
+    at: Option<time::OffsetDateTime>,
+) -> Result<()> {
+    use maverick_core::config::{
+        parse_auth_epoch, select_client_credential_at_unix, ClientCredentialSelection,
+    };
     use maverick_server::users::UserStore;
 
     let client_yaml =
@@ -195,12 +201,13 @@ pub(super) fn pair(client_path: &Path, server_path: &Path) -> Result<()> {
     let binding_ok = (!client_binding || server_binding)
         && (!(server.auth.channel_binding.require || server.advanced.end_to_end) || client_binding);
 
-    let now = maverick_core::auth::current_unix();
+    let now = at.map_or_else(maverick_core::auth::current_unix, |t| t.unix_timestamp());
     let selected = select_client_credential_at_unix(&client.server, &client.auth.rotation, now)
         .map_err(|_| anyhow!("client credential selection failed"))?;
     let users = UserStore::new(&server.users)
         .map_err(|_| anyhow!("server credential configuration rejected"))?;
-    let (credential_ok, credential) = match users.lookup_secret(selected.id, now) {
+    let accepted = users.lookup_secret(selected.id, now);
+    let (credential_ok, credential) = match &accepted {
         Some(found) if found.secret == selected.secret => (true, "match"),
         Some(_) => (false, "secret mismatch"),
         None if users.get(selected.id).is_some_and(|user| !user.enabled) => {
@@ -216,6 +223,17 @@ pub(super) fn pair(client_path: &Path, server_path: &Path) -> Result<()> {
     println!("tunnel path: {}", verdict(path_ok));
     println!("authentication version/epoch: {}", verdict(auth_ok));
     println!("TLS channel binding policy: {}", verdict(binding_ok));
+    if at.is_some() {
+        let slot = match selected.selection {
+            ClientCredentialSelection::Active => "active",
+            ClientCredentialSelection::Next => "next",
+        };
+        println!("client credential at supplied time: {slot}");
+        println!(
+            "server credential at supplied time: {}",
+            accepted.map_or("none", |entry| entry.state.as_str())
+        );
+    }
     println!("selected credential: {credential}");
     println!("remote connection: unverified (offline)");
     ensure!(

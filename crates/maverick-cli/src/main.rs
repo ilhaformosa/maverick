@@ -123,6 +123,9 @@ enum Commands {
         client: PathBuf,
         #[arg(long)]
         server: PathBuf,
+        /// Evaluate credential selection and acceptance at this RFC3339 time.
+        #[arg(long, value_name = "RFC3339")]
+        at: Option<String>,
     },
     /// Dry-run config migration report. Does not rewrite files.
     MigrateConfig {
@@ -408,7 +411,16 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::CheckPair { client, server } => check_config::pair(&client, &server),
+        Commands::CheckPair { client, server, at } => {
+            let at = at
+                .as_deref()
+                .map(parse_rotation_timestamp)
+                .transpose()
+                .map_err(|_| {
+                    anyhow::anyhow!("--at requires an RFC3339 timestamp with a UTC offset")
+                })?;
+            check_config::pair(&client, &server, at)
+        }
         Commands::MigrateConfig { config, kind } => migrate_config(&config, &kind),
         Commands::KeyInventory { config, kind } => key_inventory(&config, &kind),
         Commands::RotateCredential {

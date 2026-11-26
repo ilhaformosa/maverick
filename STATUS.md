@@ -6,6 +6,21 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## Maverick 1.2.4
+
+1.2.4 delivers the file and clipboard import preview fix. Existing 1.2.3
+private YAML works with the new executable. Both supported native platforms
+passed the packaged profile checks, credential rollover, mixed-version
+transfers, upgrade and restoration. [Native qualification](ROADMAP.md#124-native-package-qualification)
+and [release notes](docs/releases/v1.2.4.md).
+
+Independent source review covered the 28 files changed between published
+1.2.3 and candidate `207b500` and found no release-blocking issue.
+Third-party records in all five Cargo lockfiles match 1.2.3. The local
+dependency inventory and the [candidate supply-chain checks](https://github.com/ilhaformosa/maverick/actions/runs/45907972921)
+passed. Qualification covers offline and loopback behavior. Field use and
+the 72-hour soak remain unverified.
+
 ## Development after 1.2.3
 
 The published 1.2.3 CLI reported `would_write: true` when previewing a

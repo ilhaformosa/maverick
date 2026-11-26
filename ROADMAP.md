@@ -1,11 +1,27 @@
 # Maverick Roadmap
 
-Date: 2026-11-24
+Date: 2026-11-27
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
-## Development after 1.2.2
+## Offline development from `fe7dfce`
+
+The previous three items are complete. Two operator decisions still require
+waiting for a live handshake or a scheduled change. The package matrix also
+stops one release short of the version users can install today.
+
+| Priority | Deliverable | Offline or loopback acceptance |
+|---|---|---|
+| 1 | Before restarting a protected H2 origin, check its staged public certificate chain with the client's inner trust settings. | Verify the configured CA, hostname, validity period and leaf pin using the live inner TLS verifier. Accept the original, renewed and restored matching pairs. Reject a stale pin, a wrong CA or name, an expired leaf and an unusable chain. Keep outer trust separate, read no server private key and omit private values from diagnostics. Cross-check the result against a protected H2 TCP/UDP loopback rotation. |
+| 2 | Let an operator check a staged client/server credential rotation at a specified time. | With two unchanged YAML files and no clock change, check immediately before and at the client switch, during the server overlap and at its exclusive end. Show the selected credential slot without its ID or secret. Reject a missing or disabled credential and an invalid timestamp. Preserve the existing check when no time is supplied. |
+| 3 | Qualify upgrades from the published 1.2.2 archives on native macOS and Linux x86_64. | Pin each public archive digest and its source revision. On each platform run the existing six-route, five-phase TCP/UDP matrix with 1.2.2, including both mixed directions, two-sided upgrade and byte-checked restoration. Keep the 1.2.0, 1.2.1 and separate Beta.4 gates. Identify same-version development builds by source revision. |
+
+Public-network reliability, provider interoperability and the 72-hour field
+soak need an authorized environment. Transport tuning remains deferred until
+an observed workload gives it a measurable goal.
+
+## Completed development after 1.2.2
 
 The plan starts from the 1.2.1 route and rollback results. The maintained
 baseline is [1.2.2](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.2),

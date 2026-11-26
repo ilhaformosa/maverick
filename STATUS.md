@@ -21,6 +21,13 @@ at one supplied instant. The CLI regression uses a fixed calendar, checks
 the beginning and end of overlap, evaluates an explicit UTC offset and checks
 an unswitched client at expiry. Only slot names and verdicts are reported.
 
+Both native package jobs now include published 1.2.2 alongside the two earlier
+stable baselines. Each baseline receives 30 loopback cases. The archive check
+pins the published digest and source commit, and checks the candidate against
+the build commit even when both binaries report the same version. The drill
+compares the installed programs and private YAML with their backups before
+testing the restored transfers. [Package drill](scripts/test-stable-patch-interop.sh).
+
 ## Maverick 1.2.2 dependency repair
 
 The November 23 [scheduled check](https://github.com/ilhaformosa/maverick/actions/runs/45105983365)

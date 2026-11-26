@@ -1,10 +1,19 @@
 # Maverick Status
 
-Date: 2026-11-24
+Date: 2026-11-27
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
+
+## Development rotation and upgrade checks
+
+The [staged origin check](CONFIG.md#check-a-protected-h2-origin-certificate-before-switching-clients)
+applies the protected H2 client's live certificate verifier to a public PEM
+chain offline. The rotation regression compared the file verdict with fresh
+TCP and UDP opens at five points: original, stale pin, updated pin, reverse
+mismatch and restoration. Matching pairs transferred traffic. Both mismatch
+cases stopped at inner TLS verification before either target received data.
 
 ## Maverick 1.2.2 dependency repair
 

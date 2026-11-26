@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -8,7 +8,7 @@ use boring::ssl::{SslConnector, SslMethod, SslVersion};
 use bytes::Bytes;
 use h2::client::SendRequest;
 use maverick_core::auth::{TlsChannelBinding, TLS_CHANNEL_BINDING_EXPORTER_LABEL};
-use maverick_core::config::TlsFingerprintMode;
+use maverick_core::config::{EndToEndClientConfig, TlsFingerprintMode};
 use maverick_core::ClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName, UnixTime};
@@ -374,8 +374,22 @@ where
 
 pub(crate) fn rustls_client_config(config: &ClientConfig) -> Result<rustls::ClientConfig> {
     crate::reject_retired_v1_h3(config)?;
+    let roots = rustls_roots(config.server.ca_cert.as_deref())?;
+    let builder = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
+    if let Some(pin) = &config.server.cert_pin {
+        let verifier = pinned_verifier(roots, pin)?;
+        Ok(builder
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth())
+    } else {
+        Ok(builder.with_root_certificates(roots).with_no_client_auth())
+    }
+}
+
+fn rustls_roots(ca_cert: Option<&Path>) -> Result<RootCertStore> {
     let mut roots = RootCertStore::empty();
-    if let Some(path) = &config.server.ca_cert {
+    if let Some(path) = ca_cert {
         let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
             .with_context(|| format!("open CA cert {}", path.display()))?
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -387,22 +401,57 @@ pub(crate) fn rustls_client_config(config: &ClientConfig) -> Result<rustls::Clie
     } else {
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
-    let builder = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
-    if let Some(pin) = &config.server.cert_pin {
-        let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
-            .build()
-            .context("build WebPKI verifier")?;
-        let verifier = Arc::new(PinnedServerVerifier {
-            inner: verifier,
-            expected_sha256: parse_cert_pin(pin)?,
-        });
-        Ok(builder
-            .dangerous()
-            .with_custom_certificate_verifier(verifier)
-            .with_no_client_auth())
-    } else {
-        Ok(builder.with_root_certificates(roots).with_no_client_auth())
-    }
+    Ok(roots)
+}
+
+fn pinned_verifier(roots: RootCertStore, pin: &str) -> Result<Arc<PinnedServerVerifier>> {
+    let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .context("build WebPKI verifier")?;
+    Ok(Arc::new(PinnedServerVerifier {
+        inner,
+        expected_sha256: parse_cert_pin(pin)?,
+    }))
+}
+
+/// Verify a staged public chain using the same trust roots, name and leaf pin
+/// that the protected H2 client uses for the inner TLS connection.
+pub fn check_origin_chain(origin: &EndToEndClientConfig, path: &Path) -> Result<()> {
+    let certs = CertificateDer::pem_file_iter(path)
+        .and_then(|iter| iter.collect::<std::result::Result<Vec<_>, _>>())
+        .map_err(|_| anyhow::anyhow!("cannot read staged origin certificate chain"))?;
+    let (leaf, intermediates) = certs
+        .split_first()
+        .context("empty staged origin certificate chain")?;
+    let name = ServerName::try_from(origin.server_name.as_str())
+        .map_err(|_| anyhow::anyhow!("invalid configured origin name"))?;
+    let roots = rustls_roots(origin.ca_cert.as_deref())
+        .map_err(|_| anyhow::anyhow!("cannot load configured origin trust roots"))?;
+    let verifier = pinned_verifier(roots, &origin.cert_pin)
+        .map_err(|_| anyhow::anyhow!("cannot configure origin certificate verification"))?;
+    verifier
+        .verify_server_cert(leaf, intermediates, &name, &[], UnixTime::now())
+        .map_err(|err| {
+            anyhow::anyhow!(match err {
+                RustlsError::InvalidCertificate(
+                    CertificateError::ApplicationVerificationFailure,
+                ) => "staged origin leaf pin mismatch",
+                RustlsError::InvalidCertificate(CertificateError::UnknownIssuer) =>
+                    "staged origin certificate chain is untrusted or incomplete",
+                RustlsError::InvalidCertificate(
+                    CertificateError::NotValidForName
+                    | CertificateError::NotValidForNameContext { .. },
+                ) => "staged origin certificate name mismatch",
+                RustlsError::InvalidCertificate(
+                    CertificateError::Expired
+                    | CertificateError::ExpiredContext { .. }
+                    | CertificateError::NotValidYet
+                    | CertificateError::NotValidYetContext { .. },
+                ) => "staged origin certificate outside its validity period",
+                _ => "staged origin certificate verification failed",
+            })
+        })?;
+    Ok(())
 }
 
 pub(crate) fn parse_cert_pin(pin: &str) -> Result<[u8; 32]> {

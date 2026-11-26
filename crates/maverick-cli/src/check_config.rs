@@ -12,17 +12,37 @@ const BUILD_TRANSPORTS: &str = if cfg!(feature = "experimental-h3") {
 
 /// Only fixed descriptions leave this command. File and YAML errors can contain
 /// private paths or excerpts, so detailed diagnostics stay in plain check-config.
-pub(super) fn report(path: &Path, kind: &str, explain: bool, check_tls: bool) -> Result<()> {
+pub(super) fn report(
+    path: &Path,
+    kind: &str,
+    explain: bool,
+    check_tls: bool,
+    origin_cert: Option<&Path>,
+) -> Result<()> {
     ensure!(
         !check_tls || kind == "server",
         "--check-tls requires --kind server"
+    );
+    ensure!(
+        origin_cert.is_none() || kind == "client",
+        "--origin-cert requires --kind client"
     );
     let yaml = read_private_yaml(path)?;
     let rejected = |_| {
         anyhow!("configuration rejected (compiled direct transports: {BUILD_TRANSPORTS}). Run plain check-config locally for details")
     };
     let (route, udp) = match kind {
-        "client" => client_policy(&ClientConfig::from_yaml_str(&yaml).map_err(rejected)?)?,
+        "client" => {
+            let config = ClientConfig::from_yaml_str(&yaml).map_err(rejected)?;
+            let policy = client_policy(&config)?;
+            if let Some(chain) = origin_cert {
+                let origin = config.advanced.end_to_end.as_ref().ok_or_else(|| {
+                    anyhow!("--origin-cert requires a protected H2 client configuration")
+                })?;
+                maverick_client::h2_transport::check_origin_chain(origin, chain)?;
+            }
+            policy
+        }
         "server" => {
             let config = ServerConfig::from_yaml_str(&yaml).map_err(rejected)?;
             let policy = server_policy(&config)?;
@@ -38,6 +58,9 @@ pub(super) fn report(path: &Path, kind: &str, explain: bool, check_tls: bool) ->
         println!("UDP: {udp}");
         println!("compiled direct transports: {BUILD_TRANSPORTS}");
         println!("remote connection: unverified (offline)");
+    }
+    if origin_cert.is_some() {
+        println!("staged origin certificate chain, name, validity and leaf pin: OK (offline)");
     }
     if check_tls {
         println!("server TLS certificate chain and private key: OK (offline)");

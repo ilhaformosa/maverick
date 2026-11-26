@@ -51,12 +51,22 @@ fn parse_server(yaml: &str) -> Result<ServerConfig> {
 
 async fn exercise(
     client_path: &Path,
+    origin_chain: &Path,
     tcp: &TcpListener,
     udp: &UdpSocket,
     matched: bool,
 ) -> Result<()> {
     // A fresh connector forces an inner TLS handshake for each configuration.
     let config = parse_client(&fs::read_to_string(client_path)?)?;
+    let inner = config
+        .advanced
+        .end_to_end
+        .as_ref()
+        .context("missing protected H2 settings")?;
+    ensure!(
+        maverick_client::h2_transport::check_origin_chain(inner, origin_chain).is_ok() == matched,
+        "staged certificate verdict differed from the expected handshake"
+    );
     let connector = ProxyConnector::new(config)?;
     let target = TargetAddr::Ipv4(Ipv4Addr::LOCALHOST);
     let stream = connector
@@ -198,7 +208,7 @@ async fn protected_h2_origin_certificate_rotation_and_rollback() -> Result<()> {
         }
         let tcp = TcpListener::bind(loopback).await?;
         let udp = UdpSocket::bind(loopback).await?;
-        exercise(client.path(), &tcp, &udp, true)
+        exercise(client.path(), cert.path(), &tcp, &udp, true)
             .await
             .context("original pair")?;
         origin.shutdown().await?;
@@ -206,7 +216,7 @@ async fn protected_h2_origin_certificate_rotation_and_rollback() -> Result<()> {
         let load_server =
             || -> Result<ServerConfig> { parse_server(&fs::read_to_string(server_file.path())?) };
         origin = maverick_server::start_server(load_server()?).await?;
-        exercise(client.path(), &tcp, &udp, false)
+        exercise(client.path(), cert.path(), &tcp, &udp, false)
             .await
             .context("old pin against replacement")?;
         ensure!(original_client.matches(&original.pin).count() == 1);
@@ -214,7 +224,7 @@ async fn protected_h2_origin_certificate_rotation_and_rollback() -> Result<()> {
             client.path(),
             original_client.replacen(&original.pin, &replacement.pin, 1),
         )?;
-        exercise(client.path(), &tcp, &udp, true)
+        exercise(client.path(), cert.path(), &tcp, &udp, true)
             .await
             .context("replacement pair")?;
         origin.shutdown().await?;
@@ -227,7 +237,7 @@ async fn protected_h2_origin_certificate_rotation_and_rollback() -> Result<()> {
             "original certificate/key bytes were not restored"
         );
         origin = maverick_server::start_server(load_server()?).await?;
-        exercise(client.path(), &tcp, &udp, false)
+        exercise(client.path(), cert.path(), &tcp, &udp, false)
             .await
             .context("replacement pin against restored origin")?;
         fs::copy(client_backup.path(), client.path())?;
@@ -236,7 +246,7 @@ async fn protected_h2_origin_certificate_rotation_and_rollback() -> Result<()> {
                 && fs::read_to_string(server_file.path())? == server_yaml,
             "original config bytes were not restored"
         );
-        exercise(client.path(), &tcp, &udp, true)
+        exercise(client.path(), cert.path(), &tcp, &udp, true)
             .await
             .context("restored pair")?;
         drop(relay);

@@ -917,6 +917,24 @@ descriptions and omits private values and file paths. The check reads only the
 two YAML files. DNS, certificate trust, origin pins, the carrier a live session
 uses and delivery to a target require separate verification.
 
+### Check a protected H2 origin certificate before switching clients
+
+On the client machine, use a development build after 1.2.2 and the public
+chain intended for the origin. Put the leaf first, followed by any intermediate
+certificates. Run from the client's usual working directory so relative CA
+paths resolve as they will at startup.
+
+```sh
+maverick check-config --kind client -c staged-client.yaml --origin-cert replacement-chain.pem
+```
+
+The check applies the inner CA roots, hostname and leaf pin from
+`advanced.end_to_end` and the current time. It needs only the client's YAML,
+its configured origin CA file (if present) and the public chain. A mismatch
+returns a nonzero exit code with a fixed diagnostic. The certificate the
+running origin actually serves and its possession of the matching private key
+are established during a fresh connection.
+
 ### Check server certificate files before restarting
 
 In development builds after 1.2.2, run this command as the service account

@@ -628,7 +628,7 @@ auth:
 ```
 
 When `auto_switch` is false, the client always uses `server.credential_id` and
-`server.secret`. When it is true, the client switches only after
+`server.secret`. When it is true, the client switches at or after
 `auth.rotation.next.not_before`. The next secret is sensitive and diagnostic
 commands must redact it.
 
@@ -916,6 +916,21 @@ against an enabled server user. A mismatch exits nonzero. Output uses fixed
 descriptions and omits private values and file paths. The check reads only the
 two YAML files. DNS, certificate trust, origin pins, the carrier a live session
 uses and delivery to a target require separate verification.
+
+To rehearse a scheduled rotation, add an RFC3339 time with an explicit offset.
+Use the staging files for the point in the rollout you want to test.
+
+```sh
+maverick check-pair --client staged-client.yaml --server staged-server.yaml --at 2030-04-01T00:30:00Z
+```
+
+The extra lines identify the client slot (`active` or `next`) and the enabled
+server slot found for that ID (`active`, `previous` or `none`). The separate
+credential verdict includes the secret comparison. Check both a rotating
+client and a client still using the old credential. The switch and the start
+of a previous-credential window are inclusive. Its end is exclusive. The
+runtime evaluates whole Unix seconds. The supplied time applies only to
+credentials in this command. Omitting it uses the current clock.
 
 ### Check a protected H2 origin certificate before switching clients
 

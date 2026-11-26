@@ -15,6 +15,12 @@ TCP and UDP opens at five points: original, stale pin, updated pin, reverse
 mismatch and restoration. Matching pairs transferred traffic. Both mismatch
 cases stopped at inner TLS verification before either target received data.
 
+[`check-pair --at`](CONFIG.md#compare-a-client-and-server-configuration-offline)
+rehearses the client's credential switch and the server's acceptance window
+at one supplied instant. The CLI regression uses a fixed calendar, checks
+the beginning and end of overlap, evaluates an explicit UTC offset and checks
+an unswitched client at expiry. Only slot names and verdicts are reported.
+
 ## Maverick 1.2.2 dependency repair
 
 The November 23 [scheduled check](https://github.com/ilhaformosa/maverick/actions/runs/45105983365)

@@ -1124,3 +1124,116 @@ async fn offline_pair_redacts_read_and_parse_errors() -> Result<()> {
     )
     .await
 }
+
+#[tokio::test]
+async fn check_staged_origin_chain_with_only_inner_trust() -> Result<()> {
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
+    let dir = TempDir::new()?;
+    let work = dir.path();
+    let ca_params = |name| -> Result<CertificateParams> {
+        let mut p = CertificateParams::new(Vec::<String>::new())?;
+        p.distinguished_name.push(DnType::CommonName, name);
+        p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        Ok(p)
+    };
+    let ca = ca_params("test root")?;
+    let key = KeyPair::generate()?;
+    private_file(&work.join("private-ca.pem"), &ca.self_signed(&key)?.pem())?;
+    let ca = Issuer::from_params(&ca, key);
+    let intermediate = ca_params("test intermediate")?;
+    let key = KeyPair::generate()?;
+    let issuer_pem = intermediate.signed_by(&key, &ca)?.pem();
+    let issuer = Issuer::from_params(&intermediate, key);
+    let name = "private-origin.invalid";
+    let leaf_params = CertificateParams::new(vec![name.into()])?;
+    let key = KeyPair::generate()?;
+    let leaf = leaf_params.signed_by(&key, &issuer)?;
+    let chain_path = work.join("private-chain.pem");
+    let chain = leaf.pem() + &issuer_pem;
+    private_file(&chain_path, &chain)?;
+    let pin = cli(work, &["pin-cert", "--cert", "private-chain.pem"], None).await?;
+    ensure!(pin.status.success());
+    let pin = String::from_utf8(pin.stdout)?;
+    let client = client_yaml(&SecretString::generate());
+    let yaml = format!("{client}  ca_cert: private-outer.pem\nadvanced:\n  end_to_end:\n    server_name: {name}\n    ca_cert: private-ca.pem\n    cert_pin: '{}'\n", pin.trim());
+    let config_path = work.join("private-client.yaml");
+    private_file(&config_path, &yaml)?;
+    let args = [
+        "check-config",
+        "--kind",
+        "client",
+        "-c",
+        "private-client.yaml",
+        "--origin-cert",
+        "private-chain.pem",
+    ];
+    let output = cli(work, &args, None).await?;
+    ensure!(
+        output.status.success()
+            && output.stdout
+                == b"staged origin certificate chain, name, validity and leaf pin: OK (offline)\n"
+            && output.stderr.is_empty()
+    );
+    ensure!(fs::read_to_string(&config_path)? == yaml && fs::read_to_string(&chain_path)? == chain);
+    let other = rcgen::generate_simple_self_signed(vec![name.into()])?;
+    private_file(&work.join("private-wrong.pem"), &other.cert.pem())?;
+    for (input, error) in [
+        (
+            yaml.replace(name, "different.invalid"),
+            "staged origin certificate name mismatch",
+        ),
+        (
+            yaml.replace(
+                pin.trim(),
+                "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ),
+            "staged origin leaf pin mismatch",
+        ),
+        (
+            yaml.replace("private-outer.pem", "private-ca.pem").replace(
+                "    ca_cert: private-ca.pem",
+                "    ca_cert: private-wrong.pem",
+            ),
+            "staged origin certificate chain is untrusted or incomplete",
+        ),
+        (
+            yaml.replace("private-ca.pem", "missing.pem"),
+            "cannot load configured origin trust roots",
+        ),
+        (
+            client,
+            "--origin-cert requires a protected H2 client configuration",
+        ),
+    ] {
+        fs::write(&config_path, &input)?;
+        expect_check_error(work, &args, error).await?;
+        ensure!(fs::read_to_string(&config_path)? == input);
+    }
+    fs::write(&config_path, &yaml)?;
+    let mut expired = leaf_params;
+    expired.not_after = rcgen::date_time_ymd(2001, 1, 1);
+    fs::write(
+        &chain_path,
+        expired.signed_by(&key, &issuer)?.pem() + &issuer_pem,
+    )?;
+    expect_check_error(
+        work,
+        &args,
+        "staged origin certificate outside its validity period",
+    )
+    .await?;
+    fs::write(&chain_path, leaf.pem())?;
+    expect_check_error(
+        work,
+        &args,
+        "staged origin certificate chain is untrusted or incomplete",
+    )
+    .await?;
+    fs::write(&chain_path, "")?;
+    expect_check_error(work, &args, "empty staged origin certificate chain").await?;
+    fs::remove_file(&chain_path)?;
+    expect_check_error(work, &args, "cannot read staged origin certificate chain").await?;
+    let mut server_args = args;
+    server_args[2] = "server";
+    expect_check_error(work, &server_args, "--origin-cert requires --kind client").await
+}

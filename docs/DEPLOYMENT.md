@@ -161,7 +161,10 @@ outer endpoint and its trust settings stay fixed throughout.
    `advanced.end_to_end.cert_pin`. The outer `server.cert_pin` identifies a
    different TLS endpoint. Run `check-config` on the staged files. With the
    development CLI, also run `check-config --kind server --check-tls -c staged-server.yaml`
-   against the replacement files before stopping the running origin.
+   against the replacement files before stopping the running origin. On the
+   client, run `maverick check-config --kind client -c staged-client.yaml --origin-cert replacement-chain.pem`
+   to verify the public chain with the staged inner CA, hostname and pin. Keep
+   the server private key at the origin.
 3. Coordinate the restart. Stop the origin, install the replacement chain
    and key together, and start it on the original listener. Restart clients
    with the staged YAML to force fresh handshakes. Test TCP bytes in both

@@ -113,6 +113,9 @@ enum Commands {
         /// Load the configured server TLS certificate chain and matching private key offline.
         #[arg(long)]
         check_tls: bool,
+        /// Verify a staged public origin chain against a protected H2 client's inner TLS settings.
+        #[arg(long, conflicts_with = "check_tls")]
+        origin_cert: Option<PathBuf>,
     },
     /// Compare a client and server YAML pair offline without printing private values.
     CheckPair {
@@ -381,9 +384,16 @@ async fn main() -> Result<()> {
             kind,
             explain,
             check_tls,
+            origin_cert,
         } => {
-            if explain || check_tls {
-                return check_config::report(&config, &kind, explain, check_tls);
+            if explain || check_tls || origin_cert.is_some() {
+                return check_config::report(
+                    &config,
+                    &kind,
+                    explain,
+                    check_tls,
+                    origin_cert.as_deref(),
+                );
             }
             match kind.as_str() {
                 "client" => {

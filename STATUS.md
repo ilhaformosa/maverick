@@ -6,6 +6,15 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## Maverick 1.2.3
+
+1.2.3 packages the offline server TLS file check, protected H2 origin-chain
+verification, client/server pair comparison and scheduled credential rehearsal.
+The archived CLI and mixed-version upgrade and restore results are recorded
+in the [native package qualification](ROADMAP.md#123-native-package-qualification).
+See the [release notes and commands](docs/releases/v1.2.3.md) for operator use.
+Field operation and the 72-hour soak remain unverified.
+
 ## Development rotation and upgrade checks
 
 The [staged origin check](CONFIG.md#check-a-protected-h2-origin-certificate-before-switching-clients)

@@ -7,9 +7,10 @@ contains the execution order, not a second history of completed pull requests.
 
 ## Offline rotation and current-release qualification
 
-This phase starts from `fe7dfce`. The previous three items are complete. Two operator decisions still require
-waiting for a live handshake or a scheduled change. The package matrix also
-stops one release short of the version users can install today.
+At `fe7dfce`, the previous three items were complete. Checking a replacement
+origin certificate still required a handshake, and a credential change could
+only be checked at the current time. The package matrix covered upgrades from
+1.2.0 and 1.2.1. This phase adds tests for all three gaps.
 
 | Priority | Deliverable | Offline or loopback acceptance |
 |---|---|---|

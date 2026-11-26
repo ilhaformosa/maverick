@@ -12,11 +12,24 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 async fn cli(directory: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Output> {
+    cli_with_path(directory, args, input, None).await
+}
+
+async fn cli_with_path(
+    directory: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    search_path: Option<&Path>,
+) -> Result<Output> {
     timeout(Duration::from_secs(30), async {
         // The native package drill supplies the executable extracted from its verified archive.
         let binary = std::env::var_os("MAVERICK_CANDIDATE_CLI")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_maverick").into());
-        let mut child = Command::new(binary)
+        let mut command = Command::new(binary);
+        if let Some(path) = search_path {
+            command.env("PATH", path);
+        }
+        let mut child = command
             .args(args)
             .current_dir(directory)
             .env_remove("RUST_LOG")
@@ -1437,5 +1450,54 @@ async fn profile_import_preview_checks_the_requested_output() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         ensure!(fs::metadata(work.join("new.yaml"))?.permissions().mode() & 0o777 == 0o600);
     }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn profile_clipboard_preview_preserves_link_until_file_import() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new()?;
+    let work = dir.path();
+    let (read, clear) = if cfg!(target_os = "macos") {
+        ("pbpaste", "pbcopy")
+    } else {
+        ("wl-paste", "wl-copy")
+    };
+    // Restrict PATH for this CLI child so it can only reach the test clipboard.
+    for (name, command) in [(read, "/bin/cat clipboard"), (clear, ": > clipboard")] {
+        let path = work.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{command}\n"))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    let secret = SecretString::generate();
+    let uri = format!(
+        "maverick://profile/v1?server=example.invalid%3A443&name=example.invalid&path=%2Fexample&mode=auto&credential_id=test-user&secret={}",
+        secret.expose_secret()
+    );
+    let clipboard = work.join("clipboard");
+    private_file(&clipboard, &uri)?;
+    private_file(&work.join("occupied.yaml"), "keep")?;
+    for (args, success) in [
+        (vec!["--dry-run", "--output", "client.yaml"], true),
+        (vec!["--output", "occupied.yaml"], false),
+        (vec!["--output", "client.yaml"], true),
+    ] {
+        let mut command = vec!["config-uri", "import", "--clipboard"];
+        command.extend(args);
+        let result = cli_with_path(work, &command, None, Some(work)).await?;
+        ensure!(result.status.success() == success);
+        for output in [result.stdout, result.stderr] {
+            ensure!(!String::from_utf8(output)?.contains(secret.expose_secret()));
+        }
+        if command.contains(&"--dry-run") || !success {
+            ensure!(fs::read_to_string(&clipboard)? == uri && !work.join("client.yaml").exists());
+        }
+    }
+    ensure!(fs::read(&clipboard)?.is_empty());
+    ensure!(fs::read_to_string(work.join("occupied.yaml"))? == "keep");
+    let cfg = ClientConfig::from_yaml_str(&fs::read_to_string(work.join("client.yaml"))?)?;
+    ensure!(cfg.server.secret == secret);
     Ok(())
 }

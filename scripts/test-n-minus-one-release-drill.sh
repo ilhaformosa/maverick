@@ -530,7 +530,7 @@ if [[ -z "$candidate_version" ]]; then
   candidate_version="$(awk -F'"' '/^version =/ {print $2; exit}' "$repo_root/Cargo.toml")"
 fi
 case "$candidate_version" in
-  1.2.0-rc.[4-7] | 1.2.[0123]) ;;
+  1.2.0-rc.[4-7] | 1.2.[01234]) ;;
   *) fail ;;
 esac
 readonly CANDIDATE_VERSION="$candidate_version"

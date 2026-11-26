@@ -50,6 +50,20 @@ configured routes and compiled transports. For live SOCKS UDP diagnostics,
 start the client with --diagnose-udp. It reports the configured choices, the
 admitted carrier and whether it observed a target reply.
 
+Preview a profile import
+
+Read a link from an existing private file containing only the URI. Run
+this preview before creating the client configuration.
+
+./maverick config-uri import --uri - --dry-run --output client.yaml < private-profile.uri
+
+The preview checks the link and destination, leaves the file unwritten
+and hides the secret in its report. Omit
+--output to inspect a link that has no secret. To create the file, run the
+command again without --dry-run using the complete link.
+With --clipboard, a preview or failed import keeps the link available.
+A successful file import attempts to clear it. Keep the summary private.
+
 Offline checks before a change
 
 If you already hold both private YAML files, compare the carriers,

@@ -6,12 +6,12 @@ browser-equivalence claim.
 
 Download the archive, SHA-256 checksum and software bill of materials (SBOM)
 for your platform from [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
-Select the entry tagged `v1.2.3` for the stable build.
+Select the entry tagged `v1.2.4` for the stable build.
 Use `aarch64-apple-darwin` for Apple Silicon macOS and `x86_64-unknown-linux-gnu`
 for Linux x86_64. Each archive includes the CLI and `START_HERE.txt`.
 For the Rust SDK, use the release tag that matches your CLI archive.
 
-The maintainer deferred pre-release field testing for 1.2.3. Real-network
+The maintainer deferred pre-release field testing for 1.2.4. Real-network
 interoperability, operational rollback and the planned 72-hour soak remain
 unverified for this version. See the [current release status](STATUS.md).
 
@@ -55,6 +55,11 @@ Before handing off a pair of files, use `maverick check-pair --client client.yam
 --server server.yaml`. Add `--at` to rehearse a scheduled credential switch.
 Version 1.2.3 also checks the staged server certificate and key, or a protected
 H2 client's public origin chain, before restart. [Offline checks](CONFIG.md#validation).
+
+Use `maverick config-uri import --uri - --dry-run --output client.yaml`
+to check a profile before importing it. The preview leaves the file unwritten
+and preserves clipboard input when you use `--clipboard` in place of `--uri -`.
+[Profile import](CONFIG.md#profile-uri-v1-sharing-and-parser-boundary).
 
 For a running client, use `maverick client --diagnose-udp -c client.yaml` in
 1.2.1 to see which SOCKS UDP carrier was admitted and whether

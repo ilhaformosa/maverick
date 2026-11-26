@@ -9,6 +9,17 @@ independently reviewing and testing Stable tooling before field qualification,
 while freezing protocol/SDK scope. This does not move the publication decision
 or authorize a release tag, deployment or GitHub Release.
 
+## Owner decision for patch 1.2.4
+
+The owner authorized delivery of the profile import preview fix from
+`fae7fa3` after qualifying the packaged CLI on Apple Silicon macOS and
+native Linux x86_64. Exercise import previews, credential rollover and
+mixed peers with published 1.2.3, then upgrade and restore saved programs
+and private configurations and verify TCP and UDP traffic on loopback.
+Merge the reviewed PR and publish the six files from the qualified main
+commit using the existing exact-commit approval and annotated tag.
+Real-network trials and the 72-hour field soak remain deferred.
+
 ## Owner decision for patch 1.2.3
 
 On November 27 the owner authorized a 1.2.3 release from `fbb6db1` after

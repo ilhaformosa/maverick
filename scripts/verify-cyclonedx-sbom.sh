@@ -321,7 +321,7 @@ if [[ "$verification_level" == "full" ]]; then
 
   metadata_features="maverick-cli/browser-tls"
   root_features='["browser-tls"]'
-  if [[ "$expected_version" == 1.2.0-rc.[3-7] || "$expected_version" == 1.2.[0123] ]]; then
+  if [[ "$expected_version" == 1.2.0-rc.[3-7] || "$expected_version" == 1.2.[01234] ]]; then
     metadata_features="maverick-cli/experimental-h3"
     root_features='["browser-tls","experimental-h3"]'
   fi

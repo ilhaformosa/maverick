@@ -6,7 +6,7 @@ export LC_ALL=C
 # an exact-revision owner approval in the publication workflow.
 [[ $# -eq 1 ]] || { echo "release channel verification failed" >&2; exit 1; }
 version="$1"
-if [[ "$version" == 1.2.[012] ]]; then
+if [[ "$version" == 1.2.[0123] ]]; then
   echo stable
 elif [[ "$version" =~ ^1\.2\.0-beta\.[1-9][0-9]*$ ]]; then
   echo beta

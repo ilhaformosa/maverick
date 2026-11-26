@@ -9,6 +9,16 @@ independently reviewing and testing Stable tooling before field qualification,
 while freezing protocol/SDK scope. This does not move the publication decision
 or authorize a release tag, deployment or GitHub Release.
 
+## Owner decision for patch 1.2.3
+
+On November 27 the owner authorized a 1.2.3 release from `fbb6db1` after
+native macOS and Linux x86_64 package qualification, PR merge and exact-commit
+verification. Exercise the offline configuration and rotation commands using
+the executable extracted from each candidate archive. Use published 1.2.2
+for mixed peers, upgrade and restoration on loopback. Retain the earlier
+Stable and Beta.4 drills. The decision covers the annotated tag and publication
+of the six verified files. Field operation and the 72-hour soak remain deferred.
+
 ## Owner decision for dependency patch 1.2.2
 
 On November 24 the owner delegated the decision to release the dependency fix.

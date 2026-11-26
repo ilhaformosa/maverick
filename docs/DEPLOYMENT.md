@@ -1,13 +1,13 @@
 # Server deployment preparation
 
-This runbook covers the Maverick 1.2.2 Linux server. The maintainer deferred
+This runbook covers the Maverick 1.2.3 Linux server. The maintainer deferred
 field validation for this release. Deployment requires a separately authorized
 environment.
 
 ## Select and verify the build
 
 Download the archive, checksum and matching `.cdx.json` software bill of
-materials from the entry tagged `v1.2.2` on [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
+materials from the entry tagged `v1.2.3` on [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
 Select `aarch64-apple-darwin` for Apple Silicon macOS or
 `x86_64-unknown-linux-gnu` for Linux x86_64. The `pilot` segment in the
 filename is retained for compatibility.
@@ -16,16 +16,16 @@ For example, on Linux run the following in the download directory. Extract
 into an empty directory after the first check succeeds.
 
 ```sh
-sha256sum -c maverick-1.2.2-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256 &&
-mkdir maverick-1.2.2 &&
-tar -xzf maverick-1.2.2-pilot-x86_64-unknown-linux-gnu.tar.gz -C maverick-1.2.2 &&
-cd maverick-1.2.2/maverick-pilot &&
+sha256sum -c maverick-1.2.3-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256 &&
+mkdir maverick-1.2.3 &&
+tar -xzf maverick-1.2.3-pilot-x86_64-unknown-linux-gnu.tar.gz -C maverick-1.2.3 &&
+cd maverick-1.2.3/maverick-pilot &&
 sha256sum -c SHA256SUMS
 ```
 
 On macOS use the Apple Silicon filename and `shasum -a 256 -c` for both checks.
-In `SOURCE.txt`, check the target and version (`1.2.2`). Compare the full
-`git_revision` to the output of `git rev-parse 'v1.2.2^{commit}'` in a source
+In `SOURCE.txt`, check the target and version (`1.2.3`). Compare the full
+`git_revision` to the output of `git rev-parse 'v1.2.3^{commit}'` in a source
 checkout containing the release tag. Use that commit for SDK clients.
 
 For a local source-build check on Linux x86_64, run:
@@ -107,8 +107,7 @@ sudo systemctl status maverick.service
 sudo journalctl -u maverick.service --since '5 minutes ago'
 ```
 
-Plain `check-config` validates the YAML and its policy. Development builds
-after 1.2.2 also support `--check-tls` to load the configured server chain
+Plain `check-config` validates the YAML and its policy. Version 1.2.3 also supports `--check-tls` to load the configured server chain
 and key before a restart. Run it as the service user from the unit's
 `WorkingDirectory` (`/etc/maverick`). Server startup loads the TLS identity
 before announcing listener readiness. [Offline file check](../CONFIG.md#check-server-certificate-files-before-restarting).
@@ -160,7 +159,7 @@ outer endpoint and its trust settings stay fixed throughout.
    file, with the leaf first. Stage the new client YAML by changing only
    `advanced.end_to_end.cert_pin`. The outer `server.cert_pin` identifies a
    different TLS endpoint. Run `check-config` on the staged files. With the
-   development CLI, also run `check-config --kind server --check-tls -c staged-server.yaml`
+   1.2.3 CLI, also run `check-config --kind server --check-tls -c staged-server.yaml`
    against the replacement files before stopping the running origin. On the
    client, run `maverick check-config --kind client -c staged-client.yaml --origin-cert replacement-chain.pem`
    to verify the public chain with the staged inner CA, hostname and pin. Keep

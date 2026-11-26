@@ -159,7 +159,7 @@ compile_fixture_binary() {
     printf '%s\n' "#define FIXTURE_MODE $mode"
     printf '%s\n' "#define MARKER_PATH \"$marker_path\""
     printf '%s\n' "#define FIXTURE_VERSION \"$version\""
-    if [[ "$version" == 1.2.0-rc.[3-7] || "$version" == 1.2.[012] ]]; then
+    if [[ "$version" == 1.2.0-rc.[3-7] || "$version" == 1.2.[0123] ]]; then
       echo '#define FULL_PROFILE 1'
     else
       echo '#define FULL_PROFILE 0'
@@ -241,7 +241,7 @@ make_payload() {
     "source_state: clean" \
     "version: $version" \
     "target: $target" >"$root/SOURCE.txt"
-  if [[ "$version" == 1.2.0-rc.[3-7] || "$version" == 1.2.[012] ]]; then
+  if [[ "$version" == 1.2.0-rc.[3-7] || "$version" == 1.2.[0123] ]]; then
   sed -n "/^cat >.*START_HERE\\.txt.*<<'GUIDE'$/,/^GUIDE$/p" \
     "$repo_root/scripts/build-pilot.sh" |
     sed '1d;$d' >"$root/START_HERE.txt"
@@ -251,10 +251,12 @@ make_payload() {
   if [[ "$version" == "1.2.0" ]]; then
     cp "$repo_root/crates/maverick-tests/fixtures/release/START_HERE.1.2.0.txt" "$root/START_HERE.txt"
   elif [[ "$version" == 1.2.[12] ]]; then
+    cp "$repo_root/crates/maverick-tests/fixtures/release/START_HERE.1.2.1.txt" "$root/START_HERE.txt"
+  elif [[ "$version" == 1.2.3 ]]; then
     cp "$repo_root/docs/STABLE_START_HERE.txt" "$root/START_HERE.txt"
   fi
   local features="$FEATURES_LINE"
-  if [[ "$version" == 1.2.0-rc.[3-7] || "$version" == 1.2.[012] ]]; then features+=",udp-sessions,udp-policy,quiche-h3"; fi
+  if [[ "$version" == 1.2.0-rc.[3-7] || "$version" == 1.2.[0123] ]]; then features+=",udp-sessions,udp-policy,quiche-h3"; fi
   printf '%s\n' \
     "maverick $version" \
     "protocol_version: 1" \
@@ -954,7 +956,10 @@ publication_case 1.2.1 "$TEST_REVISION" stable
 publication_case 1.2.2 '' denied
 publication_case 1.2.2 2222222222222222222222222222222222222222 denied
 publication_case 1.2.2 "$TEST_REVISION" stable
-publication_case 1.2.3 "$TEST_REVISION" denied
+publication_case 1.2.3 '' denied
+publication_case 1.2.3 2222222222222222222222222222222222222222 denied
+publication_case 1.2.3 "$TEST_REVISION" stable
+publication_case 1.2.4 "$TEST_REVISION" denied
 publication_case 1.2.0+build "$TEST_REVISION" denied
 
 trace_test qualification-index-lag-and-publication
@@ -1110,20 +1115,20 @@ expect_artifact_pass positive-native "$current_archive" "$current_target" native
 
 for supported_version in \
   "$TEST_BETA_ONE_VERSION" "$TEST_BETA_MULTIDIGIT_VERSION" \
-  "$TEST_RC_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0-rc.3" "1.2.0-rc.4" "1.2.0-rc.5" "1.2.0-rc.6" "1.2.0-rc.7" "1.2.0" "1.2.1" "1.2.2"; do
+  "$TEST_RC_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0-rc.3" "1.2.0-rc.4" "1.2.0-rc.5" "1.2.0-rc.6" "1.2.0-rc.7" "1.2.0" "1.2.1" "1.2.2" "1.2.3"; do
   supported_binary="$test_root/native-maverick-$supported_version"
   compile_fixture_binary "$supported_binary" 0 "" "$supported_version"
   new_artifact_case "supported-$supported_version" "$supported_binary" \
     "$native_target" "$supported_version"
   expect_artifact_pass "supported-$supported_version-static" \
     "$current_archive" "$current_target" static "$supported_version"
-  if [[ "$supported_version" == "$TEST_RC_VERSION" || "$supported_version" == 1.2.0-rc.[3-7] || "$supported_version" == 1.2.[012] ]]; then
+  if [[ "$supported_version" == "$TEST_RC_VERSION" || "$supported_version" == 1.2.0-rc.[3-7] || "$supported_version" == 1.2.[0123] ]]; then
     expect_artifact_pass "supported-$supported_version-native" \
       "$current_archive" "$current_target" native "$supported_version"
   fi
 done
 
-for full_candidate_version in 1.2.0-rc.3 1.2.0-rc.4 1.2.0-rc.5 1.2.0-rc.6 1.2.0-rc.7 1.2.0 1.2.1 1.2.2; do
+for full_candidate_version in 1.2.0-rc.3 1.2.0-rc.4 1.2.0-rc.5 1.2.0-rc.6 1.2.0-rc.7 1.2.0 1.2.1 1.2.2 1.2.3; do
   for full_candidate_mode in 7 8 9; do
     full_candidate_label="full-candidate-$full_candidate_version-$full_candidate_mode"
     full_candidate_binary="$test_root/$full_candidate_label"
@@ -1685,7 +1690,7 @@ expect_tag_pass annotated-rc-main "$tag_repo" "v$TEST_RC_VERSION" \
   "$second_commit" "$TEST_RC_VERSION" main
 
 for release_version in \
-  "$TEST_BETA_MULTIDIGIT_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0" "1.2.1" "1.2.2"; do
+  "$TEST_BETA_MULTIDIGIT_VERSION" "$TEST_RC_MULTIDIGIT_VERSION" "1.2.0" "1.2.1" "1.2.2" "1.2.3"; do
   git -C "$tag_repo" tag -a "v$release_version" \
     -m "annotated multi-digit fixture" "$second_commit"
   expect_tag_pass "annotated-$release_version" "$tag_repo" \

@@ -45,10 +45,36 @@ certificate path before use, then validate both:
 ./maverick check-config --kind server -c server.generated.yaml
 ./maverick check-config --kind client -c client.generated.yaml
 
-With 1.2.1, add --explain to either command for an offline description of the
+Add --explain to either command for an offline description of the
 configured routes and compiled transports. For live SOCKS UDP diagnostics,
 start the client with --diagnose-udp. It reports the configured choices, the
 admitted carrier and whether it observed a target reply.
+
+Offline checks before a change
+
+If you already hold both private YAML files, compare the carriers,
+protection settings and selected credential before handoff:
+
+./maverick check-pair --client client.yaml --server server.yaml
+
+To rehearse a credential change, add --at with the intended RFC3339 time.
+For example, --at 2030-04-01T00:30:00Z checks which credential each side
+would use then. Verify both sides of the switch and the end of the overlap.
+
+On the server, load the staged certificate chain and matching private key
+before restarting. Run from the service's normal working directory:
+
+./maverick check-config --kind server -c server.yaml --check-tls
+
+For a protected H2 client, check a replacement public origin chain (leaf
+first) against the configured inner CA, hostname, validity and leaf pin:
+
+./maverick check-config --kind client -c client.yaml --origin-cert replacement-chain.pem
+
+These checks read local files. A fresh connection and a reply from your
+target are still needed to confirm a transfer.
+
+Transport options
 
 This full build includes H2 and H3. New direct configs select a dual H2/H3
 server and an automatic client. UDP defaults to allow_reliable: prefer native

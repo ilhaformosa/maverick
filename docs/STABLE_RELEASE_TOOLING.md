@@ -5,6 +5,15 @@ This task prepares and independently reviews release tooling with local/CI
 verification. It does not authorize field use, deployment, a release tag, a
 GitHub Release, or setting a publication approval.
 
+## Stable patch 1.2.3
+
+Both native jobs run the CLI configuration tests against the executable
+extracted from the candidate archive during the published 1.2.2 drill.
+The same archive is used for all Stable mixed-version and rollback cases.
+The installation guide adds commands for staged certificates and credential
+switches. The artifact verifier retains the original guide digests for earlier
+releases. Publication requires approval for the qualified main commit.
+
 ## Stable patch 1.2.2
 
 1.2.2 shares the installation guide and full H2/H3 package profile with

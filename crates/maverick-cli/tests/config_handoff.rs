@@ -13,7 +13,10 @@ use tokio::time::timeout;
 
 async fn cli(directory: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Output> {
     timeout(Duration::from_secs(30), async {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_maverick"))
+        // The native package drill supplies the executable extracted from its verified archive.
+        let binary = std::env::var_os("MAVERICK_CANDIDATE_CLI")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_maverick").into());
+        let mut child = Command::new(binary)
             .args(args)
             .current_dir(directory)
             .env_remove("RUST_LOG")

@@ -258,6 +258,7 @@ enum ConfigUriCommand {
         uri: Option<String>,
         #[arg(long)]
         clipboard: bool,
+        /// Preview without writing or clearing the clipboard. With --output, validate the intended import.
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -2190,7 +2191,7 @@ fn import_config_uri_from_clipboard(
         "clipboard does not contain a Maverick profile URI"
     );
     let result = import_config_uri(&payload, dry_run, output);
-    if result.is_ok() {
+    if result.is_ok() && !dry_run && output.is_some() {
         if let Err(err) = reader.clear_profile_uri() {
             eprintln!("warning: failed to clear OS clipboard after import: {err}");
         }
@@ -2316,19 +2317,32 @@ fn write_clipboard_command(program: &str, args: &[&str], input: &[u8]) -> Result
 
 fn import_config_uri(uri: &str, dry_run: bool, output: Option<&Path>) -> Result<()> {
     let profile = ProfileUri::parse(uri)?;
-    if dry_run || output.is_none() {
-        print_config_uri_import_summary(&profile, output);
+    let Some(output) = output else {
+        print_config_uri_import_summary(&profile, None);
         return Ok(());
-    }
+    };
 
-    let output = output.expect("checked output is_some");
-    if output.exists() {
-        anyhow::bail!(
+    match fs::symlink_metadata(output) {
+        Ok(_) => anyhow::bail!(
             "refusing to overwrite existing config: {}",
             output.display()
-        );
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err).context("cannot inspect output path"),
     }
+    let parent = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    anyhow::ensure!(
+        parent.is_dir(),
+        "output parent must be an existing directory"
+    );
     let cfg = profile.to_client_config()?;
+    if dry_run {
+        print_config_uri_import_summary(&profile, Some(output));
+        return Ok(());
+    }
     let yaml = client_config_secret_yaml(&cfg);
     write_private_file(output, yaml)?;
     println!("config-uri import wrote client config");
@@ -2359,7 +2373,8 @@ fn print_config_uri_import_summary(profile: &ProfileUri, output: Option<&Path>) 
     println!("status: parsed");
     if let Some(output) = output {
         println!("output: {}", output.display());
-        println!("would_write: true");
+        println!("configuration: valid for import");
+        println!("file creation: unverified (dry-run)");
     }
     println!("server: {}", profile.server);
     println!("server_name: {}", profile.server_name);
@@ -5185,12 +5200,17 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
     }
 
     struct FakeClipboard {
-        payload: String,
+        payload: std::cell::RefCell<String>,
     }
 
     impl ClipboardReader for FakeClipboard {
         fn read_profile_uri(&self) -> Result<String> {
-            Ok(self.payload.clone())
+            Ok(self.payload.borrow().clone())
+        }
+
+        fn clear_profile_uri(&self) -> Result<()> {
+            self.payload.borrow_mut().clear();
+            Ok(())
         }
     }
 
@@ -5203,9 +5223,21 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
         );
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("client.yaml");
-        let clipboard = FakeClipboard { payload: uri };
+        let clipboard = FakeClipboard {
+            payload: uri.clone().into(),
+        };
+
+        import_config_uri_from_clipboard(&clipboard, false, None).unwrap();
+        import_config_uri_from_clipboard(&clipboard, true, Some(&output)).unwrap();
+        assert!(!output.exists());
+        assert!(clipboard.payload.borrow().as_str() == uri);
+        let occupied = dir.path().join("occupied.yaml");
+        fs::write(&occupied, "existing").unwrap();
+        assert!(import_config_uri_from_clipboard(&clipboard, false, Some(&occupied)).is_err());
+        assert!(clipboard.payload.borrow().as_str() == uri);
 
         import_config_uri_from_clipboard(&clipboard, false, Some(&output)).unwrap();
+        assert!(clipboard.payload.borrow().is_empty());
 
         let written = fs::read_to_string(&output).unwrap();
         let cfg = ClientConfig::from_yaml_str(&written).unwrap();
@@ -5216,7 +5248,7 @@ maverick://profile/v1?server=b.example%3A443&name=b.example&path=%2Fassets%2Fupl
     #[test]
     fn clipboard_import_rejects_empty_payload_without_real_clipboard() {
         let clipboard = FakeClipboard {
-            payload: " \n\t ".into(),
+            payload: String::from(" \n\t ").into(),
         };
         let err = import_config_uri_from_clipboard(&clipboard, true, None).unwrap_err();
         assert!(err.to_string().contains("clipboard"));

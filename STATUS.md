@@ -6,6 +6,15 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## Development after 1.2.3
+
+The published 1.2.3 CLI reported `would_write: true` when previewing a
+secret-free URI with an output file, then rejected the real import.
+Development now validates both the profile and destination for that preview.
+Tests exercise stdin, new and occupied paths, file permissions and a simulated
+clipboard through preview, failed import and successful write.
+[Profile handoff](CONFIG.md#profile-uri-v1-sharing-and-parser-boundary).
+
 ## Maverick 1.2.3
 
 1.2.3 packages the offline server TLS file check, protected H2 origin-chain

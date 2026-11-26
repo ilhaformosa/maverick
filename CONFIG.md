@@ -1675,6 +1675,19 @@ so a URI does not promise identical TLS behavior across different build variants
 Secret omission remains the export default, and secret-bearing QR export remains
 rejected. This change does not introduce URI v2.
 
+On development builds after 1.2.3, inspect a link read from stdin with
+`maverick config-uri import --uri - --dry-run`. A secret-free link is enough
+for this local preview. Its summary includes the endpoint and credential ID,
+so keep the output private. To check a planned file import, also pass
+`--output client.yaml`. This validates the runnable configuration and requires
+an existing parent directory and an unused destination. A real write still
+depends on filesystem permissions and available space. Remove `--dry-run`
+to create the private file.
+
+With `--clipboard`, previews and failed imports leave the clipboard intact.
+A successful file import attempts to clear the clipboard. Clear it yourself
+after a preview if it contains a secret you no longer need.
+
 The CLI Profile URI v1 reader accepts exactly these ten decoded query keys:
 `server`, `name`, `path`, `mode`, `credential_id`, `secret`, `cert_pin`,
 `experimental_h3`, `experimental_ech`, and `experimental_tun`. Their order is

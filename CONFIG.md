@@ -3,7 +3,7 @@
 All currently runnable client and server config files use YAML and `version: 1`.
 
 The sections below describe runnable v1 configuration first. Future v2 policy
-and detailed compatibility contracts follow the runtime reference. The 1.2.3
+and detailed compatibility contracts follow the runtime reference. The 1.2.4
 packages include H3. Source builds require the `experimental-h3` feature for
 H3. New direct configs enable dual/auto. Existing configs that omit transport
 settings retain H2.
@@ -299,7 +299,7 @@ their drivers. Active TCP transfers end during shutdown. Close delivery is
 best effort; forced process exit or lost datagrams still relies on peer failure
 or idle detection.
 
-Field validation of H3 was deferred for 1.2.3. Browser equivalence and
+Field validation of H3 was deferred for 1.2.4. Browser equivalence and
 real-network performance remain unverified.
 
 ### Native UDP and automatic new connections
@@ -1678,7 +1678,7 @@ so a URI does not promise identical TLS behavior across different build variants
 Secret omission remains the export default, and secret-bearing QR export remains
 rejected. This change does not introduce URI v2.
 
-On development builds after 1.2.3, inspect a link read from stdin with
+In 1.2.4, inspect a link read from stdin with
 `maverick config-uri import --uri - --dry-run`. A secret-free link is enough
 for this local preview. Its summary includes the endpoint and credential ID,
 so keep the output private. To check a planned file import, also pass

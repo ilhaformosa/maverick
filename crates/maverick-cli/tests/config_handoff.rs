@@ -1373,3 +1373,69 @@ async fn check_pair_at_rotation_boundaries() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn profile_import_preview_checks_the_requested_output() -> Result<()> {
+    let dir = TempDir::new()?;
+    let work = dir.path();
+    let base = "maverick://profile/v1?server=example.invalid%3A443&name=example.invalid&path=%2Fexample&mode=auto";
+    let secret = SecretString::generate();
+    let complete = format!(
+        "{base}&credential_id=test-user&secret={}",
+        secret.expose_secret()
+    );
+    let no_secret = format!("{base}&credential_id=test-user");
+    let no_id = format!("{base}&secret={}", secret.expose_secret());
+    let args = ["config-uri", "import", "--uri", "-"];
+    let inspect = cli(work, &args, Some(no_secret.as_bytes())).await?;
+    ensure!(
+        inspect.status.success()
+            && String::from_utf8(inspect.stdout)?.contains("secret: [MISSING]")
+    );
+    private_file(&work.join("occupied.yaml"), "keep")?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("absent.yaml", work.join("link.yaml"))?;
+    for (uri, path, message) in [
+        (&no_secret, "new.yaml", "must include secret"),
+        (&no_id, "new.yaml", "must include credential_id"),
+        (&complete, "occupied.yaml", "refusing to overwrite"),
+        (&complete, "absent-parent/new.yaml", "output parent"),
+        #[cfg(unix)]
+        (&complete, "link.yaml", "refusing to overwrite"),
+    ] {
+        let mut write = args.to_vec();
+        write.extend(["--output", path]);
+        let mut preview = write.clone();
+        preview.push("--dry-run");
+        for op in [preview, write] {
+            let out = cli(work, &op, Some(uri.as_bytes())).await?;
+            let error = String::from_utf8(out.stderr)?;
+            ensure!(!out.status.success() && out.stdout.is_empty() && error.contains(message));
+            ensure!(!error.contains(secret.expose_secret()));
+        }
+    }
+    ensure!(fs::read_to_string(work.join("occupied.yaml"))? == "keep");
+    ensure!(!work.join("absent.yaml").exists() && !work.join("absent-parent").exists());
+    let mut preview = args.to_vec();
+    preview.extend(["--output", "new.yaml", "--dry-run"]);
+    let out = cli(work, &preview, Some(complete.as_bytes())).await?;
+    let report = String::from_utf8(out.stdout)?;
+    ensure!(out.status.success() && out.stderr.is_empty() && !work.join("new.yaml").exists());
+    ensure!(
+        report.contains("configuration: valid for import")
+            && !report.contains(secret.expose_secret())
+    );
+    preview.pop();
+    ensure!(cli(work, &preview, Some(complete.as_bytes()))
+        .await?
+        .status
+        .success());
+    let cfg = ClientConfig::from_yaml_str(&fs::read_to_string(work.join("new.yaml"))?)?;
+    ensure!(cfg.server.secret == secret);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        ensure!(fs::metadata(work.join("new.yaml"))?.permissions().mode() & 0o777 == 0o600);
+    }
+    Ok(())
+}

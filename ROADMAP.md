@@ -5,6 +5,23 @@ Date: 2026-11-27
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
+## Development after 1.2.3
+
+Start from the published `69a3cc8`. The 1.2.3 archive can already compare two
+private configurations at a chosen time. The next operator tasks are to
+preview an import accurately and to carry a staged credential change through
+a running client and server. The package jobs currently stop at 1.2.2.
+
+| Priority | Deliverable | Offline or loopback acceptance |
+|---|---|---|
+| 1 | Make profile URI import previews usable before creating a private YAML file. In 1.2.3 the default secret-free export passes a dry run with an output path, although the write fails. Clipboard preview also consumes its input. | Preview without an output may inspect a secret-free profile. With an output, preview and import reject missing credentials, occupied destinations (including dangling links) and missing parent directories. A valid preview creates nothing, preserves clipboard input and omits the secret. An actual import creates a private runnable YAML and clears an explicitly used clipboard after success. |
+| 2 | Document and rehearse a complete routine credential rollover using the packaged CLI. | On fixed H2, compare the offline verdict with fresh connections using the original credential, both clients during overlap, and each client after retirement. Positive cases must verify bidirectional TCP and independent UDP replies. Verify that a rejected old credential cannot reach the test target, then restore the original private YAML byte for byte and recheck transfer. Use loopback, fresh credentials and staged windows without changing the clock. |
+| 3 | Include the installed 1.2.3 release in regular native upgrade and recovery checks. Share one pinned list between both CI jobs. | On Apple Silicon macOS and native Linux x86_64, check archive digests and source revisions for all four published Stable baselines. Run six routes and five phases per baseline, the packaged configuration suite once per candidate, the rollover drill and the separate Beta.4 rollback. Preserve the two-archive offline entry point. |
+
+Provider behavior, public-network performance and the 72-hour field soak
+still require a separately authorized environment. A new release decision
+depends on the impact on installed clients and servers and the results above.
+
 ## 1.2.3 native package qualification
 
 1.2.3 delivers the offline configuration and rotation work from `fbb6db1`.

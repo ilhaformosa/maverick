@@ -17,7 +17,7 @@ struct DiagnosticCase {
     fault: Fault,
 }
 
-async fn next_event(events: &mut mpsc::UnboundedReceiver<String>) -> Result<String> {
+pub(super) async fn next_event(events: &mut mpsc::UnboundedReceiver<String>) -> Result<String> {
     timeout(Duration::from_secs(8), events.recv())
         .await
         .context("timed out waiting for a SOCKS UDP diagnostic")?

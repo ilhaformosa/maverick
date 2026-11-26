@@ -142,6 +142,50 @@ the replacement during code-signature verification. [Apple’s guidance on updat
 Older RC.2 does not understand the new protection/H3 settings; never weaken
 the configuration to make an old binary appear compatible.
 
+### Rotate and restore a user credential
+
+For a routine rotation, save the working private client and server YAML before
+editing either file. Generate a fresh secret and assign a distinct new
+credential ID. Exchange the new client material through the same private
+channel used for the original handoff. Keep the server's user settings
+(including limits) with that user.
+
+1. Stage the server with the **new** ID and secret as the active user. Put
+   the **old** ID and secret in that user's `rotation.previous` with explicit
+   `not_before` and `not_after` times. The old client must be inside this
+   window when the server switches. A server `rotation.next` entry records
+   a plan; it does not install the new secret.
+2. Stage a client with the original `server.credential_id` and secret plus
+   `auth.rotation.auto_switch: true` and a complete `auth.rotation.next`.
+   Choose a switch time inside the server overlap. Wherever both files are
+   already held privately, run `maverick check-pair --client client.yaml
+   --server staged-server.yaml --at 2030-04-01T00:30:00Z`, substituting the
+   intended time. Check the staged client and an unchanged client at the
+   start, switch and end. Each running peer uses its own clock.
+3. Install the staged server first and restart it. During overlap, freshly
+   opened connections with either credential should reach the target. Install
+   the staged client and restart it. Verify TCP contents in both directions
+   and independent UDP replies. At or after `not_after`, fresh opens with
+   the old credential must fail and the switched client must still transfer.
+4. To reverse a routine change while the original credential is still trusted,
+   coordinate a restart using the saved server and client YAML. Compare both
+   files with their backups, verify fresh transfers, and check that the
+   replacement credential is rejected. If a credential may be compromised,
+   keep it retired and issue fresh material.
+
+| Fixed-H2 loopback phase | Unchanged client | Client selecting the replacement |
+|---|---|---|
+| Original configuration | Active, TCP and UDP pass | Rejected |
+| Overlap | Previous, TCP and UDP pass | Active, TCP and UDP pass |
+| Old window expired | Rejected | Active, TCP and UDP pass |
+| Original files restored | Active, TCP and UDP pass | Rejected |
+
+The packaged drill uses a past switch time, then stages an expired window
+to exercise retirement without changing the clock. Each cell opens fresh
+connections. A rejected cell checks server authentication counters and
+the TCP and UDP targets. The drill makes no claim about already-open
+sessions. [Rotation field examples](../CONFIG.md#auth-v2-and-rotation).
+
 ### Rotate the origin certificate for a protected H2 intermediary
 
 The client pins the SHA-256 digest of the complete origin leaf certificate.

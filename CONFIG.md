@@ -656,6 +656,9 @@ more than four previous credentials per user, invalid RFC3339 timestamps,
 client `auto_switch` without next credential material, mismatched client next
 ids, and previous windows whose `not_after` is not after `not_before`.
 
+For the order in which to install these files and restore the working pair,
+see [credential rotation and rollback](docs/DEPLOYMENT.md#rotate-and-restore-a-user-credential).
+
 ## Shaping Budgets
 
 Shaping is disabled by default. When enabled, the current runtime applies

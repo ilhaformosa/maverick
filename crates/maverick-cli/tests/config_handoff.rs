@@ -1260,6 +1260,8 @@ async fn check_pair_at_rotation_boundaries() -> Result<()> {
         "--at",
     ];
     let disabled = server.replace("enabled: true", "enabled: false");
+    let different = SecretString::generate();
+    let wrong = server.replace(new.expose_secret(), different.expose_secret());
     let missing = "no enabled credential in its acceptance window";
     for (c, s, at, cslot, sslot, verdict) in [
         (
@@ -1312,6 +1314,14 @@ async fn check_pair_at_rotation_boundaries() -> Result<()> {
         ),
         (
             &rotating,
+            &wrong,
+            "2030-04-01T00:30:00Z",
+            "next",
+            "active",
+            "secret mismatch",
+        ),
+        (
+            &rotating,
             &disabled,
             "2030-04-01T01:00:00Z",
             "next",
@@ -1339,6 +1349,7 @@ async fn check_pair_at_rotation_boundaries() -> Result<()> {
             !report.contains("private")
                 && !report.contains(old.expose_secret())
                 && !report.contains(new.expose_secret())
+                && !report.contains(different.expose_secret())
         );
         ensure!(if matched {
             out.stderr.is_empty()

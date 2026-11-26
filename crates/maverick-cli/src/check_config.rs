@@ -156,7 +156,7 @@ pub(super) fn pair(
     use maverick_core::config::{
         parse_auth_epoch, select_client_credential_at_unix, ClientCredentialSelection,
     };
-    use maverick_server::users::UserStore;
+    use maverick_server::users::{CredentialState, UserStore};
 
     let client_yaml =
         read_private_yaml(client_path).map_err(|_| anyhow!("cannot read client configuration"))?;
@@ -206,14 +206,27 @@ pub(super) fn pair(
         .map_err(|_| anyhow!("client credential selection failed"))?;
     let users = UserStore::new(&server.users)
         .map_err(|_| anyhow!("server credential configuration rejected"))?;
-    let accepted = users.lookup_secret(selected.id, now);
-    let (credential_ok, credential) = match &accepted {
-        Some(found) if found.secret == selected.secret => (true, "match"),
-        Some(_) => (false, "secret mismatch"),
-        None if users.get(selected.id).is_some_and(|user| !user.enabled) => {
-            (false, "disabled user")
+    // Only fixed labels and a verdict leave the credential comparison.
+    let (credential_ok, credential, server_slot) = match users.lookup_secret(selected.id, now) {
+        Some(found) => {
+            let slot = match found.state {
+                CredentialState::Active => "active",
+                CredentialState::Previous => "previous",
+            };
+            if found.secret == selected.secret {
+                (true, "match", slot)
+            } else {
+                (false, "secret mismatch", slot)
+            }
         }
-        None => (false, "no enabled credential in its acceptance window"),
+        None if users.get(selected.id).is_some_and(|user| !user.enabled) => {
+            (false, "disabled user", "none")
+        }
+        None => (
+            false,
+            "no enabled credential in its acceptance window",
+            "none",
+        ),
     };
 
     let verdict = |ok| if ok { "match" } else { "mismatch" };
@@ -229,10 +242,7 @@ pub(super) fn pair(
             ClientCredentialSelection::Next => "next",
         };
         println!("client credential at supplied time: {slot}");
-        println!(
-            "server credential at supplied time: {}",
-            accepted.map_or("none", |entry| entry.state.as_str())
-        );
+        println!("server credential at supplied time: {server_slot}");
     }
     println!("selected credential: {credential}");
     println!("remote connection: unverified (offline)");

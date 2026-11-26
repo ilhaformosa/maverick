@@ -22,6 +22,13 @@ retired and restored configurations. Each denied client caused authentication
 rejections and neither target received a request. The restored private files
 matched their saved bytes.
 
+The two native package jobs now use a single pinned list for 1.2.0 through
+1.2.3. Each baseline exercises six routes and five upgrade/restore phases.
+The latest baseline adds a separate credential rollover with the published
+and development executables. The CLI configuration handoff suite runs once
+on the candidate. The two-archive command accepts previously downloaded
+files for offline use. [Native package gate](scripts/test-stable-patch-interop.sh).
+
 ## Maverick 1.2.3
 
 1.2.3 packages the offline server TLS file check, protected H2 origin-chain

@@ -3,7 +3,7 @@
 All currently runnable client and server config files use YAML and `version: 1`.
 
 The sections below describe runnable v1 configuration first. Future v2 policy
-and detailed compatibility contracts follow the runtime reference. The 1.2.2
+and detailed compatibility contracts follow the runtime reference. The 1.2.3
 packages include H3. Source builds require the `experimental-h3` feature for
 H3. New direct configs enable dual/auto. Existing configs that omit transport
 settings retain H2.
@@ -299,7 +299,7 @@ their drivers. Active TCP transfers end during shutdown. Close delivery is
 best effort; forced process exit or lost datagrams still relies on peer failure
 or idle detection.
 
-Field validation of H3 was deferred for 1.2.2. Browser equivalence and
+Field validation of H3 was deferred for 1.2.3. Browser equivalence and
 real-network performance remain unverified.
 
 ### Native UDP and automatic new connections
@@ -897,7 +897,7 @@ troubleshooting on your own machine, use plain `check-config`.
 
 ### Compare a client and server configuration offline
 
-In a development build after 1.2.2, an operator who already holds both
+In 1.2.3, an operator who already holds both
 private configuration files can check the pair before deployment.
 
 ```sh
@@ -934,7 +934,7 @@ credentials in this command. Omitting it uses the current clock.
 
 ### Check a protected H2 origin certificate before switching clients
 
-On the client machine, use a development build after 1.2.2 and the public
+On the client machine, use 1.2.3 and the public
 chain intended for the origin. Put the leaf first, followed by any intermediate
 certificates. Run from the client's usual working directory so relative CA
 paths resolve as they will at startup.
@@ -952,7 +952,7 @@ are established during a fresh connection.
 
 ### Check server certificate files before restarting
 
-In development builds after 1.2.2, run this command as the service account
+In 1.2.3, run this command as the service account
 from its normal working directory. Relative certificate and key paths resolve
 from that directory, just as they do at startup. A config can live elsewhere.
 

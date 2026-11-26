@@ -56,6 +56,11 @@ done
 export MAVERICK_BASELINE_VERSION="$baseline_version"
 export MAVERICK_BASELINE_CLI="$scratch/baseline/maverick-pilot/maverick"
 export MAVERICK_CANDIDATE_CLI="$scratch/candidate/maverick-pilot/maverick"
+# Run the handoff suite once per native candidate, using the same installed
+# executable as the current-stable upgrade drill.
+if [[ "$baseline_version" == 1.2.2 ]]; then
+  cargo test --locked -p maverick-cli --no-default-features --features experimental-h3 --test config_handoff
+fi
 cargo test --locked -p maverick-tests --test end_to_end \
   package_interop::stable_patch_package_interop -- --exact --ignored --nocapture | tee "$scratch/result"
 grep -Fxq 'Stable patch package matrix: 30/30 passed' "$scratch/result"

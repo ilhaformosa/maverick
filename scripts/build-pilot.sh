@@ -199,6 +199,8 @@ GUIDE
 if [[ "$version" == "1.2.0" ]]; then
   install -m 0644 crates/maverick-tests/fixtures/release/START_HERE.1.2.0.txt "$output_dir/START_HERE.txt"
 elif [[ "$version" == 1.2.[12] ]]; then
+  install -m 0644 crates/maverick-tests/fixtures/release/START_HERE.1.2.1.txt "$output_dir/START_HERE.txt"
+elif [[ "$version" == 1.2.3 ]]; then
   install -m 0644 docs/STABLE_START_HERE.txt "$output_dir/START_HERE.txt"
 fi
 

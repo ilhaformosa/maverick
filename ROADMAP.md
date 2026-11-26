@@ -5,6 +5,26 @@ Date: 2026-11-27
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
+## 1.2.3 native package qualification
+
+1.2.3 delivers the offline configuration and rotation work from `fbb6db1`.
+The [first candidate run](https://github.com/ilhaformosa/maverick/actions/runs/45881026669)
+tested the actual installation archives at `3985c4f`. Each native runner
+extracted its CLI and used it for the configuration tests. For each Stable
+baseline, all six TCP/UDP routes were exercised with the original programs,
+each mixed client/server combination, both upgraded and both restored.
+
+| Native runner | Archived CLI configuration tests | With published 1.2.2 | Across 1.2.0, 1.2.1 and 1.2.2 |
+|---|---|---|---|
+| [Apple Silicon macOS](https://github.com/ilhaformosa/maverick/actions/runs/45881026669/job/140120144192) | 21/21 | 30/30 | 90/90 |
+| [Linux x86_64](https://github.com/ilhaformosa/maverick/actions/runs/45881026669/job/140120143846) | 21/21 | 30/30 | 90/90 |
+
+Both jobs checked saved program and YAML contents on restoration, followed
+by bidirectional TCP data and EOF and four independent UDP replies on each
+route. The separate Beta.4 direct-H2 rollback passed on both platforms.
+The release workflow takes its six files from the successful run for the
+tagged main revision. [Release notes](docs/releases/v1.2.3.md).
+
 ## Offline rotation and current-release qualification
 
 At `fe7dfce`, the previous three items were complete. Checking a replacement
@@ -24,8 +44,8 @@ an observed workload gives it a measurable goal.
 
 ## Development after 1.2.2
 
-The plan starts from the 1.2.1 route and rollback results. The maintained
-baseline is [1.2.2](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.2),
+The plan starts from the 1.2.1 route and rollback results. The baseline for that phase was
+[1.2.2](https://github.com/ilhaformosa/maverick/releases/tag/v1.2.2),
 which delivers the dependency fix with the same CLI and transport behavior. The following items address failures an operator can identify or
 recover from without access to a field environment. Keep the dependency
 inventory green as maintenance work throughout.

@@ -20,8 +20,9 @@ covered Stable baselines through 1.2.2.
 | 3 ([native package gate](scripts/test-stable-patch-interop.sh)) | Include the installed 1.2.3 release in regular native upgrade and recovery checks. Share one pinned list between both CI jobs. | On Apple Silicon macOS and native Linux x86_64, check archive digests and source revisions for all four published Stable baselines. Run six routes and five phases per baseline, the packaged configuration suite once per candidate, the rollover drill and the separate Beta.4 rollback. Preserve the two-archive offline entry point. |
 
 Provider behavior, public-network performance and the 72-hour field soak
-still require a separately authorized environment. A new release decision
-depends on the impact on installed clients and servers and the results above.
+still require a separately authorized environment. The profile preview correction is queued for the next release.
+With 1.2.3, an operator can supply a link via stdin and import it explicitly
+to a fresh path. The credential rollover uses commands already in 1.2.3.
 
 ## 1.2.3 native package qualification
 

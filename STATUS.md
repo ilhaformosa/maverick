@@ -27,7 +27,9 @@ The two native package jobs now use a single pinned list for 1.2.0 through
 The latest baseline adds a separate credential rollover with the published
 and development executables. The CLI configuration handoff suite runs once
 on the candidate. The two-archive command accepts previously downloaded
-files for offline use. [Native package gate](scripts/test-stable-patch-interop.sh).
+files for offline use. On Apple Silicon, the archive built at `bfa94d9`
+passed all 22 packaged CLI handoff tests and 30/30 cases with the public
+1.2.3 archive. Both executables passed the four-phase rollover. [Native package gate](scripts/test-stable-patch-interop.sh).
 
 ## Maverick 1.2.3
 

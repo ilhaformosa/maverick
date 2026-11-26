@@ -14,7 +14,8 @@ async fn check_client(
     let admitted = server_slot != "none";
     let at =
         time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?;
-    let output = Command::new(tested_cli())
+    let output = tokio::process::Command::new(tested_cli())
+        .kill_on_drop(true)
         .current_dir(dir)
         .args([
             "check-pair",
@@ -25,7 +26,8 @@ async fn check_client(
             "--at",
             &at,
         ])
-        .output()?;
+        .output()
+        .await?;
     ensure!(
         output.status.code() == Some(if admitted { 0 } else { 1 }),
         "offline rollover verdict"

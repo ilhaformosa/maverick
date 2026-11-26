@@ -26,7 +26,10 @@ stable baselines. Each baseline receives 30 loopback cases. The archive check
 pins the published digest and source commit, and checks the candidate against
 the build commit even when both binaries report the same version. The drill
 compares the installed programs and private YAML with their backups before
-testing the restored transfers. [Package drill](scripts/test-stable-patch-interop.sh).
+testing the restored transfers. The native Apple Silicon archive built at
+`0a61e0f` passed all 30 cases against the published 1.2.2 archive at `04049de`.
+[Package drill](scripts/test-stable-patch-interop.sh) and
+[native PR checks](https://github.com/ilhaformosa/maverick/pull/140/checks).
 
 ## Maverick 1.2.2 dependency repair
 
@@ -240,7 +243,7 @@ The default, rustls-only and H3-enabled CLI builds each passed the 16
 configuration handoff tests. The local product harness and H3-enabled CLI
 Clippy checks passed on Apple Silicon.
 
-The [active roadmap](ROADMAP.md#development-after-122) assumes a prolonged
+The [active roadmap](ROADMAP.md#offline-rotation-and-current-release-qualification) assumes a prolonged
 period without field access. Local and CI evidence will guide maintenance
 and development; real-network and deployment results remain open.
 

@@ -43,24 +43,7 @@ async fn cli_stop_signals_close_sessions_and_release_all_carriers() -> Result<()
             local.write_all(b"x").await?;
             let mut byte = [0];
             peer.read_exact(&mut byte).await?;
-            let sent = Command::new("kill")
-                .args([signal, &server.child.id().to_string()])
-                .status()?;
-            ensure!(sent.success(), "failed to signal owned CLI process");
-            let status = timeout(Duration::from_secs(5), async {
-                loop {
-                    if let Some(status) = server.child.try_wait()? {
-                        break Ok::<_, anyhow::Error>(status);
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .context("server CLI did not stop")??;
-            ensure!(
-                status.success(),
-                "server terminated by signal instead of completing shutdown"
-            );
+            server.stop(signal).await?;
             // Keep UDP bound and silent: peer notification must be QUIC close,
             // not an ICMP error from a port that disappeared.
             let udp_guard = if h3 {

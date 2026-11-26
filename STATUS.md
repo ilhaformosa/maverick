@@ -15,6 +15,13 @@ Tests exercise stdin, new and occupied paths, file permissions and a simulated
 clipboard through preview, failed import and successful write.
 [Profile handoff](CONFIG.md#profile-uri-v1-sharing-and-parser-boundary).
 
+The [routine credential rollover](docs/DEPLOYMENT.md#rotate-and-restore-a-user-credential)
+passed with the public Apple Silicon 1.2.3 executable. Fresh fixed-H2 TCP and
+UDP sessions agreed with eight offline verdicts across original, overlap,
+retired and restored configurations. Each denied client caused authentication
+rejections and neither target received a request. The restored private files
+matched their saved bytes.
+
 ## Maverick 1.2.3
 
 1.2.3 packages the offline server TLS file check, protected H2 origin-chain

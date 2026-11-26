@@ -39,6 +39,11 @@ mod shaping;
 #[path = "support/h3_soak.rs"]
 mod soak;
 
+fn tested_cli() -> std::ffi::OsString {
+    std::env::var_os("MAVERICK_CANDIDATE_CLI")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_maverick").into())
+}
+
 struct Cli {
     child: Child,
     readiness: mpsc::Receiver<(&'static str, SocketAddr)>,
@@ -57,7 +62,7 @@ impl Cli {
         flags: &[&str],
         udp_events: Option<mpsc::UnboundedSender<String>>,
     ) -> Result<Self> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_maverick"))
+        let mut child = Command::new(tested_cli())
             .args([command, "-c", config])
             .args(flags)
             .current_dir(directory)
@@ -128,6 +133,27 @@ impl Cli {
             }
         }));
         Ok(process)
+    }
+
+    async fn stop(&mut self, signal: &str) -> Result<()> {
+        let sent = Command::new("kill")
+            .args([signal, &self.child.id().to_string()])
+            .status()?;
+        ensure!(sent.success(), "failed to signal owned CLI process");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(status) = self.child.try_wait()? {
+                    ensure!(
+                        status.success(),
+                        "CLI terminated without completing shutdown"
+                    );
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("CLI did not stop")?
     }
 
     async fn ready(&mut self, marker: &str) -> Result<SocketAddr> {
@@ -442,6 +468,8 @@ async fn rejected_before_target(socks: SocketAddr) -> Result<()> {
     Ok(())
 }
 
+#[path = "support/credential_rollover.rs"]
+mod credential_rollover;
 #[path = "support/native_udp.rs"]
 mod native_udp;
 #[path = "support/selection.rs"]

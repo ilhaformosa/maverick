@@ -110,6 +110,9 @@ enum Commands {
         /// Explain the configured route, UDP behavior and compiled transports offline.
         #[arg(long)]
         explain: bool,
+        /// Check default config-file permissions and configured listener overlaps without binding.
+        #[arg(long)]
+        check_local: bool,
         /// Load the configured server TLS certificate chain and matching private key offline.
         #[arg(long)]
         check_tls: bool,
@@ -387,14 +390,16 @@ async fn main() -> Result<()> {
             config,
             kind,
             explain,
+            check_local,
             check_tls,
             origin_cert,
         } => {
-            if explain || check_tls || origin_cert.is_some() {
+            if explain || check_local || check_tls || origin_cert.is_some() {
                 return check_config::report(
                     &config,
                     &kind,
                     explain,
+                    check_local,
                     check_tls,
                     origin_cert.as_deref(),
                 );

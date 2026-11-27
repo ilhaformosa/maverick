@@ -2,7 +2,7 @@ use anyhow::{anyhow, ensure, Result};
 use maverick_client::transport::{default_transport_kind, TransportKind};
 use maverick_core::config::UdpPolicy;
 use maverick_core::{ClientConfig, ServerConfig};
-use std::{fs, path::Path};
+use std::{fs, net::SocketAddr, path::Path};
 
 const BUILD_TRANSPORTS: &str = if cfg!(feature = "experimental-h3") {
     "H2 and H3"
@@ -16,6 +16,7 @@ pub(super) fn report(
     path: &Path,
     kind: &str,
     explain: bool,
+    check_local: bool,
     check_tls: bool,
     origin_cert: Option<&Path>,
 ) -> Result<()> {
@@ -27,7 +28,7 @@ pub(super) fn report(
         origin_cert.is_none() || kind == "client",
         "--origin-cert requires --kind client"
     );
-    let yaml = read_private_yaml(path)?;
+    let yaml = read_private_yaml(path, check_local)?;
     let rejected = |_| {
         anyhow!("configuration rejected (compiled direct transports: {BUILD_TRANSPORTS}). Run plain check-config locally for details")
     };
@@ -35,6 +36,21 @@ pub(super) fn report(
         "client" => {
             let config = ClientConfig::from_yaml_str(&yaml).map_err(rejected)?;
             let policy = client_policy(&config)?;
+            if check_local {
+                let http = config
+                    .local
+                    .http_connect
+                    .as_ref()
+                    .filter(|http| http.enabled)
+                    .and_then(|http| http.listen);
+                ensure!(
+                    !http.is_some_and(|listen| tcp_listeners_overlap(
+                        config.local.socks5.listen,
+                        listen
+                    )),
+                    "local.socks5.listen and local.http_connect.listen overlap on TCP"
+                );
+            }
             if let Some(chain) = origin_cert {
                 let origin = config.advanced.end_to_end.as_ref().ok_or_else(|| {
                     anyhow!("--origin-cert requires a protected H2 client configuration")
@@ -46,6 +62,14 @@ pub(super) fn report(
         "server" => {
             let config = ServerConfig::from_yaml_str(&yaml).map_err(rejected)?;
             let policy = server_policy(&config)?;
+            // Fixed H3 listens on UDP only. H2 and dual servers also bind TCP.
+            if check_local && !config.advanced.quiche_h3 {
+                let metrics = config.metrics.as_ref().filter(|metrics| metrics.enabled);
+                ensure!(
+                    !metrics.is_some_and(|m| tcp_listeners_overlap(config.listen, m.listen)),
+                    "server listen and metrics.listen overlap on TCP"
+                );
+            }
             if check_tls {
                 maverick_server::check_tls_material(&config)?;
             }
@@ -59,6 +83,12 @@ pub(super) fn report(
         println!("compiled direct transports: {BUILD_TRANSPORTS}");
         println!("remote connection: unverified (offline)");
     }
+    if check_local {
+        #[cfg(unix)]
+        println!("configuration file permissions: OK (default startup)");
+        println!("configured TCP listener overlap: none detected");
+        println!("port availability: unverified (offline)");
+    }
     if origin_cert.is_some() {
         println!("staged origin certificate chain, name, validity and leaf pin: OK (offline)");
     }
@@ -68,11 +98,22 @@ pub(super) fn report(
     Ok(())
 }
 
-fn read_private_yaml(path: &Path) -> Result<String> {
+fn tcp_listeners_overlap(a: SocketAddr, b: SocketAddr) -> bool {
+    a.port() != 0
+        && a.port() == b.port()
+        && a.is_ipv4() == b.is_ipv4()
+        && (a == b || a.ip().is_unspecified() || b.ip().is_unspecified())
+}
+
+fn read_private_yaml(path: &Path, require_private: bool) -> Result<String> {
     if super::config_permission_warning(path)
         .map_err(|_| anyhow!("cannot inspect configuration file permissions"))?
         .is_some()
     {
+        ensure!(
+            !require_private,
+            "configuration is accessible by group/other users; restrict permissions with chmod 600"
+        );
         eprintln!("warning: configuration is accessible by group/other users; consider chmod 600");
     }
     fs::read_to_string(path).map_err(|_| anyhow!("cannot read configuration file"))
@@ -158,13 +199,13 @@ pub(super) fn pair(
     };
     use maverick_server::users::{CredentialState, UserStore};
 
-    let client_yaml =
-        read_private_yaml(client_path).map_err(|_| anyhow!("cannot read client configuration"))?;
+    let client_yaml = read_private_yaml(client_path, false)
+        .map_err(|_| anyhow!("cannot read client configuration"))?;
     let client = ClientConfig::from_yaml_str(&client_yaml).map_err(|_| {
         anyhow!("client configuration rejected (compiled direct transports: {BUILD_TRANSPORTS})")
     })?;
-    let server_yaml =
-        read_private_yaml(server_path).map_err(|_| anyhow!("cannot read server configuration"))?;
+    let server_yaml = read_private_yaml(server_path, false)
+        .map_err(|_| anyhow!("cannot read server configuration"))?;
     let server = ServerConfig::from_yaml_str(&server_yaml).map_err(|_| {
         anyhow!("server configuration rejected (compiled direct transports: {BUILD_TRANSPORTS})")
     })?;

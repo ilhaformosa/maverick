@@ -1501,3 +1501,118 @@ async fn profile_clipboard_preview_preserves_link_until_file_import() -> Result<
     ensure!(cfg.server.secret == secret);
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn offline_local_check_applies_default_permissions_and_client_tcp_layout() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new()?;
+    let work = dir.path();
+    let path = work.join("private-client.yaml");
+    let args = [
+        "check-config",
+        "--kind",
+        "client",
+        "-c",
+        "private-client.yaml",
+    ];
+    let mut local = args.to_vec();
+    local.push("--check-local");
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = reserved.local_addr()?.port();
+    let base = client_yaml(&SecretString::generate());
+    private_file(&path, &base)?;
+    for (socks, http, enabled, conflict) in [
+        ("127.0.0.1", "127.0.0.1", true, true),
+        ("0.0.0.0", "127.0.0.1", true, true),
+        ("[::1]", "[::]", true, true),
+        ("127.0.0.1", "127.0.0.1", false, false),
+        ("127.0.0.1", "127.0.0.2", true, false),
+        ("127.0.0.1", "[::1]", true, false),
+    ] {
+        let yaml = base.replace("127.0.0.1:0", &format!("{socks}:{port}")).replace(
+            "\nserver:", &format!("\n  dns:\n    enabled: true\n    listen: '{socks}:{port}'\n  http_connect:\n    enabled: {enabled}\n    listen: '{http}:{port}'\nserver:"),
+        ) + "advanced:\n  allow_non_loopback_listeners: true\n";
+        fs::write(&path, &yaml)?;
+        if conflict {
+            expect_check_error(
+                work,
+                &local,
+                "local.socks5.listen and local.http_connect.listen overlap on TCP",
+            )
+            .await?;
+        } else {
+            let out = cli(work, &local, None).await?;
+            ensure!(out.status.success() && out.stderr.is_empty());
+            ensure!(out.stdout == b"configuration file permissions: OK (default startup)\nconfigured TCP listener overlap: none detected\nport availability: unverified (offline)\n");
+        }
+        ensure!(fs::read_to_string(&path)? == yaml);
+    }
+
+    fs::write(
+        &path,
+        base.replace(
+            "\nserver:",
+            "\n  http_connect:\n    enabled: true\n    listen: '127.0.0.1:0'\nserver:",
+        ),
+    )?;
+    ensure!(cli(work, &local, None).await?.status.success());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640))?;
+    expect_check_error(
+        work,
+        &local,
+        "configuration is accessible by group/other users; restrict permissions with chmod 600",
+    )
+    .await?;
+    let plain = cli(work, &args, None).await?;
+    ensure!(plain.status.success() && plain.stdout == b"client config OK\n");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    local.push("--explain");
+    let out = cli(work, &local, None).await?;
+    ensure!(
+        out.status.success()
+            && String::from_utf8(out.stdout)?.contains("configured route: direct H2")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn offline_local_check_uses_the_configured_server_transports() -> Result<()> {
+    let dir = TempDir::new()?;
+    let work = dir.path();
+    let secret = SecretString::generate();
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = addr.local_addr()?.port();
+    let base = format!("version: 1\nlisten: '0.0.0.0:{port}'\ntls:\n  cert_path: missing.pem\n  key_path: missing.key\nmaverick:\n  tunnel_path: /test\nusers:\n  - id: example\n    secret: '{}'\nfallback:\n  type: static\n  static_dir: public\nmetrics:\n  enabled: true\n  listen: '127.0.0.1:{port}'\n", secret.expose_secret());
+    let path = work.join("private-server.yaml");
+    private_file(&path, &base)?;
+    let args = [
+        "check-config",
+        "--kind",
+        "server",
+        "-c",
+        "private-server.yaml",
+        "--check-local",
+    ];
+    expect_check_error(
+        work,
+        &args,
+        "server listen and metrics.listen overlap on TCP",
+    )
+    .await?;
+    fs::write(&path, base.replace("enabled: true", "enabled: false"))?;
+    ensure!(cli(work, &args, None).await?.status.success());
+    if cfg!(feature = "experimental-h3") {
+        fs::write(&path, format!("{base}advanced:\n  dual_h2_h3: true\n"))?;
+        expect_check_error(
+            work,
+            &args,
+            "server listen and metrics.listen overlap on TCP",
+        )
+        .await?;
+        fs::write(&path, format!("{base}advanced:\n  quiche_h3: true\n"))?;
+        ensure!(cli(work, &args, None).await?.status.success());
+    }
+    Ok(())
+}

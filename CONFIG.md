@@ -898,6 +898,28 @@ target admission and application delivery remain unverified. Output uses
 fixed descriptions, including file and validation errors. For detailed
 troubleshooting on your own machine, use plain `check-config`.
 
+### Check local CLI startup settings before restarting
+
+Development builds after 1.2.4 accept `--check-local` for either role. Run
+as the service account, from its working directory, with the intended YAML.
+
+```sh
+maverick check-config --kind client -c client.yaml --check-local
+maverick check-config --kind server -c server.yaml --check-local --check-tls
+```
+
+On Unix, this check rejects group or other access to the configuration file
+under the CLI's default startup rule. It compares the enabled TCP listeners
+within that role. The client checks SOCKS and HTTP CONNECT. H2 and dual
+servers check the main listener and metrics. A fixed H3 server uses UDP for
+its main listener, and the client's DNS listener also uses UDP.
+
+Two TCP listeners overlap when they specify the same nonzero port and the
+same address, or one address is a wildcard in the same address family.
+Port zero requests an OS-assigned port. Port availability, host-specific
+IPv4/IPv6 dual-stack behavior and other running processes require a real
+start. The check opens no sockets. Add `--explain` for the route summary.
+
 ### Compare a client and server configuration offline
 
 In 1.2.3, an operator who already holds both

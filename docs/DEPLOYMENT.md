@@ -107,6 +107,16 @@ sudo systemctl status maverick.service
 sudo journalctl -u maverick.service --since '5 minutes ago'
 ```
 
+On development builds after 1.2.4, use `check-config --check-local`
+with the staged YAML before stopping the running service. Check client and
+server separately. If the file mode is rejected, restrict the private YAML
+to the service account and run the check as that account. For a listener
+overlap, change one TCP listen address or port, or disable the optional
+listener if it is unused. A running process can still occupy a selected
+port. Stop a foreground client with Control-C. Confirm listener readiness
+after restart, then check a target reply.
+[Local startup checks](../CONFIG.md#check-local-cli-startup-settings-before-restarting).
+
 Plain `check-config` validates the YAML and its policy. Version 1.2.3 also supports `--check-tls` to load the configured server chain
 and key before a restart. Run it as the service user from the unit's
 `WorkingDirectory` (`/etc/maverick`). Server startup loads the TLS identity

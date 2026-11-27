@@ -1,10 +1,30 @@
 # Maverick Status
 
-Date: 2026-11-27
+Date: 2026-11-28
 
 This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
+
+## Development after 1.2.4
+
+`check-config --check-local` checks the default Unix file-mode rule and
+overlapping TCP listeners in one client or server YAML before restart. The
+check can run while the current service owns its port. The deployment guide
+covers correcting a refused file or listener setting and checking the next
+startup. [CLI reference](CONFIG.md#check-local-cli-startup-settings-before-restarting).
+
+On Apple Silicon, the installation archive built at `2aa215d` passed all
+25 configuration checks. Its CLI rejected each staged startup error. After
+correction it started twice on the same SOCKS port and answered a SOCKS
+greeting each time. The same archive passed 30/30 TCP/UDP cases with the
+published 1.2.4 archive, including restoration. Both executables passed
+the separate four-phase credential rollover. The native CI matrix now
+checks all five published Stable baselines.
+
+The additional preflight is queued for the next release. Operators running
+1.2.4 can restrict YAML permissions and compare the enabled TCP listeners
+before restarting. The wire protocol and dependency lockfiles are unchanged.
 
 ## Maverick 1.2.4
 

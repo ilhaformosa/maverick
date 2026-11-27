@@ -476,6 +476,82 @@ mod native_udp;
 mod selection;
 #[path = "support/server_stop.rs"]
 mod server_stop;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_client_preflight_and_restart() -> Result<()> {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::for_transport(false, 2)?;
+        let dir = fixture.directory.path();
+        let address = TcpListener::bind("127.0.0.1:0").await?.local_addr()?;
+        fixture.client_config("client.yaml", address, false, Fault::None)?;
+        let path = dir.join("client.yaml");
+        let original = fs::read_to_string(&path)?;
+        let fixed = format!("listen: '{address}'");
+        let corrected = original.replacen("listen: '127.0.0.1:0'", &fixed, 1);
+        let conflicting = original.replace("listen: '127.0.0.1:0'", &fixed);
+        let check = [
+            "check-config",
+            "--kind",
+            "client",
+            "--check-local",
+            "-c",
+            "client.yaml",
+        ];
+        let start = ["client", "-c", "client.yaml"];
+        let run = async |args: &[&str]| {
+            tokio::process::Command::new(tested_cli())
+                .current_dir(dir)
+                .args(args)
+                .kill_on_drop(true)
+                .output()
+                .await
+        };
+        for (yaml, mode, check_error, start_error) in [
+            (
+                &conflicting,
+                0o600,
+                "overlap on TCP",
+                "bind local.http_connect.listen",
+            ),
+            (&corrected, 0o640, "chmod 600", "refusing to start"),
+        ] {
+            fs::write(&path, yaml)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+            for (args, message) in [
+                (check.as_slice(), check_error),
+                (start.as_slice(), start_error),
+            ] {
+                let out = run(args).await?;
+                ensure!(
+                    !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(message)
+                );
+            }
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        ensure!(run(&check).await?.status.success());
+        for _ in 0..2 {
+            let mut client = Cli::start(dir, "client", "client.yaml")?;
+            ensure!(client.ready(SOCKS_READY).await? == address);
+            client.ready(HTTP_READY).await?;
+            // A working listener may already own the port when preparing a restart.
+            ensure!(run(&check).await?.status.success());
+            let mut stream = TcpStream::connect(address).await?;
+            stream.write_all(&[5, 1, 0]).await?;
+            let mut method = [0; 2];
+            stream.read_exact(&mut method).await?;
+            ensure!(method == [5, 0]);
+            drop(stream);
+            client.stop("-INT").await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("client preflight and restart timed out")?
+}
+
 #[path = "support/udp_diagnostics.rs"]
 mod udp_diagnostics;
 

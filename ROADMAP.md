@@ -19,8 +19,10 @@ can run before stopping a working process.
 | 2 | Exercise correction and restart with the installed CLI. | On loopback, compare the offline result with real client startup for a duplicate listener and an insecure Unix mode. Correct the cause, verify the client answers a SOCKS greeting, then stop it and restart. Document what still needs a real start or a target reply. |
 | 3 | Qualify changes against the latest public installation archive. | Check the published 1.2.4 source and digests on Apple Silicon macOS and native Linux x86_64. Run both mixed directions, upgrade and restore in the six-route TCP/UDP matrix. Retain all earlier Stable baselines, the credential rollover and the separate Beta.4 recovery check. |
 
-Provider interoperability, public-network performance and the 72-hour field
-soak still require a separately authorized environment.
+The [development record](STATUS.md#development-after-124) gives the packaged
+results and release decision. Provider interoperability, public-network
+performance and the 72-hour field soak still require a separately authorized
+environment.
 
 ## 1.2.4 native package qualification
 

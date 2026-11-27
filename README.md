@@ -6,12 +6,12 @@ browser-equivalence claim.
 
 Download the archive, SHA-256 checksum and software bill of materials (SBOM)
 for your platform from [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
-Select the entry tagged `v1.2.4` for the stable build.
+Select the entry tagged `v1.2.5` for the stable build.
 Use `aarch64-apple-darwin` for Apple Silicon macOS and `x86_64-unknown-linux-gnu`
 for Linux x86_64. Each archive includes the CLI and `START_HERE.txt`.
 For the Rust SDK, use the release tag that matches your CLI archive.
 
-The maintainer deferred pre-release field testing for 1.2.4. Real-network
+The maintainer deferred pre-release field testing for 1.2.5. Real-network
 interoperability, operational rollback and the planned 72-hour soak remain
 unverified for this version. See the [current release status](STATUS.md).
 
@@ -50,6 +50,10 @@ A v1 file containing `mode: auto` still uses H2 when it omits the transport
 switches. In 1.2.1, add `--explain` to either
 `check-config` command above to see the configured route, UDP behavior and
 direct transports compiled into your binary. This works offline.
+
+Before restarting either role, add `--check-local` to its `check-config`
+command to check private file permissions and conflicting TCP listeners.
+You can run it while the service is using its port. [Local checks](CONFIG.md#check-local-cli-startup-settings-before-restarting).
 
 Before handing off a pair of files, use `maverick check-pair --client client.yaml
 --server server.yaml`. Add `--at` to rehearse a scheduled credential switch.

@@ -5,6 +5,33 @@ Date: 2026-11-28
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
 
+## 1.2.5 native package qualification
+
+1.2.5 delivers `check-config --check-local` from `bdaaf0c`. Both native
+jobs ran the programs extracted from the 1.2.5 archives at `3685992`.
+The published 1.2.4 archives were checked against their pinned SHA-256
+digests and source commit `ff6aed2`.
+
+| Platform | Packaged configuration checks | Corrected restarts | TCP/UDP cases with 1.2.4 | Across 1.2.0–1.2.4 |
+|---|---|---|---|---|
+| [Apple Silicon macOS](https://github.com/ilhaformosa/maverick/actions/runs/46077547949/job/140768756081) | 25/25 | Client and server passed | 30/30 | 150/150 |
+| [Native Linux x86_64](https://github.com/ilhaformosa/maverick/actions/runs/46077547949/job/140768756126) | 25/25 | Client and server passed | 30/30 | 150/150 |
+
+- For both roles, the offline check and real startup rejected mode 0640
+  and an overlapping TCP listener. With mode 0600 and separate listeners,
+  each role started twice on the same main port. The client answered the
+  SOCKS greeting and the server returned metrics after each start.
+- Configuration checks covered enabled and disabled listeners, same-family
+  wildcard overlaps, port zero and TCP/UDP reuse. An already occupied
+  port could be checked offline.
+- Six routes each exercised original peers, both mixed directions, both
+  upgraded and both restored. Restored program and YAML contents matched
+  their backups before fresh bidirectional TCP transfers and independent
+  UDP replies. The credential rollover and separate Beta.4 drills passed.
+
+Publication uses the six artifacts from the successful qualification of the
+tagged main commit. [Release notes](docs/releases/v1.2.5.md).
+
 ## Development after 1.2.4
 
 Starting at `ff6aed2`, published 1.2.4 accepts a client YAML with identical

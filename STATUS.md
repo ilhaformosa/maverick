@@ -6,6 +6,18 @@ This is the current product-state record. [ROADMAP.md](ROADMAP.md) gives the
 next deliverables. Git, pull requests, Actions and release records retain
 historical evidence; a result applies to its tested revision and workload.
 
+## Maverick 1.2.5
+
+The packaged CLI can check private configuration mode bits and TCP listener
+overlap before either role restarts. Both native platforms passed the
+packaged checks, corrected client and server restarts, mixed transfers with
+1.2.4, upgrade and restoration of the saved programs and private YAML.
+Independent source review of the 25 files changed from 1.2.4 to `3685992`
+found no release-blocking issue. Third-party records in all five Cargo
+lockfiles match 1.2.4. [Native qualification](ROADMAP.md#125-native-package-qualification)
+and [release notes](docs/releases/v1.2.5.md). Real-network use and the
+72-hour soak remain unverified.
+
 ## Development after 1.2.4
 
 `check-config --check-local` checks the default Unix file-mode rule and
@@ -22,7 +34,7 @@ published 1.2.4 archive, including restoration. Both executables passed
 the separate four-phase credential rollover. The native CI matrix now
 checks all five published Stable baselines.
 
-The additional preflight is queued for the next release. Operators running
+The additional preflight is included in 1.2.5. Operators running
 1.2.4 can restrict YAML permissions and compare the enabled TCP listeners
 before restarting. The wire protocol and dependency lockfiles are unchanged.
 

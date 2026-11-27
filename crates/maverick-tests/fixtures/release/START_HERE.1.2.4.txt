@@ -1,0 +1,119 @@
+Maverick v1.2 installation guide
+
+Fast client start
+
+Use this path only when a separately authorized deployment has already provided a
+private client.generated.yaml beside the maverick binary. The public archive
+never contains that file.
+
+Open a terminal in this folder. Paste the whole block once; each step runs only
+if the preceding step succeeded:
+
+chmod 700 . &&
+chmod 600 client.generated.yaml &&
+(
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c SHA256SUMS
+  else
+    sha256sum -c SHA256SUMS
+  fi
+) &&
+./maverick version &&
+./maverick user-smoke &&
+./maverick client -c ./client.generated.yaml
+
+The final command keeps running. Stop it with Control-C.
+
+Upgrading or rolling back
+
+Keep the previous program and private YAML together. Stop the process before
+switching versions. On macOS, copy the verified executable to a fresh file
+in the installation directory, then rename it over the live path. Use the
+same procedure for the saved executable when rolling back. Restart with the
+matching config and check that TCP and UDP still transfer.
+
+Generate new local example configs
+
+If no private client config was provided, generate fresh client and server
+examples locally:
+
+./maverick gen-config
+
+The generated files are owner-only. Replace every example hostname and
+certificate path before use, then validate both:
+
+./maverick check-config --kind server -c server.generated.yaml
+./maverick check-config --kind client -c client.generated.yaml
+
+Add --explain to either command for an offline description of the
+configured routes and compiled transports. For live SOCKS UDP diagnostics,
+start the client with --diagnose-udp. It reports the configured choices, the
+admitted carrier and whether it observed a target reply.
+
+Preview a profile import
+
+Read a link from an existing private file containing only the URI. Run
+this preview before creating the client configuration.
+
+./maverick config-uri import --uri - --dry-run --output client.yaml < private-profile.uri
+
+The preview checks the link and destination, leaves the file unwritten
+and hides the secret in its report. Omit
+--output to inspect a link that has no secret. To create the file, run the
+command again without --dry-run using the complete link.
+With --clipboard, a preview or failed import keeps the link available.
+A successful file import attempts to clear it. Keep the summary private.
+
+Offline checks before a change
+
+If you already hold both private YAML files, compare the carriers,
+protection settings and selected credential before handoff:
+
+./maverick check-pair --client client.yaml --server server.yaml
+
+To rehearse a credential change, add --at with the intended RFC3339 time.
+For example, --at 2030-04-01T00:30:00Z checks which credential each side
+would use then. Verify both sides of the switch and the end of the overlap.
+
+On the server, load the staged certificate chain and matching private key
+before restarting. Run from the service's normal working directory:
+
+./maverick check-config --kind server -c server.yaml --check-tls
+
+For a protected H2 client, check a replacement public origin chain (leaf
+first) against the configured inner CA, hostname, validity and leaf pin:
+
+./maverick check-config --kind client -c client.yaml --origin-cert replacement-chain.pem
+
+These checks read local files. A fresh connection and a reply from your
+target are still needed to confirm a transfer.
+
+Transport options
+
+This full build includes H2 and H3. New direct configs select a dual H2/H3
+server and an automatic client. UDP defaults to allow_reliable: prefer native
+H3, and permit H2 only after eligible setup failures, before sending data.
+
+For a fixed carrier, generate with --h2 or --quiche-h3 instead. To require native
+UDP without reliable compatibility, add --udp-policy native_required to the
+automatic or fixed H3 generator. Existing files are never overwritten and their
+omitted settings keep their original behavior.
+
+For a TLS-terminating intermediary, use --relay with --origin-name and
+--origin-cert (and --origin-ca for private roots). This generates protected H2;
+terminating-relay H3 is unsupported. No failed identity/authentication check
+permits fallback. Existing sessions never migrate and packets are not replayed.
+
+The source revision in SOURCE.txt identifies matching docs/INTEGRATION.md,
+docs/DEPLOYMENT.md and deploy/maverick.service in the source repository. Native
+H3 payloads are at most 1200 bytes; reliable H2 payloads are at most 65507 bytes.
+SOCKS encapsulation and actual network path limits can lower usable sizes.
+
+Real-network use still requires a separate owner decision about the environment
+and any provider TLS termination. Consult the exact release notes for completed validation and supported routes.
+
+Point only the chosen application at Maverick's loopback SOCKS5 listener. Do
+not change system proxy, DNS, routes, firewall, or VPN settings.
+
+This artifact is experimental software, provided without warranty. It is
+not production-ready, anonymous, censorship-resistant, or browser-identical.

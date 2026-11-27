@@ -75,8 +75,9 @@ export MAVERICK_CANDIDATE_CLI="$scratch/candidate/maverick-pilot/maverick"
 if [[ "$baseline_version" == "$latest" ]]; then
   cargo test --locked -p maverick-cli --no-default-features --features experimental-h3 --test config_handoff
   cargo test --locked -p maverick-cli --no-default-features --features experimental-h3 \
-    --test h3_product local_client_preflight_and_restart -- --exact | tee "$scratch/preflight"
+    --test h3_product preflight_and_restart | tee "$scratch/preflight"
   grep -Fxq 'test local_client_preflight_and_restart ... ok' "$scratch/preflight"
+  grep -Fxq 'test local_server_preflight_and_restart ... ok' "$scratch/preflight"
   rollover=credential_rollover::packaged_credential_rollover_and_restore
   for role in baseline candidate; do
     MAVERICK_CANDIDATE_CLI="$scratch/$role/maverick-pilot/maverick" \

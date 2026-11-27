@@ -9,6 +9,17 @@ independently reviewing and testing Stable tooling before field qualification,
 while freezing protocol/SDK scope. This does not move the publication decision
 or authorize a release tag, deployment or GitHub Release.
 
+## Owner decision for patch 1.2.5
+
+The owner authorized 1.2.5 from `bdaaf0c` after qualification of the native
+Apple Silicon macOS and Linux x86_64 installation archives. Use each
+packaged CLI to verify file permissions, overlapping listeners and restart
+after correction. Exercise both mixed directions with published 1.2.4,
+two-sided upgrade and fresh TCP and UDP transfers after restoring the
+saved programs and private configurations. Merge the reviewed PR and use
+the annotated tag and exact-commit approval to publish the six files from
+the qualified main revision. Field trials and the 72-hour soak remain deferred.
+
 ## Owner decision for patch 1.2.4
 
 The owner authorized delivery of the profile import preview fix from

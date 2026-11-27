@@ -64,6 +64,21 @@ command again without --dry-run using the complete link.
 With --clipboard, a preview or failed import keeps the link available.
 A successful file import attempts to clear it. Keep the summary private.
 
+Check local settings before a restart
+
+Run the check as the account that will start Maverick. It reads the YAML
+while the current process can keep serving on its port.
+
+./maverick check-config --kind client -c client.yaml --check-local
+./maverick check-config --kind server -c server.yaml --check-local
+
+On macOS and Linux, restrict the private YAML to its owner (chmod 600).
+Give enabled SOCKS and HTTP CONNECT listeners distinct TCP addresses or
+ports. On an H2 or dual server, also check the main and metrics TCP
+listeners. A wildcard can overlap a specific address on the same port.
+The check opens no sockets. Confirm readiness after restarting and verify
+a target reply.
+
 Offline checks before a change
 
 If you already hold both private YAML files, compare the carriers,

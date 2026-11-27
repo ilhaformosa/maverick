@@ -1,13 +1,13 @@
 # Server deployment preparation
 
-This runbook covers the Maverick 1.2.4 Linux server. The maintainer deferred
+This runbook covers the Maverick 1.2.5 Linux server. The maintainer deferred
 field validation for this release. Deployment requires a separately authorized
 environment.
 
 ## Select and verify the build
 
 Download the archive, checksum and matching `.cdx.json` software bill of
-materials from the entry tagged `v1.2.4` on [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
+materials from the entry tagged `v1.2.5` on [GitHub Releases](https://github.com/ilhaformosa/maverick/releases).
 Select `aarch64-apple-darwin` for Apple Silicon macOS or
 `x86_64-unknown-linux-gnu` for Linux x86_64. The `pilot` segment in the
 filename is retained for compatibility.
@@ -16,16 +16,16 @@ For example, on Linux run the following in the download directory. Extract
 into an empty directory after the first check succeeds.
 
 ```sh
-sha256sum -c maverick-1.2.4-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256 &&
-mkdir maverick-1.2.4 &&
-tar -xzf maverick-1.2.4-pilot-x86_64-unknown-linux-gnu.tar.gz -C maverick-1.2.4 &&
-cd maverick-1.2.4/maverick-pilot &&
+sha256sum -c maverick-1.2.5-pilot-x86_64-unknown-linux-gnu.tar.gz.sha256 &&
+mkdir maverick-1.2.5 &&
+tar -xzf maverick-1.2.5-pilot-x86_64-unknown-linux-gnu.tar.gz -C maverick-1.2.5 &&
+cd maverick-1.2.5/maverick-pilot &&
 sha256sum -c SHA256SUMS
 ```
 
 On macOS use the Apple Silicon filename and `shasum -a 256 -c` for both checks.
-In `SOURCE.txt`, check the target and version (`1.2.4`). Compare the full
-`git_revision` to the output of `git rev-parse 'v1.2.4^{commit}'` in a source
+In `SOURCE.txt`, check the target and version (`1.2.5`). Compare the full
+`git_revision` to the output of `git rev-parse 'v1.2.5^{commit}'` in a source
 checkout containing the release tag. Use that commit for SDK clients.
 
 For a local source-build check on Linux x86_64, run:
@@ -107,7 +107,7 @@ sudo systemctl status maverick.service
 sudo journalctl -u maverick.service --since '5 minutes ago'
 ```
 
-On development builds after 1.2.4, use `check-config --check-local`
+In 1.2.5, use `check-config --check-local`
 with the staged YAML before stopping the running service. Check client and
 server separately. If the file mode is rejected, restrict the private YAML
 to the service account and run the check as that account. For a listener

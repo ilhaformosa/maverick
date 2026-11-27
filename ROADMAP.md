@@ -1,9 +1,26 @@
 # Maverick Roadmap
 
-Date: 2026-11-27
+Date: 2026-11-28
 
 [STATUS.md](STATUS.md) records current capabilities and evidence. This file
 contains the execution order, not a second history of completed pull requests.
+
+## Development after 1.2.4
+
+Starting at `ff6aed2`, published 1.2.4 accepts a client YAML with identical
+SOCKS and HTTP TCP listeners in plain `check-config`, then fails to start.
+A group-readable YAML also passes the plain check with a warning and is
+rejected at default startup. The following work covers checks an operator
+can run before stopping a working process.
+
+| Priority | Work | Offline or loopback acceptance |
+|---|---|---|
+| 1 | Add an optional `check-config --check-local` for each role. | Apply the default CLI configuration-file permission rule on Unix and detect overlapping enabled TCP listeners within that role. Test the same address and same-family wildcard overlap, disabled listeners, OS-assigned ports and TCP/UDP reuse. Check an externally occupied port offline. Keep the ordinary check compatible and omit private paths and addresses from the new diagnostics. |
+| 2 | Exercise correction and restart with the installed CLI. | On loopback, compare the offline result with real client startup for a duplicate listener and an insecure Unix mode. Correct the cause, verify the client answers a SOCKS greeting, then stop it and restart. Document what still needs a real start or a target reply. |
+| 3 | Qualify changes against the latest public installation archive. | Check the published 1.2.4 source and digests on Apple Silicon macOS and native Linux x86_64. Run both mixed directions, upgrade and restore in the six-route TCP/UDP matrix. Retain all earlier Stable baselines, the credential rollover and the separate Beta.4 recovery check. |
+
+Provider interoperability, public-network performance and the 72-hour field
+soak still require a separately authorized environment.
 
 ## 1.2.4 native package qualification
 
